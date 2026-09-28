@@ -87,10 +87,16 @@ type Prefs struct {
 var pageFS embed.FS
 
 var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
-	"get":  get,
-	"mib":  mib,
-	"ms":   func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) + " ms" },
-	"when": when,
+	"get":       get,
+	"mib":       mib,
+	"ms":        func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) + " ms" },
+	"when":      when,
+	"alerts":    alerts,
+	"gpuMem":    gpuMem,
+	"ratio":     ratio,
+	"errTotal":  errTotal,
+	"uptime":    uptime,
+	"doctorOut": doctorOut,
 }).ParseFS(pageFS, "page.html"))
 
 // New builds the dashboard.
@@ -317,13 +323,9 @@ func get(m map[string]any, key string) string {
 }
 
 func mib(m map[string]any, key string) string {
-	v, ok := m[key].(float64)
+	v, ok := num(m, key)
 	if !ok {
-		if n, ok := m[key].(int); ok {
-			v = float64(n)
-		} else {
-			return "-"
-		}
+		return "-"
 	}
 	return strconv.FormatFloat(v/(1<<20), 'f', 0, 64) + " MiB"
 }
