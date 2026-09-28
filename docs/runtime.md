@@ -17,7 +17,7 @@ client CLI / any HTTP caller
 
 | command | plane | purpose |
 |---|---|---|
-| `hachidori setup [--home H] [--device cuda\|cpu]` | host | materialize pinned Python, packages, worker and model under `HACHIDORI_HOME`, then activate |
+| `hachidori setup [--home H] [--device cuda\|cpu]` | host | reconcile `HACHIDORI_HOME` with the Runtime Spec: private uv materializes the locked Python environment, the pinned model is materialized separately, then activate |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843]` | host | run HTTP + one resident worker; non-loopback binds are refused |
 | `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh]` | host | `serve` plus the host-local dashboard (see below) |
 | `hachidori doctor [--home H]` | host | verify the installation including a real HTTP→worker→model smoke inference |
@@ -179,20 +179,82 @@ ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -o ServerAliveInterval=15 \
   `status`, `decide`, `eval` or `benchmark` there. Datasets and labels never
   reach the GPU host; the dashboard has no upload surface.
 
+## Runtime materialization
+
+`hachidori setup` is declarative. The desired runtime is a **Runtime Spec**:
+Go data in `internal/setup/spec.go` plus the uv project embedded from
+`internal/setup/runtimespec/` (`pyproject.toml` and the locked `uv.lock`,
+with one uv extra per PyTorch flavor: `cpu`, `cu128`). The spec records the
+schema, platform, CPython version, provider (`laya==0.3.21`), exact torch build,
+flavor, pinned uv version and executable digest, the SHA-256 of both uv project
+files and of the worker script. The model is not part of it.
+
+The runtime identity is `<flavor>-<first 16 hex of sha256(canonical spec JSON)>`,
+for example `cu128-…` / `cpu-…`. Any semantic change (lock, versions, worker,
+uv, platform, flavor) yields a new identity and a new directory; an existing
+runtime is never modified.
+
+```text
+desired Runtime Spec (device -> flavor)
+  -> private uv: tools/uv/<version>/uv[.exe]; archive and executable sha256 pinned,
+     executable re-verified before every invocation, invoked by absolute path
+  -> identity
+  -> runtime/<identity>/ present?  yes: verify (manifest identity, worker digest, interpreter probe) and reuse
+                                   no:  runtime/.staging-<identity>/ :
+                                        uv python install <python> --no-bin --no-registry
+                                        uv venv --relocatable --python <python> env
+                                        uv sync --locked --no-build --no-install-project --extra <flavor>
+                                        write worker, verify, write manifest.json last
+  -> model: reuse if every file matches its pinned digest, else download to staging, verify, rename
+  -> rename staging -> runtime/<identity>, verify again
+  -> write state/active-runtime.json
+```
+
+uv owns CPython acquisition (into `tools/uv/<version>/python/`, the uv-pinned
+python-build-standalone build) and package acquisition from the lock; Hachidori
+does not resolve dependencies, write requirements files or run pip. uv runs with
+a constructed environment: `UV_NO_CONFIG=1`, `UV_MANAGED_PYTHON=1`, cache and
+Python install dirs under `HACHIDORI_HOME`, `PATH` = its own directory; user
+uv/pip configuration, indexes and interpreters are ignored. A uv from `PATH`,
+system Python or system pip is never used; a failed uv bootstrap fails setup.
+
+Verification is Hachidori's: the private interpreter (`-I`, offline, constructed
+env) must report exactly the spec's Python version, `laya==0.3.21` and
+`torch==2.11.0+<flavor>`, its prefix must be the runtime's `env/` and its base
+interpreter the uv-managed CPython under `tools/`. Failure or interruption at any
+step leaves `state/active-runtime.json` unchanged; staging is never treated as a
+runtime and is recreated on the next run. There is no retry loop beyond uv's
+own. A runtime directory that exists but does not verify is an explicit error
+(remove it to rematerialize). Runtimes created by the former pip-based setup
+(`runtime/0.1.0-*`) never match an identity; setup materializes a new one next
+to them and `doctor` reports them as `runtime_invalid`.
+
+Network is needed only while materializing. `serve` and `doctor` use the
+published runtime's absolute interpreter and do not need uv, its cache or
+package indexes.
+
+Updating the environment: edit `runtimespec/pyproject.toml`, run
+`uv lock --directory internal/setup/runtimespec` with the pinned uv version,
+commit both files. Setup runs `uv sync --locked`, which refuses a stale lock.
+
 ## HACHIDORI_HOME
 
 ```text
 HACHIDORI_HOME/
-  runtime/0.1.0-cu128/         immutable once materialized (0.1.0-cpu for CPU)
-    python/                    python-build-standalone CPython 3.12.11 (sha256 pinned)
-    worker/hachidori_worker.py (sha256 recorded in manifest)
-    requirements.txt
-    manifest.json              pins, indexes, pip freeze, worker digest
-  packages/                    downloaded runtime archives
+  tools/uv/0.12.19/
+    uv[.exe]                   pinned private uv (sha256 verified)
+    python/cpython-3.12.11-…/  uv-managed base CPython
+  runtime/<flavor>-<digest>/   immutable once published
+    env/                       relocatable venv (bin/python, Scripts\python.exe on Windows)
+    spec/pyproject.toml, spec/uv.lock   the exact spec files it was materialized from
+    worker/hachidori_worker.py (sha256 in spec and manifest)
+    manifest.json              identity, Runtime Spec, verified Python version, installed distributions, worker digest
+  runtime/.staging-<identity>/ in-progress materialization, never activated
+  packages/                    downloaded uv release archive
   models/convaiinnovations--laya/<revision>/
     model.safetensors …        every file sha256 pinned
     hachidori-model.json
-  cache/{huggingface,torch,pip,xdg,nv,tmp,home}
+  cache/{uv,huggingface,torch,pip,xdg,nv,tmp,home}
   logs/worker.log, logs/doctor-worker.log
   state/active-runtime.json
   state/dashboard.json         last tunnel form values (non-secret), dashboard only
@@ -208,10 +270,10 @@ The worker environment is constructed, not inherited: `PYTHONNOUSERSITE=1`,
 proxy/CA settings (setup downloads), OS essentials on Windows, and `LD_LIBRARY_PATH`
 on Linux (host GPU driver location, e.g. NixOS `/run/opengl-driver/lib`).
 
-Pins (in `internal/setup/spec.go`): CPython 3.12.11 (python-build-standalone
-20250902, linux-amd64 and windows-amd64), `torch==2.11.0+cu128` (NVIDIA driver
-≥ 570, RTX 20xx–50xx) or `torch==2.11.0+cpu`, `laya==0.3.21`,
-`transformers==5.17.0` and the full resolved package set, model
+Pins: uv 0.12.19 (linux-amd64, windows-amd64; `internal/setup/spec.go`),
+CPython 3.12.11, `torch==2.11.0+cu128` (NVIDIA driver ≥ 570, RTX 20xx–50xx) or
+`torch==2.11.0+cpu`, `laya==0.3.21`, `transformers==5.17.0` and the full locked
+package set (`internal/setup/runtimespec/uv.lock`), model
 `convaiinnovations/laya@55cf4c4e…` (Laya's own reviewed revision).
 
 Removing the executable and `HACHIDORI_HOME` removes everything Hachidori owns.

@@ -17,9 +17,13 @@ level reports it as **blocked / not checked**, never as passed.
 # 1. build (or copy) the single executable
 go build -o hachidori.exe ./cmd/hachidori
 
-# 2. materialize runtime + model (network needed only here)
-$env:HACHIDORI_HOME = "D:\Hachidori"
+# 2. materialize runtime + model (network needed only here). Use a clean
+#    home; no system Python, pip or uv is needed (Hachidori bootstraps its
+#    pinned uv into $env:HACHIDORI_HOME\tools\uv\0.12.19\uv.exe).
+$env:HACHIDORI_HOME = "D:\Hachidori-test"
 .\hachidori.exe setup --device cuda
+# expect: "private uv 0.12.19 ready", uv python install / venv / sync lines,
+#         "runtime cu128-<digest> published", "active: runtime=cu128-<digest> …"
 
 # 3. doctor: home, runtime, model digests, isolation, provider import,
 #    CUDA, worker start/load/warmup, real HTTP smoke inference
@@ -29,7 +33,9 @@ $env:HACHIDORI_HOME = "D:\Hachidori"
 $env:HACHIDORI_CERT_HOME = $env:HACHIDORI_HOME
 go test ./internal/doctor -run TestCertifyRealProvider -v -count=1
 
-# 5. serve (loopback only)
+# 5. serve (loopback only). To show serving does not use uv or package
+#    resolution, first move the private uv away and cut the network, e.g.
+#    Rename-Item $env:HACHIDORI_HOME\tools\uv\0.12.19\uv.exe uv.exe.off
 .\hachidori.exe serve
 ```
 
@@ -56,7 +62,7 @@ accuracy comparison is not like-for-like.
 
 ## Linux GPU host
 
-Same commands with `export HACHIDORI_HOME=/srv/hachidori`. On NixOS the private
-CPython (python-build-standalone, glibc) needs a dynamic loader (`nix-ld` or an
+Same commands with `export HACHIDORI_HOME=/srv/hachidori`. On NixOS the private uv and
+CPython (the uv-managed python-build-standalone build, glibc) need a dynamic loader (`nix-ld` or an
 FHS environment) and `LD_LIBRARY_PATH` must include the driver libraries
 (`/run/opengl-driver/lib`).

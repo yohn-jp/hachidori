@@ -1,86 +1,132 @@
-// Package setup materializes the pinned runtime and model under HACHIDORI_HOME.
+// Package setup reconciles HACHIDORI_HOME with the desired Runtime Spec and
+// the pinned model: it bootstraps Hachidori's private uv, lets uv materialize
+// the locked Python environment into staging, verifies it, and activates it.
 package setup
 
 import (
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
 	"fmt"
 	"runtime"
 
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/worker/py"
 )
 
-// RuntimeVersion is the version of the runtime bundle this binary materializes.
-const RuntimeVersion = "0.1.0"
+// SpecSchema versions the Runtime Spec contract and its identity derivation.
+const SpecSchema = "hachidori.runtime-spec/1"
 
-// Pinned private CPython (python-build-standalone, install_only).
+// Runtime environment intent. The authoritative package set is the uv
+// project in runtimespec/ (pyproject.toml + uv.lock); these values are what
+// verification requires of the materialized environment.
 const (
-	pythonRelease = "20250902"
-	pythonVersion = "3.12.11"
-	pbsBase       = "https://github.com/astral-sh/python-build-standalone/releases/download/" + pythonRelease + "/"
+	pythonVersion   = "3.12.11"
+	providerName    = "laya"
+	providerVersion = "0.3.21"
+	torchVersion    = "2.11.0"
 )
 
-type pythonDist struct {
-	home.Artifact
-	RelPath string // interpreter path inside the extracted archive
+// flavors maps a device to the uv extra (and torch local version) that
+// selects the PyTorch build in runtimespec/pyproject.toml.
+var flavors = map[string]string{
+	"cuda": "cu128",
+	"cpu":  "cpu",
 }
 
-var pythonDists = map[string]pythonDist{
-	"linux/amd64": {home.Artifact{
-		URL:    pbsBase + "cpython-" + pythonVersion + "%2B" + pythonRelease + "-x86_64-unknown-linux-gnu-install_only.tar.gz",
-		SHA256: "59c2827a4385741d04ea3971a3e6a845f951e96b2d168284534cc0d465391eeb"}, "python/bin/python3.12"},
-	"windows/amd64": {home.Artifact{
-		URL:    pbsBase + "cpython-" + pythonVersion + "%2B" + pythonRelease + "-x86_64-pc-windows-msvc-install_only.tar.gz",
-		SHA256: "9ff8fddfd39b518d3902f204ceb9b6cef4213c6d78cf4bc4507c28079afece7c"}, "python/python.exe"},
+//go:embed runtimespec/pyproject.toml runtimespec/uv.lock
+var specFS embed.FS
+
+func specFile(name string) []byte {
+	b, err := specFS.ReadFile("runtimespec/" + name)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }
 
-// Flavors select the PyTorch build. CUDA 12.8 wheels support RTX 20xx..50xx
-// (Turing..Blackwell) and need an NVIDIA driver >= 570.
-var flavors = map[string]struct{ Name, Torch, Index string }{
-	"cuda": {"cu128", "torch==2.11.0+cu128", "https://download.pytorch.org/whl/cu128"},
-	"cpu":  {"cpu", "torch==2.11.0+cpu", "https://download.pytorch.org/whl/cpu"},
+// Private uv: the exact release Hachidori bootstraps under
+// HACHIDORI_HOME/tools/uv/<version>/. Both the published archive digest and the
+// digest of the extracted executable are pinned; the executable is verified
+// before every invocation. uv from PATH is never used.
+var uvVersion = "0.12.19"
+
+type uvArtifact struct {
+	URL          string // release archive
+	SHA256       string // archive digest (as published next to the release asset)
+	Member       string // executable path inside the archive
+	BinarySHA256 string // digest of the extracted executable
 }
 
-// packages is the exact package set resolved for laya 0.3.21 on CPython 3.12.
-// On Linux CUDA, torch additionally pulls its own exactly pinned NVIDIA wheels.
-var packages = []string{
-	"laya==0.3.21",
-	"transformers==5.17.0",
-	"tokenizers==0.23.2",
-	"safetensors==0.8.0",
-	"huggingface_hub==1.33.0",
-	"hf-xet==1.6.0",
-	"numpy==2.5.3",
-	"annotated-doc==0.0.5",
-	"anyio==4.15.1",
-	"certifi==2026.7.22",
-	"click==8.5.0",
-	"filelock==4.0.5",
-	"fsspec==2026.9.0",
-	"h11==0.16.0",
-	"httpcore==1.0.9",
-	"httpx==0.28.1",
-	"idna==3.20",
-	"Jinja2==3.1.6",
-	"markdown-it-py==4.2.0",
-	"MarkupSafe==3.0.3",
-	"mdurl==0.1.2",
-	"mpmath==1.3.0",
-	"networkx==3.7",
-	"packaging==26.3",
-	"Pygments==2.21.0",
-	"PyYAML==6.0.3",
-	"regex==2026.9.10",
-	"rich==15.0.0",
-	"setuptools==81.0.0",
-	"shellingham==1.5.4",
-	"sympy==1.14.0",
-	"tqdm==4.70.1",
-	"typer==0.27.2",
-	"typing_extensions==4.16.0",
-	`colorama==0.4.6; sys_platform == "win32"`,
+const uvBase = "https://github.com/astral-sh/uv/releases/download/"
+
+var uvArtifacts = map[string]uvArtifact{
+	"linux/amd64": {
+		URL:          uvBase + "0.12.19/uv-x86_64-unknown-linux-gnu.tar.gz",
+		SHA256:       "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8",
+		Member:       "uv-x86_64-unknown-linux-gnu/uv",
+		BinarySHA256: "242e462a63f5a3c0421d68557006193ecbfb61321cba0fe8542213ac62d92563",
+	},
+	"windows/amd64": {
+		URL:          uvBase + "0.12.19/uv-x86_64-pc-windows-msvc.zip",
+		SHA256:       "6dbb02d79e419522f1c500f0adb1cddcff0cda7d59b0d66ea7f5e3b4a1b2f5f0",
+		Member:       "uv.exe",
+		BinarySHA256: "f94eddb81f3addca6ef8f2361a70c3edde31adcbd1000a55fc6674306ae0b1e7",
+	},
+}
+
+// uvFor selects the pinned uv artifact for a platform.
+func uvFor(plat string) (uvArtifact, error) {
+	a, ok := uvArtifacts[plat]
+	if !ok {
+		return uvArtifact{}, fmt.Errorf("no pinned uv for %s (supported: linux/amd64, windows/amd64)", plat)
+	}
+	return a, nil
+}
+
+// Desired is the Runtime Spec this executable materializes for a device on
+// the current platform.
+func Desired(device string) (home.RuntimeSpec, error) {
+	return desiredFor(device, platform())
+}
+
+func desiredFor(device, plat string) (home.RuntimeSpec, error) {
+	flavor, ok := flavors[device]
+	if !ok {
+		return home.RuntimeSpec{}, fmt.Errorf("device must be cuda or cpu, got %q", device)
+	}
+	uv, err := uvFor(plat)
+	if err != nil {
+		return home.RuntimeSpec{}, err
+	}
+	return home.RuntimeSpec{
+		Schema:   SpecSchema,
+		Platform: plat,
+		Python:   pythonVersion,
+		Provider: providerName + "==" + providerVersion,
+		Torch:    torchVersion + "+" + flavor,
+		Flavor:   flavor,
+		UV:       uvVersion,
+		UVSHA256: uv.BinarySHA256,
+		Project:  digest(specFile("pyproject.toml")),
+		Lock:     digest(specFile("uv.lock")),
+		Worker:   digest(py.Script),
+	}, nil
+}
+
+// RuntimeName is the runtime identity (directory name under runtime/) for a device.
+func RuntimeName(device string) (string, error) {
+	s, err := Desired(device)
+	if err != nil {
+		return "", err
+	}
+	return s.ID(), nil
 }
 
 // Model is the pinned Laya checkpoint (English, ModernBERT-large) at the
 // revision Laya itself lists as reviewed in laya.revisions.PINNED_REVISIONS.
+// It is materialized independently of the Python runtime and is not part of
+// the runtime identity.
 var Model = home.ModelManifest{
 	Repo:     "convaiinnovations/laya",
 	Revision: "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
@@ -93,16 +139,14 @@ var Model = home.ModelManifest{
 	},
 }
 
+var modelBaseURL = "https://huggingface.co/"
+
 // ModelDirName is the activation name of the pinned model.
 func ModelDirName() string { return "convaiinnovations--laya/" + Model.Revision }
 
-// RuntimeName is the runtime directory name for a device.
-func RuntimeName(device string) (string, error) {
-	f, ok := flavors[device]
-	if !ok {
-		return "", fmt.Errorf("device must be cuda or cpu, got %q", device)
-	}
-	return RuntimeVersion + "-" + f.Name, nil
-}
-
 func platform() string { return runtime.GOOS + "/" + runtime.GOARCH }
+
+func digest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}

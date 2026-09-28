@@ -1,39 +1,69 @@
 package setup
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/worker/py"
 )
 
-// Run materializes the pinned runtime and model and activates them.
-// Existing materialized versions are immutable and reused as-is.
+// Run reconciles HACHIDORI_HOME with the desired Runtime Spec for device:
+//
+//	desired spec -> private uv -> runtime identity
+//	  -> reuse the verified immutable runtime, or materialize it into staging and verify it
+//	  -> materialize/verify the model independently
+//	  -> publish the runtime (atomic rename) -> update state/active-runtime.json
+//
+// Any failure leaves the active runtime untouched; rerunning reconciles again.
 func Run(h home.Home, device string, log io.Writer) error {
-	name, err := RuntimeName(device)
+	spec, err := Desired(device)
 	if err != nil {
 		return err
 	}
 	if err := h.Ensure(); err != nil {
 		return err
 	}
-	if err := materializeRuntime(h, name, device, log); err != nil {
-		return fmt.Errorf("runtime: %w", err)
+	uv, err := ensureUV(h, log)
+	if err != nil {
+		return fmt.Errorf("private uv: %w", err)
+	}
+	id := spec.ID()
+	final := h.Path("runtime", id)
+	stage := ""
+	if _, err := os.Stat(final); err == nil {
+		if err := verifyPublished(h, final, spec); err != nil {
+			return fmt.Errorf("runtime %s exists but failed verification; it is never modified in place (remove %s to rematerialize): %w", id, final, err)
+		}
+		fmt.Fprintf(log, "runtime %s verified, reusing\n", id)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	} else if stage, err = materializeRuntime(h, uv, spec, log); err != nil {
+		return fmt.Errorf("runtime %s: %w", id, err)
 	}
 	if err := materializeModel(h, log); err != nil {
 		return fmt.Errorf("model: %w", err)
 	}
-	a := home.Active{Runtime: name, Model: ModelDirName(), Device: device}
+	if stage != "" {
+		if err := os.Rename(stage, final); err != nil {
+			return fmt.Errorf("runtime %s: publish: %w", id, err)
+		}
+		if err := verifyPublished(h, final, spec); err != nil {
+			return fmt.Errorf("runtime %s: published runtime failed verification: %w", id, err)
+		}
+		fmt.Fprintf(log, "runtime %s published\n", id)
+	}
+	a := home.Active{Runtime: id, Model: ModelDirName(), Device: device}
 	if err := home.WriteJSON(h.Path("state", "active-runtime.json"), a); err != nil {
 		return err
 	}
@@ -41,82 +71,157 @@ func Run(h home.Home, device string, log io.Writer) error {
 	return nil
 }
 
-func materializeRuntime(h home.Home, name, device string, log io.Writer) error {
-	final := h.Path("runtime", name)
-	if _, err := os.Stat(filepath.Join(final, "manifest.json")); err == nil {
-		fmt.Fprintf(log, "runtime %s already materialized\n", name)
-		return nil
+// pythonRelPath is the private interpreter inside a runtime directory.
+func pythonRelPath() string {
+	if runtime.GOOS == "windows" {
+		return "env/Scripts/python.exe"
 	}
-	dist, ok := pythonDists[platform()]
-	if !ok {
-		return fmt.Errorf("no pinned Python distribution for %s", platform())
-	}
-	flavor := flavors[device]
-	stage := h.Path("runtime", ".staging-"+name)
-	if err := os.RemoveAll(stage); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(stage, 0o755); err != nil {
-		return err
-	}
-
-	archive := h.Path("packages", filepath.Base(strings.ReplaceAll(dist.URL, "%2B", "+")))
-	if err := fetch(dist.URL, archive, dist.SHA256, log); err != nil {
-		return err
-	}
-	fmt.Fprintf(log, "extracting %s\n", filepath.Base(archive))
-	if err := extractTarGz(archive, stage); err != nil {
-		return err
-	}
-	python := filepath.Join(stage, filepath.FromSlash(dist.RelPath))
-
-	reqs := filepath.Join(stage, "requirements.txt")
-	lines := append([]string{flavor.Torch}, packages...)
-	if err := os.WriteFile(reqs, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-		return err
-	}
-	env := h.Env(filepath.Dir(python), false)
-	pip := func(args ...string) *exec.Cmd {
-		cmd := exec.Command(python, append([]string{"-I", "-m", "pip"}, args...)...)
-		cmd.Env, cmd.Dir = env, stage
-		return cmd
-	}
-	fmt.Fprintf(log, "installing pinned packages (%s)\n", flavor.Torch)
-	cmd := pip("install", "--no-input", "--only-binary=:all:", "--no-warn-script-location",
-		"--index-url", "https://pypi.org/simple", "--extra-index-url", flavor.Index, "-r", reqs)
-	cmd.Stdout, cmd.Stderr = log, log
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pip install: %w", err)
-	}
-	freeze, err := pip("freeze", "--all").Output()
-	if err != nil {
-		return fmt.Errorf("pip freeze: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(stage, "worker"), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(stage, "worker", "hachidori_worker.py"), py.Script, 0o644); err != nil {
-		return err
-	}
-	sum := sha256.Sum256(py.Script)
-	m := home.RuntimeManifest{
-		Version: RuntimeVersion, Flavor: flavor.Name, Platform: platform(), PythonVersion: pythonVersion,
-		PythonArchive: dist.Artifact, PythonRelPath: dist.RelPath,
-		Packages: lines, PackageIndexes: []string{"https://pypi.org/simple", flavor.Index},
-		Installed: strings.Fields(string(freeze)),
-		Worker:    map[string]string{"worker/hachidori_worker.py": hex.EncodeToString(sum[:])},
-	}
-	if err := home.WriteJSON(filepath.Join(stage, "manifest.json"), m); err != nil {
-		return err
-	}
-	return os.Rename(stage, final)
+	return "env/bin/python"
 }
 
+// materializeRuntime lets the private uv materialize spec into a fresh
+// staging directory and verifies the result. It returns the staging path; the
+// runtime becomes valid only once Run publishes it.
+func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Writer) (string, error) {
+	stage := h.Path("runtime", ".staging-"+spec.ID())
+	if err := os.RemoveAll(stage); err != nil {
+		return "", err
+	}
+	specDir := filepath.Join(stage, "spec")
+	if err := os.MkdirAll(specDir, 0o755); err != nil {
+		return "", err
+	}
+	for _, name := range []string{"pyproject.toml", "uv.lock"} {
+		if err := os.WriteFile(filepath.Join(specDir, name), specFile(name), 0o644); err != nil {
+			return "", err
+		}
+	}
+	envDir := filepath.Join(stage, "env")
+	fmt.Fprintf(log, "materializing runtime %s (python %s, %s, torch %s) with private uv %s\n",
+		spec.ID(), spec.Python, spec.Provider, spec.Torch, spec.UV)
+	// uv acquires the CPython build it pins for this version into
+	// tools/uv/<version>/python; no system interpreter is considered.
+	if err := uv.run(stage, uv.env(), "python", "install", spec.Python, "--no-bin", "--no-registry"); err != nil {
+		return "", err
+	}
+	if err := uv.run(stage, uv.env(), "venv", "--relocatable", "--no-python-downloads", "--python", spec.Python, envDir); err != nil {
+		return "", err
+	}
+	if err := uv.run(specDir, uv.env("UV_PROJECT_ENVIRONMENT="+envDir),
+		"sync", "--locked", "--no-build", "--no-install-project", "--no-python-downloads", "--extra", spec.Flavor); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Join(stage, "worker"), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(stage, "worker", "hachidori_worker.py"), py.Script, 0o644); err != nil {
+		return "", err
+	}
+	p, err := verifyRuntime(h, stage, spec)
+	if err != nil {
+		return "", fmt.Errorf("verification: %w", err)
+	}
+	m := home.RuntimeManifest{
+		Identity: spec.ID(), Spec: spec, PythonVersion: p.Python, PythonRelPath: pythonRelPath(),
+		BasePython: p.BasePrefix, Installed: p.Installed,
+		Worker: map[string]string{"worker/hachidori_worker.py": spec.Worker},
+	}
+	// The manifest is written last: its presence marks a complete runtime.
+	if err := home.WriteJSON(filepath.Join(stage, "manifest.json"), m); err != nil {
+		return "", err
+	}
+	return stage, nil
+}
+
+// verifyPublished checks that dir is a complete runtime for exactly spec.
+func verifyPublished(h home.Home, dir string, spec home.RuntimeSpec) error {
+	var m home.RuntimeManifest
+	if err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &m); err != nil {
+		return fmt.Errorf("incomplete runtime: %w", err)
+	}
+	if m.Identity != spec.ID() || m.Spec != spec {
+		return fmt.Errorf("manifest identity %q does not match desired spec %s", m.Identity, spec.ID())
+	}
+	if m.PythonRelPath != pythonRelPath() {
+		return fmt.Errorf("unexpected interpreter path %q", m.PythonRelPath)
+	}
+	_, err := verifyRuntime(h, dir, spec)
+	return err
+}
+
+type runtimeProbe struct {
+	Python     string   `json:"python"`
+	Prefix     string   `json:"prefix"`
+	BasePrefix string   `json:"base_prefix"`
+	Installed  []string `json:"installed"`
+}
+
+// runtimeProbeCode reports the interpreter and installed distributions
+// without importing the ML stack.
+const runtimeProbeCode = `import json, sys, importlib.metadata as md
+print(json.dumps({"python": "%d.%d.%d" % sys.version_info[:3], "prefix": sys.prefix, "base_prefix": sys.base_prefix,
+ "installed": sorted({"%s==%s" % (d.metadata["Name"], d.version) for d in md.distributions()})}))`
+
+// verifyRuntime is Hachidori's own check of a materialized environment: the
+// worker digest, and, from the private interpreter run isolated and offline,
+// the exact Python, provider and torch versions and that the environment and
+// its base interpreter live under HACHIDORI_HOME.
+func verifyRuntime(h home.Home, dir string, spec home.RuntimeSpec) (runtimeProbe, error) {
+	var p runtimeProbe
+	if got, err := FileSHA256(filepath.Join(dir, "worker", "hachidori_worker.py")); err != nil || got != spec.Worker {
+		return p, fmt.Errorf("worker script digest mismatch")
+	}
+	python := filepath.Join(dir, filepath.FromSlash(pythonRelPath()))
+	if _, err := os.Stat(python); err != nil {
+		return p, fmt.Errorf("private python missing: %w", err)
+	}
+	cmd := exec.Command(python, "-I", "-c", runtimeProbeCode)
+	cmd.Env = h.Env(filepath.Dir(python), true)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return p, fmt.Errorf("private python probe: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if err := json.Unmarshal(out, &p); err != nil {
+		return p, fmt.Errorf("private python probe: unexpected output %q", strings.TrimSpace(string(out)))
+	}
+	if p.Python != spec.Python {
+		return p, fmt.Errorf("python %s, want %s", p.Python, spec.Python)
+	}
+	if !within(filepath.Join(dir, "env"), p.Prefix) {
+		return p, fmt.Errorf("interpreter prefix %s is not the runtime environment", p.Prefix)
+	}
+	if !within(filepath.Join(uvDir(h), "python"), p.BasePrefix) {
+		return p, fmt.Errorf("base interpreter %s is not the Hachidori-managed CPython", p.BasePrefix)
+	}
+	have := map[string]bool{}
+	for _, d := range p.Installed {
+		have[normalizeDist(d)] = true
+	}
+	for _, want := range []string{spec.Provider, "torch==" + spec.Torch} {
+		if !have[normalizeDist(want)] {
+			return p, fmt.Errorf("%s not installed", want)
+		}
+	}
+	return p, nil
+}
+
+func normalizeDist(d string) string {
+	name, ver, _ := strings.Cut(d, "==")
+	return strings.ReplaceAll(strings.ToLower(name), "_", "-") + "==" + ver
+}
+
+// materializeModel materializes the pinned model independently of the
+// Python runtime. A present model is reused only if every file still matches
+// its pinned digest.
 func materializeModel(h home.Home, log io.Writer) error {
 	final := h.Path("models", filepath.FromSlash(ModelDirName()))
 	if _, err := os.Stat(filepath.Join(final, "hachidori-model.json")); err == nil {
-		fmt.Fprintf(log, "model %s@%s already materialized\n", Model.Repo, Model.Revision[:12])
+		if err := VerifyModel(final); err != nil {
+			return fmt.Errorf("model %s exists but failed verification: %w", final, err)
+		}
+		fmt.Fprintf(log, "model %s@%s verified, reusing\n", Model.Repo, Model.Revision[:12])
 		return nil
 	}
 	stage := final + ".staging"
@@ -124,7 +229,7 @@ func materializeModel(h home.Home, log io.Writer) error {
 		return err
 	}
 	for rel, want := range Model.Files {
-		url := "https://huggingface.co/" + Model.Repo + "/resolve/" + Model.Revision + "/" + rel
+		url := modelBaseURL + Model.Repo + "/resolve/" + Model.Revision + "/" + rel
 		if err := fetch(url, filepath.Join(stage, filepath.FromSlash(rel)), want, log); err != nil {
 			return err
 		}
@@ -133,6 +238,27 @@ func materializeModel(h home.Home, log io.Writer) error {
 		return err
 	}
 	return os.Rename(stage, final)
+}
+
+// VerifyModel checks every pinned model file in dir against its digest.
+func VerifyModel(dir string) error {
+	var mm home.ModelManifest
+	if err := home.ReadJSON(filepath.Join(dir, "hachidori-model.json"), &mm); err != nil {
+		return err
+	}
+	for rel, want := range Model.Files {
+		if mm.Files[rel] != want {
+			return fmt.Errorf("model manifest does not match pinned digest for %s", rel)
+		}
+		got, err := FileSHA256(filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			return err
+		}
+		if got != want {
+			return fmt.Errorf("%s: sha256 %s, want %s", rel, got, want)
+		}
+	}
+	return nil
 }
 
 // fetch downloads url to dst and verifies its SHA-256. A present file with
@@ -188,65 +314,7 @@ func FileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// extractTarGz extracts a verified archive, refusing entries that escape dst.
-func extractTarGz(archive, dst string) error {
-	f, err := os.Open(archive)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, filepath.FromSlash(hdr.Name))
-		if !within(dst, target) {
-			return fmt.Errorf("archive entry escapes destination: %s", hdr.Name)
-		}
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o755|0o644)
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(out, tr)
-			if cerr := out.Close(); err == nil {
-				err = cerr
-			}
-			if err != nil {
-				return err
-			}
-		case tar.TypeSymlink:
-			if filepath.IsAbs(hdr.Linkname) || !within(dst, filepath.Join(filepath.Dir(target), hdr.Linkname)) {
-				return fmt.Errorf("archive symlink escapes destination: %s", hdr.Name)
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return err
-			}
-		}
-	}
-}
-
 func within(root, p string) bool {
 	rel, err := filepath.Rel(root, p)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return err == nil && filepath.IsAbs(p) && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
