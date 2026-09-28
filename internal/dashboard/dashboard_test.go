@@ -416,3 +416,120 @@ func assertOnlyPrefsWritten(t *testing.T, home string) {
 		return nil
 	})
 }
+
+var formRe = regexp.MustCompile(`(?s)<form\b([^>]*)>(.*?)</form>`)
+
+// Every state-changing control is a same-origin POST form carrying the form
+// token, and the page exposes exactly the existing action routes.
+func TestPageFormsAreWiredToActionRoutes(t *testing.T) {
+	e := newEnv(t)
+	body := e.get(t, "/").Body.String()
+	token := `name="token" value="` + e.d.token + `"`
+	got := map[string]string{}
+	for _, m := range formRe.FindAllStringSubmatch(body, -1) {
+		action := regexp.MustCompile(`action="([^"]+)"`).FindStringSubmatch(m[1])
+		if action == nil || !strings.Contains(m[1], `method="post"`) {
+			t.Errorf("form without POST action: %s", m[1])
+			continue
+		}
+		if !strings.Contains(m[2], token) {
+			t.Errorf("form %s lacks the form token", action[1])
+		}
+		got[action[1]] = m[1] + m[2]
+	}
+	want := []string{"/runtime/start", "/runtime/stop", "/runtime/restart", "/doctor", "/tunnel/connect", "/tunnel/disconnect"}
+	if len(got) != len(want) {
+		t.Errorf("forms %v, want %v", got, want)
+	}
+	for _, a := range want {
+		if _, ok := got[a]; !ok {
+			t.Errorf("no form for %s", a)
+		}
+	}
+	// The tunnel form keeps the existing field names; its submit control is
+	// associated with it.
+	connect := got["/tunnel/connect"]
+	for _, n := range []string{"destination", "remote_bind", "remote_port", "local_port"} {
+		if !strings.Contains(connect, `name="`+n+`"`) {
+			t.Errorf("tunnel form lacks %s", n)
+		}
+	}
+	id := regexp.MustCompile(`id="([^"]+)"`).FindStringSubmatch(connect)
+	if !strings.Contains(connect, `type="submit"`) && (id == nil || !regexp.MustCompile(`<button type="submit"[^>]*form="`+id[1]+`"`).MatchString(body)) {
+		t.Error("tunnel form has no submit control")
+	}
+	// Doctor cannot be started twice from the page.
+	e.d.mu.Lock()
+	e.d.doctor.Running = true
+	e.d.mu.Unlock()
+	if !regexp.MustCompile(`(?s)action="/doctor".*?<button[^>]*disabled`).MatchString(e.get(t, "/").Body.String()) {
+		t.Error("doctor button not disabled while running")
+	}
+}
+
+// The live fragment refreshes every status slot of the page independently
+// and never carries the tunnel form, so refreshes cannot clobber its input.
+func TestLiveFragmentRefreshesPageSlots(t *testing.T) {
+	e := newEnv(t)
+	page, live := e.get(t, "/").Body.String(), e.get(t, "/live").Body.String()
+	slotRe := regexp.MustCompile(`data-live="([a-z]+)"`)
+	slots := slotRe.FindAllStringSubmatch(live, -1)
+	if len(slots) < 2 {
+		t.Fatalf("live fragment slots: %v", slots)
+	}
+	for _, s := range slots {
+		if !strings.Contains(page, s[0]) {
+			t.Errorf("page has no slot %s", s[1])
+		}
+	}
+	if strings.Contains(live, `name="destination"`) || strings.Contains(live, "<html") {
+		t.Error("live fragment contains the tunnel form or a full page")
+	}
+	if !strings.Contains(page, `fetch("/live"`) || !strings.Contains(page, "setInterval(refresh, 3000)") {
+		t.Error("page does not poll /live every 3 s")
+	}
+	for _, want := range []string{"READY", "NVIDIA GeForce RTX 3060", "12288 MiB", "0 / 64", "25.3 ms", "idle"} {
+		if !strings.Contains(live, want) {
+			t.Errorf("live fragment lacks %q", want)
+		}
+	}
+}
+
+func TestAttentionSummarizesOperationalProblems(t *testing.T) {
+	e := newEnv(t)
+	body := e.get(t, "/live").Body.String()
+	if !strings.Contains(body, "Recovered from worker failure: worker_crash") {
+		t.Errorf("recovered failure not flagged:\n%s", body)
+	}
+	e.post(t, "/runtime/stop", nil)
+	e.rt.mu.Lock()
+	e.rt.snap.State, e.rt.snap.Ready = worker.StateStopped, false
+	e.rt.mu.Unlock()
+	v := e.d.view()
+	a := alerts(v)
+	if len(a) < 2 || a[0].Title != "Runtime is not running" || a[0].Level != "bad" || a[1].Level != "bad" {
+		t.Fatalf("alerts %+v", a)
+	}
+	e.rt.mu.Lock()
+	e.rt.run, e.rt.snap.State, e.rt.snap.Ready, e.rt.snap.LastFailure = true, worker.StateReady, true, nil
+	e.rt.mu.Unlock()
+	if a := alerts(e.d.view()); len(a) != 0 {
+		t.Fatalf("healthy runtime flagged: %+v", a)
+	}
+	if !strings.Contains(e.get(t, "/live").Body.String(), "No operator attention required") {
+		t.Error("all-clear state not shown")
+	}
+}
+
+func TestGPUMemoryBreakdown(t *testing.T) {
+	m := gpuMem(map[string]any{"memory_allocated": 25.0, "memory_reserved": 50.0, "memory_free": 40.0, "memory_total": 100.0})
+	if m == nil || m.Alloc != 25 || m.Cached != 25 || m.Other != 10 || m.Free != 40 || m.Used != 60 || m.Level != "ok" {
+		t.Fatalf("%+v", m)
+	}
+	if m := gpuMem(map[string]any{"memory_free": 3.0, "memory_total": 100.0}); m == nil || m.Level != "bad" {
+		t.Fatalf("pressure not flagged: %+v", m)
+	}
+	if gpuMem(nil) != nil || gpuMem(map[string]any{"memory_total": 0.0, "memory_free": 0.0}) != nil {
+		t.Fatal("breakdown without device stats")
+	}
+}
