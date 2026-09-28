@@ -18,11 +18,13 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/client"
+	"github.com/yohn-jp/hachidori/internal/dashboard"
 	"github.com/yohn-jp/hachidori/internal/doctor"
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -31,6 +33,8 @@ const usage = `usage: hachidori <command> [flags]
 runtime (inference host):
   setup      materialize the pinned runtime and model under HACHIDORI_HOME
   serve      run the HTTP runtime with a resident inference worker
+  dashboard  serve, plus a host-local Web dashboard (status, start/stop/restart,
+             doctor, SSH reverse-tunnel launcher) on 127.0.0.1:7844
   doctor     verify the installation, including a real smoke inference
 
 client (caller side, uses HACHIDORI_ENDPOINT):
@@ -49,7 +53,8 @@ func main() {
 	}
 	cmds := map[string]func([]string) error{
 		"setup": cmdSetup, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
-		"decide": cmdDecide, "eval": func(a []string) error { return cmdEval("eval", a) },
+		"dashboard": func(a []string) error { return runHost("dashboard", a) },
+		"decide":    cmdDecide, "eval": func(a []string) error { return cmdEval("eval", a) },
 		"benchmark": func(a []string) error { return cmdEval("benchmark", a) },
 	}
 	run, ok := cmds[os.Args[1]]
@@ -75,13 +80,27 @@ func cmdSetup(args []string) error {
 	return setup.Run(h, *device, os.Stderr)
 }
 
-func cmdServe(args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+func cmdServe(args []string) error { return runHost("serve", args) }
+
+// runHost runs the inference runtime (HTTP API + resident worker) and, for
+// the dashboard command, the host-local dashboard beside it.
+func runHost(name string, args []string) error {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	homeFlag := fs.String("home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
 	listen := fs.String("listen", server.DefaultListen, "loopback address to bind")
+	var dashAddr, sshExe *string
+	if name == "dashboard" {
+		dashAddr = fs.String("addr", dashboard.DefaultListen, "loopback address of the dashboard")
+		sshExe = fs.String("ssh", "ssh", "host ssh client used by the tunnel launcher")
+	}
 	fs.Parse(args)
 	if err := server.CheckLoopback(*listen); err != nil {
 		return err
+	}
+	if dashAddr != nil {
+		if err := server.CheckLoopback(*dashAddr); err != nil {
+			return err
+		}
 	}
 	h, err := home.Resolve(*homeFlag)
 	if err != nil {
@@ -99,27 +118,52 @@ func cmdServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	sup := worker.NewSupervisor(cfg, worker.DefaultPolicy)
-	supDone := make(chan struct{})
-	go func() { sup.Run(ctx); close(supDone) }()
+	lc := worker.NewLifecycle(ctx, sup)
+	lc.Start()
+	defer lc.Stop()
 
-	srv := &http.Server{Addr: *listen, Handler: server.Handler(sup, rt), ReadHeaderTimeout: 10 * time.Second}
-	errc := make(chan error, 1)
+	started := time.Now()
+	srv := &http.Server{Addr: *listen, Handler: server.HandlerSince(sup, rt, started), ReadHeaderTimeout: 10 * time.Second}
+	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
 	fmt.Fprintf(os.Stderr, "hachidori: serving %s (runtime %s, model %s, device %s); worker log %s\n",
 		*listen, rt.Runtime, rt.Model, rt.Device, logf.Name())
 	go logTransitions(ctx, sup)
 
+	var dash *http.Server
+	if dashAddr != nil {
+		d := dashboard.New(dashboard.Config{
+			APIAddr:   *listen,
+			Status:    func() server.Status { return server.StatusBody(sup, rt, started) },
+			Lifecycle: lc,
+			Doctor:    func(out io.Writer) bool { return doctor.Run(h.Root, out) },
+			Tunnel:    tunnel.NewManager(*sshExe),
+			PrefsPath: h.Path("state", "dashboard.json"),
+		})
+		// Terminate the managed ssh child on every exit path of this process
+		// that runs deferred code; see docs/runtime.md for hard kills.
+		defer d.Close()
+		dash = &http.Server{Addr: *dashAddr, ReadHeaderTimeout: 10 * time.Second, Handler: d}
+		go func() { errc <- dash.ListenAndServe() }()
+		fmt.Fprintf(os.Stderr, "hachidori: dashboard http://%s/\n", *dashAddr)
+	}
+
 	select {
 	case err := <-errc:
 		stop()
-		<-supDone
+		srv.Close()
+		if dash != nil {
+			dash.Close()
+		}
 		return err
 	case <-ctx.Done():
 	}
 	shut, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if dash != nil {
+		_ = dash.Shutdown(shut)
+	}
 	_ = srv.Shutdown(shut)
-	<-supDone
 	return nil
 }
 

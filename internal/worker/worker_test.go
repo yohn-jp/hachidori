@@ -266,6 +266,54 @@ func TestSupervisorDoesNotRetryStartupFailure(t *testing.T) {
 	}
 }
 
+func TestLifecycleStartStopRestart(t *testing.T) {
+	s := NewSupervisor(fakeConfig(t, "ok"), Policy{QueueDepth: 2})
+	l := NewLifecycle(context.Background(), s)
+	defer l.Stop()
+	if !l.Start() {
+		t.Fatal("first start refused")
+	}
+	if l.Start() {
+		t.Fatal("second start while running must not spawn another worker")
+	}
+	waitState(t, s, StateReady)
+	pid := s.Snapshot().PID
+	l.Stop()
+	if l.Running() || s.State() != StateStopped || s.Ready() {
+		t.Fatalf("after stop: running %v state %s", l.Running(), s.State())
+	}
+	if _, _, err := s.Decide([]Item{item}); err == nil {
+		t.Fatal("decide succeeded while stopped")
+	}
+	l.Restart()
+	waitState(t, s, StateReady)
+	if s.Snapshot().PID == pid || s.Snapshot().Starts != 2 {
+		t.Fatalf("restart did not start a new worker: pid %d starts %d", s.Snapshot().PID, s.Snapshot().Starts)
+	}
+	l.Restart()
+	waitState(t, s, StateReady)
+	if s.Snapshot().Starts != 3 || !l.Running() {
+		t.Fatalf("starts %d", s.Snapshot().Starts)
+	}
+}
+
+func TestLifecycleStartAfterFailure(t *testing.T) {
+	s := NewSupervisor(fakeConfig(t, "fatal"), DefaultPolicy)
+	l := NewLifecycle(context.Background(), s)
+	l.Start()
+	waitState(t, s, StateFailed)
+	for l.Running() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !l.Start() {
+		t.Fatal("start after failure refused")
+	}
+	l.Stop()
+	if s.Snapshot().Starts != 2 {
+		t.Fatalf("starts %d", s.Snapshot().Starts)
+	}
+}
+
 func TestPercentile(t *testing.T) {
 	xs := []float64{5, 1, 4, 2, 3, 6, 7, 8, 9, 10}
 	if Percentile(xs, 50) != 5 || Percentile(xs, 95) != 10 || Percentile(nil, 50) != 0 {

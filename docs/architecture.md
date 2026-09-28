@@ -499,6 +499,8 @@ Important boundary:
 
 Hachidori should not grow SSH key management, tunnel orchestration, or host provisioning into the inference runtime.
 
+The host dashboard's transport launcher (issue #2) stays inside this boundary: it only starts, observes and stops an `ssh` child it created, with a fixed argument vector, using the host's existing SSH client, identity and configuration. The inference runtime itself does not depend on it.
+
 If explicit non-loopback binding is later supported, it must be opt-in and accompanied by an authentication and exposure model appropriate to that deployment.
 
 ## 11. Evaluation architecture
