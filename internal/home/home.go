@@ -3,6 +3,8 @@
 package home
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +15,9 @@ import (
 )
 
 // Subdirectories of HACHIDORI_HOME (architecture §6.2).
-var Dirs = []string{"runtime", "packages", "models", "cache", "logs", "state"}
+// tools/ holds Hachidori-managed materializer tooling (the pinned private uv
+// and the CPython installations it manages).
+var Dirs = []string{"runtime", "tools", "packages", "models", "cache", "logs", "state"}
 
 // Home is a resolved HACHIDORI_HOME.
 type Home struct{ Root string }
@@ -46,7 +50,7 @@ func (h Home) Ensure() error {
 			return err
 		}
 	}
-	for _, d := range []string{"tmp", "home", "huggingface", "torch", "pip", "xdg", "nv"} {
+	for _, d := range []string{"tmp", "home", "huggingface", "torch", "pip", "uv", "xdg", "nv"} {
 		if err := os.MkdirAll(h.Path("cache", d), 0o755); err != nil {
 			return err
 		}
@@ -65,18 +69,46 @@ type Active struct {
 	Device  string `json:"device"`  // cuda | cpu
 }
 
-// RuntimeManifest is runtime/<version>/manifest.json, written once at materialization.
+// RuntimeSpec is the declarative desired state of a private runtime. Its
+// canonical encoding determines the runtime identity: any semantic change
+// yields a different identity and therefore a different immutable runtime
+// directory. The locked package set is identified by the digests of the uv
+// project files it was materialized from.
+type RuntimeSpec struct {
+	Schema   string `json:"schema"`
+	Platform string `json:"platform"`       // GOOS/GOARCH
+	Python   string `json:"python"`         // exact CPython version
+	Provider string `json:"provider"`       // name==version
+	Torch    string `json:"torch"`          // exact torch version including local flavor
+	Flavor   string `json:"flavor"`         // uv extra selecting the torch build: cu128 | cpu
+	UV       string `json:"uv"`             // pinned private uv version
+	UVSHA256 string `json:"uv_sha256"`      // pinned uv executable digest for Platform
+	Project  string `json:"project_sha256"` // runtimespec/pyproject.toml
+	Lock     string `json:"lock_sha256"`    // runtimespec/uv.lock
+	Worker   string `json:"worker_sha256"`  // worker/hachidori_worker.py
+}
+
+// ID is the runtime identity: the flavor plus a digest of the canonical
+// (field-ordered JSON) encoding of the spec.
+func (s RuntimeSpec) ID() string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(b)
+	return s.Flavor + "-" + hex.EncodeToString(sum[:8])
+}
+
+// RuntimeManifest is runtime/<identity>/manifest.json, written once when the
+// runtime is materialized and verified. Its presence marks a complete runtime.
 type RuntimeManifest struct {
-	Version        string            `json:"version"`
-	Flavor         string            `json:"flavor"`
-	Platform       string            `json:"platform"`
-	PythonVersion  string            `json:"python_version"`
-	PythonArchive  Artifact          `json:"python_archive"`
-	PythonRelPath  string            `json:"python"` // relative to runtime dir, slash separated
-	Packages       []string          `json:"packages"`
-	PackageIndexes []string          `json:"package_indexes"`
-	Installed      []string          `json:"installed"` // pip freeze after install
-	Worker         map[string]string `json:"worker"`    // relpath -> sha256
+	Identity      string            `json:"identity"`
+	Spec          RuntimeSpec       `json:"spec"`
+	PythonVersion string            `json:"python_version"` // verified
+	PythonRelPath string            `json:"python"`         // relative to runtime dir, slash separated
+	BasePython    string            `json:"base_python"`    // uv-managed CPython prefix under tools/
+	Installed     []string          `json:"installed"`      // verified distributions, name==version
+	Worker        map[string]string `json:"worker"`         // relpath -> sha256
 }
 
 // ModelManifest is models/<id>/<revision>/hachidori-model.json.
@@ -84,12 +116,6 @@ type ModelManifest struct {
 	Repo     string            `json:"repo"`
 	Revision string            `json:"revision"`
 	Files    map[string]string `json:"files"` // relpath -> sha256
-}
-
-// Artifact is a pinned downloadable artifact.
-type Artifact struct {
-	URL    string `json:"url"`
-	SHA256 string `json:"sha256"`
 }
 
 // ReadJSON decodes a JSON file.

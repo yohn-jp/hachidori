@@ -1,0 +1,56 @@
+# Hachidori private runtime environment (Runtime Spec, uv project).
+#
+# This is not a Python package. It declares the Python/ML environment that
+# `hachidori setup` materializes with its pinned, Hachidori-managed uv:
+#
+#   uv sync --locked --no-build --no-install-project --extra <cpu|cu128>
+#
+# uv.lock next to this file is the locked environment. Both files are embedded
+# in the hachidori executable and are part of the runtime identity. After
+# editing this file, regenerate the lock with the pinned uv version
+# (internal/setup/spec.go) and commit both files:
+#
+#   uv lock --directory internal/setup/runtimespec
+[project]
+name = "hachidori-runtime"
+version = "1"
+requires-python = "==3.12.11"
+dependencies = [
+  "laya==0.3.21",
+  "transformers==5.17.0",
+  "tokenizers==0.23.2",
+  "safetensors==0.8.0",
+  "huggingface_hub==1.33.0",
+  "hf-xet==1.6.0",
+  "numpy==2.5.3",
+]
+
+# PyTorch device flavors. Exactly one is selected per runtime. CUDA 12.8 wheels
+# support RTX 20xx..50xx (Turing..Blackwell) and need an NVIDIA driver >= 570.
+[project.optional-dependencies]
+cpu = ["torch==2.11.0+cpu"]
+cu128 = ["torch==2.11.0+cu128"]
+
+[tool.uv]
+package = false
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+conflicts = [[{ extra = "cpu" }, { extra = "cu128" }]]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu128", extra = "cu128" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

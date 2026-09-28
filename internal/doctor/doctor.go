@@ -96,7 +96,9 @@ func Run(homeFlag string, out io.Writer) bool {
 	a, rm, mm, err := h.LoadActive()
 	python := h.PythonExe(a, rm)
 	if err == nil {
-		if _, serr := os.Stat(python); serr != nil {
+		if rm.Identity != a.Runtime || rm.Spec.ID() != rm.Identity {
+			err = fmt.Errorf("runtime %s: manifest identity %q does not match its Runtime Spec (not materialized by declarative setup; run `hachidori setup`)", a.Runtime, rm.Identity)
+		} else if _, serr := os.Stat(python); serr != nil {
 			err = fmt.Errorf("private python missing: %s", python)
 		} else if got, _ := setup.FileSHA256(h.WorkerScript(a)); got != rm.Worker["worker/hachidori_worker.py"] {
 			err = fmt.Errorf("worker script digest mismatch")
@@ -107,9 +109,9 @@ func Run(homeFlag string, out io.Writer) bool {
 		return skipRest(later[1:]...)
 	}
 	report(Check{Name: "runtime", Status: "pass", Owner: "hachidori",
-		Detail: fmt.Sprintf("%s (python %s, device %s)", a.Runtime, rm.PythonVersion, a.Device)})
+		Detail: fmt.Sprintf("%s (python %s, %s, torch %s, device %s)", a.Runtime, rm.PythonVersion, rm.Spec.Provider, rm.Spec.Torch, a.Device)})
 
-	if err := verifyModel(h.ModelDir(a), mm); err != nil {
+	if err := setup.VerifyModel(h.ModelDir(a)); err != nil {
 		report(Check{Name: "model", Status: "fail", Owner: "hachidori", Class: ModelUnavailable, Detail: err.Error()})
 		return skipRest(later[2:]...)
 	}
@@ -219,22 +221,6 @@ func startLocal(h home.Home) (*client.Client, string, func(), error) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-}
-
-func verifyModel(dir string, mm home.ModelManifest) error {
-	for rel, want := range setup.Model.Files {
-		if mm.Files[rel] != want {
-			return fmt.Errorf("model manifest does not match pinned digest for %s", rel)
-		}
-		got, err := setup.FileSHA256(filepath.Join(dir, filepath.FromSlash(rel)))
-		if err != nil {
-			return err
-		}
-		if got != want {
-			return fmt.Errorf("%s: sha256 %s, want %s", rel, got, want)
-		}
-	}
-	return nil
 }
 
 const isolationProbe = `import json, os, site, sys
