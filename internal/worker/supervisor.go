@@ -58,7 +58,13 @@ func NewSupervisor(cfg Config, policy Policy) *Supervisor {
 }
 
 // Run starts the worker and keeps it resident until ctx is cancelled.
+// Run may be called again after it returns (see Lifecycle).
 func (s *Supervisor) Run(ctx context.Context) {
+	s.mu.Lock()
+	if s.state == StateStopped || s.state == StateFailed {
+		s.state = StateStarting
+	}
+	s.mu.Unlock()
 	for {
 		s.mu.Lock()
 		s.starts++

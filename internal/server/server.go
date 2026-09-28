@@ -41,8 +41,11 @@ type Runtime struct {
 }
 
 // Handler builds the public HTTP handler.
-func Handler(d Decider, rt Runtime) http.Handler {
-	started := time.Now()
+func Handler(d Decider, rt Runtime) http.Handler { return HandlerSince(d, rt, time.Now()) }
+
+// HandlerSince is Handler with an explicit serving start time, so that other
+// host surfaces can report the same uptime via StatusBody.
+func HandlerSince(d Decider, rt Runtime, started time.Time) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		h := api.Health{Ready: d.Ready(), State: d.State()}
@@ -53,12 +56,7 @@ func Handler(d Decider, rt Runtime) http.Handler {
 		writeJSON(w, code, h)
 	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"schema":   api.SchemaV1,
-			"runtime":  rt,
-			"uptime_s": int(time.Since(started).Seconds()),
-			"worker":   d.Snapshot(),
-		})
+		writeJSON(w, http.StatusOK, StatusBody(d, rt, started))
 	})
 	mux.HandleFunc("POST /v1/decide", func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
@@ -104,6 +102,20 @@ func Handler(d Decider, rt Runtime) http.Handler {
 		writeJSON(w, http.StatusOK, out)
 	})
 	return mux
+}
+
+// Status is the GET /v1/status document. The host dashboard renders this
+// same document rather than keeping its own view of the runtime.
+type Status struct {
+	Schema  string          `json:"schema"`
+	Runtime Runtime         `json:"runtime"`
+	UptimeS int             `json:"uptime_s"`
+	Worker  worker.Snapshot `json:"worker"`
+}
+
+// StatusBody builds the status document for a runtime serving since started.
+func StatusBody(d Decider, rt Runtime, started time.Time) Status {
+	return Status{Schema: api.SchemaV1, Runtime: rt, UptimeS: int(time.Since(started).Seconds()), Worker: d.Snapshot()}
 }
 
 // CheckLoopback refuses non-loopback binds: remote exposure needs an
