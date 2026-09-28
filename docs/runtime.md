@@ -19,6 +19,7 @@ client CLI / any HTTP caller
 |---|---|---|
 | `hachidori setup [--home H] [--device cuda\|cpu]` | host | materialize pinned Python, packages, worker and model under `HACHIDORI_HOME`, then activate |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843]` | host | run HTTP + one resident worker; non-loopback binds are refused |
+| `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh]` | host | `serve` plus the host-local dashboard (see below) |
 | `hachidori doctor [--home H]` | host | verify the installation including a real HTTP→worker→model smoke inference |
 | `hachidori status [--endpoint URL]` | client | print `/v1/status` |
 | `hachidori decide [--endpoint URL] <request.json\|->` | client | send one v1 decide request |
@@ -111,6 +112,73 @@ Newline-delimited JSON. Go owns all stdio streams:
 - stdout: protocol only. The worker duplicates fd 1 for the protocol and points fd 1 / `sys.stdout` at stderr, because Laya prints warnings to stdout. Any non-JSON line is a protocol violation.
 - stderr: logs, appended to `<home>/logs/worker.log`; the last 64 lines are attached to failures.
 
+## Host dashboard
+
+`hachidori dashboard` runs exactly what `serve` runs (same API, same resident
+worker) and adds a small server-rendered page on `http://127.0.0.1:7844/`
+(`--addr`; non-loopback addresses are refused, and requests whose `Host` is not
+loopback are rejected to defeat DNS rebinding).
+
+```text
+Development machine                    GPU host
+-------------------                    ----------------
+dataset / eval / benchmark             hachidori dashboard (127.0.0.1:7844)
+        |                                      +-- runtime status / start / stop / restart
+127.0.0.1:7843                                 +-- doctor
+        ^                                      +-- SSH tunnel launcher
+        +========== ssh -R ====================+
+                                         Hachidori API 127.0.0.1:7843 -> resident worker
+```
+
+It holds no runtime state of its own:
+
+| surface | authority |
+|---|---|
+| status (page, `GET /api/status`) | the `/v1/status` document (`server.StatusBody`) |
+| Start / Stop / Restart | `worker.Lifecycle`, which `serve` also uses; Stop leaves the API bound and reporting not ready |
+| Run doctor | `doctor.Run` on the same `HACHIDORI_HOME` (it starts its own temporary worker, as the CLI does) |
+| tunnel | `tunnel.Manager`, `GET /api/tunnel` |
+
+Every state-changing action is a same-origin `POST` carrying a per-process form
+token; `GET` never changes state. All rendered values go through `html/template`
+escaping. The page polls `/live` every 3 s; there is no frontend build.
+
+### SSH reverse-tunnel launcher
+
+Connect runs the host's existing `ssh` client directly (argument vector, no
+shell) with a fixed option set:
+
+```text
+ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -o ServerAliveInterval=15 \
+    -o ServerAliveCountMax=3 -R <remote-bind>:<remote-port>:127.0.0.1:<local-port> -- <destination>
+```
+
+- Inputs: destination `[user@]host` or an ssh_config `Host` alias (letters,
+  digits, `.`, `-`, `_`; no leading `-`, no spaces, ports or URIs), remote bind
+  (loopback only: `127.0.0.1`, `::1`, `localhost`), remote port and local
+  Hachidori port (1–65535). Anything else is rejected before a process starts.
+- SSH authority stays outside Hachidori: keys, agent, identity selection,
+  `known_hosts` and `ssh_config` are the host's. `BatchMode=yes` means ssh never
+  prompts; authentication or host-key failures exit and are shown with the ssh
+  stderr tail. Hachidori never generates, uploads, stores or reads keys or
+  passwords and never edits SSH configuration.
+- One managed tunnel: Connect with the identical spec while running is a no-op;
+  a different spec is refused until Disconnect. Disconnect sends SIGTERM (kill
+  on Windows), kills after 3 s, and returns once the child is reaped. An
+  unexpected exit becomes state `exited` with the exit status and stderr tail.
+  Tunnel and worker failures are separate states.
+- Shutdown (Ctrl+C / SIGTERM, or a listener error) terminates the managed ssh
+  child before the process exits. A hard kill of `hachidori` itself (task
+  manager, SIGKILL) cannot run that cleanup: the `ssh` child then remains and
+  must be ended by the operator (its PID is shown on the dashboard).
+- Persisted: only the last successful form values in
+  `state/dashboard.json` (`destination`, `remote_bind`, `remote_port`,
+  `local_port`). Nothing secret exists to persist.
+- The caller then uses `HACHIDORI_ENDPOINT=http://<remote-bind>:<remote-port>`
+  (default `http://127.0.0.1:7843`) on the SSH destination host and runs
+  `status`, `decide`, `eval` or `benchmark` there. Datasets and labels never
+  reach the GPU host; the dashboard has no upload surface.
+
 ## HACHIDORI_HOME
 
 ```text
@@ -127,6 +195,7 @@ HACHIDORI_HOME/
   cache/{huggingface,torch,pip,xdg,nv,tmp,home}
   logs/worker.log, logs/doctor-worker.log
   state/active-runtime.json
+  state/dashboard.json         last tunnel form values (non-secret), dashboard only
 ```
 
 The worker environment is constructed, not inherited: `PYTHONNOUSERSITE=1`,

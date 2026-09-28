@@ -16,6 +16,8 @@ export HACHIDORI_HOME=/path/to/hachidori-home   # the only mutable root
 ./hachidori setup --device cuda                 # or --device cpu
 ./hachidori doctor
 ./hachidori serve                               # 127.0.0.1:7843
+# or, with the host-local dashboard and SSH tunnel launcher:
+./hachidori dashboard                           # API 127.0.0.1:7843, UI http://127.0.0.1:7844/
 
 # caller side
 export HACHIDORI_ENDPOINT=http://127.0.0.1:7843

@@ -1,0 +1,104 @@
+{{define "page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hachidori host</title>
+<style>
+body { font: 14px/1.4 system-ui, sans-serif; margin: 1rem auto; max-width: 60rem; padding: 0 1rem; color: #222; background: #fafafa; }
+h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin: 1.2rem 0 .4rem; border-bottom: 1px solid #ccc; }
+table { border-collapse: collapse; } td, th { padding: .15rem .8rem .15rem 0; text-align: left; vertical-align: top; }
+th { font-weight: normal; color: #555; white-space: nowrap; }
+pre { background: #eee; padding: .5rem; overflow-x: auto; white-space: pre-wrap; margin: .3rem 0; }
+form { display: inline; } button { margin: .2rem .3rem .2rem 0; }
+.ok { color: #176b2c; } .bad { color: #a11; font-weight: bold; } .muted { color: #777; }
+.box { padding: .4rem .6rem; border: 1px solid #ccc; background: #fff; }
+label { display: inline-block; margin-right: .8rem; } input { font: inherit; }
+</style>
+</head>
+<body>
+<h1>Hachidori host dashboard</h1>
+<p class="muted">Host-local operator page. Inference API: http://{{.APIAddr}} (loopback only). Datasets, labels and evaluation stay on the caller.</p>
+<div id="live">{{template "live" .}}</div>
+
+<h2>Caller transport (SSH reverse tunnel)</h2>
+<p class="muted">Runs the host's existing <code>ssh</code> client: <code>ssh -N -R &lt;remote-bind&gt;:&lt;remote-port&gt;:127.0.0.1:&lt;local-port&gt; &lt;destination&gt;</code>.
+Keys, agent, known_hosts and ssh_config stay under the operator's control; failures are shown, never fixed here.</p>
+<form method="post" action="/tunnel/connect">
+<input type="hidden" name="token" value="{{.Token}}">
+<label>SSH destination <input name="destination" value="{{.Form.Destination}}" placeholder="user@host" size="24" required></label>
+<label>remote bind <input name="remote_bind" value="{{.Form.RemoteBind}}" size="10" required></label>
+<label>remote port <input name="remote_port" value="{{.Form.RemotePort}}" size="6" inputmode="numeric" required></label>
+<label>local Hachidori port <input name="local_port" value="{{.Form.LocalPort}}" size="6" inputmode="numeric" required></label>
+<button type="submit">Connect</button>
+</form>
+<form method="post" action="/tunnel/disconnect"><input type="hidden" name="token" value="{{.Token}}"><button type="submit">Disconnect</button></form>
+
+<script>
+// Refresh only the status fragment; forms above keep their input.
+function refresh() {
+  fetch("/live", {cache: "no-store"}).then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
+    .then(function (t) { document.getElementById("live").innerHTML = t; })
+    .catch(function () {});
+}
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
+{{end}}
+
+{{define "live"}}
+{{with .Last}}<p class="box">{{when .Time}} &middot; {{.Name}}: {{if .OK}}<span class="ok">OK</span>{{else}}<span class="bad">FAILED</span>{{end}} &middot; {{.Message}}</p>{{end}}
+
+<h2>Runtime</h2>
+<div>
+<form method="post" action="/runtime/start"><input type="hidden" name="token" value="{{.Token}}"><button type="submit">Start</button></form>
+<form method="post" action="/runtime/stop"><input type="hidden" name="token" value="{{.Token}}"><button type="submit">Stop</button></form>
+<form method="post" action="/runtime/restart"><input type="hidden" name="token" value="{{.Token}}"><button type="submit">Restart</button></form>
+<button type="button" onclick="refresh()">Refresh status</button>
+</div>
+{{$w := .S.Worker}}
+<table>
+<tr><th>server</th><td>serving http://{{.APIAddr}}, up {{.S.UptimeS}} s; worker supervision {{if .Running}}<span class="ok">running</span>{{else}}<span class="bad">not running</span>{{end}}</td></tr>
+<tr><th>worker state</th><td>{{if $w.Ready}}<span class="ok">READY</span>{{else}}<span class="bad">{{$w.State}}</span>{{end}} (phase {{$w.Phase}}){{with $w.ReadySince}}, ready since {{.}}{{end}}</td></tr>
+<tr><th>worker PID</th><td>{{if $w.PID}}{{$w.PID}}{{else}}-{{end}}</td></tr>
+<tr><th>starts / restarts</th><td>{{$w.Starts}} / {{$w.Restarts}} in window</td></tr>
+<tr><th>requests</th><td>{{$w.Requests}}{{range $k, $v := $w.Errors}}; {{$k}} {{$v}}{{end}}</td></tr>
+<tr><th>queue</th><td>{{$w.QueueDepth}} / {{$w.QueueLimit}}</td></tr>
+<tr><th>inference latency</th><td>p50 {{ms $w.LatencyP50MS}}, p95 {{ms $w.LatencyP95MS}}</td></tr>
+<tr><th>last error</th><td>{{with $w.LastFailure}}<span class="bad">{{.Class}}</span>: {{.Message}}{{if .Stderr}}<pre>{{range .Stderr}}{{.}}
+{{end}}</pre>{{end}}{{else}}-{{end}}</td></tr>
+</table>
+
+<h2>Provider / accelerator</h2>
+{{$i := $w.Info}}{{$a := $w.Accelerator}}
+<table>
+<tr><th>provider</th><td>{{get $i "provider"}} {{get $i "laya_version"}}</td></tr>
+<tr><th>model</th><td>{{.S.Runtime.Model}}</td></tr>
+<tr><th>runtime</th><td>{{.S.Runtime.Runtime}} (device {{.S.Runtime.Device}}, home {{.S.Runtime.Home}})</td></tr>
+<tr><th>Python</th><td>{{get $i "python_version"}}</td></tr>
+<tr><th>PyTorch / CUDA</th><td>{{get $i "torch_version"}} / {{get $i "torch_cuda"}}</td></tr>
+<tr><th>device</th><td>{{get $i "device"}} {{get $i "dtype"}}</td></tr>
+<tr><th>GPU</th><td>{{get $i "device_name"}}</td></tr>
+<tr><th>GPU memory</th><td>allocated {{mib $a "memory_allocated"}}, reserved {{mib $a "memory_reserved"}}, free {{mib $a "memory_free"}}, total {{mib $a "memory_total"}}</td></tr>
+<tr><th>model load / warmup</th><td>{{get $i "load_ms"}} ms / {{get $i "warmup_ms"}} ms</td></tr>
+</table>
+
+<h2>Doctor</h2>
+<form method="post" action="/doctor"><input type="hidden" name="token" value="{{.Token}}"><button type="submit"{{if .Doctor.Running}} disabled{{end}}>Run doctor</button></form>
+{{with .Doctor}}{{if .Running}}<span>running since {{when .Started}}&hellip;</span>{{else if not .Finished.IsZero}}<span>{{when .Finished}}: {{if .OK}}<span class="ok">all checks passed</span>{{else}}<span class="bad">problems found</span>{{end}}</span><pre>{{.Output}}</pre>{{end}}{{end}}
+
+<h2>Tunnel state</h2>
+{{with .Tunnel}}
+<table>
+<tr><th>state</th><td>{{if eq .State "running"}}<span class="ok">running</span>{{else if eq .State "exited"}}<span class="bad">exited</span>{{else}}{{.State}}{{end}}</td></tr>
+{{with .Spec}}<tr><th>destination</th><td>{{.Destination}}</td></tr>{{end}}
+<tr><th>ssh PID</th><td>{{if .PID}}{{.PID}}{{else}}-{{end}}</td></tr>
+<tr><th>started / exited</th><td>{{when .Started}} / {{when .Exited}}</td></tr>
+{{with .Endpoint}}<tr><th>caller endpoint</th><td><code>HACHIDORI_ENDPOINT={{.}}</code> (on the SSH destination host)</td></tr>{{end}}
+{{with .Argv}}<tr><th>argv</th><td><code>{{range .}}{{.}} {{end}}</code></td></tr>{{end}}
+<tr><th>last error</th><td>{{with .LastError}}<span class="bad">{{.}}</span>{{else}}-{{end}}{{if .Stderr}}<pre>{{range .Stderr}}{{.}}
+{{end}}</pre>{{end}}</td></tr>
+</table>
+{{end}}
+{{end}}
