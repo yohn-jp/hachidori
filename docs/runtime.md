@@ -299,8 +299,7 @@ binding hits a fatal WebView2 error after startup it prints the error and
 exits the process immediately; deferred cleanup is then skipped as with a
 hard kill (the worker still exits on stdin EOF).
 
-`hachidori.exe` is a console-subsystem program, so `desktop` started outside a
-terminal shows a console window beside the shell.
+`hachidori.exe` remains a console-subsystem program so explicit CLI commands keep normal terminal behavior. On the no-argument product path, Hachidori hides the console only when it is the sole process attached to that console (the normal Explorer/double-click case). A launch from an existing terminal never hides the caller's console.
 
 ## Windows first run and no-argument launch
 
@@ -359,13 +358,17 @@ launch. Before any home exists (first run, recovery) it is a temporary folder
 that is removed when the window closes, so nothing Hachidori-owned is left
 outside the selected home except the bootstrap locator.
 
-Closing the window closes the controller: the runtime is stopped. An
-in-progress setup is not interruptible; the process waits for it up to its
-shutdown bound, and setup's atomic publish means an interrupted setup never
-activates a partial runtime. The Windows executable is a console-subsystem
-program, so a double-click also shows a console window; fatal startup errors
-(for example a missing WebView2 Runtime) are additionally shown in a message
-box.
+Closing the main window follows the resident desktop rule above: it hides to
+the tray and leaves the controller/runtime running. **Quit Hachidori** performs
+the bounded controller shutdown. An in-progress setup is not interruptible;
+Quit waits for it up to the shutdown bound, and setup's atomic publish means an
+interrupted setup never activates a partial runtime.
+
+The executable remains console-subsystem for CLI compatibility. A no-argument
+Explorer/double-click launch hides only a console owned solely by Hachidori; a
+launch from an existing terminal leaves that terminal visible. Fatal startup
+errors (for example a missing WebView2 Runtime) are shown in a native message
+box even when the owned console has been hidden.
 
 ## Application lifecycle (`internal/app`)
 
