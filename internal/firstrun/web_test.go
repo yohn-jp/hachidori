@@ -117,9 +117,7 @@ func TestHandlerServesWizardAndProtectsActions(t *testing.T) {
 		t.Fatalf("install %d %s", w.Code, w.Body)
 	}
 	f.waitStage(StageStarting)
-	if got, _ := f.remembered(); got != dir {
-		t.Fatalf("remembered %q, want the picked %q", got, dir)
-	}
+	f.waitRemembered(dir)
 
 	// Until READY every non-wizard path is still the wizard; after READY the
 	// desktop home takes over.
