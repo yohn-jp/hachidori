@@ -1,9 +1,11 @@
 // Package dashboard serves the host-local operator page: runtime/GPU status,
-// worker lifecycle actions, doctor, and the SSH reverse-tunnel launcher.
+// worker lifecycle actions, doctor, the SSH reverse-tunnel launcher, and the
+// Question Workbench.
 //
 // It keeps no runtime state of its own. Status is the /v1/status document
 // (server.StatusBody), lifecycle actions go through worker.Lifecycle, doctor is
-// the same doctor.Run as the CLI, and the tunnel is a tunnel.Manager.
+// the same doctor.Run as the CLI, the tunnel is a tunnel.Manager, and the
+// workbench is a caller of the existing POST /v1/decide endpoint at APIAddr.
 package dashboard
 
 import (
@@ -13,6 +15,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -41,7 +44,7 @@ type Lifecycle interface {
 
 // Config wires the dashboard to the existing host authorities.
 type Config struct {
-	APIAddr   string               // the loopback inference API address, for display
+	APIAddr   string               // the loopback inference API address; the workbench calls it
 	Status    func() server.Status // the /v1/status document
 	Lifecycle Lifecycle
 	Doctor    func(out io.Writer) bool // doctor.Run bound to HACHIDORI_HOME
@@ -100,7 +103,7 @@ type Prefs struct {
 	Tunnel tunnel.Spec `json:"tunnel"`
 }
 
-//go:embed page.html
+//go:embed page.html workbench.html
 var pageFS embed.FS
 
 var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
@@ -114,7 +117,19 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"errTotal":  errTotal,
 	"uptime":    uptime,
 	"doctorOut": doctorOut,
-}).ParseFS(pageFS, "page.html"))
+	"pct":       func(p float64) string { return strconv.FormatFloat(100*p, 'f', 1, 64) + "%" },
+	"prob":      func(p float64) string { return strconv.FormatFloat(p, 'f', 4, 64) },
+	"probs":     probRows,
+}).ParseFS(pageFS, "page.html", "workbench.html"))
+
+// Chrome is what every page's shared header needs: the page title, the
+// active navigation entry and the inference API address.
+type Chrome struct {
+	Title   string
+	Nav     string // runtime | workbench
+	APIAddr string
+	Live    bool // the page refreshes its live status slots
+}
 
 // New builds the dashboard.
 func New(cfg Config) *Dashboard {
@@ -133,6 +148,8 @@ func New(cfg Config) *Dashboard {
 	})
 	d.mux.HandleFunc("POST /runtime/{op}", d.runtimeOp)
 	d.mux.HandleFunc("POST /doctor", d.runDoctor)
+	d.mux.HandleFunc("GET /workbench", d.workbenchPage)
+	d.mux.HandleFunc("POST /workbench", d.workbenchPost)
 	if cfg.Desktop != nil {
 		d.mux.HandleFunc("POST /desktop/prefs", d.desktopPrefs)
 	}
@@ -166,7 +183,18 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "cross-site request refused", http.StatusForbidden)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+		limit := int64(4 << 10)
+		if r.URL.Path == "/workbench" {
+			limit = workbenchMaxBody
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		if err := r.ParseForm(); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				http.Error(w, fmt.Sprintf("request body exceeds %d bytes", limit), http.StatusRequestEntityTooLarge)
+				return
+			}
+		}
 		if subtle.ConstantTimeCompare([]byte(r.PostFormValue("token")), []byte(d.token)) != 1 {
 			http.Error(w, "missing or stale form token; reload the dashboard", http.StatusForbidden)
 			return
@@ -189,8 +217,8 @@ func loopbackHost(hostport string) bool {
 }
 
 type view struct {
+	Chrome
 	Token   string
-	APIAddr string
 	Running bool
 	S       server.Status
 	Last    *Action
@@ -204,8 +232,8 @@ func (d *Dashboard) view() view {
 	d.mu.Lock()
 	last, doc := d.last, d.doctor
 	d.mu.Unlock()
-	v := view{Token: d.token, APIAddr: d.cfg.APIAddr, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(),
-		Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status(), Form: d.formDefaults()}
+	v := view{Chrome: Chrome{Title: "host console", Nav: "runtime", APIAddr: d.cfg.APIAddr, Live: true},
+		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status(), Form: d.formDefaults()}
 	if d.cfg.Desktop != nil {
 		dv := &DesktopView{}
 		var err error
@@ -238,15 +266,17 @@ func (d *Dashboard) formDefaults() tunnel.Spec {
 }
 
 func (d *Dashboard) render(name string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var buf bytes.Buffer
-		if err := page.ExecuteTemplate(&buf, name, d.view()); err != nil {
-			http.Error(w, "render: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = buf.WriteTo(w)
+	return func(w http.ResponseWriter, r *http.Request) { d.renderView(w, name, d.view()) }
+}
+
+func (d *Dashboard) renderView(w http.ResponseWriter, name string, v any) {
+	var buf bytes.Buffer
+	if err := page.ExecuteTemplate(&buf, name, v); err != nil {
+		http.Error(w, "render: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
 }
 
 func (d *Dashboard) done(w http.ResponseWriter, r *http.Request, name string, err error, okMsg string) {

@@ -1,10 +1,10 @@
-{{define "page"}}<!doctype html>
+{{define "head"}}<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>Hachidori · host console</title>
+<title>Hachidori · {{.Title}}</title>
 <style>
 :root {
   --bg: #0d1015; --panel: #151a21; --panel-2: #1b2129; --line: #262e39; --line-2: #333d4a;
@@ -50,6 +50,33 @@ a { color: var(--accent); }
 .sync { display: flex; align-items: center; gap: .6rem; font-size: .8rem; color: var(--faint); }
 .sync-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-right: .35rem; vertical-align: 1px; }
 .sync.stale { color: var(--warn); } .sync.stale .sync-dot { background: var(--warn); }
+.nav { display: flex; flex-wrap: wrap; gap: .25rem; }
+.nav a { color: var(--dim); text-decoration: none; font-size: .85rem; font-weight: 550; padding: .3rem .65rem; border-radius: 7px; border: 1px solid transparent; }
+.nav a:hover { color: var(--text); border-color: var(--line-2); }
+.nav a[aria-current="page"] { color: var(--text); background: var(--panel-2); border-color: var(--line-2); }
+.nav a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* editors and analysis tables */
+textarea { font: inherit; font-family: var(--mono); font-size: .85rem; width: 100%; padding: .45rem .55rem; border-radius: 7px; border: 1px solid var(--line-2); background: var(--bg); color: var(--text); resize: vertical; }
+textarea:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+select { font: inherit; font-size: .85rem; padding: .38rem .5rem; border-radius: 7px; border: 1px solid var(--line-2); background: var(--bg); color: var(--text); }
+.field { display: grid; gap: .25rem; font-size: .75rem; color: var(--dim); }
+.row { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); align-items: end; }
+.choices { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(0, 2fr); gap: .35rem .6rem; }
+.choices .h { font-size: .72rem; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
+.qcard { border: 1px solid var(--line); border-radius: var(--radius); padding: .9rem 1rem; background: var(--panel-2); display: grid; gap: .7rem; }
+.qcard-h { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; justify-content: space-between; }
+.msg { margin: 0; padding: .55rem .8rem; border-radius: 7px; border: 1px solid var(--line); overflow-wrap: anywhere; }
+.msg.bad { border-color: var(--bad); background: var(--bad-bg); color: var(--bad); }
+.msg.ok { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: var(--ok-bg); }
+table.data { width: 100%; border-collapse: collapse; font-size: .84rem; }
+table.data th, table.data td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+table.data th { font-size: .72rem; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+table.data td.num, table.data th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.pbar { display: inline-block; width: 7rem; height: 8px; border-radius: 4px; background: var(--seg-free); overflow: hidden; vertical-align: middle; margin-right: .4rem; }
+.pbar > span { display: block; height: 100%; background: var(--accent); }
+tr.chosen td { font-weight: 650; }
+tr.chosen .pbar > span { background: var(--ok); }
 
 main { max-width: 78rem; margin: 0 auto; padding: 1.1rem 1.25rem 2.5rem; display: grid; gap: 1rem; }
 [data-live] { display: contents; }
@@ -192,13 +219,22 @@ footer.foot { font-size: .78rem; color: var(--faint); text-align: center; paddin
   details.more > summary .muted { display: none; }
 }
 </style>
-</head>
-<body>
-<header class="topbar">
+</head>{{end}}
+
+{{define "topbar"}}<header class="topbar">
   <div class="brand"><span class="mark" aria-hidden="true"></span><div><strong>Hachidori</strong><span class="sub">host console</span></div></div>
+  <nav class="nav" aria-label="Sections">
+    <a href="/"{{if eq .Nav "runtime"}} aria-current="page"{{end}}>Runtime</a>
+    <a href="/workbench"{{if eq .Nav "workbench"}} aria-current="page"{{end}}>Workbench</a>
+    <a href="/#diagnostics">Diagnostics</a>
+  </nav>
   <div class="endpoint"><span>Inference API</span><code>http://{{.APIAddr}}</code><span class="tag">loopback only</span></div>
-  <div class="sync" id="sync"><span id="sync-text" role="status" aria-live="polite"><span class="sync-dot"></span>live · 3 s</span><button type="button" class="btn ghost" id="refresh">Refresh</button></div>
-</header>
+  {{if .Live}}<div class="sync" id="sync"><span id="sync-text" role="status" aria-live="polite"><span class="sync-dot"></span>live · 3 s</span><button type="button" class="btn ghost" id="refresh">Refresh</button></div>{{end}}
+</header>{{end}}
+
+{{define "page"}}{{template "head" .Chrome}}
+<body>
+{{template "topbar" .Chrome}}
 
 <main>
 <div data-live="overview">{{template "overview" .}}</div>

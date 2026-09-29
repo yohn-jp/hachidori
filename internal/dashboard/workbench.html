@@ -1,0 +1,122 @@
+{{define "workbench"}}{{template "head" .Chrome}}
+<body>
+{{template "topbar" .Chrome}}
+<main>
+<section class="panel" aria-labelledby="wb-h">
+  <div class="panel-h">
+    <h2 id="wb-h">Question Workbench<span class="sub">one state, one or more v1 choice questions, one POST /v1/decide</span></h2>
+    <span class="faint mono">{{.Endpoint}}</span>
+  </div>
+  <p class="cmd">Interactive inference against the resident runtime. Nothing here is stored: the editor lives in this page.
+  There are no expected labels; only the compiled questions below and the state are sent.</p>
+</section>
+
+<form method="post" action="/workbench" class="stack" id="wb">
+  <input type="hidden" name="token" value="{{.Token}}">
+  <input type="hidden" name="nq" value="{{len .W.Questions}}">
+
+  <div class="btn-row">
+    <button type="submit" class="btn primary" name="op" value="run">Run</button>
+    <button type="submit" class="btn" name="op" value="preview">Validate &amp; show request</button>
+    <button type="submit" class="btn" name="op" value="add">Add question</button>
+  </div>
+
+  {{with .FormError}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+
+  {{with .Run}}
+  <section class="panel" aria-labelledby="run-h" id="run">
+    <div class="panel-h">
+      <h2 id="run-h">{{if $.Preview}}Request preview{{else}}Run{{end}}</h2>
+      {{if .Invalid}}<span class="pill bad">invalid · not sent</span>
+      {{else if .Err}}<span class="pill bad">failed</span>
+      {{else if .Response}}<span class="pill ok">{{len .Response.Results}} results</span>
+      {{else}}<span class="pill">valid · not sent</span>{{end}}
+    </div>
+    {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+    {{with .Response}}
+    <p class="meta mono">schema {{.Schema}}{{with .Timing}} · inference {{ms .InferenceMS}} · server total {{ms .TotalMS}}{{end}} · round trip {{ms $.Run.TookMS}}</p>
+    {{end}}
+    {{with .Wire}}
+    <details class="sub" data-keep="wire" open><summary>Exact request JSON (the POST /v1/decide body{{if $.Run.Sent}} that was sent{{end}})</summary>
+    <textarea readonly rows="8" aria-label="exact request JSON" spellcheck="false">{{.}}</textarea></details>
+    {{end}}
+  </section>
+  {{end}}
+
+  <section class="panel" aria-labelledby="state-h">
+    <div class="panel-h"><h2 id="state-h">State</h2><span class="faint mono">{{len .W.State}} bytes</span></div>
+    <textarea name="state" rows="8" spellcheck="false" aria-labelledby="state-h" placeholder="the bounded state the questions are asked about">{{.W.State}}</textarea>
+  </section>
+
+  {{range $i, $q := .W.Questions}}{{$qv := $.Question $i}}
+  <section class="qcard" aria-label="question {{$i}}">
+    <div class="qcard-h">
+      <h2>Question {{$i}}{{with $qv.Identity}}<span class="sub mono">{{.ID}}@{{.Version}} · {{.Digest}}</span>{{end}}</h2>
+      <div class="btn-row">
+        {{with $q.Loaded}}{{if $qv.Modified}}<span class="pill warn">modified since load</span>{{else}}<span class="pill ok">matches loaded definition</span>{{end}}{{end}}
+        <button type="submit" class="btn danger" name="op" value="remove:{{$i}}">Remove</button>
+      </div>
+    </div>
+    {{with $q.Loaded}}
+    <input type="hidden" name="q{{$i}}.loaded_id" value="{{.ID}}"><input type="hidden" name="q{{$i}}.loaded_version" value="{{.Version}}"><input type="hidden" name="q{{$i}}.loaded_digest" value="{{.Digest}}">
+    <p class="meta mono">loaded {{.ID}}@{{.Version}} · {{.Digest}}</p>
+    {{end}}
+    <div class="row">
+      <label class="field">Question id<input name="q{{$i}}.id" value="{{$q.ID}}" spellcheck="false" autocomplete="off"></label>
+      <label class="field">Definition version (export only)<input name="q{{$i}}.version" value="{{$q.Version}}" inputmode="numeric"></label>
+    </div>
+    <label class="field">Instructions<textarea name="q{{$i}}.instructions" rows="3">{{$q.Instructions}}</textarea></label>
+    <input type="hidden" name="q{{$i}}.nc" value="{{len $q.Choices}}">
+    <div class="choices">
+      <span class="h">Choice label</span><span class="h">Description (optional)</span>
+      {{range $j, $c := $q.Choices}}
+      <input name="q{{$i}}.c{{$j}}.label" value="{{$c.Label}}" aria-label="question {{$i}} choice {{$j}} label" spellcheck="false" autocomplete="off">
+      <input name="q{{$i}}.c{{$j}}.desc" value="{{$c.Desc}}" aria-label="question {{$i}} choice {{$j}} description" autocomplete="off">
+      {{end}}
+    </div>
+    <div class="btn-row"><button type="submit" class="btn ghost" name="op" value="choices:{{$i}}">Add choice rows</button></div>
+
+    {{with $qv.Result}}
+    <div aria-label="result for question {{$i}}">
+      <dl class="stats">
+        <div class="stat"><dt>Choice</dt><dd>{{.Choice}}</dd></div>
+        <div class="stat"><dt>Confidence</dt><dd>{{prob .Confidence}}</dd></div>
+      </dl>
+      <table class="data"><thead><tr><th>choice</th><th class="num">probability</th><th></th></tr></thead><tbody>
+      {{range probs .Probabilities .Choice}}<tr{{if .Chosen}} class="chosen"{{end}}><td>{{.Choice}}</td><td class="num">{{prob .P}}</td><td><span class="pbar"><span style="width:{{pct .P}}"></span></span></td></tr>{{end}}
+      </tbody></table>
+    </div>
+    {{end}}
+
+    <details class="sub"{{with $.Export}}{{if eq .Index $i}} open{{end}}{{end}}><summary>Export as Question Definition</summary>
+      <div class="row">
+        <label class="field">New file (absolute path; never overwritten)<input name="q{{$i}}.export_path" value="{{$q.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="C:\definitions\my.question.json"></label>
+        <div class="btn-row"><button type="submit" class="btn" name="op" value="export:{{$i}}">Export</button></div>
+      </div>
+      {{if not $qv.Identity}}<p class="note bad-t">not exportable: {{$qv.DefErr}}</p>{{end}}
+      {{with $.Export}}{{if eq .Index $i}}
+        {{if .Err}}<p class="msg bad" role="alert">{{.Err}}</p>
+        {{else}}<p class="msg ok" role="status">wrote {{.Identity.ID}}@{{.Identity.Version}} ({{.Identity.Digest}}) to {{.Path}}</p>
+        <textarea readonly rows="8" aria-label="exported definition" spellcheck="false">{{.JSON}}</textarea>{{end}}
+      {{end}}{{end}}
+    </details>
+  </section>
+  {{end}}
+
+  <section class="panel" aria-labelledby="load-h">
+    <div class="panel-h"><h2 id="load-h">Load Question Definition<span class="sub">one hachidori.question.v1 file</span></h2></div>
+    <div class="row">
+      <label class="field">Definition file (absolute path)<input name="load_path" value="{{.W.LoadPath}}" spellcheck="false" autocomplete="off" placeholder="C:\definitions\my.question.json"></label>
+      <div class="btn-row"><button type="submit" class="btn" name="op" value="load">Load into editor</button></div>
+    </div>
+    {{with .LoadErr}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+    {{with .LoadMsg}}<p class="msg ok" role="status">{{.}}</p>{{end}}
+    <p class="cmd">The file is read once, validated with the same rules as <code>hachidori question</code>, and projected into the editor. It is not stored or watched.</p>
+  </section>
+</form>
+
+<footer class="foot">Host-local operator page · the workbench calls POST http://{{.APIAddr}}/v1/decide · question definitions and labels stay with the caller.</footer>
+</main>
+</body>
+</html>
+{{end}}
