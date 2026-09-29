@@ -300,6 +300,8 @@ Selecting a home (`home.Remember`) requires an existing directory, normalizes it
 
 Non-Windows builds have no locator: they create no bootstrap state and desktop discovery resolves only explicit and `HACHIDORI_HOME`.
 
+The first-run wizard (`internal/firstrun`) writes the locator only after setup has succeeded (docs/runtime.md, "Windows first run and no-argument launch"); a failed setup leaves the previous locator state untouched, and a locator naming a missing home is a recovery screen, never a silent fresh install.
+
 ### 6.3 Isolation requirements
 
 The supervised worker MUST be started with an explicitly constructed environment.

@@ -42,6 +42,8 @@ runtime (inference host):
              doctor, SSH reverse-tunnel launcher) on 127.0.0.1:7844
   desktop    (Windows) dashboard in a native WebView2 window; closing the
              window stops the runtime (explicit --home / HACHIDORI_HOME)
+  (no command) on Windows, hachidori.exe with no arguments opens the desktop:
+             first-run setup with a native folder picker, or normal startup
   doctor     verify the installation, including a real smoke inference
 
 client (caller side, uses HACHIDORI_ENDPOINT):
@@ -56,10 +58,22 @@ client (caller side, uses HACHIDORI_ENDPOINT):
 Run 'hachidori <command> -h' for flags.
 `
 
-func main() {
-	if len(os.Args) < 2 {
+func main() { os.Exit(run(os.Args[1:], noArgLaunch)) }
+
+// run dispatches the command line. noArg, when non-nil, is the no-argument
+// entry point (the Windows desktop); without it, or with any argument, the
+// explicit CLI commands behave exactly as before.
+func run(args []string, noArg func() error) int {
+	if len(args) < 1 {
+		if noArg != nil {
+			if err := noArg(); err != nil {
+				fmt.Fprintln(os.Stderr, "hachidori:", err)
+				return 1
+			}
+			return 0
+		}
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
 	cmds := map[string]func([]string) error{
 		"setup": cmdSetup, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
@@ -70,15 +84,16 @@ func main() {
 		"question":  cmdQuestion,
 		"replay":    cmdReplay,
 	}
-	run, ok := cmds[os.Args[1]]
+	cmd, ok := cmds[args[0]]
 	if !ok {
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
-	if err := run(os.Args[2:]); err != nil {
+	if err := cmd(args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "hachidori:", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // setupFlags are the flags of `hachidori setup`. A model is selected only by
