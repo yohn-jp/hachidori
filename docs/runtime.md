@@ -23,8 +23,9 @@ client CLI / any HTTP caller
 | `hachidori doctor [--home H]` | host | verify the installation including a real HTTP→worker→model smoke inference |
 | `hachidori status [--endpoint URL]` | client | print `/v1/status` |
 | `hachidori decide [--endpoint URL] <request.json\|->` | client | send one v1 decide request |
-| `hachidori eval [--endpoint URL] [--out report.json] <dataset.jsonl>` | client | caller-side evaluation |
-| `hachidori benchmark [--endpoint URL] [--warmup N] [--passes N] [--out report.json] <dataset.jsonl>` | client | eval plus warmup and repeated passes for latency |
+| `hachidori eval [--endpoint URL] [--questions PATH]... [--out report.json] <dataset.jsonl>` | client | caller-side evaluation |
+| `hachidori benchmark [--endpoint URL] [--questions PATH]... [--warmup N] [--passes N] [--out report.json] <dataset.jsonl>` | client | eval plus warmup and repeated passes for latency |
+| `hachidori question <definition.json\|dir>...` | client | validate Question Definitions locally; print id, version, digest and the compiled v1 question (no endpoint) |
 
 `--home` defaults to `HACHIDORI_HOME`; there is no implicit home. `--endpoint`
 defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
@@ -295,3 +296,42 @@ Request errors are listed and never scored.
 `testdata/eval/contract-example.jsonl` is a three-case format example, **not**
 benchmark evidence. The coding-agent benchmark from architecture §12 is not in
 this repository and must be supplied as a local JSONL file in this format.
+
+### Question Definitions (caller side)
+
+A Question Definition is a repository-owned, versioned v1 question. One JSON
+object per file; unknown fields are rejected; no imports, inheritance or
+templating:
+
+```json
+{"schema": "hachidori.question.v1", "id": "scope_expansion", "version": 1, "type": "choice",
+ "instructions": "Did the agent modify files outside the scope the user requested?",
+ "choices": ["yes", "no"], "descriptions": {"yes": "…"}}
+```
+
+- `version` is an explicit integer ≥ 1; `type`, instructions, choices and
+  descriptions follow the same rules and limits as `/v1/decide` questions.
+- It compiles to the v1 question `{id, type, instructions, choices,
+  descriptions}` (choice order kept, empty descriptions omitted).
+- Identity is `id@version` plus `digest` = `sha256:` of the canonical JSON
+  (fixed field order, sorted description keys, no whitespace). Any change to
+  id, version, instructions, choices (including order) or descriptions changes
+  the digest; file path, file name and file formatting do not.
+
+A dataset case may use `question_refs` instead of inline `questions`:
+
+```json
+{"id": "case-001", "state": "…", "question_refs": [{"id": "scope_expansion", "version": 1}], "expected": {"scope_expansion": "yes"}}
+```
+
+`--questions` (files or directories of `*.json`, repeatable) supplies the
+definitions. References are resolved and compiled before the first request;
+an unknown id/version, a duplicate definition or reference, a mismatching
+optional `digest` pin, mixing `questions` and `question_refs` in one case, or
+one question id bound to different versions (or to both inline and a
+definition) within a dataset fails locally. The endpoint receives ordinary v1
+requests only — never references, versions, digests or paths. Inline datasets
+work unchanged. The report lists the resolved definitions as
+`question_definitions` (`id`, `version`, `digest`). `testdata/questions/` and
+`testdata/eval/contract-example-refs.jsonl` are the reference-form equivalent
+of the contract example.

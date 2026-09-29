@@ -1,0 +1,8 @@
+{
+  "schema": "hachidori.question.v1",
+  "id": "ready_to_finalize",
+  "version": 1,
+  "type": "choice",
+  "instructions": "Is the work ready to finalize without further review?",
+  "choices": ["yes", "no"]
+}
