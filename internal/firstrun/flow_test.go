@@ -340,19 +340,18 @@ func TestUnusableLocationBlocksSetup(t *testing.T) {
 	}
 }
 
-func TestReadOnlyDirectoryBlocksSetup(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
-	}
+func TestWriteProbeFailureBlocksSetup(t *testing.T) {
 	f := newFixture(t, Plan{Mode: ModeFirstRun})
-	dir := f.dir("ro")
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
+	dir := f.dir("blocked")
+	f.flow.cfg.Env.ProbeWritable = func(path string) error {
+		if path != dir {
+			t.Fatalf("probe path %q, want %q", path, dir)
+		}
+		return os.ErrPermission
 	}
-	defer os.Chmod(dir, 0o755)
 	v := f.selectDir(dir)
 	if v.OK() || !strings.Contains(v.Problem, "cannot write") {
-		t.Fatalf("read-only folder: %+v", v)
+		t.Fatalf("unwritable folder: %+v", v)
 	}
 	if err := f.flow.Install("cpu"); err == nil || f.setups.Load() != 0 {
 		t.Fatalf("install err %v setups %d", err, f.setups.Load())
