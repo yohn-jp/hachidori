@@ -51,6 +51,7 @@ client (caller side, uses HACHIDORI_ENDPOINT):
   benchmark  eval with warmup and repeated passes for latency
   question   validate local Question Definitions and print their identity
              and compiled v1 question (no endpoint)
+  replay     reconstruct and re-send decisions from a Decision Evidence report
 
 Run 'hachidori <command> -h' for flags.
 `
@@ -67,6 +68,7 @@ func main() {
 		"decide":    cmdDecide, "eval": func(a []string) error { return cmdEval("eval", a) },
 		"benchmark": func(a []string) error { return cmdEval("benchmark", a) },
 		"question":  cmdQuestion,
+		"replay":    cmdReplay,
 	}
 	run, ok := cmds[os.Args[1]]
 	if !ok {
@@ -375,7 +377,10 @@ func cmdEval(name string, args []string) error {
 	if h, err := c.Health(); err != nil || !h.Ready {
 		return fmt.Errorf("endpoint %s not ready (state %q): %v", c.Endpoint, h.State, err)
 	}
-	r := eval.Run(c, cases, opt)
+	r, err := eval.RunEvidence(c, cases, opt)
+	if err != nil {
+		return err
+	}
 	r.Endpoint, r.Dataset, r.DatasetSHA256 = c.Endpoint, fs.Arg(0), sum
 	eval.Summary(os.Stdout, r)
 	if *out != "" {
@@ -387,6 +392,89 @@ func cmdEval(name string, args []string) error {
 	}
 	if len(r.Errors) > 0 {
 		return fmt.Errorf("%d request errors", len(r.Errors))
+	}
+	if !r.ServedConsistent {
+		return errors.New("served runtime identity changed during the run; evidence is marked served_consistent=false")
+	}
+	return nil
+}
+
+// cmdReplay reconstructs requests from Decision Evidence and the original local
+// dataset. Question Definitions are resolved caller-side exactly as for eval.
+func cmdReplay(args []string) error {
+	fs := flag.NewFlagSet("replay", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "", "endpoint (default: $HACHIDORI_ENDPOINT or "+client.DefaultEndpoint+")")
+	dataset := fs.String("dataset", "", "dataset JSONL (default: path recorded in report)")
+	out := fs.String("out", "", "write replay comparison JSON to this local file")
+	printOnly := fs.Bool("print", false, "print reconstructed requests without contacting the endpoint")
+	var defPaths, caseIDs, questionIDs pathList
+	fs.Var(&defPaths, "questions", "Question Definition file or directory resolving question_refs (repeatable)")
+	fs.Var(&caseIDs, "case", "replay only this case id (repeatable)")
+	fs.Var(&questionIDs, "question", "replay only this question id (repeatable)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: hachidori replay [flags] <report.json>")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return errors.New("replay requires one report path")
+	}
+	r, err := eval.LoadReport(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	path := *dataset
+	if path == "" {
+		path = r.Dataset
+	}
+	var defs *question.Set
+	if len(defPaths) > 0 {
+		defs, err = question.Load(defPaths...)
+		if err != nil {
+			return err
+		}
+	}
+	cases, sum, err := eval.Load(path, defs)
+	if err != nil {
+		return fmt.Errorf("replay source %q: %w", path, err)
+	}
+	items, err := eval.ReplayRequests(r, cases, sum, eval.Selection{Cases: []string(caseIDs), Questions: []string(questionIDs)})
+	if err != nil {
+		return err
+	}
+	if *printOnly {
+		reqs := make([]api.DecideRequest, len(items))
+		for i, it := range items {
+			reqs[i] = it.Request
+		}
+		return printJSON(reqs)
+	}
+	c := client.New(*endpoint)
+	rep, err := eval.Replay(c, r, items)
+	if err != nil {
+		return err
+	}
+	rep.Endpoint = c.Endpoint
+	if *out != "" {
+		b, err := json.MarshalIndent(rep, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(*out, append(b, '\n'), 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("replay written to %s\n", *out)
+	} else if err := printJSON(rep); err != nil {
+		return err
+	}
+	if !rep.ServedMatches {
+		fmt.Fprintln(os.Stderr, "hachidori: note: endpoint serves a different identity than the recorded evidence")
+	}
+	for _, res := range rep.Results {
+		if res.Error != nil {
+			return errors.New("replay request errors (see output)")
+		}
 	}
 	return nil
 }

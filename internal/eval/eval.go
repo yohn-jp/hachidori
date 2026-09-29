@@ -2,7 +2,8 @@
 //
 // Datasets and expected labels are read locally; only state and questions
 // are sent to the endpoint. Question Definition references are resolved and
-// compiled locally before any request. Metrics are computed locally.
+// compiled locally before any request. Metrics and replayable Decision Evidence
+// are computed locally.
 package eval
 
 import (
@@ -136,19 +137,31 @@ func (c Case) Request() api.DecideRequest {
 	return api.DecideRequest{Schema: api.SchemaV1, State: c.State, Questions: c.Questions}
 }
 
-// Decider is the endpoint surface eval needs.
+// Decider is the endpoint decide surface.
 type Decider interface {
 	Decide(api.DecideRequest) (api.DecideResponse, error)
 }
 
-// Observation is one scored (case, question) pair.
+// Endpoint is the evidence-capable endpoint surface: decisions plus the status
+// authority that identifies the runtime/model serving them.
+type Endpoint interface {
+	Decider
+	StatusSource
+}
+
+// Observation is one scored (case, question) Decision Evidence record.
 type Observation struct {
-	CaseID     string  `json:"case_id"`
-	QuestionID string  `json:"question_id"`
-	Expected   string  `json:"expected"`
-	Choice     string  `json:"choice"`
-	Confidence float64 `json:"confidence"`
-	Correct    bool    `json:"correct"`
+	CaseID             string             `json:"case_id"`
+	QuestionID         string             `json:"question_id"`
+	QuestionSHA256     string             `json:"question_sha256"`
+	QuestionDefinition *question.Identity `json:"question_definition,omitempty"`
+	Expected           string             `json:"expected"`
+	Choice             string             `json:"choice"`
+	Confidence         float64            `json:"confidence"`
+	Probabilities      map[string]float64 `json:"probabilities"`
+	Correct            bool               `json:"correct"`
+	RequestMS          float64            `json:"request_ms"`
+	InferenceMS        *float64           `json:"inference_ms,omitempty"`
 }
 
 // QuestionStats is per-question performance.
@@ -167,41 +180,74 @@ type Latency struct {
 	Mean float64 `json:"mean_ms"`
 }
 
-// Report is the locally computed evaluation evidence.
+// Report is the locally computed, versioned Decision Evidence for one run.
 type Report struct {
-	Endpoint        string                   `json:"endpoint"`
-	Dataset         string                   `json:"dataset"`
-	DatasetSHA256   string                   `json:"dataset_sha256"`
-	Definitions     []question.Identity      `json:"question_definitions,omitempty"`
-	StartedAt       string                   `json:"started_at"`
-	Cases           int                      `json:"cases"`
-	Observations    int                      `json:"observations"`
-	Errors          []string                 `json:"errors"`
-	ChoiceAccuracy  float64                  `json:"choice_accuracy"`
-	MeanConfidence  float64                  `json:"mean_confidence"`
-	ECE             float64                  `json:"ece"`
-	WarmupRequests  int                      `json:"warmup_requests"`
-	Passes          int                      `json:"passes"`
-	RequestLatency  Latency                  `json:"request_latency"`
-	ServerInference Latency                  `json:"server_inference_latency"`
-	PerQuestion     map[string]QuestionStats `json:"per_question"`
-	Results         []Observation            `json:"results"`
+	Schema           string                   `json:"schema"`
+	Endpoint         string                   `json:"endpoint"`
+	Dataset          string                   `json:"dataset"`
+	DatasetSHA256    string                   `json:"dataset_sha256"`
+	Definitions      []question.Identity      `json:"question_definitions,omitempty"`
+	StartedAt        string                   `json:"started_at"`
+	Served           *Served                  `json:"served,omitempty"`
+	ServedEnd        *Served                  `json:"served_end,omitempty"`
+	ServedConsistent bool                     `json:"served_consistent"`
+	Cases            int                      `json:"cases"`
+	Observations     int                      `json:"observations"`
+	Errors           []RequestError           `json:"errors"`
+	ChoiceAccuracy   float64                  `json:"choice_accuracy"`
+	MeanConfidence   float64                  `json:"mean_confidence"`
+	ECE              float64                  `json:"ece"`
+	WarmupRequests   int                      `json:"warmup_requests"`
+	Passes           int                      `json:"passes"`
+	RequestLatency   Latency                  `json:"request_latency"`
+	ServerInference  Latency                  `json:"server_inference_latency"`
+	PerQuestion      map[string]QuestionStats `json:"per_question"`
+	Results          []Observation            `json:"results"`
 }
 
-// Options control a run. Warmup requests are sent first and excluded from
-// latency; Passes repeats the dataset for latency (accuracy uses pass 1).
+// Options control a run. Warmup requests are excluded from latency; Passes
+// repeats the dataset for latency while semantic scoring uses pass 1.
 type Options struct {
 	Warmup int
 	Passes int
 }
 
-// Run evaluates cases against d.
+// Run preserves the caller-side evaluation API for in-process/tests that do
+// not expose status. It still emits versioned observations, but has no served
+// identity. Production CLI eval/benchmark uses RunEvidence.
 func Run(d Decider, cases []Case, opt Options) Report {
-	r := Report{Cases: len(cases), StartedAt: time.Now().UTC().Format(time.RFC3339), PerQuestion: map[string]QuestionStats{},
-		WarmupRequests: opt.Warmup, Passes: max(opt.Passes, 1), Errors: []string{}, Definitions: definitions(cases)}
+	return run(d, cases, opt)
+}
+
+// RunEvidence snapshots endpoint status before and after the run so evidence
+// cannot silently claim the wrong served runtime/model identity.
+func RunEvidence(d Endpoint, cases []Case, opt Options) (Report, error) {
+	start, err := Snapshot(d)
+	if err != nil {
+		return Report{}, fmt.Errorf("cannot identify served runtime: %w", err)
+	}
+	r := run(d, cases, opt)
+	r.Served = &start
+	end, err := Snapshot(d)
+	if err != nil {
+		r.Errors = append(r.Errors, RequestError{Phase: "status", Class: ErrClassStatus, Message: err.Error()})
+		r.ServedConsistent = false
+		return r, nil
+	}
+	r.ServedEnd = &end
+	r.ServedConsistent = start.Compatible(&end)
+	return r, nil
+}
+
+func run(d Decider, cases []Case, opt Options) Report {
+	r := Report{Schema: EvidenceSchema, Cases: len(cases), StartedAt: time.Now().UTC().Format(time.RFC3339),
+		PerQuestion: map[string]QuestionStats{}, WarmupRequests: opt.Warmup, Passes: max(opt.Passes, 1),
+		Errors: []RequestError{}, Results: []Observation{}, Definitions: definitions(cases)}
 	for i := 0; i < opt.Warmup; i++ {
-		if _, err := d.Decide(cases[i%len(cases)].Request()); err != nil {
-			r.Errors = append(r.Errors, fmt.Sprintf("warmup: %v", err))
+		c := cases[i%len(cases)]
+		if _, err := d.Decide(c.Request()); err != nil {
+			cls, msg := classify(err)
+			r.Errors = append(r.Errors, RequestError{Phase: "warmup", CaseID: c.ID, Class: cls, Message: msg})
 		}
 	}
 	var lat, inf []float64
@@ -211,12 +257,16 @@ func Run(d Decider, cases []Case, opt Options) Report {
 			resp, err := d.Decide(c.Request())
 			ms := float64(time.Since(t0).Microseconds()) / 1000
 			if err != nil {
-				r.Errors = append(r.Errors, fmt.Sprintf("%s: %v", c.ID, err))
+				cls, msg := classify(err)
+				r.Errors = append(r.Errors, RequestError{Phase: "pass", Pass: pass + 1, CaseID: c.ID, Class: cls, Message: msg})
 				continue
 			}
 			lat = append(lat, ms)
+			var infMS *float64
 			if resp.Timing != nil {
 				inf = append(inf, resp.Timing.InferenceMS)
+				v := resp.Timing.InferenceMS
+				infMS = &v
 			}
 			if pass > 0 {
 				continue
@@ -225,14 +275,24 @@ func Run(d Decider, cases []Case, opt Options) Report {
 			for _, res := range resp.Results {
 				byID[res.ID] = res
 			}
-			for _, q := range c.Questions {
+			for qi, q := range c.Questions {
 				res, ok := byID[q.ID]
 				if !ok {
-					r.Errors = append(r.Errors, fmt.Sprintf("%s: missing result for %s", c.ID, q.ID))
+					r.Errors = append(r.Errors, RequestError{Phase: "pass", Pass: 1, CaseID: c.ID, QuestionID: q.ID,
+						Class: ErrClassMissingResult, Message: "response has no result for this question"})
 					continue
 				}
-				r.Results = append(r.Results, Observation{CaseID: c.ID, QuestionID: q.ID, Expected: c.Expected[q.ID],
-					Choice: res.Choice, Confidence: res.Confidence, Correct: res.Choice == c.Expected[q.ID]})
+				var def *question.Identity
+				if len(c.Definitions) == len(c.Questions) {
+					v := c.Definitions[qi]
+					def = &v
+				}
+				r.Results = append(r.Results, Observation{
+					CaseID: c.ID, QuestionID: q.ID, QuestionSHA256: QuestionSHA256(q), QuestionDefinition: def,
+					Expected: c.Expected[q.ID], Choice: res.Choice, Confidence: res.Confidence,
+					Probabilities: res.Probabilities, Correct: res.Choice == c.Expected[q.ID],
+					RequestMS: ms, InferenceMS: infMS,
+				})
 			}
 		}
 	}
@@ -362,6 +422,6 @@ func Summary(w io.Writer, r Report) {
 		fmt.Fprintf(w, "  %-32s n=%-4d acc=%.4f conf=%.4f ece=%.4f\n", id, q.N, q.Accuracy, q.MeanConfidence, q.ECE)
 	}
 	for _, e := range r.Errors {
-		fmt.Fprintf(w, "error: %s\n", e)
+		fmt.Fprintf(w, "error: %s\n", e.String())
 	}
 }

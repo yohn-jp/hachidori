@@ -27,6 +27,7 @@ client CLI / any HTTP caller
 | `hachidori eval [--endpoint URL] [--questions PATH]... [--out report.json] <dataset.jsonl>` | client | caller-side evaluation |
 | `hachidori benchmark [--endpoint URL] [--questions PATH]... [--warmup N] [--passes N] [--out report.json] <dataset.jsonl>` | client | eval plus warmup and repeated passes for latency |
 | `hachidori question <definition.json\|dir>...` | client | validate Question Definitions locally; print id, version, digest and the compiled v1 question (no endpoint) |
+| `hachidori replay [--questions PATH]... [--dataset D] [--case ID]... [--question ID]... [--print] [--out replay.json] <report.json>` | client | reconstruct and optionally re-send decisions recorded by eval/benchmark |
 
 `--home` defaults to `HACHIDORI_HOME`; the CLI has no implicit home (the Windows
 desktop bootstrap locator below is never consulted by CLI commands). `--endpoint`
@@ -405,6 +406,19 @@ overall mean confidence, ECE (15 equal-width bins, same binning as
 `laya.common.ece_score`), client round-trip p50/p95 and server inference p50/p95,
 per-observation results keyed by case id and question id, dataset SHA-256.
 Request errors are listed and never scored.
+
+### Decision Evidence
+
+Eval/benchmark reports are versioned as `hachidori.evidence.v1`. They retain
+the full probability distribution, exact question digest, optional Question
+Definition identity, request/inference timing, dataset digest, and the served
+runtime/provider identity snapshotted from `GET /v1/status`. Expected labels
+and evidence remain caller-side.
+
+`hachidori replay` reloads the original dataset, verifies its SHA-256 and each
+recorded question digest, reconstructs the original `/v1/decide` requests, and
+can either print them or re-send them for comparison. Definition-backed datasets
+must supply the same caller-side `--questions` definitions when replayed.
 
 `testdata/eval/contract-example.jsonl` is a three-case format example, **not**
 benchmark evidence. The coding-agent benchmark from architecture §12 is not in
