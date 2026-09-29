@@ -29,8 +29,8 @@ const (
 	// ICoreWebView2Controller
 	slotControllerClose = 24
 
-	sOK          = 0
-	eNoInterface = 0x80004002
+	sOK          hresult = 0
+	eNoInterface hresult = 0x80004002
 )
 
 var (
@@ -39,14 +39,23 @@ var (
 	iidNewWindowRequestedEH = windows.GUID{Data1: 0xd4c185fe, Data2: 0xc81c, Data3: 0x4989, Data4: [8]byte{0x97, 0xaf, 0x2d, 0x3f, 0xa7, 0xab, 0x56, 0x51}}
 )
 
+// hresult is the 32-bit COM result domain. syscall.SyscallN returns uintptr,
+// which is pointer-width on amd64; narrowing here preserves HRESULT semantics
+// before callers compare success/failure codes.
+type hresult uint32
+
+func (hr hresult) errno() syscall.Errno { return syscall.Errno(uint32(hr)) }
+
+func normalizeHRESULT(raw uintptr) hresult { return hresult(uint32(raw)) }
+
 // comCall invokes vtable slot of the COM object obj.
 //
 //go:uintptrescapes
-func comCall(obj unsafe.Pointer, slot int, args ...uintptr) uintptr {
+func comCall(obj unsafe.Pointer, slot int, args ...uintptr) hresult {
 	vtbl := *(*unsafe.Pointer)(obj)
 	fn := *(*uintptr)(unsafe.Add(vtbl, uintptr(slot)*unsafe.Sizeof(uintptr(0))))
 	r, _, _ := syscall.SyscallN(fn, append([]uintptr{uintptr(obj)}, args...)...)
-	return r
+	return normalizeHRESULT(r)
 }
 
 // eventHandler is a COM object implementing one ICoreWebView2*EventHandler.
