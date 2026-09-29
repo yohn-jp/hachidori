@@ -143,6 +143,7 @@ It holds no runtime state of its own:
 | Run doctor | `doctor.Run` on the same `HACHIDORI_HOME` (it starts its own temporary worker, as the CLI does) |
 | tunnel | `tunnel.Manager`, `GET /api/tunnel` |
 | Experiment Runner (`/experiments`) | `internal/eval` (`question.Load`, `eval.Load`, `eval.RunEvidence`) run caller-side in the dashboard process against the same inference API address |
+| Error Explorer (`/errors`) | `internal/eval/explore`, a pure read-only consumer of `eval.Report` (`hachidori.evidence.v1`); no endpoint access |
 | Question Workbench (`/workbench`) | a caller of the existing `POST /v1/decide` on the dashboard's inference API address; `internal/question` / `internal/api` validation and compilation |
 
 Every state-changing action is a same-origin `POST` carrying a per-process form
@@ -193,6 +194,34 @@ canonical `hachidori.evidence.v1` JSON (the `eval -out` encoding) to a new file
 at an absolute path, never overwriting, and it can be replayed with
 `hachidori replay`. Dashboard shutdown, and the desktop replacing or closing
 its runtime, abort a running experiment; an aborted run keeps no report.
+
+### Error Explorer
+
+`/errors` analyses one `hachidori.evidence.v1` report: the current
+experiment's report, or a report file opened by absolute path. Opening never
+runs inference. Reports are decoded strictly (`internal/eval/explore`): another
+schema, unknown fields, trailing data, or an internally inconsistent report
+(observation count, `correct` versus choice/expected, confidence outside
+[0, 1], missing probabilities, per-question counts) is rejected and the
+previously open report stays.
+
+All counts and selections are deterministic functions of the report:
+correct, wrong, request errors, high-confidence wrong (wrong with confidence
+>= the threshold), per-question correct/wrong/high-confidence-wrong/missing
+results beside the report's own accuracy, mean confidence and ECE, and
+request errors by class. Observations filter by question, expected choice,
+predicted choice, outcome and confidence range, request errors by class, and
+sort by confidence, request latency or inference latency (ties and missing
+values in report order). The detail view shows case, question id and wire
+digest, definition identity, expected and predicted choice, confidence,
+probabilities, latencies and served identity.
+
+The high-confidence threshold (initially 0.9) is an analysis control only;
+Hachidori makes no pass/fail or fitness judgment. **Export selection** writes a
+separate `hachidori.evidence-analysis.v1` document (source report digest and
+identity, threshold, filter, counts, and the selected observations and request
+errors copied verbatim) to a new file; it never modifies or replaces the
+source report.
 
 ### SSH reverse-tunnel launcher
 
