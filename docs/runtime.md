@@ -20,7 +20,7 @@ client CLI / any HTTP caller
 | `hachidori setup [--home H] [--device cuda\|cpu] [--model ID]` | host | reconcile `HACHIDORI_HOME` with the Runtime Spec: private uv materializes the locked Python environment, the selected catalog model (default `laya-base`) is materialized separately, then activate |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843]` | host | run HTTP + one resident worker; non-loopback binds are refused |
 | `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh]` | host | `serve` plus the host-local dashboard (see below) |
-| `hachidori desktop [--home H] [--listen …] [--addr …] [--ssh ssh]` | host (Windows) | `dashboard` shown in a native WebView2 window (see below); fails with a clear error on other systems |
+| `hachidori desktop [--home H] [--listen …] [--addr …] [--ssh ssh] [--background]` | host (Windows) | the same desktop composition as a no-argument `hachidori.exe`: first run/recovery or normal start in a resident WebView2 window with a tray icon (see below); fails with a clear error on other systems |
 | `hachidori doctor [--home H]` | host | verify the installation including a real HTTP→worker→model smoke inference |
 | `hachidori status [--endpoint URL]` | client | print `/v1/status` |
 | `hachidori decide [--endpoint URL] <request.json\|->` | client | send one v1 decide request |
@@ -185,24 +185,27 @@ ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -o ServerAliveInterval=15 \
 
 ## Windows desktop shell
 
-`hachidori desktop --home D:\Hachidori` is the explicit developer entry point of
-the thin Windows shell. It is `hachidori dashboard` (same flags, same
-composition in `runHost`: one API, one resident worker, one `worker.Lifecycle`,
-the same dashboard handler with its Host/Origin/form-token checks) plus one
-native top-level window that shows `http://<--addr>/` through Microsoft
-WebView2. The window has no runtime, lifecycle, status or doctor logic of its
-own; it owns only its own lifetime. No-argument launch and first-run setup
-are not part of this command. The runtime is owned by the application
-controller (`internal/app`, see below): `desktop` binds exactly one supervised
-worker through `app.Controller` and the tray, dashboard and API all observe
-that one supervisor. The home is `--home`, then `HACHIDORI_HOME`, then the
-bootstrap locator.
+The Windows desktop is one composition, `desktopApp` (`cmd/hachidori/desktopapp.go`),
+entered two ways: `hachidori.exe` with no arguments (the product path) and
+`hachidori desktop [--home H] [--listen …] [--addr …] [--ssh …] [--background]`
+(the same composition with explicit flags; start at sign-in uses it). There is
+no second lifecycle composition: both entries run the single-instance guard,
+home discovery, first-run/recovery or normal start, and the resident tray
+window described below. It serves the API and the dashboard handler
+(Host/Origin/form-token checks) and one native top-level window that shows
+`http://<--addr>/` through Microsoft WebView2. The window has no runtime,
+lifecycle, status or doctor logic of its own; it owns only its own lifetime.
+The runtime is owned by the application controller (`internal/app`, see
+below): setup, start, restart and quit all act on the one `app.Controller`,
+which binds exactly one supervised worker, and the tray, dashboard and API all
+observe that one supervisor. The home is `--home`, then `HACHIDORI_HOME`, then
+the bootstrap locator; with none of them the desktop enters first-run setup.
 
 Order of a launch:
 
-1. flags and `--home` / `HACHIDORI_HOME` are resolved exactly as for `dashboard`;
+1. the loopback listen addresses are checked;
 2. the installed WebView2 Runtime is detected (registry and client DLL lookup).
-   If it is missing the command fails before anything starts, with a
+   If it is missing the launch fails before anything starts, with a
    diagnostic that names the Evergreen WebView2 Runtime download page.
    Hachidori never downloads or installs WebView2;
 3. the per-user single-instance guard is taken: a named mutex
@@ -214,9 +217,11 @@ Order of a launch:
    before starting any runtime component. If that window cannot be found
    within ~10 s the second launch fails with "already running". The kernel
    drops the mutex when the process ends, so a crash never blocks a relaunch;
-4. the API, worker and dashboard start; the dashboard listener is bound before
-   the window is created;
-5. the window opens and navigates to the dashboard.
+4. the home is discovered and the first-run/recovery or normal start plan is
+   decided (see first run below); the controller starts a configured, installed
+   home;
+5. the API and dashboard listeners are bound before the window is created, then
+   the window opens on the dashboard (or the first-run screen).
 
 Window security:
 
@@ -243,7 +248,7 @@ Ctrl+C in the console quits the same way.
 
 ### Tray and start at sign-in
 
-While `hachidori desktop` runs it shows one per-user notification-area icon
+While the desktop runs (either entry, including during first run and recovery) it shows one per-user notification-area icon
 (`internal/desktop`, `tray_windows.go`). Its tooltip and the first menu line
 show one concise state, derived only from `app.Controller.Snapshot()`: **Ready**,
 **Starting** (starting/warming), **Setting up**, **Stopping**, **Stopped**, or
@@ -276,10 +281,13 @@ Runtime** (the controller's `Restart`; disabled when nothing is installed),
 - **Start minimized** (opt-in, stored in `%LOCALAPPDATA%\Hachidori\desktop.json`
   beside the bootstrap locator) applies to `--background` launches only: the
   window starts hidden in the tray (only if the tray icon exists) while the
-  runtime starts as usual. An explicit `hachidori desktop` always shows the
-  window.
-- A background launch that cannot start the runtime at all (for example no
-  active runtime) shows an error box and exits 1; it is not retried.
+  runtime starts as usual. It applies only to a configured, installed home
+  whose runtime could be bound: first run, recovery and a failed start always
+  show the window (on `#diagnostics` for a failed start). An explicit launch
+  always shows the window.
+- A launch that cannot even reach the window (for example a missing WebView2
+  Runtime or a busy listen address) reports the error, and a `--background`
+  launch shows it in an error box; it exits 1 and is not retried.
 
 Distribution: the binding is `github.com/wailsapp/go-webview2` with its pure-Go
 loader (default build, no cgo). No `WebView2Loader.dll` is embedded, written
@@ -300,7 +308,8 @@ On Windows, `hachidori.exe` with no arguments is the desktop product entry point
 (`cmd/hachidori/launch_windows.go`; other platforms print the CLI usage exactly
 as before, and every explicit subcommand keeps its CLI behavior). It uses the
 same WebView2 preflight, single-instance guard, window policy and
-`worker`/`server`/`dashboard` authorities as `hachidori desktop`, plus:
+`worker`/`server`/`dashboard` authorities as `hachidori desktop` (they are the
+same composition, including the resident tray lifecycle above), plus:
 
 1. `home.Discover("")` (explicit env `HACHIDORI_HOME` > bootstrap locator >
    unconfigured) and `firstrun.Decide`:

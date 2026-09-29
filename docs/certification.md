@@ -96,6 +96,13 @@ go test ./internal/desktop -v -count=1          # Windows-only tests: instance g
 5. On a machine without the WebView2 Runtime (or with it uninstalled), the
    command fails before any worker starts with the WebView2 diagnostic, and
    nothing is downloaded.
+6. Unified composition: a no-argument `hachidori.exe` and `hachidori.exe desktop`
+   behave identically. From a first run, after Install reaches READY the same
+   window stays open with the tray icon (Open/Restart/Diagnostics/Quit act on
+   the one worker; closing hides to the tray); a second launch activates it. A
+   `--background` launch with Start minimized starts in the tray only when the
+   runtime is up, and shows the window when first run/recovery is needed or the
+   start failed.
 
 ## Windows first-run wizard (manual, real Windows only)
 

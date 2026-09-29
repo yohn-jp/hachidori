@@ -25,10 +25,16 @@ import (
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
-// desktopApp is the no-argument Windows entry point: home discovery, then the
-// first-run/recovery flow or normal startup, in one native window. It is a
-// composition of existing authorities: home.Discover/Remember (bootstrap
-// locator), app.Controller (setup and the one resident worker), the same
+// errActivated is returned by run when another desktop instance of this user
+// was already running and was asked to show its window instead.
+var errActivated = errors.New("activated the running desktop instance")
+
+// desktopApp is the one Windows desktop composition, entered by both the
+// no-argument launch and `hachidori desktop`: single-instance guard, home
+// discovery, then the first-run/recovery flow or normal startup, and the
+// resident tray lifecycle, in one native window. It is a composition of
+// existing authorities: home.Discover/Remember (bootstrap locator),
+// app.Controller (setup, start, restart and the one resident worker), the same
 // server/dashboard handlers as `hachidori dashboard`, and the desktop shell.
 type desktopApp struct {
 	Platform desktop.Platform
@@ -39,23 +45,57 @@ type desktopApp struct {
 	APIAddr  string // loopback address of the inference API
 	DashAddr string // loopback address of the window's origin
 	Setup    app.SetupFunc
-	Stderr   io.Writer
+	// Open, when set, replaces the production worker binding (tests only).
+	Open   app.OpenFunc
+	Stderr io.Writer
+
+	// Startup and PrefsPath back the tray and dashboard desktop preferences.
+	Startup   desktop.Startup
+	PrefsPath string
+	// SSH is the host ssh client used by the tunnel launcher.
+	SSH string
+	// Background marks a start-at-sign-in launch: it honors Start minimized,
+	// but only while the application is READY; setup, recovery and a failed
+	// start are always shown.
+	Background bool
 }
 
-func newDesktopApp(p desktop.Platform, pk desktop.FolderPicker) *desktopApp {
+// newDesktopApp builds the production composition. homeFlag is an explicit
+// home (`desktop --home`); empty means HACHIDORI_HOME, then the locator.
+func newDesktopApp(p desktop.Platform, pk desktop.FolderPicker, st desktop.Startup, prefsPath, homeFlag string) *desktopApp {
 	return &desktopApp{
 		Platform: p, Picker: pk,
-		Discover: func() (home.Discovery, error) { return home.Discover("") },
+		Discover: func() (home.Discovery, error) { return home.Discover(homeFlag) },
 		Remember: home.Remember,
 		Env:      firstrun.Env{FreeSpace: firstrun.DefaultFreeSpace},
 		APIAddr:  server.DefaultListen, DashAddr: dashboard.DefaultListen,
-		Stderr: os.Stderr,
+		Stderr:  os.Stderr,
+		Startup: st, PrefsPath: prefsPath, SSH: "ssh",
 	}
 }
 
 // runDesktopApp is the production no-argument entry point.
 func runDesktopApp(p desktop.Platform, pk desktop.FolderPicker) error {
-	return newDesktopApp(p, pk).run()
+	prefsPath, err := desktop.PrefsPath()
+	if err != nil {
+		return err
+	}
+	return newDesktopApp(p, pk, desktop.NativeStartup(), prefsPath, "").launch()
+}
+
+// launch runs the application and settles the two outcomes that are not
+// failures of the caller: a duplicate launch that activated the running
+// instance, and a sign-in launch that failed with no console to say why.
+func (a *desktopApp) launch() error {
+	err := a.run()
+	switch {
+	case errors.Is(err, errActivated):
+		fmt.Fprintln(a.Stderr, "hachidori: already running for this user; activated the existing window")
+		return nil
+	case err != nil && a.Background:
+		a.Platform.ReportError("Hachidori could not start", err.Error())
+	}
+	return err
 }
 
 // swap holds the handlers bound to the current runtime; the listeners are
@@ -97,6 +137,14 @@ func (a *desktopApp) run() error {
 		return err
 	}
 	version, release, err := desktop.Preflight(a.Platform)
+	if errors.Is(err, desktop.ErrAlreadyRunning) {
+		// Duplicate launch: activate the running instance instead of starting
+		// a second controller or worker. Nothing has been started yet.
+		if aerr := a.Platform.Activate(); aerr != nil {
+			return fmt.Errorf("%w (and it could not be activated: %v)", err, aerr)
+		}
+		return errActivated
+	}
 	if err != nil {
 		return err
 	}
@@ -112,7 +160,7 @@ func (a *desktopApp) run() error {
 	rctx, rcancel := context.WithCancel(context.Background())
 	defer rcancel()
 	sw := &swap{}
-	tun := tunnel.NewManager("ssh")
+	tun := tunnel.NewManager(a.sshExe())
 	defer tun.Disconnect()
 	var logMu sync.Mutex
 	var logs []*os.File
@@ -124,7 +172,23 @@ func (a *desktopApp) run() error {
 		}
 	}()
 
+	// The startup entry runs this executable in background mode. The home is
+	// embedded only when the desktop cannot rediscover it by itself; a home
+	// chosen in first run is remembered in the bootstrap locator.
+	homeArg := ""
+	if d.Source == home.SourceExplicit || d.Source == home.SourceEnv {
+		homeArg = d.Home.Root
+	}
+	mgr := &desktop.Manager{Path: a.PrefsPath, Startup: a.Startup}
+	if exe, err := os.Executable(); err == nil {
+		// An unusable command only disables enabling start at sign-in.
+		mgr.Command, _ = desktop.StartupCommand(exe, homeArg)
+	}
+
 	open := func(root string) (app.Runtime, error) {
+		if a.Open != nil {
+			return a.Open(root)
+		}
 		if err := os.MkdirAll(filepath.Join(root, "logs"), 0o755); err != nil {
 			return nil, err
 		}
@@ -141,6 +205,7 @@ func (a *desktopApp) run() error {
 				Doctor:    func(out io.Writer) bool { return doctor.Run(root, out) },
 				Tunnel:    tun,
 				PrefsPath: h.Path("state", "dashboard.json"),
+				Desktop:   mgr,
 			})
 			sw.set(server.HandlerSince(b.Supervisor, b.Info, b.Started), dash)
 		})(root)
@@ -158,12 +223,14 @@ func (a *desktopApp) run() error {
 	if plan.Mode == firstrun.ModeLaunch || plan.Mode == firstrun.ModeResume {
 		selected = plan.Home
 	}
-	ctl := app.New(app.Config{Home: selected, Open: open, Setup: a.Setup})
+	ctl := app.New(app.Config{Home: selected, Open: open, Setup: a.Setup, Installed: a.Env.IsInstalled})
 	flow := firstrun.New(firstrun.Config{Ctl: ctl, Plan: plan, Picker: a.Picker, Env: a.Env, Remember: a.Remember})
+	startFailed := false
 	if plan.Mode == firstrun.ModeLaunch {
 		// A configured, installed home: normal startup. A failure is kept by
 		// the controller and shown with Retry, never as an opaque exit.
 		if err := ctl.Start(); err != nil {
+			startFailed = true
 			fmt.Fprintln(a.Stderr, "hachidori: start:", err)
 		}
 	}
@@ -200,7 +267,18 @@ func (a *desktopApp) run() error {
 				case <-ctx.Done():
 				}
 			}()
-			err = a.Platform.Open(ctx, desktop.Window{Title: "Hachidori", URL: dashURL, DataDir: dataDir, Policy: pol})
+			res := &desktop.Resident{App: ctl, Prefs: mgr}
+			// Only a healthy configured launch may begin hidden in the tray:
+			// first run, recovery and a failed start are always visible.
+			hidden := plan.Mode == firstrun.ModeLaunch && !startFailed &&
+				desktop.StartHidden(a.Background, res.Preferences())
+			openURL := dashURL
+			if plan.Mode == firstrun.ModeLaunch {
+				openURL = desktop.OpenURL(dashURL, res.Summary())
+			}
+			err = a.Platform.Open(ctx, desktop.Window{Title: "Hachidori", URL: openURL, DataDir: dataDir, Policy: pol,
+				Resident: res, StartHidden: hidden})
+			res.Wait()
 			stop()
 		}
 	}
@@ -214,6 +292,13 @@ func (a *desktopApp) run() error {
 	_ = dashSrv.Shutdown(shut)
 	_ = apiSrv.Shutdown(shut)
 	return err
+}
+
+func (a *desktopApp) sshExe() string {
+	if a.SSH == "" {
+		return "ssh"
+	}
+	return a.SSH
 }
 
 // webviewDataDir is the WebView2 profile folder. With a selected home it is
