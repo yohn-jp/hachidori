@@ -83,16 +83,16 @@ func newEventHandler(iid windows.GUID, invoke func(sender, args unsafe.Pointer))
 			QueryInterface: windows.NewCallback(func(this *eventHandler, riid *windows.GUID, out *unsafe.Pointer) uintptr {
 				if *riid == iidIUnknown || *riid == this.iid {
 					*out = unsafe.Pointer(this)
-					return sOK
+					return uintptr(sOK)
 				}
 				*out = nil
-				return eNoInterface
+				return uintptr(eNoInterface)
 			}),
 			AddRef:  windows.NewCallback(func(this *eventHandler) uintptr { return 1 }),
 			Release: windows.NewCallback(func(this *eventHandler) uintptr { return 1 }),
 			Invoke: windows.NewCallback(func(this *eventHandler, sender, args unsafe.Pointer) uintptr {
 				this.invoke(sender, args)
-				return sOK
+				return uintptr(sOK)
 			}),
 		}
 	})
