@@ -1,0 +1,17 @@
+name: Go Windows development release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  release:
+    uses: yohn-jp/.github/.github/workflows/go-windows-release.yml@main
+    with:
+      binary-name: hachidori
+      build-target: ./cmd/hachidori
+    permissions:
+      actions: read
+      contents: write
