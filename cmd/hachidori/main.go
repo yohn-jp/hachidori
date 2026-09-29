@@ -9,9 +9,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/client"
 	"github.com/yohn-jp/hachidori/internal/dashboard"
+	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/doctor"
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
@@ -35,6 +38,8 @@ runtime (inference host):
   serve      run the HTTP runtime with a resident inference worker
   dashboard  serve, plus a host-local Web dashboard (status, start/stop/restart,
              doctor, SSH reverse-tunnel launcher) on 127.0.0.1:7844
+  desktop    (Windows) dashboard in a native WebView2 window; closing the
+             window stops the runtime (explicit --home / HACHIDORI_HOME)
   doctor     verify the installation, including a real smoke inference
 
 client (caller side, uses HACHIDORI_ENDPOINT):
@@ -53,7 +58,8 @@ func main() {
 	}
 	cmds := map[string]func([]string) error{
 		"setup": cmdSetup, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
-		"dashboard": func(a []string) error { return runHost("dashboard", a) },
+		"dashboard": func(a []string) error { return runHost("dashboard", a, nil) },
+		"desktop":   func(a []string) error { return cmdDesktop(desktop.Native(), a) },
 		"decide":    cmdDecide, "eval": func(a []string) error { return cmdEval("eval", a) },
 		"benchmark": func(a []string) error { return cmdEval("benchmark", a) },
 	}
@@ -80,16 +86,48 @@ func cmdSetup(args []string) error {
 	return setup.Run(h, *device, os.Stderr)
 }
 
-func cmdServe(args []string) error { return runHost("serve", args) }
+func cmdServe(args []string) error { return runHost("serve", args, nil) }
+
+// cmdDesktop is the Windows desktop shell: after WebView2 detection and the
+// per-user single-instance guard it runs exactly the dashboard composition
+// (runHost) and attaches one native window to the dashboard URL. Closing the
+// window ends the process the same way Ctrl+C ends `hachidori dashboard`.
+func cmdDesktop(p desktop.Platform, args []string) error {
+	if runtime.GOOS != "windows" {
+		return desktop.ErrUnsupported
+	}
+	return runHost("desktop", args, func(h home.Home) (func(), func(context.Context, string) error, error) {
+		version, release, err := desktop.Preflight(p)
+		if err != nil {
+			return nil, nil, err
+		}
+		fmt.Fprintf(os.Stderr, "hachidori: WebView2 Runtime %s\n", version)
+		attach := func(ctx context.Context, dashURL string) error {
+			pol, err := desktop.NewPolicy(dashURL)
+			if err != nil {
+				return err
+			}
+			return p.Open(ctx, desktop.Window{Title: "Hachidori", URL: dashURL,
+				DataDir: h.Path("cache", "webview2"), Policy: pol})
+		}
+		return release, attach, nil
+	})
+}
+
+// shellHook lets the desktop command run its preflight after flags and home
+// are resolved but before any runtime component starts, then attach a window
+// once the dashboard is listening. The returned attach blocks until the
+// window is closed.
+type shellHook func(h home.Home) (release func(), attach func(ctx context.Context, dashURL string) error, err error)
 
 // runHost runs the inference runtime (HTTP API + resident worker) and, for
-// the dashboard command, the host-local dashboard beside it.
-func runHost(name string, args []string) error {
+// the dashboard and desktop commands, the host-local dashboard beside it.
+func runHost(name string, args []string, shell shellHook) error {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	homeFlag := fs.String("home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
 	listen := fs.String("listen", server.DefaultListen, "loopback address to bind")
 	var dashAddr, sshExe *string
-	if name == "dashboard" {
+	if name == "dashboard" || name == "desktop" {
 		dashAddr = fs.String("addr", dashboard.DefaultListen, "loopback address of the dashboard")
 		sshExe = fs.String("ssh", "ssh", "host ssh client used by the tunnel launcher")
 	}
@@ -105,6 +143,19 @@ func runHost(name string, args []string) error {
 	h, err := home.Resolve(*homeFlag)
 	if err != nil {
 		return err
+	}
+	var attach func(context.Context, string) error
+	var dashURL string
+	if shell != nil {
+		if dashURL, err = desktop.DashboardURL(*dashAddr); err != nil {
+			return err
+		}
+		release, a, err := shell(h)
+		if err != nil {
+			return err
+		}
+		defer release()
+		attach = a
 	}
 	logf, err := os.OpenFile(h.Path("logs", "worker.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -144,8 +195,34 @@ func runHost(name string, args []string) error {
 		// that runs deferred code; see docs/runtime.md for hard kills.
 		defer d.Close()
 		dash = &http.Server{Addr: *dashAddr, ReadHeaderTimeout: 10 * time.Second, Handler: d}
-		go func() { errc <- dash.ListenAndServe() }()
+		// Bind before announcing (or showing) the URL, so a window never
+		// navigates to a dashboard that is not listening yet.
+		ln, err := net.Listen("tcp", *dashAddr)
+		if err != nil {
+			stop()
+			srv.Close()
+			return err
+		}
+		go func() { errc <- dash.Serve(ln) }()
 		fmt.Fprintf(os.Stderr, "hachidori: dashboard http://%s/\n", *dashAddr)
+	}
+
+	// The desktop window owns only its own lifetime: when it closes (or
+	// fails), the process shuts down exactly as on Ctrl+C.
+	if attach != nil {
+		windowDone := make(chan struct{})
+		go func() {
+			defer close(windowDone)
+			if err := attach(ctx, dashURL); err != nil {
+				fmt.Fprintln(os.Stderr, "hachidori: desktop window:", err)
+			} else {
+				fmt.Fprintln(os.Stderr, "hachidori: desktop window closed; stopping")
+			}
+			stop()
+		}()
+		// On every exit path, close the window and wait for its resources
+		// to be released before the runtime is torn down.
+		defer func() { stop(); <-windowDone }()
 	}
 
 	select {
