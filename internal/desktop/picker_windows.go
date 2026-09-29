@@ -38,11 +38,11 @@ const (
 	slotDialogResult   = 20
 	slotItemDisplay    = 5
 
-	fosPickFolders     = 0x20
-	fosForceFileSystem = 0x40
-	fosPathMustExist   = 0x800
-	sigdnFileSysPath   = 0x80058000
-	hrCancelled hresult = 0x800704C7
+	fosPickFolders             = 0x20
+	fosForceFileSystem         = 0x40
+	fosPathMustExist           = 0x800
+	sigdnFileSysPath           = 0x80058000
+	hrCancelled        hresult = 0x800704C7
 )
 
 func (winPicker) PickFolder(ctx context.Context, title string) (string, error) {
@@ -76,9 +76,14 @@ func (winPicker) PickFolder(ctx context.Context, title string) (string, error) {
 func showFolderDialog(title string, owner uintptr) (string, error) {
 	var dlg unsafe.Pointer
 	const clsctxInprocServer = 0x1
-	if raw, _, _ := procCoCreateInstance.Call(uintptr(unsafe.Pointer(&clsidFileOpenDialog)), 0, clsctxInprocServer,
-		uintptr(unsafe.Pointer(&iidFileOpenDialog)), uintptr(unsafe.Pointer(&dlg))); normalizeHRESULT(raw) != sOK {
-		hr := normalizeHRESULT(raw)
+	raw, _, _ := procCoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&clsidFileOpenDialog)),
+		0,
+		clsctxInprocServer,
+		uintptr(unsafe.Pointer(&iidFileOpenDialog)),
+		uintptr(unsafe.Pointer(&dlg)),
+	)
+	if hr := normalizeHRESULT(raw); hr != sOK {
 		return "", fmt.Errorf("creating the folder dialog: %w", hr.errno())
 	}
 	defer comCall(dlg, slotRelease)
