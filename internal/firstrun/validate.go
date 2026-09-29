@@ -46,6 +46,10 @@ type Env struct {
 	FreeSpace func(path string) (free uint64, ok bool)
 	// Load reads a home's activation record (home.Home.LoadActive).
 	Load func(root string) (home.Active, error)
+	// ProbeWritable verifies that path can accept Hachidori-managed files.
+	// Production leaves this nil and uses the real temporary-file probe;
+	// tests may inject a deterministic filesystem failure.
+	ProbeWritable func(path string) error
 }
 
 func (e Env) load(root string) (home.Active, error) {
@@ -66,6 +70,13 @@ func (e Env) installed(root string) *Installed {
 
 // IsInstalled reports whether root has a valid activation record.
 func (e Env) IsInstalled(root string) bool { return e.installed(root) != nil }
+
+func (e Env) probeWritable(path string) error {
+	if e.ProbeWritable != nil {
+		return e.ProbeWritable(path)
+	}
+	return probeWritable(path)
+}
 
 // Validate checks a storage root picked by the user without leaving anything
 // behind: writability is probed with a temporary file that is removed, and the
@@ -150,7 +161,7 @@ func finish(v Validation, probeDir string, env Env) Validation {
 	if v.Exists {
 		v.Existing = env.installed(v.Home)
 	}
-	if err := probeWritable(probeDir); err != nil {
+	if err := env.probeWritable(probeDir); err != nil {
 		v.Problem = "Hachidori cannot write to this location: " + err.Error()
 		return v
 	}
