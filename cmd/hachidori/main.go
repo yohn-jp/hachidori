@@ -22,6 +22,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/doctor"
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/question"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
@@ -43,6 +44,8 @@ client (caller side, uses HACHIDORI_ENDPOINT):
   decide     send a v1 decide request (JSON file or - for stdin)
   eval       evaluate a local JSONL dataset through the endpoint
   benchmark  eval with warmup and repeated passes for latency
+  question   validate local Question Definitions and print their identity
+             and compiled v1 question (no endpoint)
 
 Run 'hachidori <command> -h' for flags.
 `
@@ -57,6 +60,7 @@ func main() {
 		"dashboard": func(a []string) error { return runHost("dashboard", a) },
 		"decide":    cmdDecide, "eval": func(a []string) error { return cmdEval("eval", a) },
 		"benchmark": func(a []string) error { return cmdEval("benchmark", a) },
+		"question":  cmdQuestion,
 	}
 	run, ok := cmds[os.Args[1]]
 	if !ok {
@@ -263,6 +267,8 @@ func cmdEval(name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	endpoint := fs.String("endpoint", "", "endpoint (default: $HACHIDORI_ENDPOINT or "+client.DefaultEndpoint+")")
 	out := fs.String("out", "", "write the full JSON report (with per-observation results) to this local file")
+	var defPaths pathList
+	fs.Var(&defPaths, "questions", "Question Definition file or directory of *.json resolving question_refs (repeatable)")
 	opt := eval.Options{Passes: 1}
 	if name == "benchmark" {
 		fs.IntVar(&opt.Warmup, "warmup", 5, "warmup requests excluded from latency")
@@ -277,7 +283,14 @@ func cmdEval(name string, args []string) error {
 		fs.Usage()
 		os.Exit(2)
 	}
-	cases, sum, err := eval.Load(fs.Arg(0))
+	var defs *question.Set
+	if len(defPaths) > 0 {
+		var err error
+		if defs, err = question.Load(defPaths...); err != nil {
+			return err
+		}
+	}
+	cases, sum, err := eval.Load(fs.Arg(0), defs)
 	if err != nil {
 		return err
 	}
@@ -300,6 +313,42 @@ func cmdEval(name string, args []string) error {
 	}
 	return nil
 }
+
+// cmdQuestion validates definitions locally and prints, per definition, its
+// identity and the exact api.Question it compiles to.
+func cmdQuestion(args []string) error {
+	fs := flag.NewFlagSet("question", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: hachidori question <definition.json|dir>...")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() == 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	set, err := question.Load(fs.Args()...)
+	if err != nil {
+		return err
+	}
+	if set.Len() == 0 {
+		return errors.New("no question definitions found")
+	}
+	type compiled struct {
+		question.Identity
+		Question api.Question `json:"question"`
+	}
+	var out []compiled
+	for _, d := range set.Definitions() {
+		out = append(out, compiled{Identity: d.Identity(), Question: d.Compile()})
+	}
+	return printJSON(out)
+}
+
+type pathList []string
+
+func (p *pathList) String() string     { return strings.Join(*p, ",") }
+func (p *pathList) Set(v string) error { *p = append(*p, v); return nil }
 
 func printJSON(v any) error {
 	var b []byte

@@ -125,26 +125,36 @@ func (r *DecideRequest) Validate() error {
 			return fmt.Errorf("questions[%d]: duplicate id %q", i, q.ID)
 		}
 		seen[q.ID] = true
-		if q.Type != "choice" {
-			return fmt.Errorf("question %q: type must be \"choice\"", q.ID)
+		if err := q.Validate(); err != nil {
+			return err
 		}
-		if strings.TrimSpace(q.Instructions) == "" || len(q.Instructions) > MaxInstructionSize {
-			return fmt.Errorf("question %q: instructions must be 1..%d bytes", q.ID, MaxInstructionSize)
+	}
+	return nil
+}
+
+// Validate checks one question's type, instructions, choices and
+// descriptions against the v1 contract. The id must be checked by the caller
+// (presence and uniqueness are properties of the enclosing request).
+func (q Question) Validate() error {
+	if q.Type != "choice" {
+		return fmt.Errorf("question %q: type must be \"choice\"", q.ID)
+	}
+	if strings.TrimSpace(q.Instructions) == "" || len(q.Instructions) > MaxInstructionSize {
+		return fmt.Errorf("question %q: instructions must be 1..%d bytes", q.ID, MaxInstructionSize)
+	}
+	if len(q.Choices) < 2 || len(q.Choices) > MaxChoices {
+		return fmt.Errorf("question %q: choices must contain 2..%d labels", q.ID, MaxChoices)
+	}
+	labels := map[string]bool{}
+	for _, c := range q.Choices {
+		if c == "" || labels[c] {
+			return fmt.Errorf("question %q: choice labels must be non-empty and unique", q.ID)
 		}
-		if len(q.Choices) < 2 || len(q.Choices) > MaxChoices {
-			return fmt.Errorf("question %q: choices must contain 2..%d labels", q.ID, MaxChoices)
-		}
-		labels := map[string]bool{}
-		for _, c := range q.Choices {
-			if c == "" || labels[c] {
-				return fmt.Errorf("question %q: choice labels must be non-empty and unique", q.ID)
-			}
-			labels[c] = true
-		}
-		for k := range q.Descriptions {
-			if !labels[k] {
-				return fmt.Errorf("question %q: description for unknown choice %q", q.ID, k)
-			}
+		labels[c] = true
+	}
+	for k := range q.Descriptions {
+		if !labels[k] {
+			return fmt.Errorf("question %q: description for unknown choice %q", q.ID, k)
 		}
 	}
 	return nil

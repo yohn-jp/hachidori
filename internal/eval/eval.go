@@ -1,7 +1,8 @@
 // Package eval runs caller-side evaluation against a Hachidori endpoint.
 //
 // Datasets and expected labels are read locally; only state and questions
-// are sent to the endpoint. Metrics are computed locally.
+// are sent to the endpoint. Question Definition references are resolved and
+// compiled locally before any request. Metrics are computed locally.
 package eval
 
 import (
@@ -17,20 +18,33 @@ import (
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/question"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
 // Case is one dataset line. Expected maps question id -> expected choice and
 // never leaves the caller.
+//
+// A case carries either inline Questions or QuestionRefs to caller-side
+// Question Definitions, not both. Load resolves QuestionRefs into Questions
+// (compiled api.Question) and records the resolved identities in
+// Definitions; neither the references nor the identities are sent.
 type Case struct {
-	ID        string            `json:"id"`
-	State     string            `json:"state"`
-	Questions []api.Question    `json:"questions"`
-	Expected  map[string]string `json:"expected"`
+	ID           string              `json:"id"`
+	State        string              `json:"state"`
+	Questions    []api.Question      `json:"questions,omitempty"`
+	QuestionRefs []question.Ref      `json:"question_refs,omitempty"`
+	Expected     map[string]string   `json:"expected"`
+	Definitions  []question.Identity `json:"-"`
 }
 
 // Load reads and validates a JSONL dataset, returning its cases and SHA-256.
-func Load(path string) ([]Case, string, error) {
+// defs resolves question_refs and may be nil for inline-only datasets. Every
+// reference is resolved before Load returns, so unresolved, duplicate or
+// incompatible definitions fail before any inference. Within one dataset a
+// question id must always mean the same thing: one definition version, or
+// inline questions only.
+func Load(path string, defs *question.Set) ([]Case, string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, "", err
@@ -41,6 +55,7 @@ func Load(path string) ([]Case, string, error) {
 	sc.Buffer(make([]byte, 1<<20), 16<<20)
 	var cases []Case
 	ids := map[string]bool{}
+	bound := map[string]string{} // question id -> "inline" or definition id@version
 	for n := 1; sc.Scan(); n++ {
 		if len(sc.Bytes()) == 0 {
 			continue
@@ -53,6 +68,9 @@ func Load(path string) ([]Case, string, error) {
 			return nil, "", fmt.Errorf("%s:%d: case id must be present and unique", path, n)
 		}
 		ids[c.ID] = true
+		if err := resolve(&c, defs, bound); err != nil {
+			return nil, "", fmt.Errorf("%s:%d (%s): %w", path, n, c.ID, err)
+		}
 		req := c.Request()
 		if err := req.Validate(); err != nil {
 			return nil, "", fmt.Errorf("%s:%d (%s): %w", path, n, c.ID, err)
@@ -77,7 +95,43 @@ func Load(path string) ([]Case, string, error) {
 	return cases, hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// Request is the inference-only projection of a case: no expected labels.
+// resolve compiles c.QuestionRefs into c.Questions and checks that every
+// question id is bound to a single source across the dataset.
+func resolve(c *Case, defs *question.Set, bound map[string]string) error {
+	if len(c.QuestionRefs) > 0 {
+		if len(c.Questions) > 0 {
+			return fmt.Errorf("questions and question_refs are mutually exclusive")
+		}
+		seen := map[string]bool{}
+		for _, r := range c.QuestionRefs {
+			if seen[r.ID] {
+				return fmt.Errorf("duplicate question reference %q", r.ID)
+			}
+			seen[r.ID] = true
+			d, err := defs.Resolve(r)
+			if err != nil {
+				return err
+			}
+			c.Questions = append(c.Questions, d.Compile())
+			c.Definitions = append(c.Definitions, d.Identity())
+		}
+		c.QuestionRefs = nil
+	}
+	for i, q := range c.Questions {
+		src := "inline"
+		if c.Definitions != nil {
+			src = c.Definitions[i].String()
+		}
+		if prev, ok := bound[q.ID]; ok && prev != src {
+			return fmt.Errorf("question %q is %s here but %s in an earlier case", q.ID, src, prev)
+		}
+		bound[q.ID] = src
+	}
+	return nil
+}
+
+// Request is the inference-only projection of a case: no expected labels,
+// no definition references or identities.
 func (c Case) Request() api.DecideRequest {
 	return api.DecideRequest{Schema: api.SchemaV1, State: c.State, Questions: c.Questions}
 }
@@ -118,6 +172,7 @@ type Report struct {
 	Endpoint        string                   `json:"endpoint"`
 	Dataset         string                   `json:"dataset"`
 	DatasetSHA256   string                   `json:"dataset_sha256"`
+	Definitions     []question.Identity      `json:"question_definitions,omitempty"`
 	StartedAt       string                   `json:"started_at"`
 	Cases           int                      `json:"cases"`
 	Observations    int                      `json:"observations"`
@@ -143,7 +198,7 @@ type Options struct {
 // Run evaluates cases against d.
 func Run(d Decider, cases []Case, opt Options) Report {
 	r := Report{Cases: len(cases), StartedAt: time.Now().UTC().Format(time.RFC3339), PerQuestion: map[string]QuestionStats{},
-		WarmupRequests: opt.Warmup, Passes: max(opt.Passes, 1), Errors: []string{}}
+		WarmupRequests: opt.Warmup, Passes: max(opt.Passes, 1), Errors: []string{}, Definitions: definitions(cases)}
 	for i := 0; i < opt.Warmup; i++ {
 		if _, err := d.Decide(cases[i%len(cases)].Request()); err != nil {
 			r.Errors = append(r.Errors, fmt.Sprintf("warmup: %v", err))
@@ -193,6 +248,23 @@ func Run(d Decider, cases []Case, opt Options) Report {
 	}
 	r.RequestLatency, r.ServerInference = summarize(lat), summarize(inf)
 	return r
+}
+
+// definitions lists the distinct resolved definitions used by cases, sorted
+// by question id.
+func definitions(cases []Case) []question.Identity {
+	seen := map[question.Identity]bool{}
+	var out []question.Identity
+	for _, c := range cases {
+		for _, d := range c.Definitions {
+			if !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 func score(obs []Observation) (acc, conf, ece float64) {
@@ -270,6 +342,9 @@ func contains(xs []string, s string) bool {
 func Summary(w io.Writer, r Report) {
 	fmt.Fprintf(w, "dataset        %s (sha256 %s)\n", r.Dataset, r.DatasetSHA256[:12])
 	fmt.Fprintf(w, "endpoint       %s\n", r.Endpoint)
+	for _, d := range r.Definitions {
+		fmt.Fprintf(w, "definition     %s (%s)\n", d, d.Digest)
+	}
 	fmt.Fprintf(w, "cases          %d  observations %d  errors %d\n", r.Cases, r.Observations, len(r.Errors))
 	fmt.Fprintf(w, "choice acc     %.4f\n", r.ChoiceAccuracy)
 	fmt.Fprintf(w, "mean conf      %.4f\n", r.MeanConfidence)
