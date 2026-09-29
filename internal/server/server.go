@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -36,7 +37,8 @@ type Decider interface {
 type Runtime struct {
 	Home    string `json:"home"`
 	Runtime string `json:"runtime"`
-	Model   string `json:"model"`
+	ModelID string `json:"model_id"` // catalog model identity
+	Model   string `json:"model"`    // model directory: <repo>/<revision>
 	Device  string `json:"device"`
 }
 
@@ -136,11 +138,21 @@ func CheckLoopback(addr string) error {
 }
 
 // WorkerConfig builds the launch configuration of the private worker from
-// the active runtime, verifying the worker's pinned digest first.
+// the active runtime and the activated catalog model, verifying the worker's
+// pinned digest first. It only resolves what setup already materialized and
+// activated; it never downloads anything. The worker verifies every model
+// file against the manifest's digests before loading.
 func WorkerConfig(h home.Home, log io.Writer) (worker.Config, Runtime, error) {
-	a, rm, _, err := h.LoadActive()
+	a, rm, mm, err := h.LoadActive()
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
+	}
+	model, err := setup.ActiveModel(a)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	if mm.Repo != model.Repo || mm.Revision != model.Revision || (mm.ID != "" && mm.ID != model.ID) || !maps.Equal(mm.Files, model.Files) {
+		return worker.Config{}, Runtime{}, fmt.Errorf("model %s: materialized manifest does not match its catalog entry (run `hachidori setup`)", model.ID)
 	}
 	python := h.PythonExe(a, rm)
 	if _, err := os.Stat(python); err != nil {
@@ -162,7 +174,7 @@ func WorkerConfig(h home.Home, log io.Writer) (worker.Config, Runtime, error) {
 		StartTimeout:   10 * time.Minute,
 		RequestTimeout: 2 * time.Minute,
 	}
-	return cfg, Runtime{Home: h.Root, Runtime: a.Runtime, Model: a.Model, Device: a.Device}, nil
+	return cfg, Runtime{Home: h.Root, Runtime: a.Runtime, ModelID: model.ID, Model: a.Model, Device: a.Device}, nil
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

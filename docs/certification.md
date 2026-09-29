@@ -44,7 +44,7 @@ forward (`ssh -N -L 7843:127.0.0.1:7843 <windows-host>`):
 
 ```sh
 export HACHIDORI_ENDPOINT=http://127.0.0.1:7843
-hachidori status                      # worker.state=ready, provider.device=cuda, provider.device_name, accelerator memory
+hachidori status                      # runtime.model_id=laya-base, worker.state=ready, provider.device=cuda, provider.device_name, accelerator memory
 hachidori decide examples/decide.json # repeat: worker.pid and worker.starts in status stay unchanged
 hachidori benchmark --warmup 5 --passes 3 --out coding-agent-report.json <coding-agent.jsonl>
 ```

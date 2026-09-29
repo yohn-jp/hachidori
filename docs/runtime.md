@@ -17,7 +17,7 @@ client CLI / any HTTP caller
 
 | command | plane | purpose |
 |---|---|---|
-| `hachidori setup [--home H] [--device cuda\|cpu]` | host | reconcile `HACHIDORI_HOME` with the Runtime Spec: private uv materializes the locked Python environment, the pinned model is materialized separately, then activate |
+| `hachidori setup [--home H] [--device cuda\|cpu] [--model ID]` | host | reconcile `HACHIDORI_HOME` with the Runtime Spec: private uv materializes the locked Python environment, the selected catalog model (default `laya-base`) is materialized separately, then activate |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843]` | host | run HTTP + one resident worker; non-loopback binds are refused |
 | `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh]` | host | `serve` plus the host-local dashboard (see below) |
 | `hachidori doctor [--home H]` | host | verify the installation including a real HTTP→worker→model smoke inference |
@@ -187,7 +187,8 @@ Go data in `internal/setup/spec.go` plus the uv project embedded from
 with one uv extra per PyTorch flavor: `cpu`, `cu128`). The spec records the
 schema, platform, CPython version, provider (`laya==0.3.21`), exact torch build,
 flavor, pinned uv version and executable digest, the SHA-256 of both uv project
-files and of the worker script. The model is not part of it.
+files and of the worker script. The model is not part of it: selecting a
+different compatible checkpoint reuses the same runtime.
 
 The runtime identity is `<flavor>-<first 16 hex of sha256(canonical spec JSON)>`,
 for example `cu128-…` / `cpu-…`. Any semantic change (lock, versions, worker,
@@ -205,7 +206,8 @@ desired Runtime Spec (device -> flavor)
                                         uv venv --relocatable --python <python> env
                                         uv sync --locked --no-build --no-install-project --extra <flavor>
                                         write worker, verify, write manifest.json last
-  -> model: reuse if every file matches its pinned digest, else download to staging, verify, rename
+  -> model (catalog entry selected by --model): reuse if every file matches its pinned digest,
+     else download to staging, verify, rename
   -> rename staging -> runtime/<identity>, verify again
   -> write state/active-runtime.json
 ```
@@ -229,6 +231,35 @@ own. A runtime directory that exists but does not verify is an explicit error
 (`runtime/0.1.0-*`) never match an identity; setup materializes a new one next
 to them and `doctor` reports them as `runtime_invalid`.
 
+### Model catalog
+
+Models are immutable catalog identities declared in `internal/setup/spec.go`
+(`setup.Models`): a stable Hachidori model ID, provider kind (`laya`), upstream
+repository, immutable commit revision and every required file with its SHA-256.
+
+| ID | checkpoint |
+|---|---|
+| `laya-base` (default) | `convaiinnovations/laya@55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`, the upstream English ModernBERT-large checkpoint |
+
+`hachidori setup --model <id>` selects one; omitting `--model` selects
+`laya-base`. Only catalog IDs are accepted (an unknown ID fails before anything
+is changed); there is no repository or revision input. Adding a checkpoint
+(for example a fine-tuned Laya) means declaring another entry, not changing the
+worker or provider. The model directory `models/<owner>--<repo>/<revision>/` and
+its `hachidori-model.json` are derived from the entry. `state/active-runtime.json`
+records the runtime identity, the model ID (`model_id`), the model directory and
+the device. A failed materialization of a newly selected model leaves the active
+runtime and model unchanged. Changing the active model takes effect when the
+host is restarted; a READY worker never switches models.
+
+`serve` resolves only the activated model: the activation's model ID must be a
+catalog entry, the directory must be the one derived from it and the
+materialized manifest must equal the entry; the worker then verifies every file
+digest while loading. Nothing is downloaded. `/v1/status` (and the dashboard)
+report `runtime.model_id` and `runtime.model`; `doctor` verifies the selected
+entry's files and prints its ID, repository and revision. Activation records
+from before model selection (no `model_id`) are resolved by their directory.
+
 Network is needed only while materializing. `serve` and `doctor` use the
 published runtime's absolute interpreter and do not need uv, its cache or
 package indexes.
@@ -251,9 +282,9 @@ HACHIDORI_HOME/
     manifest.json              identity, Runtime Spec, verified Python version, installed distributions, worker digest
   runtime/.staging-<identity>/ in-progress materialization, never activated
   packages/                    downloaded uv release archive
-  models/convaiinnovations--laya/<revision>/
+  models/<owner>--<repo>/<revision>/   one per materialized catalog model
     model.safetensors …        every file sha256 pinned
-    hachidori-model.json
+    hachidori-model.json       the catalog entry (id, provider, repo, revision, files)
   cache/{uv,huggingface,torch,pip,xdg,nv,tmp,home}
   logs/worker.log, logs/doctor-worker.log
   state/active-runtime.json
@@ -273,7 +304,7 @@ on Linux (host GPU driver location, e.g. NixOS `/run/opengl-driver/lib`).
 Pins: uv 0.12.19 (linux-amd64, windows-amd64; `internal/setup/spec.go`),
 CPython 3.12.11, `torch==2.11.0+cu128` (NVIDIA driver ≥ 570, RTX 20xx–50xx) or
 `torch==2.11.0+cpu`, `laya==0.3.21`, `transformers==5.17.0` and the full locked
-package set (`internal/setup/runtimespec/uv.lock`), model
+package set (`internal/setup/runtimespec/uv.lock`), default model `laya-base` =
 `convaiinnovations/laya@55cf4c4e…` (Laya's own reviewed revision).
 
 Removing the executable and `HACHIDORI_HOME` removes everything Hachidori owns.

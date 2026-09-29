@@ -111,12 +111,16 @@ func Run(homeFlag string, out io.Writer) bool {
 	report(Check{Name: "runtime", Status: "pass", Owner: "hachidori",
 		Detail: fmt.Sprintf("%s (python %s, %s, torch %s, device %s)", a.Runtime, rm.PythonVersion, rm.Spec.Provider, rm.Spec.Torch, a.Device)})
 
-	if err := setup.VerifyModel(h.ModelDir(a)); err != nil {
+	model, err := setup.ActiveModel(a)
+	if err == nil {
+		err = setup.VerifyModel(h.ModelDir(a), model)
+	}
+	if err != nil {
 		report(Check{Name: "model", Status: "fail", Owner: "hachidori", Class: ModelUnavailable, Detail: err.Error()})
 		return skipRest(later[2:]...)
 	}
 	report(Check{Name: "model", Status: "pass", Owner: "hachidori",
-		Detail: fmt.Sprintf("%s@%s, %d files verified", mm.Repo, mm.Revision[:12], len(mm.Files))})
+		Detail: fmt.Sprintf("%s (%s@%s), %d files verified", model.ID, mm.Repo, mm.Revision, len(model.Files))})
 
 	env := h.Env(filepath.Dir(python), true)
 	iso, err := probe(python, env, isolationProbe)

@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"runtime"
+	"sort"
+	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/worker/py"
@@ -123,26 +125,83 @@ func RuntimeName(device string) (string, error) {
 	return s.ID(), nil
 }
 
-// Model is the pinned Laya checkpoint (English, ModernBERT-large) at the
-// revision Laya itself lists as reviewed in laya.revisions.PINNED_REVISIONS.
-// It is materialized independently of the Python runtime and is not part of
-// the runtime identity.
-var Model = home.ModelManifest{
-	Repo:     "convaiinnovations/laya",
-	Revision: "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
-	Files: map[string]string{
-		"rl_agent_config.json":            "ae287b56bbcf5f8c4f4541ae9dfd00c914c4c48b940b8398c3058af37ba92bbd",
-		"model.safetensors":               "891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c",
-		"encoder/config.json":             "bf3ab80598fdccf414855a2ce80f22859e4492d06ca8a62ddd1cfb63972f8979",
-		"tokenizer/tokenizer.json":        "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
-		"tokenizer/tokenizer_config.json": "50044de60daaa73df97d262e15a40d4faf0160e7d742df64b377877a1320dd12",
+// DefaultModel is the catalog model setup activates when none is selected.
+const DefaultModel = "laya-base"
+
+// Models is the Laya model catalog: every checkpoint Hachidori can
+// materialize, each an immutable identity (upstream repository, revision and
+// the exact files with their pinned digests). A model is materialized
+// independently of the Python runtime and is not part of the runtime
+// identity; every entry must be loadable by the runtime's provider. Adding a
+// checkpoint means declaring another entry here, nothing else.
+var Models = []home.ModelManifest{
+	{
+		// The upstream Laya checkpoint (English, ModernBERT-large) at the
+		// revision Laya itself lists as reviewed in laya.revisions.PINNED_REVISIONS.
+		ID:          DefaultModel,
+		Provider:    providerName,
+		Repo:        "convaiinnovations/laya",
+		Revision:    "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+		Description: "upstream Laya checkpoint (English, ModernBERT-large)",
+		Files: map[string]string{
+			"rl_agent_config.json":            "ae287b56bbcf5f8c4f4541ae9dfd00c914c4c48b940b8398c3058af37ba92bbd",
+			"model.safetensors":               "891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c",
+			"encoder/config.json":             "bf3ab80598fdccf414855a2ce80f22859e4492d06ca8a62ddd1cfb63972f8979",
+			"tokenizer/tokenizer.json":        "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+			"tokenizer/tokenizer_config.json": "50044de60daaa73df97d262e15a40d4faf0160e7d742df64b377877a1320dd12",
+		},
 	},
 }
 
 var modelBaseURL = "https://huggingface.co/"
 
-// ModelDirName is the activation name of the pinned model.
-func ModelDirName() string { return "convaiinnovations--laya/" + Model.Revision }
+// LookupModel resolves a catalog model ID; the empty ID selects DefaultModel.
+// Only catalog identities can be selected: there is no way to name an
+// arbitrary repository or revision.
+func LookupModel(id string) (home.ModelManifest, error) {
+	if id == "" {
+		id = DefaultModel
+	}
+	var known []string
+	for _, m := range Models {
+		if m.ID == id {
+			return m, nil
+		}
+		known = append(known, m.ID)
+	}
+	sort.Strings(known)
+	return home.ModelManifest{}, fmt.Errorf("unsupported model %q (supported: %s)", id, strings.Join(known, ", "))
+}
+
+// ModelDirName is the activation name (directory under models/, slash
+// separated) of a catalog model, derived from its immutable repository and
+// revision.
+func ModelDirName(m home.ModelManifest) string {
+	return strings.ReplaceAll(m.Repo, "/", "--") + "/" + m.Revision
+}
+
+// ActiveModel resolves the catalog model an activation record selects and
+// checks that the record's model directory is the one that model derives.
+// Records written before model selection existed carry no model ID; they
+// are resolved by their directory.
+func ActiveModel(a home.Active) (home.ModelManifest, error) {
+	if a.ModelID == "" {
+		for _, m := range Models {
+			if ModelDirName(m) == a.Model {
+				return m, nil
+			}
+		}
+		return home.ModelManifest{}, fmt.Errorf("active model %s is not a catalog model (run `hachidori setup`)", a.Model)
+	}
+	m, err := LookupModel(a.ModelID)
+	if err != nil {
+		return m, fmt.Errorf("active model: %w (run `hachidori setup`)", err)
+	}
+	if ModelDirName(m) != a.Model {
+		return m, fmt.Errorf("active model %s: directory %s does not match its catalog entry %s", a.ModelID, a.Model, ModelDirName(m))
+	}
+	return m, nil
+}
 
 func platform() string { return runtime.GOOS + "/" + runtime.GOARCH }
 
