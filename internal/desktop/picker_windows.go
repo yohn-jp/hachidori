@@ -38,10 +38,10 @@ const (
 	slotDialogResult   = 20
 	slotItemDisplay    = 5
 
-	fosPickFolders     = 0x20
-	fosForceFileSystem = 0x40
-	fosPathMustExist   = 0x800
-	sigdnFileSysPath   = 0x80058000
+	fosPickFolders             = 0x20
+	fosForceFileSystem         = 0x40
+	fosPathMustExist           = 0x800
+	sigdnFileSysPath           = 0x80058000
 	hrCancelled        hresult = 0x800704C7
 )
 
