@@ -346,6 +346,17 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	}
 	s.hwnd = hwnd
 	s.tray.hwnd = hwnd
+
+	// A visible launch must make the native parent presentable before WebView2
+	// creates its controller. Creating a controller against a hidden Win32
+	// parent can leave WebView2 alive and navigable but never presenting pixels,
+	// which is observed by users as a permanent blank window. Background launches
+	// intentionally keep the parent hidden and preserve the tray-only contract.
+	if !w.StartHidden {
+		procShowWindow.Call(hwnd, swShowNormal)
+		procUpdateWindow.Call(hwnd)
+	}
+
 	destroyed := false
 	defer func() {
 		s.tray.remove()
@@ -362,6 +373,17 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	c.SetErrorCallback(func(err error) {
 		fmt.Fprintln(os.Stderr, "hachidori: WebView2 failure:", err)
 	})
+	c.NavigationCompletedCallback = func(_ *edge.ICoreWebView2, _ *edge.ICoreWebView2NavigationCompletedEventArgs) {
+		fmt.Fprintf(os.Stderr, "hachidori: WebView2 navigation completed: %s\n", w.URL)
+	}
+	c.ProcessFailedCallback = func(_ *edge.ICoreWebView2, args *edge.ICoreWebView2ProcessFailedEventArgs) {
+		kind, err := args.GetProcessFailedKind()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "hachidori: WebView2 process failure:", err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "hachidori: WebView2 process failure: kind=%d\n", kind)
+	}
 	// The dashboard needs no camera, microphone, geolocation, clipboard or
 	// notification permission.
 	c.SetGlobalPermission(edge.CoreWebView2PermissionStateDeny)
@@ -393,10 +415,17 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 		hidden = s.tray.add(sum) && w.StartHidden
 	}
 	if !hidden {
-		procShowWindow.Call(hwnd, swShowNormal)
-		procUpdateWindow.Call(hwnd)
+		// Visible launches were presented before controller creation. A requested
+		// background launch can still become visible here when the tray icon could
+		// not be created, preserving the existing reachability fallback.
+		if w.StartHidden {
+			procShowWindow.Call(hwnd, swShowNormal)
+			procUpdateWindow.Call(hwnd)
+		}
+		c.Resize()
 		c.Focus()
 	}
+	fmt.Fprintf(os.Stderr, "hachidori: WebView2 navigate: %s\n", w.URL)
 	c.Navigate(w.URL)
 
 	done := make(chan struct{})
