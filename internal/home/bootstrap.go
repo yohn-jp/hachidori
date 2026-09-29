@@ -239,7 +239,15 @@ func writeFileAtomic(path string, data []byte) (err error) {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	const attempts = 10
+	for i := 0; i < attempts; i++ {
+		err = os.Rename(tmp, path)
+		if err == nil || !retryableBootstrapReplaceError(err) {
+			return err
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return err
 }
 
 // Source says which authority resolved a desktop home.
