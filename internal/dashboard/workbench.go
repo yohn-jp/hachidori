@@ -323,7 +323,8 @@ func (d *Dashboard) workbenchRun(wb workbench, send bool) *wbRun {
 }
 
 // absPath requires an explicit absolute local path: the dashboard never
-// resolves paths against its own working directory.
+// resolves paths against its own working directory. The cleaned path may not
+// contain "..", so a path always names exactly the location that was typed.
 func absPath(p, what string) (string, error) {
 	if p == "" {
 		return "", fmt.Errorf("enter the %s path", what)
@@ -331,7 +332,11 @@ func absPath(p, what string) (string, error) {
 	if !filepath.IsAbs(p) {
 		return "", fmt.Errorf("%s path must be absolute, got %q", what, p)
 	}
-	return filepath.Clean(p), nil
+	p = filepath.Clean(p)
+	if strings.Contains(p, "..") {
+		return "", fmt.Errorf("%s path must not contain \"..\", got %q", what, p)
+	}
+	return p, nil
 }
 
 // workbenchLoad reads one Question Definition file named by the operator,

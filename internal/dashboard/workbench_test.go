@@ -333,6 +333,7 @@ func TestWorkbenchLoadRejectsBadInput(t *testing.T) {
 	old := writeDef(t, dir, "old.json", `{"schema":"hachidori.question.v0","id":"q","version":1,"type":"choice","instructions":"x","choices":["a","b"]}`)
 	for p, want := range map[string]string{
 		"relative.json":                    "path must be absolute",
+		filepath.Join(dir, "a..b.json"):    `must not contain ".."`,
 		"":                                 "enter the Question Definition file path",
 		dir:                                "is not a regular file",
 		bad:                                `unknown field "extra"`,
