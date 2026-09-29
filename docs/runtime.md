@@ -27,7 +27,8 @@ client CLI / any HTTP caller
 | `hachidori benchmark [--endpoint URL] [--questions PATH]... [--warmup N] [--passes N] [--out report.json] <dataset.jsonl>` | client | eval plus warmup and repeated passes for latency |
 | `hachidori question <definition.json\|dir>...` | client | validate Question Definitions locally; print id, version, digest and the compiled v1 question (no endpoint) |
 
-`--home` defaults to `HACHIDORI_HOME`; there is no implicit home. `--endpoint`
+`--home` defaults to `HACHIDORI_HOME`; the CLI has no implicit home (the Windows
+desktop bootstrap locator below is never consulted by CLI commands). `--endpoint`
 defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
 
 ## HTTP API (`hachidori.v1`)
@@ -308,7 +309,24 @@ CPython 3.12.11, `torch==2.11.0+cu128` (NVIDIA driver ≥ 570, RTX 20xx–50xx) 
 package set (`internal/setup/runtimespec/uv.lock`), default model `laya-base` =
 `convaiinnovations/laya@55cf4c4e…` (Laya's own reviewed revision).
 
-Removing the executable and `HACHIDORI_HOME` removes everything Hachidori owns.
+### Windows bootstrap locator
+
+The only Hachidori state outside `HACHIDORI_HOME`, Windows only
+(architecture §6.2.1):
+
+```text
+%LOCALAPPDATA%\Hachidori\bootstrap.json   {"schema":"hachidori.bootstrap/1","home":"D:\\Hachidori"}
+```
+
+`home.Discover` (desktop): explicit > `HACHIDORI_HOME` > valid locator >
+unconfigured. Errors are typed: `ErrBootstrapMalformed`,
+`ErrBootstrapUnknownSchema`, `ErrStoredHomeMissing` (distinct from the clean
+unconfigured result). `home.Remember` writes it atomically (parent created only
+then, no setup run); `home.Forget` removes only this file. Non-Windows builds
+return `ErrBootstrapUnsupported` and create no bootstrap state.
+
+Removing the executable and `HACHIDORI_HOME` removes everything Hachidori owns
+(plus, on Windows, the tiny locator above, which holds no runtime state).
 
 ## Evaluation (caller side)
 
