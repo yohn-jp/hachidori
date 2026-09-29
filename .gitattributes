@@ -1,0 +1,5 @@
+# Runtime identity/materialization embeds these files byte-for-byte.
+# Keep their bytes independent of the checkout platform's core.autocrlf policy.
+internal/setup/runtimespec/pyproject.toml text eol=lf
+internal/setup/runtimespec/uv.lock text eol=lf
+internal/worker/py/hachidori_worker.py text eol=lf
