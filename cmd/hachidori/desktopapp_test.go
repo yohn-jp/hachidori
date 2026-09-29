@@ -58,6 +58,8 @@ func (p *fakePlatform) RuntimeVersion() (string, error) { return p.version, nil 
 func (p *fakePlatform) AcquireInstance() (func(), error) {
 	return func() { p.release.Add(1) }, nil
 }
+func (p *fakePlatform) Activate() error            { return nil }
+func (p *fakePlatform) ReportError(string, string) {}
 func (p *fakePlatform) Open(ctx context.Context, w desktop.Window) error {
 	p.opened.Add(1)
 	return p.open(ctx, w)
