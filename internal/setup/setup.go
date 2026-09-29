@@ -27,6 +27,32 @@ import (
 //
 // Any failure leaves the active runtime untouched; rerunning reconciles again.
 func Run(h home.Home, device string, log io.Writer) error {
+	return RunObserved(h, device, log, nil)
+}
+
+// Phase is a setup boundary that RunObserved reports as it is entered. The
+// phases are the real steps of Run in order; there is no percentage.
+type Phase string
+
+// Setup phases, in the order Run enters them. PhaseRuntime covers verifying
+// a reused runtime or materializing and verifying a new one; PhaseActivation
+// covers publishing a new runtime and writing state/active-runtime.json.
+const (
+	PhasePreparing  Phase = "preparing"
+	PhaseRuntime    Phase = "runtime"
+	PhaseModel      Phase = "model"
+	PhaseActivation Phase = "activation"
+)
+
+// RunObserved is Run with onPhase (if non-nil) called synchronously at each
+// phase boundary. It does not change what Run does.
+func RunObserved(h home.Home, device string, log io.Writer, onPhase func(Phase)) error {
+	enter := func(p Phase) {
+		if onPhase != nil {
+			onPhase(p)
+		}
+	}
+	enter(PhasePreparing)
 	spec, err := Desired(device)
 	if err != nil {
 		return err
@@ -38,6 +64,7 @@ func Run(h home.Home, device string, log io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("private uv: %w", err)
 	}
+	enter(PhaseRuntime)
 	id := spec.ID()
 	final := h.Path("runtime", id)
 	stage := ""
@@ -51,9 +78,11 @@ func Run(h home.Home, device string, log io.Writer) error {
 	} else if stage, err = materializeRuntime(h, uv, spec, log); err != nil {
 		return fmt.Errorf("runtime %s: %w", id, err)
 	}
+	enter(PhaseModel)
 	if err := materializeModel(h, log); err != nil {
 		return fmt.Errorf("model: %w", err)
 	}
+	enter(PhaseActivation)
 	if stage != "" {
 		if err := os.Rename(stage, final); err != nil {
 			return fmt.Errorf("runtime %s: publish: %w", id, err)

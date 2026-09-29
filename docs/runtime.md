@@ -179,6 +179,34 @@ ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -o ServerAliveInterval=15 \
   `status`, `decide`, `eval` or `benchmark` there. Datasets and labels never
   reach the GPU host; the dashboard has no upload surface.
 
+## Application lifecycle (`internal/app`)
+
+`internal/app` is the in-process application controller that a desktop
+surface consumes. It is a projection over the existing authorities and keeps
+no runtime state of its own: setup is `setup.RunObserved`, the worker is driven
+through `worker.Lifecycle` and observed through `server.StatusBody`, and
+"installed" is `home.Home.LoadActive`. The home is an explicit input (`""` is
+unresolved); the controller never discovers one.
+
+| state | meaning |
+|---|---|
+| `unconfigured` | no home selected/resolved |
+| `not_installed` | home known, no valid activation record |
+| `installing` | setup running; `operation.phase`/`phases` are the setup phases actually entered (`preparing`, `runtime`, `model`, `activation`) — never a percentage |
+| `installed` | valid activation, no worker running |
+| `starting` | worker spawning/importing/loading, or restarting after a crash |
+| `warming` | the worker reported its `warming` phase |
+| `ready` | the supervised worker is ready |
+| `stopping` | an application Stop is shutting the worker down |
+| `failed` | the last action failed or the supervisor gave up; `failure` has `source` (`setup`, `runtime`, `worker`), `class`, `message` |
+
+Concurrency: one action at a time. Duplicate Start/Restart while starting or
+Start while running is a no-op; duplicate Setup returns `ErrSetupRunning`;
+Setup under a running worker returns `ErrRuntimeBusy`; any other overlap
+returns `ErrBusy`. Setup is not cancellable. `Close` stops accepting actions,
+waits for the in-flight action and then stops the worker, bounded by its
+context. The CLI `serve`/`dashboard` commands do not use the controller.
+
 ## Runtime materialization
 
 `hachidori setup` is declarative. The desired runtime is a **Runtime Spec**:
