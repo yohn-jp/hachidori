@@ -66,6 +66,8 @@ HACHIDORI_HOME
 
 Everything Hachidori owns at runtime lives under `HACHIDORI_HOME`.
 
+The single narrow exception is the Windows desktop bootstrap locator (§6.2.1): a per-user discovery record that only says where `HACHIDORI_HOME` is.
+
 ### 2.3 Reproducibility
 
 The runtime must be reconstructible from versioned artifacts and manifests.
@@ -280,6 +282,23 @@ HACHIDORI_HOME/
 ```
 
 No runtime-owned mutable state should escape this root except operating-system resources that cannot reasonably be relocated, such as the installed GPU driver.
+
+### 6.2.1 Windows bootstrap locator (the one exception)
+
+So a double-clicked Windows desktop can rediscover the selected home without an environment variable or CLI flag, Hachidori keeps exactly one out-of-home file, on Windows only:
+
+```text
+%LOCALAPPDATA%\Hachidori\bootstrap.json
+{"schema": "hachidori.bootstrap/1", "home": "D:\\Hachidori"}
+```
+
+It owns only discovery metadata. It MUST NOT contain runtime/model manifests, device/model selection, worker state, logs, caches, credentials/secrets, SSH material, semantic policy, benchmark/evaluation state, or copies of active-runtime state; it is never a second state root. The record is strictly versioned: unknown fields, a relative or unclean `home`, or invalid JSON are malformed, and any other `schema` is rejected, never treated as a first run.
+
+Desktop discovery (`home.Discover`) uses the precedence explicit home from the desktop/controller > `HACHIDORI_HOME` > valid locator > unconfigured (first run). A locator whose home no longer exists is reported distinctly from never configured. Lower authorities are not read once a higher one applies. The CLI resolver (`home.Resolve`) stays strict and never reads the locator.
+
+Selecting a home (`home.Remember`) requires an existing directory, normalizes it as a Windows absolute path, creates the locator's parent directory only then, and replaces the record atomically; it does not run setup or write under the home. Forgetting (`home.Forget`) removes only the locator file, never the home; the desktop then asks for a home again.
+
+Non-Windows builds have no locator: they create no bootstrap state and desktop discovery resolves only explicit and `HACHIDORI_HOME`.
 
 ### 6.3 Isolation requirements
 
@@ -733,6 +752,8 @@ Hachidori must be removable without forensic cleanup.
 
 Removing the user-facing executable and `HACHIDORI_HOME` should remove all Hachidori-owned runtime state.
 
+On Windows the desktop may additionally leave the bootstrap locator `%LOCALAPPDATA%\Hachidori\bootstrap.json` (§6.2.1), which holds no runtime state; deleting it never deletes `HACHIDORI_HOME`.
+
 The product should avoid:
 
 - arbitrary files in user profile caches
@@ -783,7 +804,7 @@ The following are the initial architecture invariants.
 1. Hachidori returns semantic observations; it does not own final policy.
 2. The model remains resident across requests.
 3. Python is an internal implementation detail, not a host prerequisite managed by the user.
-4. Hachidori owns its runtime, model, and cache locations explicitly.
+4. Hachidori owns its runtime, model, and cache locations explicitly; the only out-of-home state is the Windows bootstrap locator, which holds nothing but the home's location (§6.2.1).
 5. Runtime versions are pinned, verified, and immutable after materialization.
 6. Models are versioned independently from the outer runtime.
 7. Callers depend on the public endpoint, not on local Python APIs.
