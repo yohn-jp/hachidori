@@ -171,6 +171,7 @@ details.sub > summary { cursor: pointer; color: var(--dim); font-size: .82rem; }
 .fields label.wide { grid-column: 1 / -1; }
 input { font: inherit; font-family: var(--mono); font-size: .85rem; width: 100%; padding: .42rem .55rem; border-radius: 7px; border: 1px solid var(--line-2); background: var(--bg); color: var(--text); }
 input::placeholder { color: var(--faint); }
+label.check { display: flex; align-items: center; gap: .5rem; }
 .cmd { font-size: .78rem; color: var(--faint); margin: 0; }
 .cmd code { color: var(--dim); }
 footer.foot { font-size: .78rem; color: var(--faint); text-align: center; padding-top: .5rem; }
@@ -225,6 +226,22 @@ footer.foot { font-size: .78rem; color: var(--faint); text-align: center; paddin
     </div>
   </div>
 </section>
+
+{{with .Desktop}}
+<section class="panel" id="desktop" aria-labelledby="desktop-h">
+  <div class="panel-h"><h2 id="desktop-h">Desktop<span class="sub">tray and sign-in</span></h2></div>
+  <p class="muted">Closing this window hides Hachidori to the system tray and the inference runtime keeps running.
+  Use the tray icon to open it again, or choose <strong>Quit Hachidori</strong> from the tray menu to stop the runtime and exit.</p>
+  <form method="post" action="/desktop/prefs" class="stack">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <label class="check"><input type="checkbox" name="start_at_sign_in" value="1"{{if .StartAtSignIn}} checked{{end}}> Start Hachidori when I sign in</label>
+    <label class="check"><input type="checkbox" name="start_minimized" value="1"{{if .StartMinimized}} checked{{end}}> Start minimized (in the tray, when started at sign-in)</label>
+    <div class="btn-row"><button type="submit" class="btn primary">Save</button></div>
+    {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+  </form>
+  <p class="cmd">Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). Unchecking it removes the entry.</p>
+</section>
+{{end}}
 
 <footer class="foot">Host-local operator page · inference API http://{{.APIAddr}} (loopback only) · datasets, labels and evaluation stay on the caller.</footer>
 </main>
@@ -375,7 +392,7 @@ footer.foot { font-size: .78rem; color: var(--faint); text-align: center; paddin
   </section>
 </div>
 
-<section class="panel" aria-labelledby="doc-h">
+<section class="panel" id="diagnostics" aria-labelledby="doc-h">
   <div class="panel-h">
     <h2 id="doc-h">Doctor<span class="sub">full installation check, incl. a real smoke inference</span></h2>
     <form method="post" action="/doctor" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn"{{if .Doctor.Running}} disabled{{end}}>Run doctor</button></form>

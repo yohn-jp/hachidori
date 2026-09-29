@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/wailsapp/go-webview2/pkg/edge"
@@ -34,11 +35,12 @@ var (
 )
 
 const (
-	className = "HachidoriDesktopShell"
-
 	wsOverlappedWindow = 0x00CF0000
 	cwUseDefault       = 0x80000000
+	swHide             = 0
 	swShowNormal       = 1
+	swMinimize         = 6
+	swRestore          = 9
 	idcArrow           = 32512
 	colorWindow        = 5
 
@@ -46,6 +48,12 @@ const (
 	wmMove    = 0x0003
 	wmSize    = 0x0005
 	wmClose   = 0x0010
+
+	// Private messages, posted to the window from other goroutines.
+	wmTray     = 0x8000 + 1 // tray icon callback (WM_APP+1)
+	wmRefresh  = 0x8000 + 2 // application state may have changed
+	wmQuitReq  = 0x8000 + 3 // end the session (context cancelled)
+	trayNotice = "Hachidori keeps running in the tray. Use the tray icon to open it, or choose Quit Hachidori to exit."
 )
 
 type wndClassEx struct {
@@ -81,6 +89,14 @@ type shell struct {
 	controller *edge.ICoreWebView2Controller
 	guard      *navigationGuard
 	closed     bool
+
+	// Resident mode (nil res: no tray, closing the window ends the session).
+	res         *Resident
+	url         string // dashboard URL the window was opened on
+	tray        tray
+	activateMsg uint32 // registered per-user activate message
+	taskbarMsg  uint32 // "TaskbarCreated": explorer restarted, re-add the icon
+	lastLevel   Level
 }
 
 var (
@@ -103,7 +119,13 @@ func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 			_ = s.chromium.NotifyParentWindowPositionChanged()
 		}
 	case wmClose:
-		// Documented close behaviour: closing the window ends the desktop
+		if s != nil && s.res != nil {
+			// Resident: closing the window hides it to the tray. The
+			// runtime is not touched; Quit is the only way out.
+			s.onClose()
+			return 0
+		}
+		// Non-resident close behaviour: closing the window ends the desktop
 		// session. Release the WebView2 controller (browser processes)
 		// before the parent window goes away.
 		if s != nil {
@@ -111,12 +133,136 @@ func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 		}
 		procDestroyWindow.Call(hwnd)
 		return 0
+	case wmQuitReq:
+		if s != nil {
+			s.quit()
+		}
+		return 0
+	case wmTray:
+		if s != nil && s.res != nil {
+			switch uint32(lp) & 0xFFFF {
+			case wmLButtonUp, wmLButtonDblClk:
+				s.perform(s.res.OnActivate())
+			case wmRButtonUp, wmContextMenu:
+				s.showMenu()
+			}
+		}
+		return 0
+	case wmRefresh:
+		if s != nil && s.res != nil {
+			s.refresh()
+		}
+		return 0
 	case wmDestroy:
+		if s != nil {
+			s.tray.remove()
+		}
 		procPostQuitMessage.Call(0)
 		return 0
 	}
+	if s != nil && s.res != nil && m != 0 {
+		switch uint32(m) {
+		case s.activateMsg:
+			// A second launch: show the existing window.
+			s.perform(s.res.OnActivate())
+			return 0
+		case s.taskbarMsg:
+			s.tray.added = false
+			s.tray.add(s.res.Summary())
+			return 0
+		}
+	}
 	r, _, _ := procDefWindowProcW.Call(hwnd, m, wp, lp)
 	return r
+}
+
+// onClose is the resident WM_CLOSE: hide to the tray (telling the user the
+// first time). Without a tray icon there would be no way back to a hidden
+// window, so it minimizes to the taskbar instead.
+func (s *shell) onClose() {
+	if !s.tray.added && !s.tray.add(s.res.Summary()) {
+		procShowWindow.Call(s.hwnd, swMinimize)
+		return
+	}
+	s.perform(s.res.OnClose())
+}
+
+// quit ends the desktop session: the WebView2 controller and tray icon are
+// released and the window is destroyed, which ends the message loop. Open then
+// returns and the caller shuts the runtime down.
+func (s *shell) quit() {
+	s.closeWebView()
+	s.tray.remove()
+	procDestroyWindow.Call(s.hwnd)
+}
+
+// perform carries out a Resident decision on the UI thread.
+func (s *shell) perform(a Action) {
+	switch a {
+	case ActionShow:
+		s.show(false)
+	case ActionShowDiagnostics:
+		s.show(true)
+	case ActionHide:
+		procShowWindow.Call(s.hwnd, swHide)
+	case ActionHideWithNotice:
+		procShowWindow.Call(s.hwnd, swHide)
+		s.tray.balloon("Hachidori is still running", trayNotice)
+	case ActionQuit:
+		s.quit()
+	}
+}
+
+// show restores and focuses the one existing window (never a second one).
+func (s *shell) show(diagnostics bool) {
+	if r, _, _ := procIsIconic.Call(s.hwnd); r != 0 {
+		procShowWindow.Call(s.hwnd, swRestore)
+	} else {
+		procShowWindow.Call(s.hwnd, swShowNormal)
+	}
+	procSetForegroundWindow.Call(s.hwnd)
+	if s.chromium != nil {
+		s.chromium.Resize()
+		s.chromium.Focus()
+		if diagnostics {
+			s.chromium.Navigate(s.url + DiagnosticsFragment)
+		}
+	}
+}
+
+// showMenu pops the tray menu and dispatches the choice.
+func (s *shell) showMenu() {
+	id := s.tray.popup(s.res.Menu())
+	if id == 0 {
+		return
+	}
+	a, err := s.res.OnMenu(id)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "hachidori: tray:", err)
+		s.tray.balloon("Hachidori", err.Error())
+		return
+	}
+	s.perform(a)
+}
+
+// refresh updates the tray tooltip from the application state and, on the
+// transition into needing attention, says so once (no repeated prompts).
+func (s *shell) refresh() {
+	sum := s.res.Summary()
+	if !s.tray.added {
+		s.tray.add(sum)
+	}
+	s.tray.setTip(sum)
+	if sum.Level == LevelAttention && s.lastLevel != LevelAttention {
+		s.tray.balloon("Hachidori needs attention", "Open Hachidori to see diagnostics.")
+	}
+	s.lastLevel = sum.Level
+}
+
+func registerMessage(name string) uint32 {
+	p, _ := windows.UTF16PtrFromString(name)
+	r, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(p)))
+	return uint32(r)
 }
 
 func (s *shell) closeWebView() {
@@ -170,8 +316,19 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	if err := windows.GetModuleHandleEx(0, nil, &inst); err != nil {
 		return err
 	}
-	cls, _ := windows.UTF16PtrFromString(className)
+	uid, err := currentUserID()
+	if err != nil {
+		return err
+	}
+	// Per-user class: a second launch finds this window by it (see Activate).
+	cls, _ := windows.UTF16PtrFromString(WindowClassName(uid))
 	title, _ := windows.UTF16PtrFromString(w.Title)
+	if w.Resident != nil {
+		s.res, s.url = w.Resident, w.URL
+		s.activateMsg = registerMessage(ActivateMessageName(uid))
+		s.taskbarMsg = registerMessage("TaskbarCreated")
+		s.tray.msg = wmTray
+	}
 	wndProcOnce.Do(func() { wndProcCB = windows.NewCallback(wndProc) })
 	cursor, _, _ := procLoadCursorW.Call(0, idcArrow)
 	wc := wndClassEx{WndProc: wndProcCB, Instance: inst, Cursor: windows.Handle(cursor),
@@ -188,8 +345,10 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 		return fmt.Errorf("creating the window: %w", e)
 	}
 	s.hwnd = hwnd
+	s.tray.hwnd = hwnd
 	destroyed := false
 	defer func() {
+		s.tray.remove()
 		if !destroyed {
 			s.closeWebView()
 			procDestroyWindow.Call(hwnd)
@@ -225,9 +384,19 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	}
 	s.chromium = c
 	c.Resize()
-	procShowWindow.Call(hwnd, swShowNormal)
-	procUpdateWindow.Call(hwnd)
-	c.Focus()
+	// A resident shell starts in the tray only if the tray icon really exists;
+	// otherwise a hidden window would be unreachable.
+	hidden := false
+	if s.res != nil {
+		sum := s.res.Summary()
+		s.lastLevel = sum.Level
+		hidden = s.tray.add(sum) && w.StartHidden
+	}
+	if !hidden {
+		procShowWindow.Call(hwnd, swShowNormal)
+		procUpdateWindow.Call(hwnd)
+		c.Focus()
+	}
 	c.Navigate(w.URL)
 
 	done := make(chan struct{})
@@ -235,10 +404,33 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	go func() {
 		select {
 		case <-ctx.Done():
-			procPostMessageW.Call(hwnd, wmClose, 0, 0)
+			procPostMessageW.Call(hwnd, wmQuitReq, 0, 0)
 		case <-done:
 		}
 	}()
+	if s.res != nil {
+		// The supervisor owns worker transitions and the controller only
+		// signals its own actions, so the tray polls the canonical state and
+		// only repaints when the window thread is told to.
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			last := s.res.Summary()
+			for n := 1; ; n++ {
+				select {
+				case <-t.C:
+					// Also every few seconds regardless, so an icon that
+					// could not be created at sign-in is retried.
+					if cur := s.res.Summary(); cur != last || n%5 == 0 {
+						last = cur
+						procPostMessageW.Call(hwnd, wmRefresh, 0, 0)
+					}
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
 
 	var m msg
 	for {

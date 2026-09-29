@@ -13,12 +13,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/app"
 	"github.com/yohn-jp/hachidori/internal/client"
 	"github.com/yohn-jp/hachidori/internal/dashboard"
 	"github.com/yohn-jp/hachidori/internal/desktop"
@@ -40,8 +40,9 @@ runtime (inference host):
   serve      run the HTTP runtime with a resident inference worker
   dashboard  serve, plus a host-local Web dashboard (status, start/stop/restart,
              doctor, SSH reverse-tunnel launcher) on 127.0.0.1:7844
-  desktop    (Windows) dashboard in a native WebView2 window; closing the
-             window stops the runtime (explicit --home / HACHIDORI_HOME)
+  desktop    (Windows) dashboard in a native WebView2 window with a tray icon;
+             closing the window hides it to the tray, Quit stops the runtime
+             (--home / HACHIDORI_HOME; --background is used by start at sign-in)
   doctor     verify the installation, including a real smoke inference
 
 client (caller side, uses HACHIDORI_ENDPOINT):
@@ -114,38 +115,6 @@ func cmdSetup(args []string) error {
 
 func cmdServe(args []string) error { return runHost("serve", args, nil) }
 
-// cmdDesktop is the Windows desktop shell: after WebView2 detection and the
-// per-user single-instance guard it runs exactly the dashboard composition
-// (runHost) and attaches one native window to the dashboard URL. Closing the
-// window ends the process the same way Ctrl+C ends `hachidori dashboard`.
-func cmdDesktop(p desktop.Platform, args []string) error {
-	if runtime.GOOS != "windows" {
-		return desktop.ErrUnsupported
-	}
-	return runHost("desktop", args, func(h home.Home) (func(), func(context.Context, string) error, error) {
-		version, release, err := desktop.Preflight(p)
-		if err != nil {
-			return nil, nil, err
-		}
-		fmt.Fprintf(os.Stderr, "hachidori: WebView2 Runtime %s\n", version)
-		attach := func(ctx context.Context, dashURL string) error {
-			pol, err := desktop.NewPolicy(dashURL)
-			if err != nil {
-				return err
-			}
-			return p.Open(ctx, desktop.Window{Title: "Hachidori", URL: dashURL,
-				DataDir: h.Path("cache", "webview2"), Policy: pol})
-		}
-		return release, attach, nil
-	})
-}
-
-// shellHook lets the desktop command run its preflight after flags and home
-// are resolved but before any runtime component starts, then attach a window
-// once the dashboard is listening. The returned attach blocks until the
-// window is closed.
-type shellHook func(h home.Home) (release func(), attach func(ctx context.Context, dashURL string) error, err error)
-
 // runHost runs the inference runtime (HTTP API + resident worker) and, for
 // the dashboard and desktop commands, the host-local dashboard beside it.
 func runHost(name string, args []string, shell shellHook) error {
@@ -157,6 +126,10 @@ func runHost(name string, args []string, shell shellHook) error {
 		dashAddr = fs.String("addr", dashboard.DefaultListen, "loopback address of the dashboard")
 		sshExe = fs.String("ssh", "ssh", "host ssh client used by the tunnel launcher")
 	}
+	var background *bool
+	if name == "desktop" {
+		background = fs.Bool("background", false, "launched at sign-in: honor the Start minimized preference")
+	}
 	fs.Parse(args)
 	if err := server.CheckLoopback(*listen); err != nil {
 		return err
@@ -166,40 +139,80 @@ func runHost(name string, args []string, shell shellHook) error {
 			return err
 		}
 	}
-	h, err := home.Resolve(*homeFlag)
-	if err != nil {
+	var h home.Home
+	var src home.Source
+	var err error
+	if shell != nil {
+		// The desktop also discovers the home from the per-user bootstrap
+		// locator; the CLI resolver stays strict.
+		d, derr := home.Discover(*homeFlag)
+		if derr != nil {
+			return derr
+		}
+		if d.Source == home.SourceUnconfigured {
+			return errors.New("no Hachidori home is selected; pass --home or set HACHIDORI_HOME")
+		}
+		h, src = d.Home, d.Source
+	} else if h, err = home.Resolve(*homeFlag); err != nil {
 		return err
 	}
-	var attach func(context.Context, string) error
+	var attach func(context.Context, string, *app.Controller) error
 	var dashURL string
+	var deskPrefs dashboard.Desktop
 	if shell != nil {
 		if dashURL, err = desktop.DashboardURL(*dashAddr); err != nil {
 			return err
 		}
-		release, a, err := shell(h)
+		sess, err := shell(h, src, *background)
 		if err != nil {
 			return err
 		}
-		defer release()
-		attach = a
+		defer sess.Release()
+		attach, deskPrefs = sess.Attach, sess.Prefs
 	}
 	logf, err := os.OpenFile(h.Path("logs", "worker.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
 	defer logf.Close()
-	cfg, rt, err := server.WorkerConfig(h, logf)
-	if err != nil {
-		return err
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	sup := worker.NewSupervisor(cfg, worker.DefaultPolicy)
-	lc := worker.NewLifecycle(ctx, sup)
-	lc.Start()
-	defer lc.Stop()
 
-	started := time.Now()
+	var (
+		sup     *worker.Supervisor
+		rt      server.Runtime
+		lc      dashboard.Lifecycle
+		started time.Time
+		ctrl    *app.Controller
+	)
+	if shell != nil {
+		// The desktop's single runtime owner is the application controller
+		// (#17): the tray, dashboard and API all observe the one supervisor
+		// it binds. Nothing else starts a worker.
+		var b *app.WorkerBinding
+		ctrl = app.New(app.Config{Home: h.Root,
+			Open: app.WorkerRuntime(ctx, logf, worker.DefaultPolicy, func(x *app.WorkerBinding) { b = x })})
+		if err := ctrl.Start(); err != nil {
+			return err
+		}
+		defer func() {
+			c, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_ = ctrl.Close(c)
+		}()
+		sup, rt, lc, started = b.Supervisor, b.Info, b, b.Started
+	} else {
+		cfg, info, err := server.WorkerConfig(h, logf)
+		if err != nil {
+			return err
+		}
+		sup = worker.NewSupervisor(cfg, worker.DefaultPolicy)
+		wl := worker.NewLifecycle(ctx, sup)
+		wl.Start()
+		defer wl.Stop()
+		rt, lc, started = info, wl, time.Now()
+	}
+
 	srv := &http.Server{Addr: *listen, Handler: server.HandlerSince(sup, rt, started), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -216,6 +229,7 @@ func runHost(name string, args []string, shell shellHook) error {
 			Doctor:    func(out io.Writer) bool { return doctor.Run(h.Root, out) },
 			Tunnel:    tunnel.NewManager(*sshExe),
 			PrefsPath: h.Path("state", "dashboard.json"),
+			Desktop:   deskPrefs,
 		})
 		// Terminate the managed ssh child on every exit path of this process
 		// that runs deferred code; see docs/runtime.md for hard kills.
@@ -239,10 +253,10 @@ func runHost(name string, args []string, shell shellHook) error {
 		windowDone := make(chan struct{})
 		go func() {
 			defer close(windowDone)
-			if err := attach(ctx, dashURL); err != nil {
+			if err := attach(ctx, dashURL, ctrl); err != nil {
 				fmt.Fprintln(os.Stderr, "hachidori: desktop window:", err)
 			} else {
-				fmt.Fprintln(os.Stderr, "hachidori: desktop window closed; stopping")
+				fmt.Fprintln(os.Stderr, "hachidori: desktop session ended (Quit or window closed without a tray); stopping")
 			}
 			stop()
 		}()

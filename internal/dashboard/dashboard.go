@@ -47,6 +47,23 @@ type Config struct {
 	Doctor    func(out io.Writer) bool // doctor.Run bound to HACHIDORI_HOME
 	Tunnel    *tunnel.Manager
 	PrefsPath string // non-secret tunnel preferences; empty disables persistence
+	// Desktop, when set, adds the desktop preferences panel (start at
+	// sign-in, start minimized). It is nil for serve/dashboard.
+	Desktop Desktop
+}
+
+// Desktop reads and applies the per-user desktop preferences. The dashboard
+// only renders and forwards the form; the mechanism lives behind it.
+type Desktop interface {
+	Prefs() (startAtSignIn, startMinimized bool, err error)
+	Set(startAtSignIn, startMinimized bool) error
+}
+
+// DesktopView is the desktop panel's view model.
+type DesktopView struct {
+	StartAtSignIn  bool
+	StartMinimized bool
+	Err            string
 }
 
 // Dashboard is the HTTP surface. Create it with New.
@@ -116,6 +133,9 @@ func New(cfg Config) *Dashboard {
 	})
 	d.mux.HandleFunc("POST /runtime/{op}", d.runtimeOp)
 	d.mux.HandleFunc("POST /doctor", d.runDoctor)
+	if cfg.Desktop != nil {
+		d.mux.HandleFunc("POST /desktop/prefs", d.desktopPrefs)
+	}
 	d.mux.HandleFunc("POST /tunnel/connect", d.connect)
 	d.mux.HandleFunc("POST /tunnel/disconnect", d.disconnect)
 	return d
@@ -177,6 +197,7 @@ type view struct {
 	Doctor  DoctorRun
 	Tunnel  tunnel.Status
 	Form    tunnel.Spec
+	Desktop *DesktopView // nil unless the desktop shell is hosting the dashboard
 }
 
 func (d *Dashboard) view() view {
@@ -185,6 +206,14 @@ func (d *Dashboard) view() view {
 	d.mu.Unlock()
 	v := view{Token: d.token, APIAddr: d.cfg.APIAddr, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(),
 		Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status(), Form: d.formDefaults()}
+	if d.cfg.Desktop != nil {
+		dv := &DesktopView{}
+		var err error
+		if dv.StartAtSignIn, dv.StartMinimized, err = d.cfg.Desktop.Prefs(); err != nil {
+			dv.Err = err.Error()
+		}
+		v.Desktop = dv
+	}
 	return v
 }
 
@@ -249,6 +278,13 @@ func (d *Dashboard) runtimeOp(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// desktopPrefs applies the desktop preferences form. Unchecked boxes are
+// absent from the form, so the posted state is the complete desired state.
+func (d *Dashboard) desktopPrefs(w http.ResponseWriter, r *http.Request) {
+	err := d.cfg.Desktop.Set(r.PostFormValue("start_at_sign_in") == "1", r.PostFormValue("start_minimized") == "1")
+	d.done(w, r, "desktop preferences", err, "saved")
 }
 
 func (d *Dashboard) runDoctor(w http.ResponseWriter, r *http.Request) {
