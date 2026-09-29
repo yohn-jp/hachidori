@@ -20,6 +20,7 @@ client CLI / any HTTP caller
 | `hachidori setup [--home H] [--device cuda\|cpu] [--model ID]` | host | reconcile `HACHIDORI_HOME` with the Runtime Spec: private uv materializes the locked Python environment, the selected catalog model (default `laya-base`) is materialized separately, then activate |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843]` | host | run HTTP + one resident worker; non-loopback binds are refused |
 | `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh]` | host | `serve` plus the host-local dashboard (see below) |
+| `hachidori desktop [--home H] [--listen …] [--addr …] [--ssh ssh]` | host (Windows) | `dashboard` shown in a native WebView2 window (see below); fails with a clear error on other systems |
 | `hachidori doctor [--home H]` | host | verify the installation including a real HTTP→worker→model smoke inference |
 | `hachidori status [--endpoint URL]` | client | print `/v1/status` |
 | `hachidori decide [--endpoint URL] <request.json\|->` | client | send one v1 decide request |
@@ -181,6 +182,68 @@ ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -o ServerAliveInterval=15 \
   `status`, `decide`, `eval` or `benchmark` there. Datasets and labels never
   reach the GPU host; the dashboard has no upload surface.
 
+## Windows desktop shell
+
+`hachidori desktop --home D:\Hachidori` is the explicit developer entry point of
+the thin Windows shell. It is `hachidori dashboard` (same flags, same
+composition in `runHost`: one API, one resident worker, one `worker.Lifecycle`,
+the same dashboard handler with its Host/Origin/form-token checks) plus one
+native top-level window that shows `http://<--addr>/` through Microsoft
+WebView2. The window has no runtime, lifecycle, status or doctor logic of its
+own; it owns only its own lifetime. No-argument launch, home discovery,
+first-run setup and tray behaviour are not part of this command.
+
+Order of a launch:
+
+1. flags and `--home` / `HACHIDORI_HOME` are resolved exactly as for `dashboard`;
+2. the installed WebView2 Runtime is detected (registry and client DLL lookup).
+   If it is missing the command fails before anything starts, with a
+   diagnostic that names the Evergreen WebView2 Runtime download page.
+   Hachidori never downloads or installs WebView2;
+3. the per-user single-instance guard is taken: a named mutex
+   `Local\Hachidori.Desktop.<digest of the user SID>` (session-local
+   namespace, no elevation). A second `desktop` launch by the same user exits
+   with "already running" before starting any runtime component. The kernel
+   drops the mutex when the process ends, so a crash never blocks a relaunch;
+4. the API, worker and dashboard start; the dashboard listener is bound before
+   the window is created;
+5. the window opens and navigates to the dashboard.
+
+Window security:
+
+- Top-level and frame navigations are allowed only to the exact dashboard
+  origin (`http://127.0.0.1:7844` by default); everything else, including the
+  inference API port, `localhost` aliases, `https:`, `file:`, `data:`,
+  `javascript:` and `about:` URLs, is cancelled and logged. Popups /
+  `target=_blank` / `window.open` never create a window and are not handed to
+  another application (`internal/desktop` `Policy`).
+- WebView2 web messaging and host objects are disabled, so there is no
+  JS-to-Go bridge at all; DevTools, the default context menu and the status
+  bar are off; every permission request (camera, clipboard, notifications, …)
+  is denied.
+- The page is the same server-rendered dashboard; its loopback `Host` check,
+  same-origin check and per-process form token are unchanged.
+
+Close behaviour: closing the window ends the desktop session. The WebView2
+controller is closed (its browser processes exit), the window is destroyed,
+and then the process shuts down exactly as `dashboard` does on Ctrl+C: the
+dashboard and API stop listening, the worker is stopped, and a managed `ssh`
+child is terminated. Ctrl+C in the console closes the window the same way.
+(Tray/background operation is a separate, later feature.)
+
+Distribution: the binding is `github.com/wailsapp/go-webview2` with its pure-Go
+loader (default build, no cgo). No `WebView2Loader.dll` is embedded, written
+to disk or searched for; the WebView2 Runtime installed on Windows is the only
+prerequisite. The UI stays the dashboard's embedded `html/template` page; there
+is no frontend bundle. WebView2's user data folder (its browser profile) is
+`HACHIDORI_HOME/cache/webview2`, so nothing is written to `%APPDATA%`. If the
+binding hits a fatal WebView2 error after startup it prints the error and
+exits the process immediately; deferred cleanup is then skipped as with a
+hard kill (the worker still exits on stdin EOF).
+
+`hachidori.exe` is a console-subsystem program, so `desktop` started outside a
+terminal shows a console window beside the shell.
+
 ## Runtime materialization
 
 `hachidori setup` is declarative. The desired runtime is a **Runtime Spec**:
@@ -291,6 +354,7 @@ HACHIDORI_HOME/
   logs/worker.log, logs/doctor-worker.log
   state/active-runtime.json
   state/dashboard.json         last tunnel form values (non-secret), dashboard only
+  cache/webview2/              WebView2 browser profile of `hachidori desktop` (Windows only, disposable)
 ```
 
 The worker environment is constructed, not inherited: `PYTHONNOUSERSITE=1`,

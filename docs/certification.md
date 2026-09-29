@@ -66,3 +66,29 @@ Same commands with `export HACHIDORI_HOME=/srv/hachidori`. On NixOS the private 
 CPython (the uv-managed python-build-standalone build, glibc) need a dynamic loader (`nix-ld` or an
 FHS environment) and `LD_LIBRARY_PATH` must include the driver libraries
 (`/run/opengl-driver/lib`).
+
+## Windows desktop shell (manual, real Windows only)
+
+Generic CI and cross-compilation cannot open a WebView2 window; report these
+items as **not checked** unless they were run on a real Windows desktop with
+the resulting `hachidori.exe`.
+
+```powershell
+go test ./internal/desktop -v -count=1          # Windows-only tests: instance guard, runtime detection
+.\hachidori.exe desktop --home D:\Hachidori-test
+```
+
+1. With the WebView2 Runtime installed: a native window titled "Hachidori"
+   shows the dashboard (status, Start/Stop/Restart, doctor, tunnel), and the
+   console prints `WebView2 Runtime <version>`. Start/Stop/Restart work.
+2. A second `hachidori.exe desktop` by the same user exits with "already
+   running" and starts no worker (`status` pid unchanged).
+3. F12 / Ctrl+Shift+I open no DevTools and right-click shows no browser
+   context menu. The navigation allow-list itself is covered by unit tests
+   (`TestPolicyAllowsOnlyTheDashboardOrigin`); any navigation the window
+   cancels is logged on the console as `desktop blocked`.
+4. Closing the window stops the process: the API and dashboard ports are free
+   and no `python` worker or `msedgewebview2.exe` child of this run remains.
+5. On a machine without the WebView2 Runtime (or with it uninstalled), the
+   command fails before any worker starts with the WebView2 diagnostic, and
+   nothing is downloaded.

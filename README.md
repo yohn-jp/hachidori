@@ -18,6 +18,8 @@ export HACHIDORI_HOME=/path/to/hachidori-home   # the only mutable root
 ./hachidori serve                               # 127.0.0.1:7843
 # or, with the host-local dashboard and SSH tunnel launcher:
 ./hachidori dashboard                           # API 127.0.0.1:7843, UI http://127.0.0.1:7844/
+# or, on Windows, the same dashboard in a native WebView2 window:
+hachidori.exe desktop --home D:\Hachidori        # needs the WebView2 Runtime; one per user
 
 # caller side
 export HACHIDORI_ENDPOINT=http://127.0.0.1:7843
