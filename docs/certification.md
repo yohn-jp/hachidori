@@ -91,8 +91,12 @@ go test ./internal/desktop -v -count=1          # Windows-only tests: instance g
 ```
 
 1. With the WebView2 Runtime installed: a native window titled "Hachidori"
-   shows the dashboard (status, Start/Stop/Restart, doctor, tunnel), and the
-   console prints `WebView2 Runtime <version>`. Start/Stop/Restart work.
+   shows the dashboard (status, Start/Stop/Restart, doctor, tunnel).
+   - From an existing terminal, the terminal remains visible and prints
+     `WebView2 Runtime <version>`.
+   - From Explorer/no-argument double-click, the process-owned console is hidden
+     and only the desktop window is visible.
+   Start/Stop/Restart work.
 2. A second `hachidori.exe desktop` by the same user activates the running
    window (restores and focuses it, also when it is hidden in the tray), exits 0
    and starts no worker (`status` pid unchanged).
@@ -127,7 +131,9 @@ Prepare a clean user profile: no `%LOCALAPPDATA%\Hachidori\bootstrap.json`, no
 `HACHIDORI_HOME` in the environment, WebView2 Runtime installed.
 
 1. Double-click `hachidori.exe`. A window titled "Hachidori" shows the first-run
-   page; no other terminal input is needed.
+   page with no companion console window; no terminal input is needed. Running
+   the same no-argument executable from an existing terminal must leave that
+   terminal visible.
 2. **Browse...** opens the normal Windows folder dialog. Choose a folder on a
    non-system drive. The page shows the chosen path (and free space when
    reported). No bootstrap file exists yet.
