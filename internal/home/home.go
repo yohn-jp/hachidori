@@ -64,9 +64,10 @@ func (h Home) Ensure() error {
 
 // Active is state/active-runtime.json: the activation record.
 type Active struct {
-	Runtime string `json:"runtime"` // directory name under runtime/
-	Model   string `json:"model"`   // directory under models/, slash separated
-	Device  string `json:"device"`  // cuda | cpu
+	Runtime string `json:"runtime"`            // directory name under runtime/
+	ModelID string `json:"model_id,omitempty"` // catalog model identity (absent in records from before model selection)
+	Model   string `json:"model"`              // directory under models/, slash separated
+	Device  string `json:"device"`             // cuda | cpu
 }
 
 // RuntimeSpec is the declarative desired state of a private runtime. Its
@@ -111,11 +112,16 @@ type RuntimeManifest struct {
 	Worker        map[string]string `json:"worker"`         // relpath -> sha256
 }
 
-// ModelManifest is models/<id>/<revision>/hachidori-model.json.
+// ModelManifest is an immutable model identity: an entry of the model
+// catalog, and, once materialized, models/<repo>/<revision>/hachidori-model.json.
+// Manifests written before the catalog existed carry no ID or provider.
 type ModelManifest struct {
-	Repo     string            `json:"repo"`
-	Revision string            `json:"revision"`
-	Files    map[string]string `json:"files"` // relpath -> sha256
+	ID          string            `json:"id,omitempty"`          // stable Hachidori model ID
+	Provider    string            `json:"provider,omitempty"`    // provider kind that loads it (laya)
+	Repo        string            `json:"repo"`                  // upstream repository
+	Revision    string            `json:"revision"`              // immutable upstream revision
+	Description string            `json:"description,omitempty"` // descriptive only
+	Files       map[string]string `json:"files"`                 // relpath -> sha256
 }
 
 // ReadJSON decodes a JSON file.

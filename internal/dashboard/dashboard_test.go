@@ -101,7 +101,7 @@ func newEnv(t *testing.T) *env {
 	}}
 	e := &env{rt: rt, home: home}
 	started := time.Now()
-	rtInfo := server.Runtime{Home: home, Runtime: "0.1.0-cu128", Model: "convaiinnovations--laya/55cf4c4e", Device: "cuda"}
+	rtInfo := server.Runtime{Home: home, Runtime: "0.1.0-cu128", ModelID: "laya-base", Model: "convaiinnovations--laya/55cf4c4e", Device: "cuda"}
 	e.api = server.HandlerSince(rt, rtInfo, started)
 	e.tun = tunnel.NewManager(exe)
 	t.Cleanup(e.tun.Disconnect)
@@ -161,12 +161,15 @@ func TestStatusIsTheV1StatusDocument(t *testing.T) {
 	json.Unmarshal(api.Body.Bytes(), &b)
 	delete(a, "uptime_s")
 	delete(b, "uptime_s")
+	if rt, _ := a["runtime"].(map[string]any); rt["model_id"] != "laya-base" {
+		t.Errorf("status lacks the selected model identity: %v", a["runtime"])
+	}
 	if rec.Code != 200 || fmt.Sprint(a) != fmt.Sprint(b) || a["worker"] == nil {
 		t.Fatalf("dashboard status differs from /v1/status:\n%v\n%v", a, b)
 	}
 	// The page renders values from that same document.
 	body := e.get(t, "/").Body.String()
-	for _, want := range []string{"READY", "4242", "2 / 1", "17", "p50 25.3 ms, p95 30.5 ms", "laya 0.3.21", "convaiinnovations--laya/55cf4c4e",
+	for _, want := range []string{"READY", "4242", "2 / 1", "17", "p50 25.3 ms, p95 30.5 ms", "laya 0.3.21", "convaiinnovations--laya/55cf4c4e", "laya-base",
 		"0.1.0-cu128", "3.12.11", "2.11.0&#43;cu128 / 12.8", "NVIDIA GeForce RTX 3060", "allocated 600 MiB, reserved 700 MiB, free 10240 MiB, total 12288 MiB",
 		"812.5 ms / 90.1 ms", "worker_crash", "0 / 64"} {
 		if !strings.Contains(body, want) {

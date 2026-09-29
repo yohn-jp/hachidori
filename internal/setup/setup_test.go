@@ -262,11 +262,11 @@ func TestRuntimeSpecIdentity(t *testing.T) {
 		t.Error("platforms share an identity")
 	}
 	// The model is not part of the Python runtime identity.
-	old := Model
-	t.Cleanup(func() { Model = old })
-	Model.Revision = strings.Repeat("f", 40)
+	old := Models
+	t.Cleanup(func() { Models = old })
+	Models = []home.ModelManifest{{ID: DefaultModel, Provider: "laya", Repo: "x/y", Revision: strings.Repeat("f", 40)}}
 	if c, _ := desiredFor("cuda", "windows/amd64"); c.ID() != a.ID() {
-		t.Error("model revision changed the runtime identity")
+		t.Error("model catalog changed the runtime identity")
 	}
 }
 
@@ -301,9 +301,11 @@ func TestSpecMatchesProject(t *testing.T) {
 			t.Errorf("%s: no uv extra %s", dev, flavor)
 		}
 	}
-	for rel, sum := range Model.Files {
-		if !hex64.MatchString(sum) {
-			t.Errorf("%s: bad digest", rel)
+	for _, m := range Models {
+		for rel, sum := range m.Files {
+			if !hex64.MatchString(sum) {
+				t.Errorf("%s %s: bad digest", m.ID, rel)
+			}
 		}
 	}
 	if _, err := RuntimeName("rocm"); err == nil {
@@ -331,7 +333,7 @@ func TestRunMaterializesAndReuses(t *testing.T) {
 	if err := home.ReadJSON(f.H.Path("state", "active-runtime.json"), &a); err != nil {
 		t.Fatal(err)
 	}
-	if a != (home.Active{Runtime: id, Model: ModelDirName(), Device: "cpu"}) {
+	if a != (home.Active{Runtime: id, ModelID: DefaultModel, Model: ModelDirName(f.model("")), Device: "cpu"}) {
 		t.Fatalf("active %+v", a)
 	}
 	_, rm, _, err := f.H.LoadActive()
@@ -358,12 +360,12 @@ func TestRunMaterializesAndReuses(t *testing.T) {
 	}
 	for _, c := range calls {
 		for _, arg := range c.Args {
-			if strings.Contains(arg, "huggingface") || strings.Contains(arg, Model.Repo) || strings.Contains(arg, "models") {
+			if strings.Contains(arg, "huggingface") || strings.Contains(arg, f.model("").Repo) || strings.Contains(arg, "models") {
 				t.Fatalf("uv involved in model materialization: %v", c.Args)
 			}
 		}
 	}
-	modelPath := "/test/model/resolve/" + Model.Revision + "/config.json"
+	modelPath := "/test/model/resolve/" + f.model("").Revision + "/config.json"
 	if f.hitCount(modelPath) != 1 {
 		t.Fatalf("model fetched %d times", f.hitCount(modelPath))
 	}
@@ -468,7 +470,7 @@ func TestModelFailurePreservesActive(t *testing.T) {
 	f.mustRun("cpu")
 	prev := f.active()
 	os.RemoveAll(f.H.Path("models"))
-	f.setDown("/test/model/resolve/"+Model.Revision+"/config.json", true)
+	f.setDown("/test/model/resolve/"+f.model("").Revision+"/config.json", true)
 	if _, err := f.run("cuda"); err == nil || !strings.Contains(err.Error(), "model") {
 		t.Fatalf("model failure: %v", err)
 	}
@@ -480,9 +482,9 @@ func TestModelFailurePreservesActive(t *testing.T) {
 		t.Fatal("active changed")
 	}
 	// Corrupted materialized model is an explicit failure, not silently repaired.
-	f.setDown("/test/model/resolve/"+Model.Revision+"/config.json", false)
+	f.setDown("/test/model/resolve/"+f.model("").Revision+"/config.json", false)
 	f.mustRun("cpu")
-	cfg := filepath.Join(f.H.Path("models"), filepath.FromSlash(ModelDirName()), "config.json")
+	cfg := filepath.Join(f.H.Path("models"), filepath.FromSlash(ModelDirName(f.model(""))), "config.json")
 	os.WriteFile(cfg, []byte("tampered"), 0o644)
 	if _, err := f.run("cpu"); err == nil || !strings.Contains(err.Error(), "failed verification") {
 		t.Fatalf("tampered model: %v", err)
@@ -540,7 +542,7 @@ func TestLegacyRuntimeNotReused(t *testing.T) {
 	legacy := f.H.Path("runtime", "0.1.0-cpu")
 	os.MkdirAll(filepath.Join(legacy, "worker"), 0o755)
 	os.WriteFile(filepath.Join(legacy, "manifest.json"), []byte(`{"version":"0.1.0","flavor":"cpu","packages":["torch==2.11.0+cpu"],"installed":["pip==25.2"]}`), 0o644)
-	home.WriteJSON(f.H.Path("state", "active-runtime.json"), home.Active{Runtime: "0.1.0-cpu", Model: ModelDirName(), Device: "cpu"})
+	home.WriteJSON(f.H.Path("state", "active-runtime.json"), home.Active{Runtime: "0.1.0-cpu", Model: ModelDirName(f.model("")), Device: "cpu"})
 	before := snapshot(t, legacy)
 
 	f.mustRun("cpu")

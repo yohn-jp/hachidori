@@ -214,7 +214,7 @@ func newFixture(t *testing.T) *fixture {
 	bin, archive := fakeUVRelease(t)
 
 	f := &fixture{t: t, hits: map[string]int{}, down: map[string]bool{}}
-	modelFile := []byte(`{"model":"fake"}`)
+	modelFile, tunedFile := []byte(`{"model":"fake"}`), []byte(`{"model":"fake-tuned"}`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.hits[r.URL.Path]++
@@ -227,6 +227,8 @@ func newFixture(t *testing.T) *fixture {
 			w.Write(archive)
 		case strings.HasPrefix(r.URL.Path, "/test/model/resolve/"):
 			w.Write(modelFile)
+		case strings.HasPrefix(r.URL.Path, "/test/tuned/resolve/"):
+			w.Write(tunedFile)
 		default:
 			http.NotFound(w, r)
 		}
@@ -234,14 +236,20 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(srv.Close)
 	f.URL = srv.URL
 
-	oldVer, oldArts, oldModel, oldBase := uvVersion, uvArtifacts, Model, modelBaseURL
-	t.Cleanup(func() { uvVersion, uvArtifacts, Model, modelBaseURL = oldVer, oldArts, oldModel, oldBase })
+	oldVer, oldArts, oldModels, oldBase := uvVersion, uvArtifacts, Models, modelBaseURL
+	t.Cleanup(func() { uvVersion, uvArtifacts, Models, modelBaseURL = oldVer, oldArts, oldModels, oldBase })
 	uvVersion = "0.0.0-test"
 	uvArtifacts = map[string]uvArtifact{platform(): {
 		URL: srv.URL + "/uv/uv-fake.tar.gz", SHA256: digest(archive), Member: fakeUVMember, BinarySHA256: digest(bin),
 	}}
-	Model = home.ModelManifest{Repo: "test/model", Revision: strings.Repeat("ab", 20),
-		Files: map[string]string{"config.json": digest(modelFile)}}
+	// A two-entry catalog: the default identity and a second (for example
+	// fine-tuned) checkpoint declared the same way.
+	Models = []home.ModelManifest{
+		{ID: DefaultModel, Provider: "laya", Repo: "test/model", Revision: strings.Repeat("ab", 20),
+			Files: map[string]string{"config.json": digest(modelFile)}},
+		{ID: tunedModel, Provider: "laya", Repo: "test/tuned", Revision: strings.Repeat("cd", 20),
+			Files: map[string]string{"config.json": digest(tunedFile)}},
+	}
 	modelBaseURL = srv.URL + "/"
 
 	f.H = home.Home{Root: t.TempDir()}
@@ -287,17 +295,34 @@ func (f *fixture) calls() []uvCall {
 	return out
 }
 
-func (f *fixture) run(device string) (string, error) {
+// tunedModel is the second catalog entry of the fixture.
+const tunedModel = "laya-test-tuned"
+
+func (f *fixture) run(device string) (string, error) { return f.runModel(device, "") }
+
+func (f *fixture) runModel(device, model string) (string, error) {
 	var log strings.Builder
-	err := Run(f.H, device, &log)
+	err := Run(f.H, device, model, &log)
 	return log.String(), err
 }
 
-func (f *fixture) mustRun(device string) {
+func (f *fixture) mustRun(device string) { f.t.Helper(); f.mustRunModel(device, "") }
+
+func (f *fixture) mustRunModel(device, model string) {
 	f.t.Helper()
-	if log, err := f.run(device); err != nil {
-		f.t.Fatalf("setup %s: %v\n%s", device, err, log)
+	if log, err := f.runModel(device, model); err != nil {
+		f.t.Fatalf("setup %s %s: %v\n%s", device, model, err, log)
 	}
+}
+
+// model is the fixture catalog entry for id ("" is the default).
+func (f *fixture) model(id string) home.ModelManifest {
+	f.t.Helper()
+	m, err := LookupModel(id)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return m
 }
 
 func (f *fixture) active() []byte {

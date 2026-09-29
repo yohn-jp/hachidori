@@ -295,7 +295,7 @@ footer.foot { font-size: .78rem; color: var(--faint); text-align: center; paddin
     <span class="state-sub">phase {{$w.Phase}}{{with $w.ReadySince}} · ready since {{.}}{{end}}</span>
   </div>
   <div class="identity">
-    <div class="model" title="model">{{.S.Runtime.Model}}</div>
+    <div class="model" title="model {{.S.Runtime.Model}}">{{.S.Runtime.ModelID}}</div>
     <ul class="facts">
       <li>provider<strong>{{get $i "provider"}} {{get $i "laya_version"}}</strong></li>
       <li>device<strong>{{get $i "device"}} {{get $i "dtype"}}</strong></li>
@@ -427,7 +427,8 @@ footer.foot { font-size: .78rem; color: var(--faint); text-align: center; paddin
       <dl class="kv">
         <dt>home</dt><dd>{{.S.Runtime.Home}}</dd>
         <dt>runtime</dt><dd>{{.S.Runtime.Runtime}}</dd>
-        <dt>model</dt><dd>{{.S.Runtime.Model}}</dd>
+        <dt>model</dt><dd>{{.S.Runtime.ModelID}}</dd>
+        <dt>model artifact</dt><dd>{{.S.Runtime.Model}}</dd>
         <dt>requested device</dt><dd>{{.S.Runtime.Device}}</dd>
         <dt>provider</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd>
         <dt>Python</dt><dd>{{get $i "python_version"}}</dd>

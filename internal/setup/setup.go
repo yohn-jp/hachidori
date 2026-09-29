@@ -18,18 +18,27 @@ import (
 	"github.com/yohn-jp/hachidori/internal/worker/py"
 )
 
-// Run reconciles HACHIDORI_HOME with the desired Runtime Spec for device:
+// Run reconciles HACHIDORI_HOME with the desired Runtime Spec for device and
+// the catalog model modelID (empty selects DefaultModel):
 //
 //	desired spec -> private uv -> runtime identity
 //	  -> reuse the verified immutable runtime, or materialize it into staging and verify it
-//	  -> materialize/verify the model independently
+//	  -> materialize/verify the selected model independently
 //	  -> publish the runtime (atomic rename) -> update state/active-runtime.json
 //
-// Any failure leaves the active runtime untouched; rerunning reconciles again.
-func Run(h home.Home, device string, log io.Writer) error {
+// Any failure leaves the active runtime and model untouched; rerunning
+// reconciles again.
+func Run(h home.Home, device, modelID string, log io.Writer) error {
 	spec, err := Desired(device)
 	if err != nil {
 		return err
+	}
+	model, err := LookupModel(modelID)
+	if err != nil {
+		return err
+	}
+	if model.Provider != providerName {
+		return fmt.Errorf("model %s: provider %q is not supported by runtime provider %s", model.ID, model.Provider, spec.Provider)
 	}
 	if err := h.Ensure(); err != nil {
 		return err
@@ -51,8 +60,8 @@ func Run(h home.Home, device string, log io.Writer) error {
 	} else if stage, err = materializeRuntime(h, uv, spec, log); err != nil {
 		return fmt.Errorf("runtime %s: %w", id, err)
 	}
-	if err := materializeModel(h, log); err != nil {
-		return fmt.Errorf("model: %w", err)
+	if err := materializeModel(h, model, log); err != nil {
+		return fmt.Errorf("model %s: %w", model.ID, err)
 	}
 	if stage != "" {
 		if err := os.Rename(stage, final); err != nil {
@@ -63,11 +72,11 @@ func Run(h home.Home, device string, log io.Writer) error {
 		}
 		fmt.Fprintf(log, "runtime %s published\n", id)
 	}
-	a := home.Active{Runtime: id, Model: ModelDirName(), Device: device}
+	a := home.Active{Runtime: id, ModelID: model.ID, Model: ModelDirName(model), Device: device}
 	if err := home.WriteJSON(h.Path("state", "active-runtime.json"), a); err != nil {
 		return err
 	}
-	fmt.Fprintf(log, "active: runtime=%s model=%s device=%s\n", a.Runtime, a.Model, a.Device)
+	fmt.Fprintf(log, "active: runtime=%s model=%s (%s) device=%s\n", a.Runtime, a.ModelID, a.Model, a.Device)
 	return nil
 }
 
@@ -212,41 +221,46 @@ func normalizeDist(d string) string {
 	return strings.ReplaceAll(strings.ToLower(name), "_", "-") + "==" + ver
 }
 
-// materializeModel materializes the pinned model independently of the
+// materializeModel materializes the catalog model m independently of the
 // Python runtime. A present model is reused only if every file still matches
 // its pinned digest.
-func materializeModel(h home.Home, log io.Writer) error {
-	final := h.Path("models", filepath.FromSlash(ModelDirName()))
+func materializeModel(h home.Home, m home.ModelManifest, log io.Writer) error {
+	final := h.Path("models", filepath.FromSlash(ModelDirName(m)))
 	if _, err := os.Stat(filepath.Join(final, "hachidori-model.json")); err == nil {
-		if err := VerifyModel(final); err != nil {
-			return fmt.Errorf("model %s exists but failed verification: %w", final, err)
+		if err := VerifyModel(final, m); err != nil {
+			return fmt.Errorf("%s exists but failed verification: %w", final, err)
 		}
-		fmt.Fprintf(log, "model %s@%s verified, reusing\n", Model.Repo, Model.Revision[:12])
+		fmt.Fprintf(log, "model %s (%s@%s) verified, reusing\n", m.ID, m.Repo, m.Revision[:12])
 		return nil
 	}
 	stage := final + ".staging"
 	if err := os.RemoveAll(stage); err != nil {
 		return err
 	}
-	for rel, want := range Model.Files {
-		url := modelBaseURL + Model.Repo + "/resolve/" + Model.Revision + "/" + rel
+	for rel, want := range m.Files {
+		url := modelBaseURL + m.Repo + "/resolve/" + m.Revision + "/" + rel
 		if err := fetch(url, filepath.Join(stage, filepath.FromSlash(rel)), want, log); err != nil {
 			return err
 		}
 	}
-	if err := home.WriteJSON(filepath.Join(stage, "hachidori-model.json"), Model); err != nil {
+	if err := home.WriteJSON(filepath.Join(stage, "hachidori-model.json"), m); err != nil {
 		return err
 	}
 	return os.Rename(stage, final)
 }
 
-// VerifyModel checks every pinned model file in dir against its digest.
-func VerifyModel(dir string) error {
+// VerifyModel checks that dir holds exactly the catalog model m: its
+// manifest names m's repository and revision (and ID, when recorded) with
+// m's digests, and every file matches its pinned digest.
+func VerifyModel(dir string, m home.ModelManifest) error {
 	var mm home.ModelManifest
 	if err := home.ReadJSON(filepath.Join(dir, "hachidori-model.json"), &mm); err != nil {
 		return err
 	}
-	for rel, want := range Model.Files {
+	if mm.Repo != m.Repo || mm.Revision != m.Revision || (mm.ID != "" && mm.ID != m.ID) {
+		return fmt.Errorf("model manifest %s %s@%s is not catalog model %s (%s@%s)", mm.ID, mm.Repo, mm.Revision, m.ID, m.Repo, m.Revision)
+	}
+	for rel, want := range m.Files {
 		if mm.Files[rel] != want {
 			return fmt.Errorf("model manifest does not match pinned digest for %s", rel)
 		}

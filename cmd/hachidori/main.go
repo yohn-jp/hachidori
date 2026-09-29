@@ -31,7 +31,8 @@ import (
 const usage = `usage: hachidori <command> [flags]
 
 runtime (inference host):
-  setup      materialize the pinned runtime and model under HACHIDORI_HOME
+  setup      materialize the pinned runtime and a catalog model (--model) under
+             HACHIDORI_HOME and activate them
   serve      run the HTTP runtime with a resident inference worker
   dashboard  serve, plus a host-local Web dashboard (status, start/stop/restart,
              doctor, SSH reverse-tunnel launcher) on 127.0.0.1:7844
@@ -68,16 +69,35 @@ func main() {
 	}
 }
 
-func cmdSetup(args []string) error {
+// setupFlags are the flags of `hachidori setup`. A model is selected only by
+// its catalog ID; there is deliberately no repository or revision input.
+type setupFlags struct{ home, device, model string }
+
+func newSetupFlags() (*flag.FlagSet, *setupFlags) {
+	var f setupFlags
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
-	homeFlag := fs.String("home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
-	device := fs.String("device", "cuda", "inference device: cuda or cpu")
+	fs.StringVar(&f.home, "home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
+	fs.StringVar(&f.device, "device", "cuda", "inference device: cuda or cpu")
+	fs.StringVar(&f.model, "model", setup.DefaultModel, "catalog model ID to materialize and activate ("+strings.Join(modelIDs(), ", ")+")")
+	return fs, &f
+}
+
+func modelIDs() []string {
+	var ids []string
+	for _, m := range setup.Models {
+		ids = append(ids, m.ID)
+	}
+	return ids
+}
+
+func cmdSetup(args []string) error {
+	fs, f := newSetupFlags()
 	fs.Parse(args)
-	h, err := home.Resolve(*homeFlag)
+	h, err := home.Resolve(f.home)
 	if err != nil {
 		return err
 	}
-	return setup.Run(h, *device, os.Stderr)
+	return setup.Run(h, f.device, f.model, os.Stderr)
 }
 
 func cmdServe(args []string) error { return runHost("serve", args) }
@@ -126,8 +146,8 @@ func runHost(name string, args []string) error {
 	srv := &http.Server{Addr: *listen, Handler: server.HandlerSince(sup, rt, started), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
-	fmt.Fprintf(os.Stderr, "hachidori: serving %s (runtime %s, model %s, device %s); worker log %s\n",
-		*listen, rt.Runtime, rt.Model, rt.Device, logf.Name())
+	fmt.Fprintf(os.Stderr, "hachidori: serving %s (runtime %s, model %s (%s), device %s); worker log %s\n",
+		*listen, rt.Runtime, rt.ModelID, rt.Model, rt.Device, logf.Name())
 	go logTransitions(ctx, sup)
 
 	var dash *http.Server
