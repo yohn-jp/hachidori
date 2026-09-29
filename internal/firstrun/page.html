@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hachidori</title>
+<style>
+  :root { color-scheme: light dark; --fg:#1b1f24; --muted:#59636e; --bg:#f6f8fa; --card:#fff; --line:#d0d7de; --accent:#0969da; --ok:#1a7f37; --bad:#cf222e; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#8d96a0; --bg:#0d1117; --card:#161b22; --line:#30363d; --accent:#4493f8; --ok:#3fb950; --bad:#f85149; } }
+  body { margin:0; font:15px/1.5 "Segoe UI", system-ui, sans-serif; color:var(--fg); background:var(--bg); }
+  main { max-width:680px; margin:6vh auto; padding:0 20px; }
+  h1 { font-size:28px; margin:0 0 4px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:20px; margin-top:16px; }
+  .muted { color:var(--muted); }
+  .path { font-family:Consolas, monospace; word-break:break-all; padding:8px 10px; border:1px solid var(--line); border-radius:6px; min-height:1.5em; }
+  button { font:inherit; padding:7px 16px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+  .bad { color:var(--bad); } .ok { color:var(--ok); }
+  ol.phases { list-style:none; padding:0; margin:12px 0 0; }
+  ol.phases li { padding:4px 0; } ol.phases li::before { content:"\25CB  "; color:var(--muted); }
+  ol.phases li.done::before { content:"\2713  "; color:var(--ok); } ol.phases li.current::before { content:"\25B6  "; color:var(--accent); }
+  ol.phases li.failed::before { content:"\2717  "; color:var(--bad); }
+  pre { white-space:pre-wrap; word-break:break-word; font-size:12px; max-height:180px; overflow:auto; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Hachidori</h1>
+  <div class="muted">Local semantic inference on this computer.</div>
+
+  <div id="notice" class="card bad" hidden></div>
+
+  <section id="select" class="card" hidden>
+    <strong>Where should Hachidori keep its models and runtime?</strong>
+    <p class="muted">Hachidori stores the model and its runtime locally, in one folder you choose. It manages everything inside that folder; you only pick the folder. Choose a drive with plenty of free space.</p>
+    <div class="path" id="path">No folder selected</div>
+    <div id="detail" class="muted"></div>
+    <div id="problem" class="bad"></div>
+    <div class="row">
+      <button id="browse" type="button">Browse...</button>
+    </div>
+    <fieldset class="row" style="border:0;padding:0" id="devices">
+      <label><input type="radio" name="device" value="cuda" checked> NVIDIA GPU (CUDA)</label>
+      <label><input type="radio" name="device" value="cpu"> CPU only</label>
+    </fieldset>
+    <div class="muted" id="devnote">Hachidori never switches from GPU to CPU on its own: if the GPU cannot be used, setup or startup reports the problem.</div>
+    <div class="row">
+      <button id="install" class="primary" type="button" disabled>Install</button>
+      <button id="use" class="primary" type="button" hidden>Use this installation</button>
+    </div>
+  </section>
+
+  <section id="progress" class="card" hidden>
+    <strong id="ptitle"></strong>
+    <ol class="phases" id="phases"></ol>
+    <div class="muted" id="worker"></div>
+  </section>
+
+  <section id="ready" class="card" hidden>
+    <strong class="ok">READY</strong>
+    <div id="identity" class="muted"></div>
+    <div class="row"><button id="open" class="primary" type="button">Open Hachidori</button></div>
+  </section>
+
+  <section id="failed" class="card" hidden>
+    <strong class="bad">Needs attention</strong>
+    <div id="fmsg"></div>
+    <pre id="fdetail"></pre>
+    <div class="muted" id="flog"></div>
+    <div class="row">
+      <button id="retry" class="primary" type="button">Retry</button>
+      <button id="change" type="button" hidden>Change storage location</button>
+    </div>
+  </section>
+  <div id="error" class="bad" style="margin-top:12px"></div>
+</main>
+<script>
+const TOKEN = "{{.Token}}";
+const $ = id => document.getElementById(id);
+let last = null, redirecting = false, devInit = false;
+
+async function post(path, extra) {
+  const fd = new FormData(); fd.set("token", TOKEN);
+  for (const k in (extra || {})) fd.set(k, extra[k]);
+  const r = await fetch(path, { method: "POST", body: new URLSearchParams(fd) });
+  const j = await r.json().catch(() => ({}));
+  $("error").textContent = r.ok ? "" : (j.error || ("request failed: " + r.status));
+  if (r.ok) render(j); else refresh();
+}
+async function refresh() {
+  try { const r = await fetch("/wizard/state"); render(await r.json()); } catch (e) { $("error").textContent = "Lost contact with Hachidori."; }
+}
+function gib(b) { return (b / 1073741824).toFixed(1) + " GiB"; }
+function show(id, on) { $(id).hidden = !on; }
+
+function render(v) {
+  last = v;
+  const n = $("notice"); n.textContent = v.notice || ""; show("notice", !!v.notice && v.stage === "select");
+  show("select", v.stage === "select");
+  show("progress", v.stage === "installing" || v.stage === "starting");
+  show("ready", v.stage === "ready");
+  show("failed", v.stage === "failed");
+  if (v.stage === "select") {
+    const s = v.selection;
+    $("path").textContent = s ? s.picked : "No folder selected";
+    let d = "";
+    if (s && s.home) {
+      if (s.nested) d += "Hachidori will use the folder " + s.home + ". ";
+      if (s.existing) d += "An existing Hachidori installation was found (" + s.existing.model_id + ", " + s.existing.device + "). ";
+      d += s.free_bytes != null ? "Free space: " + gib(s.free_bytes) + ". " : "Free space could not be determined. ";
+      d += "The space required is not calculated in advance.";
+    }
+    $("detail").textContent = d;
+    $("problem").textContent = s && s.problem ? s.problem : "";
+    const ok = !!(s && !s.problem && s.home);
+    $("install").disabled = !(ok && !s.existing);
+    show("install", !(ok && s.existing));
+    show("use", ok && !!s.existing);
+    show("devices", !(ok && s.existing)); show("devnote", !(ok && s.existing));
+    if (!devInit) { devInit = true; for (const r of document.getElementsByName("device")) r.checked = r.value === v.device; }
+  }
+  if (v.stage === "installing" || v.stage === "starting") {
+    $("ptitle").textContent = v.stage === "installing" ? "Installing Hachidori" : "Starting the model";
+    const ol = $("phases"); ol.textContent = "";
+    const label = { preparing: "Preparing the storage folder", runtime: "Installing the runtime", model: "Installing the model", activation: "Activating" };
+    for (const p of (v.phases || [])) { const li = document.createElement("li"); li.className = p.status; li.textContent = label[p.name] || p.name; ol.appendChild(li); }
+    $("worker").textContent = v.stage === "starting" ? "Runtime: " + (v.worker || "starting") : "This can take several minutes. Setup reports each stage as it begins.";
+  }
+  if (v.stage === "ready") {
+    const i = v.identity;
+    $("identity").textContent = i ? "Model " + i.model_id + " on " + i.device + " (runtime " + i.runtime + ") in " + i.home : "";
+    if (!redirecting) { redirecting = true; setTimeout(() => { location.href = "/"; }, 2500); }
+  }
+  if (v.stage === "failed") {
+    const f = v.failure || {};
+    $("fmsg").textContent = f.message || "The last action failed.";
+    $("fdetail").textContent = (f.class ? f.class + "\n" : "") + (f.stderr_tail || []).join("\n");
+    $("flog").textContent = v.setup_log ? "Details are kept in " + v.setup_log : "";
+    $("retry").disabled = !v.can_retry; show("change", v.can_change);
+  }
+}
+$("browse").onclick = () => post("/wizard/browse");
+$("install").onclick = () => post("/wizard/install", { device: document.querySelector("input[name=device]:checked").value });
+$("use").onclick = () => post("/wizard/use-existing");
+$("retry").onclick = () => post("/wizard/retry");
+$("change").onclick = () => post("/wizard/change");
+$("open").onclick = () => { location.href = "/"; };
+refresh(); setInterval(refresh, 800);
+</script>
+</body>
+</html>
