@@ -42,7 +42,7 @@ const (
 	fosForceFileSystem = 0x40
 	fosPathMustExist   = 0x800
 	sigdnFileSysPath   = 0x80058000
-	hrCancelled hresult = 0x800704C7
+	hrCancelled        hresult = 0x800704C7
 )
 
 func (winPicker) PickFolder(ctx context.Context, title string) (string, error) {
