@@ -107,7 +107,7 @@ func TestErrorsFiltersThresholdDetailAndExport(t *testing.T) {
 
 	// Threshold 0.8 marks the wrong 0.8 observation high-confidence.
 	body := e.get(t, "/errors?th=0.8&outcome=high_confidence_wrong").Body.String()
-	if !strings.Contains(body, `<dt>High-confidence wrong</dt><dd class="warn-t">1</dd>`) || !strings.Contains(body, "1 selected") ||
+	if !strings.Contains(body, `<dt>High-confidence wrong</dt><dd class="bad-t">1</dd>`) || !strings.Contains(body, "1 selected") ||
 		!strings.Contains(body, `<td class="mono">c2</td>`) || strings.Contains(body, `<td class="mono">c1</td>`) {
 		t.Fatalf("threshold/filter not applied")
 	}
@@ -184,8 +184,8 @@ func TestErrorsRoutesKeepDashboardBoundaries(t *testing.T) {
 	if b := e.post(t, "/errors/export", url.Values{"export_path": {filepath.Join(t.TempDir(), "x.json")}}).Body.String(); !strings.Contains(b, "no report is open") {
 		t.Error("exported without a report")
 	}
-	if !strings.Contains(e.get(t, "/").Body.String(), `<a href="/errors">Errors</a>`) {
-		t.Error("navigation lacks Errors")
+	if root := e.get(t, "/").Body.String(); !strings.Contains(root, `<a href="/errors">Evidence</a>`) || strings.Contains(root, ">Errors</a>") {
+		t.Error("navigation lacks Evidence")
 	}
 	// Rendered evidence values are escaped.
 	r := eval.Report{Schema: eval.EvidenceSchema, DatasetSHA256: "x", Dataset: xss, Observations: 1, Errors: []eval.RequestError{},

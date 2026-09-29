@@ -1,6 +1,6 @@
 package dashboard
 
-// Presentation-only helpers for page.html. Everything here is derived from
+// Presentation-only helpers for the workstation templates. Everything here is derived from
 // the view the handlers already build (the /v1/status document, the tunnel
 // status, the doctor run and the last action); nothing here reads or changes
 // runtime state.
@@ -58,9 +58,68 @@ func alerts(v view) []alert {
 		warn = append(warn, alert{"warn", "SSH tunnel error", t.LastError})
 	}
 	if d := v.Doctor; !d.Running && !d.Finished.IsZero() && !d.OK {
-		bad = append(bad, alert{"bad", "Doctor found problems", "See the doctor report below."})
+		bad = append(bad, alert{"bad", "Doctor found problems", "See the doctor report in Diagnostics."})
 	}
 	return append(bad, warn...)
+}
+
+// shellStatus is the compact runtime identity the workstation shell shows on
+// every page. It restates the /v1/status document and the attention list; it
+// is not a second readiness authority.
+type shellStatus struct {
+	Word      string // "READY", else the worker state
+	Tone      string // ok | warn | bad | idle
+	Model     string // selected model id
+	Provider  string // provider and version
+	Device    string // device and dtype
+	GPU       string // accelerator name
+	Memory    string // GPU memory in use, when the device reports it
+	Attention int    // items in the needs-attention list
+}
+
+func shellOf(v view) shellStatus {
+	w := v.S.Worker
+	s := shellStatus{Word: w.State, Tone: stateTone(w), Model: v.S.Runtime.ModelID, Attention: len(alerts(v)),
+		Provider: join(opt(w.Info, "provider"), opt(w.Info, "laya_version")),
+		Device:   join(opt(w.Info, "device"), opt(w.Info, "dtype")), GPU: opt(w.Info, "device_name")}
+	if w.Ready {
+		s.Word = "READY"
+	}
+	if m := gpuMem(w.Accelerator); m != nil {
+		s.Memory = fmt.Sprintf("%.0f%% GPU memory used", m.Used)
+	}
+	return s
+}
+
+// stateTone is the status vocabulary shared by every workspace.
+func stateTone(w worker.Snapshot) string {
+	switch {
+	case w.Ready:
+		return "ok"
+	case w.State == worker.StateFailed:
+		return "bad"
+	case w.State == worker.StateStarting || w.State == worker.StateRestarting:
+		return "warn"
+	}
+	return "idle"
+}
+
+// opt is one value of a free-form worker map, empty when absent.
+func opt(m map[string]any, key string) string {
+	if v, ok := m[key]; ok && v != nil {
+		return fmt.Sprint(v)
+	}
+	return ""
+}
+
+func join(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // memView is the GPU-memory breakdown derived from the accelerator stats, as
@@ -189,4 +248,15 @@ func probRows(probs map[string]float64, choice string) []probRow {
 		return rows[i].Choice < rows[j].Choice
 	})
 	return rows
+}
+
+// distView is one rendered probability distribution. Expected is set only
+// when the distribution comes from evidence that carries an expected label.
+type distView struct {
+	Rows     []probRow
+	Expected string
+}
+
+func distOf(probs map[string]float64, choice, expected string) distView {
+	return distView{Rows: probRows(probs, choice), Expected: expected}
 }

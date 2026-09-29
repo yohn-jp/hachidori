@@ -335,7 +335,7 @@ func formOf(in ExperimentInput) expForm {
 }
 
 func (d *Dashboard) expView() expView {
-	v := expView{Chrome: Chrome{Title: "Experiments", Nav: "experiments", APIAddr: d.cfg.APIAddr},
+	v := expView{Chrome: d.chrome("Experiments", "experiments"),
 		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr, Exp: d.exp.snapshot(),
 		Form: expForm{Warmup: "0", Passes: "1"}}
 	if v.Exp != nil {

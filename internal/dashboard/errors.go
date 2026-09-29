@@ -125,7 +125,7 @@ func (c controls) parse() (float64, explore.Filter, error) {
 	return th, f, nil
 }
 
-// errView is the Errors page's view model.
+// errView is the Evidence workspace's view model (the Error Explorer).
 type errView struct {
 	Chrome
 	Token    string
@@ -142,7 +142,7 @@ type errView struct {
 }
 
 func (d *Dashboard) errView(q url.Values) errView {
-	v := errView{Chrome: Chrome{Title: "Errors", Nav: "errors", APIAddr: d.cfg.APIAddr}, Token: d.token,
+	v := errView{Chrome: d.chrome("Evidence", "evidence"), Token: d.token,
 		Src: d.errs.get(), C: controlsOf(q)}
 	if e := d.exp.snapshot(); e != nil && e.Report != nil && e.State != ExpRunning {
 		v.ExpSeq = e.Seq

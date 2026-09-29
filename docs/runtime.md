@@ -143,12 +143,25 @@ It holds no runtime state of its own:
 | Run doctor | `doctor.Run` on the same `HACHIDORI_HOME` (it starts its own temporary worker, as the CLI does) |
 | tunnel | `tunnel.Manager`, `GET /api/tunnel` |
 | Experiment Runner (`/experiments`) | `internal/eval` (`question.Load`, `eval.Load`, `eval.RunEvidence`) run caller-side in the dashboard process against the same inference API address |
-| Error Explorer (`/errors`) | `internal/eval/explore`, a pure read-only consumer of `eval.Report` (`hachidori.evidence.v1`); no endpoint access |
+| Evidence / Error Explorer (`/errors`) | `internal/eval/explore`, a pure read-only consumer of `eval.Report` (`hachidori.evidence.v1`); no endpoint access |
 | Question Workbench (`/workbench`) | a caller of the existing `POST /v1/decide` on the dashboard's inference API address; `internal/question` / `internal/api` validation and compilation |
+
+The page is one workstation shell: a persistent navigation for **Runtime**
+(`/`, readiness, model/accelerator identity and lifecycle actions),
+**Workbench** (`/workbench`), **Experiments** (`/experiments`), **Evidence**
+(`/errors`, the Error Explorer) and, separated from them, **Diagnostics**
+(`/diagnostics`: doctor, the last worker failure, the SSH tunnel launcher and
+the Desktop panel). A compact readiness indicator and the runtime identity
+(provider, model, device, inference API address) are restated from the
+`/v1/status` document on every workspace. Lifecycle actions return to Runtime;
+doctor, tunnel and desktop actions return to Diagnostics. `/#diagnostics` (the
+tray's attention target) keeps an anchor on Runtime and forwards to
+`/diagnostics`.
 
 Every state-changing action is a same-origin `POST` carrying a per-process form
 token; `GET` never changes state. All rendered values go through `html/template`
-escaping. The page polls `/live` every 3 s; there is no frontend build.
+escaping. Every workspace polls `/live` every 3 s for the shell status (Runtime
+and Diagnostics also for their detail); there is no frontend build.
 
 ### Question Workbench
 
@@ -195,9 +208,9 @@ at an absolute path, never overwriting, and it can be replayed with
 `hachidori replay`. Dashboard shutdown, and the desktop replacing or closing
 its runtime, abort a running experiment; an aborted run keeps no report.
 
-### Error Explorer
+### Evidence (Error Explorer)
 
-`/errors` analyses one `hachidori.evidence.v1` report: the current
+The Evidence workspace (`/errors`) analyses one `hachidori.evidence.v1` report: the current
 experiment's report, or a report file opened by absolute path. Opening never
 runs inference. Reports are decoded strictly (`internal/eval/explore`): another
 schema, unknown fields, trailing data, or an internally inconsistent report

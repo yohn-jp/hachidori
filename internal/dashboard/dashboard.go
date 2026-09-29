@@ -1,6 +1,7 @@
-// Package dashboard serves the host-local operator page: runtime/GPU status,
-// worker lifecycle actions, doctor, the SSH reverse-tunnel launcher, the
-// Question Workbench, the Experiment Runner and the Error Explorer.
+// Package dashboard serves the host-local Semantic Experiment Workstation:
+// Runtime (status and worker lifecycle actions), the Question Workbench, the
+// Experiment Runner, Evidence (the Error Explorer) and Diagnostics (doctor,
+// worker failures, the SSH reverse-tunnel launcher, desktop preferences).
 //
 // It keeps no runtime state of its own. Status is the /v1/status document
 // (server.StatusBody), lifecycle actions go through worker.Lifecycle, doctor is
@@ -123,19 +124,21 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"doctorOut": doctorOut,
 	"pct":       func(p float64) string { return strconv.FormatFloat(100*p, 'f', 1, 64) + "%" },
 	"prob":      func(p float64) string { return strconv.FormatFloat(p, 'f', 4, 64) },
-	"probs":     probRows,
+	"distOf":    distOf,
 	"perQ":      perQuestion,
 	"f4":        func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) },
 	"short":     func(s string) string { return s[:min(len(s), 12)] },
 }).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html"))
 
-// Chrome is what every page's shared header needs: the page title, the
-// active navigation entry and the inference API address.
+// Chrome is what the shared workstation shell needs on every page: the page
+// title, the active workspace, the inference API address and the compact
+// runtime status restated from the /v1/status document.
 type Chrome struct {
 	Title   string
-	Nav     string // runtime | workbench | experiments | errors
+	Nav     string // runtime | workbench | experiments | evidence | diagnostics
 	APIAddr string
-	Live    bool // the page refreshes its live status slots
+	Live    bool // the workspace shows the live-refresh indicator
+	Rt      shellStatus
 }
 
 // New builds the dashboard.
@@ -145,8 +148,9 @@ func New(cfg Config) *Dashboard {
 		panic(err)
 	}
 	d := &Dashboard{cfg: cfg, token: hex.EncodeToString(b), mux: http.NewServeMux()}
-	d.mux.HandleFunc("GET /{$}", d.render("page"))
-	d.mux.HandleFunc("GET /live", d.render("live"))
+	d.mux.HandleFunc("GET /{$}", d.render("page", "Runtime", "runtime"))
+	d.mux.HandleFunc("GET /diagnostics", d.render("diagnostics", "Diagnostics", "diagnostics"))
+	d.mux.HandleFunc("GET /live", d.render("live", "Runtime", "runtime"))
 	d.mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, cfg.Status())
 	})
@@ -248,12 +252,23 @@ type view struct {
 	Desktop *DesktopView // nil unless the desktop shell is hosting the dashboard
 }
 
-func (d *Dashboard) view() view {
+// statusView is the part of the runtime view every page's shell needs.
+func (d *Dashboard) statusView(title, nav string) view {
 	d.mu.Lock()
 	last, doc := d.last, d.doctor
 	d.mu.Unlock()
-	v := view{Chrome: Chrome{Title: "host console", Nav: "runtime", APIAddr: d.cfg.APIAddr, Live: true},
-		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status(), Form: d.formDefaults()}
+	v := view{Chrome: Chrome{Title: title, Nav: nav, APIAddr: d.cfg.APIAddr},
+		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
+	v.Rt = shellOf(v)
+	return v
+}
+
+// chrome is the shell for the workspaces that do not render runtime detail.
+func (d *Dashboard) chrome(title, nav string) Chrome { return d.statusView(title, nav).Chrome }
+
+func (d *Dashboard) view(title, nav string) view {
+	v := d.statusView(title, nav)
+	v.Live, v.Form = true, d.formDefaults()
 	if d.cfg.Desktop != nil {
 		dv := &DesktopView{}
 		var err error
@@ -285,8 +300,8 @@ func (d *Dashboard) formDefaults() tunnel.Spec {
 	return f
 }
 
-func (d *Dashboard) render(name string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) { d.renderView(w, name, d.view()) }
+func (d *Dashboard) render(name, title, nav string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { d.renderView(w, name, d.view(title, nav)) }
 }
 
 func (d *Dashboard) renderView(w http.ResponseWriter, name string, v any) {
@@ -307,7 +322,16 @@ func (d *Dashboard) done(w http.ResponseWriter, r *http.Request, name string, er
 	d.mu.Lock()
 	d.last = a
 	d.mu.Unlock()
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, returnTo(r.URL.Path), http.StatusSeeOther)
+}
+
+// returnTo is the workspace an action's outcome is shown in: lifecycle
+// actions return to Runtime, doctor, tunnel and desktop setup to Diagnostics.
+func returnTo(path string) string {
+	if strings.HasPrefix(path, "/runtime/") {
+		return "/"
+	}
+	return "/diagnostics"
 }
 
 func (d *Dashboard) runtimeOp(w http.ResponseWriter, r *http.Request) {
