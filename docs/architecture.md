@@ -300,6 +300,8 @@ Selecting a home (`home.Remember`) requires an existing directory, normalizes it
 
 Non-Windows builds have no locator: they create no bootstrap state and desktop discovery resolves only explicit and `HACHIDORI_HOME`.
 
+Beside the locator the desktop may keep one more small integration record, `%LOCALAPPDATA%\Hachidori\desktop.json` (`{"schema":"hachidori.desktop/1","start_minimized":false,"close_notice_shown":false}`), holding only the Start minimized preference and whether the first close-to-tray was explained. It is distinct from runtime/model state and holds no secrets. The opt-in "Start Hachidori when I sign in" preference is stored nowhere else than in its mechanism, one value in the current user's `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` key (docs/runtime.md, "Tray and start at sign-in"); no service, task or machine-wide entry exists.
+
 ### 6.3 Isolation requirements
 
 The supervised worker MUST be started with an explicitly constructed environment.
@@ -752,7 +754,7 @@ Hachidori must be removable without forensic cleanup.
 
 Removing the user-facing executable and `HACHIDORI_HOME` should remove all Hachidori-owned runtime state.
 
-On Windows the desktop may additionally leave the bootstrap locator `%LOCALAPPDATA%\Hachidori\bootstrap.json` (§6.2.1), which holds no runtime state; deleting it never deletes `HACHIDORI_HOME`.
+On Windows the desktop may additionally leave the bootstrap locator `%LOCALAPPDATA%\Hachidori\bootstrap.json` (§6.2.1), which holds no runtime state; deleting it never deletes `HACHIDORI_HOME`. It may also leave `desktop.json` beside it (§6.2.1) and, if the user opted in, one per-user `Run` value named `Hachidori`.
 
 The product should avoid:
 

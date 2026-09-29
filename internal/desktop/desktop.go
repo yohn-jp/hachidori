@@ -25,7 +25,8 @@ var ErrUnsupported = errors.New("hachidori desktop is only available on Windows;
 	"on this system run 'hachidori dashboard' and open the printed http://127.0.0.1:7844/ URL in a browser")
 
 // ErrAlreadyRunning is returned when this user already has a desktop shell
-// running. The second launch exits without starting any runtime component.
+// running. The second launch activates that shell's window (Platform.Activate)
+// and exits without starting any runtime component.
 var ErrAlreadyRunning = errors.New("hachidori desktop is already running for this user; " +
 	"switch to its window (only one desktop shell may own the local runtime)")
 
@@ -44,6 +45,15 @@ type Window struct {
 	URL     string // initial navigation: the loopback dashboard
 	DataDir string // WebView2 user data folder (browser profile), under HACHIDORI_HOME
 	Policy  Policy // top-level navigation allow-list
+
+	// Resident, when set, makes the window resident: a tray icon is shown,
+	// closing the window hides it to the tray, and the window ends only when
+	// the user chooses Quit or ctx is done. When nil the window has no tray
+	// and closing it ends the session.
+	Resident *Resident
+	// StartHidden starts in the tray without showing the window (only
+	// meaningful with Resident).
+	StartHidden bool
 }
 
 // Platform is the OS surface the shell needs. Native returns the real one;
@@ -59,6 +69,13 @@ type Platform interface {
 	// the window is closed or ctx is done (which closes the window). All
 	// window and WebView2 resources are released before it returns.
 	Open(ctx context.Context, w Window) error
+	// Activate asks the desktop shell already running for this user to show
+	// and focus its window. It is what a second launch does instead of
+	// starting another runtime owner.
+	Activate() error
+	// ReportError tells the user about a fatal startup failure when no
+	// console may be visible (for example a sign-in launch).
+	ReportError(title, message string)
 }
 
 // Preflight runs, in order, everything that must succeed before the runtime
