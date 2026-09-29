@@ -415,8 +415,13 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 		hidden = s.tray.add(sum) && w.StartHidden
 	}
 	if !hidden {
-		// The window was already made visible before controller creation. Resize
-		// once more now that the controller exists, then focus it.
+		// Visible launches were presented before controller creation. A requested
+		// background launch can still become visible here when the tray icon could
+		// not be created, preserving the existing reachability fallback.
+		if w.StartHidden {
+			procShowWindow.Call(hwnd, swShowNormal)
+			procUpdateWindow.Call(hwnd)
+		}
 		c.Resize()
 		c.Focus()
 	}
