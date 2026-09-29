@@ -191,8 +191,12 @@ composition in `runHost`: one API, one resident worker, one `worker.Lifecycle`,
 the same dashboard handler with its Host/Origin/form-token checks) plus one
 native top-level window that shows `http://<--addr>/` through Microsoft
 WebView2. The window has no runtime, lifecycle, status or doctor logic of its
-own; it owns only its own lifetime. No-argument launch, home discovery,
-first-run setup and tray behaviour are not part of this command.
+own; it owns only its own lifetime. No-argument launch and first-run setup
+are not part of this command. The runtime is owned by the application
+controller (`internal/app`, see below): `desktop` binds exactly one supervised
+worker through `app.Controller` and the tray, dashboard and API all observe
+that one supervisor. The home is `--home`, then `HACHIDORI_HOME`, then the
+bootstrap locator.
 
 Order of a launch:
 
@@ -203,8 +207,12 @@ Order of a launch:
    Hachidori never downloads or installs WebView2;
 3. the per-user single-instance guard is taken: a named mutex
    `Local\Hachidori.Desktop.<digest of the user SID>` (session-local
-   namespace, no elevation). A second `desktop` launch by the same user exits
-   with "already running" before starting any runtime component. The kernel
+   namespace, no elevation). A second `desktop` launch by the same user
+   activates the running instance instead: it posts a per-user registered
+   window message to the running shell's window (found by a per-user window
+   class, hidden windows included), which shows and focuses it, and exits 0
+   before starting any runtime component. If that window cannot be found
+   within ~10 s the second launch fails with "already running". The kernel
    drops the mutex when the process ends, so a crash never blocks a relaunch;
 4. the API, worker and dashboard start; the dashboard listener is bound before
    the window is created;
@@ -225,12 +233,53 @@ Window security:
 - The page is the same server-rendered dashboard; its loopback `Host` check,
   same-origin check and per-process form token are unchanged.
 
-Close behaviour: closing the window ends the desktop session. The WebView2
-controller is closed (its browser processes exit), the window is destroyed,
-and then the process shuts down exactly as `dashboard` does on Ctrl+C: the
-dashboard and API stop listening, the worker is stopped, and a managed `ssh`
-child is terminated. Ctrl+C in the console closes the window the same way.
-(Tray/background operation is a separate, later feature.)
+Close behaviour: closing the window hides it to the tray (next section); the
+runtime keeps running. **Quit Hachidori** (tray menu) ends the desktop session:
+the WebView2 controller is closed (its browser processes exit), the tray icon
+is removed, the window is destroyed, and then the process shuts down exactly as
+`dashboard` does on Ctrl+C: the dashboard and API stop listening, the worker is
+stopped through the controller, and a managed `ssh` child is terminated.
+Ctrl+C in the console quits the same way.
+
+### Tray and start at sign-in
+
+While `hachidori desktop` runs it shows one per-user notification-area icon
+(`internal/desktop`, `tray_windows.go`). Its tooltip and the first menu line
+show one concise state, derived only from `app.Controller.Snapshot()`: **Ready**,
+**Starting** (starting/warming), **Setting up**, **Stopping**, **Stopped**, or
+**Needs attention** (failed, no home, not installed). The tray has no status
+calculation of its own. Menu: state line, **Open Hachidori**, **Restart
+Runtime** (the controller's `Restart`; disabled when nothing is installed),
+**Diagnostics**, the two preferences below, **Quit Hachidori**.
+
+- Closing the window hides it to the tray and leaves the worker untouched. The
+  first time, a tray notice says Hachidori keeps running; the dashboard's
+  Desktop panel repeats this. If the tray icon could not be created (for
+  example explorer is not up yet at sign-in) closing minimizes to the taskbar
+  instead, and the icon is retried (`TaskbarCreated` and a periodic refresh).
+- Open (or a tray click, or a second launch) shows the one existing window. When
+  the state is Needs attention it opens on the dashboard's `#diagnostics`
+  section, so a failed background start is visible. A worker that fails to reach
+  READY is shown as Needs attention with a one-time notice; the application never
+  restarts itself in a loop (worker restarts stay with the supervisor's policy;
+  only the user's Restart Runtime asks for another one).
+- **Start Hachidori when I sign in** (opt-in, off by default; tray menu and the
+  dashboard's Desktop panel) writes one value to the current user's Run key:
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `Hachidori` =
+  `"<exe>" desktop --background [--home "<home>"]`. It needs no elevation, is
+  idempotent (enabling twice writes one identical value; a moved executable
+  rewrites it), is removed by unchecking it (disabling an absent value
+  succeeds), starts this same executable, and creates no Windows Service,
+  scheduled task or machine-wide entry. `--home` is embedded unless the home
+  came from the bootstrap locator. Windows' own Startup Apps switch can still
+  disable a Run entry; Hachidori does not read or write that state.
+- **Start minimized** (opt-in, stored in `%LOCALAPPDATA%\Hachidori\desktop.json`
+  beside the bootstrap locator) applies to `--background` launches only: the
+  window starts hidden in the tray (only if the tray icon exists) while the
+  runtime starts as usual. An explicit `hachidori desktop` always shows the
+  window.
+- A background launch that cannot start the runtime at all (for example no
+  active runtime) shows an error box and exits 1; it is not retried.
 
 Distribution: the binding is `github.com/wailsapp/go-webview2` with its pure-Go
 loader (default build, no cgo). No `WebView2Loader.dll` is embedded, written

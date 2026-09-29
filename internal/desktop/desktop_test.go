@@ -122,6 +122,11 @@ func (f *fakePlatform) AcquireInstance() (func(), error) {
 }
 
 func (f *fakePlatform) Open(context.Context, Window) error { return nil }
+func (f *fakePlatform) Activate() error {
+	f.calls = append(f.calls, "activate")
+	return nil
+}
+func (f *fakePlatform) ReportError(string, string) {}
 
 func TestPreflightWebView2MissingIsExplicitAndTakesNoGuard(t *testing.T) {
 	f := &fakePlatform{}
