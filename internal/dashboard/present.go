@@ -7,6 +7,7 @@ package dashboard
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/tunnel"
@@ -165,4 +166,27 @@ func doctorOut(out string) doctorReport {
 		r.Lines = append(r.Lines, doctorLine{k, l})
 	}
 	return r
+}
+
+// probRow is one choice of a typed result with its probability.
+type probRow struct {
+	Choice string
+	P      float64
+	Chosen bool
+}
+
+// probRows orders a result's probabilities most likely first (ties by
+// label), marking the reported choice.
+func probRows(probs map[string]float64, choice string) []probRow {
+	rows := make([]probRow, 0, len(probs))
+	for c, p := range probs {
+		rows = append(rows, probRow{Choice: c, P: p, Chosen: c == choice})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].P != rows[j].P {
+			return rows[i].P > rows[j].P
+		}
+		return rows[i].Choice < rows[j].Choice
+	})
+	return rows
 }

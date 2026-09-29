@@ -142,10 +142,33 @@ It holds no runtime state of its own:
 | Start / Stop / Restart | `worker.Lifecycle`, which `serve` also uses; Stop leaves the API bound and reporting not ready |
 | Run doctor | `doctor.Run` on the same `HACHIDORI_HOME` (it starts its own temporary worker, as the CLI does) |
 | tunnel | `tunnel.Manager`, `GET /api/tunnel` |
+| Question Workbench (`/workbench`) | a caller of the existing `POST /v1/decide` on the dashboard's inference API address; `internal/question` / `internal/api` validation and compilation |
 
 Every state-changing action is a same-origin `POST` carrying a per-process form
 token; `GET` never changes state. All rendered values go through `html/template`
 escaping. The page polls `/live` every 3 s; there is no frontend build.
+
+### Question Workbench
+
+`/workbench` is an interactive caller surface for one bounded state and one or
+more editable v1 choice questions (id, instructions, choices, optional choice
+descriptions). **Run** compiles every question with `internal/question`,
+validates the request with the v1 contract and sends it as one
+`POST /v1/decide` to the resident runtime; an invalid request shows the v1
+validation error and is not sent. The page shows each result's choice,
+confidence and per-choice probabilities, and the exact request JSON body.
+There are no expected labels and no scoring here.
+
+The workbench keeps no state: the editor travels in the page's form (bounded
+by the v1 limits) and nothing is stored. Question Definition files are read or
+written only at an absolute local path the operator types, one file per
+action: **Load** validates one `hachidori.question.v1` file with the same rules
+as `hachidori question` and projects it into the editor (showing whether the
+edited question still matches the loaded identity); **Export** writes one
+edited question as a new `hachidori.question.v1` file (id, explicit version,
+content) and reports its identity and digest. Exports never replace an existing
+file. The workbench POST has a larger body limit than the other dashboard
+actions; its token, same-origin and loopback checks are the same.
 
 ### SSH reverse-tunnel launcher
 
