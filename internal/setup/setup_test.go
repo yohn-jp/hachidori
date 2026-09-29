@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -590,5 +591,29 @@ func TestNoPipInstallPath(t *testing.T) {
 		if !bytes.Equal(b, specFile(n)) {
 			t.Errorf("%s: runtime does not carry the exact spec file it was materialized from", n)
 		}
+	}
+}
+
+
+// RunObserved reports real setup phases in order and stops at the failing phase.
+func TestRunObservedPhases(t *testing.T) {
+	f := newFixture(t)
+	var got []Phase
+	if err := RunObserved(f.H, "cpu", DefaultModel, io.Discard, func(p Phase) { got = append(got, p) }); err != nil {
+		t.Fatal(err)
+	}
+	want := []Phase{PhasePreparing, PhaseRuntime, PhaseModel, PhaseActivation}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("phases %v, want %v", got, want)
+	}
+
+	f2 := newFixture(t)
+	f2.control(fakeControl{Fail: "venv"})
+	got = nil
+	if err := RunObserved(f2.H, "cpu", DefaultModel, io.Discard, func(p Phase) { got = append(got, p) }); err == nil {
+		t.Fatal("injected uv failure did not fail setup")
+	}
+	if want := []Phase{PhasePreparing, PhaseRuntime}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("phases on runtime failure %v, want %v", got, want)
 	}
 }

@@ -29,6 +29,29 @@ import (
 // Any failure leaves the active runtime and model untouched; rerunning
 // reconciles again.
 func Run(h home.Home, device, modelID string, log io.Writer) error {
+	return RunObserved(h, device, modelID, log, nil)
+}
+
+// Phase is a real setup boundary reported by RunObserved. There is no
+// percentage-based synthetic progress.
+type Phase string
+
+const (
+	PhasePreparing  Phase = "preparing"
+	PhaseRuntime    Phase = "runtime"
+	PhaseModel      Phase = "model"
+	PhaseActivation Phase = "activation"
+)
+
+// RunObserved is Run with an optional synchronous phase callback. It preserves
+// the same materialization/verification/activation semantics as Run.
+func RunObserved(h home.Home, device, modelID string, log io.Writer, onPhase func(Phase)) error {
+	enter := func(p Phase) {
+		if onPhase != nil {
+			onPhase(p)
+		}
+	}
+	enter(PhasePreparing)
 	spec, err := Desired(device)
 	if err != nil {
 		return err
@@ -47,6 +70,7 @@ func Run(h home.Home, device, modelID string, log io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("private uv: %w", err)
 	}
+	enter(PhaseRuntime)
 	id := spec.ID()
 	final := h.Path("runtime", id)
 	stage := ""
@@ -60,9 +84,11 @@ func Run(h home.Home, device, modelID string, log io.Writer) error {
 	} else if stage, err = materializeRuntime(h, uv, spec, log); err != nil {
 		return fmt.Errorf("runtime %s: %w", id, err)
 	}
+	enter(PhaseModel)
 	if err := materializeModel(h, model, log); err != nil {
 		return fmt.Errorf("model %s: %w", model.ID, err)
 	}
+	enter(PhaseActivation)
 	if stage != "" {
 		if err := os.Rename(stage, final); err != nil {
 			return fmt.Errorf("runtime %s: publish: %w", id, err)
