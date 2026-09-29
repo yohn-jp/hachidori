@@ -164,6 +164,7 @@ func (a *desktopApp) run() error {
 	defer tun.Disconnect()
 	var logMu sync.Mutex
 	var logs []*os.File
+	var dashNow *dashboard.Dashboard // guarded by logMu; the dashboard bound to the current runtime
 	defer func() {
 		logMu.Lock()
 		defer logMu.Unlock()
@@ -207,6 +208,15 @@ func (a *desktopApp) run() error {
 				PrefsPath: h.Path("state", "dashboard.json"),
 				Desktop:   mgr,
 			})
+			// An experiment of a replaced runtime's dashboard must not keep
+			// running against the next runtime.
+			logMu.Lock()
+			prev := dashNow
+			dashNow = dash
+			logMu.Unlock()
+			if prev != nil {
+				prev.StopExperiment()
+			}
 			sw.set(server.HandlerSince(b.Supervisor, b.Info, b.Started), dash)
 		})(root)
 		if err != nil {
@@ -283,6 +293,12 @@ func (a *desktopApp) run() error {
 		}
 	}
 
+	logMu.Lock()
+	last := dashNow
+	logMu.Unlock()
+	if last != nil {
+		last.StopExperiment()
+	}
 	shut, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if cerr := ctl.Close(shut); cerr != nil {

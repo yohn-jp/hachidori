@@ -1,11 +1,12 @@
 // Package dashboard serves the host-local operator page: runtime/GPU status,
-// worker lifecycle actions, doctor, the SSH reverse-tunnel launcher, and the
-// Question Workbench.
+// worker lifecycle actions, doctor, the SSH reverse-tunnel launcher, the
+// Question Workbench and the Experiment Runner.
 //
 // It keeps no runtime state of its own. Status is the /v1/status document
 // (server.StatusBody), lifecycle actions go through worker.Lifecycle, doctor is
 // the same doctor.Run as the CLI, the tunnel is a tunnel.Manager, and the
-// workbench is a caller of the existing POST /v1/decide endpoint at APIAddr.
+// workbench and experiment runner are callers of the existing inference API
+// at APIAddr (the runner through internal/eval).
 package dashboard
 
 import (
@@ -78,6 +79,8 @@ type Dashboard struct {
 	mu     sync.Mutex
 	last   *Action
 	doctor DoctorRun
+
+	exp experiments
 }
 
 // Action is the visible outcome of the last state-changing request.
@@ -103,7 +106,7 @@ type Prefs struct {
 	Tunnel tunnel.Spec `json:"tunnel"`
 }
 
-//go:embed page.html workbench.html
+//go:embed page.html workbench.html experiments.html
 var pageFS embed.FS
 
 var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
@@ -120,13 +123,16 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"pct":       func(p float64) string { return strconv.FormatFloat(100*p, 'f', 1, 64) + "%" },
 	"prob":      func(p float64) string { return strconv.FormatFloat(p, 'f', 4, 64) },
 	"probs":     probRows,
-}).ParseFS(pageFS, "page.html", "workbench.html"))
+	"perQ":      perQuestion,
+	"f4":        func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) },
+	"short":     func(s string) string { return s[:min(len(s), 12)] },
+}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html"))
 
 // Chrome is what every page's shared header needs: the page title, the
 // active navigation entry and the inference API address.
 type Chrome struct {
 	Title   string
-	Nav     string // runtime | workbench
+	Nav     string // runtime | workbench | experiments
 	APIAddr string
 	Live    bool // the page refreshes its live status slots
 }
@@ -150,6 +156,11 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /doctor", d.runDoctor)
 	d.mux.HandleFunc("GET /workbench", d.workbenchPage)
 	d.mux.HandleFunc("POST /workbench", d.workbenchPost)
+	d.mux.HandleFunc("GET /experiments", d.experimentsPage)
+	d.mux.HandleFunc("GET /experiments/live", d.experimentsLive)
+	d.mux.HandleFunc("POST /experiments/preflight", d.experimentsPreflight)
+	d.mux.HandleFunc("POST /experiments/run", d.experimentsRun)
+	d.mux.HandleFunc("POST /experiments/export", d.experimentsExport)
 	if cfg.Desktop != nil {
 		d.mux.HandleFunc("POST /desktop/prefs", d.desktopPrefs)
 	}
@@ -158,9 +169,13 @@ func New(cfg Config) *Dashboard {
 	return d
 }
 
-// Close releases what the dashboard owns: it terminates the managed ssh child
-// (if any) and waits for it, so dashboard shutdown never leaves it running.
-func (d *Dashboard) Close() { d.cfg.Tunnel.Disconnect() }
+// Close releases what the dashboard owns: it aborts a running experiment and
+// terminates the managed ssh child (if any), waiting for both, so dashboard
+// shutdown never leaves them running.
+func (d *Dashboard) Close() {
+	d.StopExperiment()
+	d.cfg.Tunnel.Disconnect()
+}
 
 // ServeHTTP enforces the host-local boundary before routing: the Host header
 // must name a loopback address (defeats DNS rebinding) and every POST must be
