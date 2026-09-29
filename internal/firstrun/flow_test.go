@@ -196,6 +196,18 @@ func (f *fixture) remembered() (string, bool) {
 	return b.Home, found
 }
 
+func (f *fixture) waitRemembered(want string) {
+	f.t.Helper()
+	for i := 0; i < 400; i++ {
+		if got, found := f.remembered(); found && got == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got, found := f.remembered()
+	f.t.Fatalf("remembered %q %v, want %q", got, found, want)
+}
+
 // Proofs 1-3: startup decisions come from real home discovery results.
 func TestDecideStartup(t *testing.T) {
 	loc := home.Locator{Path: filepath.Join(t.TempDir(), "bootstrap.json")}
@@ -280,9 +292,7 @@ func TestSelectValidateInstallReady(t *testing.T) {
 	}
 	close(f.gate)
 	f.waitStage(StageStarting)
-	if got, found := f.remembered(); !found || got != dir {
-		t.Fatalf("remembered %q %v, want %q", got, found, dir)
-	}
+	f.waitRemembered(dir)
 	if f.rt.starts != 1 || f.opens.Load() != 1 {
 		t.Fatalf("starts %d opens %d", f.rt.starts, f.opens.Load())
 	}
@@ -375,9 +385,7 @@ func TestForeignFolderGetsHachidoriSubfolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.waitStage(StageStarting)
-	if got, _ := f.remembered(); got != want {
-		t.Fatalf("remembered %q, want %q", got, want)
-	}
+	f.waitRemembered(want)
 	// Proof 14: nothing but the foreign file and the home escapes into the
 	// chosen folder or its parent.
 	assertOnly(t, dir, "notes.txt", HomeSubdir)
@@ -506,9 +514,7 @@ func TestChangeLocationBeforeActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.waitStage(StageStarting)
-	if got, _ := f.remembered(); got != b {
-		t.Fatalf("remembered %q, want %q", got, b)
-	}
+	f.waitRemembered(b)
 	if f.env.IsInstalled(a) {
 		t.Fatal("abandoned location must not read as installed")
 	}
@@ -546,9 +552,7 @@ func TestExistingHomeIsRecognisedNotOverwritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.waitStage(StageStarting)
-	if got, _ := f.remembered(); got != dir {
-		t.Fatalf("remembered %q", got)
-	}
+	f.waitRemembered(dir)
 	if f.setups.Load() != 0 || f.rt.starts != 1 {
 		t.Fatalf("setups %d starts %d", f.setups.Load(), f.rt.starts)
 	}
