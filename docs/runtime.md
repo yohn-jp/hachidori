@@ -245,6 +245,22 @@ hard kill (the worker still exits on stdin EOF).
 `hachidori.exe` is a console-subsystem program, so `desktop` started outside a
 terminal shows a console window beside the shell.
 
+## Application lifecycle (`internal/app`)
+
+`internal/app` is the platform-neutral application controller used by desktop
+surfaces. It projects one user-facing state over the existing setup,
+`worker.Lifecycle` / supervisor, active-runtime, and `server.StatusBody`
+authorities; it does not create a second runtime state model.
+
+States are `unconfigured`, `not_installed`, `installing`, `installed`,
+`starting`, `warming`, `ready`, `stopping`, and `failed`. Setup reports
+only real phases entered (`preparing`, `runtime`, `model`, `activation`);
+no synthetic percentage is exposed.
+
+The controller serializes setup/start/stop/restart actions so UI retries cannot
+create duplicate runtime ownership. Setup accepts the same device and catalog
+model selection as the CLI. Home discovery remains outside the controller.
+
 ## Runtime materialization
 
 `hachidori setup` is declarative. The desired runtime is a **Runtime Spec**:
