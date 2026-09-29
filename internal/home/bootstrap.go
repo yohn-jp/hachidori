@@ -100,7 +100,6 @@ func (l Locator) Load() (b Bootstrap, found bool, err error) {
 	return b, true, nil
 }
 
-
 // readBootstrapFile tolerates the narrow Windows sharing/lock window that can
 // occur while another process atomically replaces the locator. It never retries
 // malformed data or permanent I/O failures, and the total delay is bounded.
