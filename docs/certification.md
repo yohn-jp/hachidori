@@ -13,9 +13,21 @@ level reports it as **blocked / not checked**, never as passed.
 
 ## Windows RTX host (PowerShell)
 
+For dogfood, use the development prerelease assets from
+https://github.com/yohn-jp/hachidori/releases:
+
+- `hachidori-windows-amd64.exe`
+- `hachidori-windows-amd64.exe.sha256`
+
 ```powershell
-# 1. build (or copy) the single executable
-go build -o hachidori.exe ./cmd/hachidori
+# 1. verify the downloaded development executable.
+$expected = (Get-Content .\hachidori-windows-amd64.exe.sha256).Split()[0].ToLowerInvariant()
+$actual = (Get-FileHash .\hachidori-windows-amd64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "Hachidori SHA-256 mismatch" }
+Copy-Item .\hachidori-windows-amd64.exe .\hachidori.exe
+
+# Alternatively, build the same entry point locally:
+# go build -o hachidori.exe ./cmd/hachidori
 
 # 2. materialize runtime + model (network needed only here). Use a clean
 #    home; no system Python, pip or uv is needed (Hachidori bootstraps its
@@ -124,9 +136,12 @@ Prepare a clean user profile: no `%LOCALAPPDATA%\Hachidori\bootstrap.json`, no
    with the model, device and runtime identity.
 4. `%LOCALAPPDATA%\Hachidori\bootstrap.json` now names the chosen folder and
    contains only `schema` and `home`; the heavy state is under the chosen folder.
-5. Close the window; no `python` worker or `msedgewebview2.exe` of this run
-   remains. Double-click again: the dashboard appears and reaches READY without
-   the wizard, from the same home.
+5. Close the main window: it hides to the tray and the API keeps answering with
+   the same worker pid. Use **Quit Hachidori** from the tray and confirm the
+   process exits, the API/dashboard ports are released, and no `python` worker
+   or `msedgewebview2.exe` child from this run remains. Double-click again:
+   the dashboard appears and reaches READY without the wizard, from the same
+   home.
 6. Rename the chosen folder and relaunch: a recovery screen names the missing
    folder and nothing is installed. Rename it back and use Browse to locate it:
    "Use this installation" starts it without running setup.
@@ -134,14 +149,15 @@ Prepare a clean user profile: no `%LOCALAPPDATA%\Hachidori\bootstrap.json`, no
    exit.
 8. With the GPU unusable, choose CUDA: setup or startup reports the failure and
    Retry / Change location are offered; Hachidori never switches to CPU.
-6. Tray: exactly one icon; its tooltip and menu header read Starting, then Ready;
+9. Tray: exactly one icon; its tooltip and menu header read Starting, then Ready;
    stopping the worker from the dashboard reads Stopped; forcing a worker failure
    reads Needs attention with a one-time notice, and Open lands on Diagnostics.
    Restart Runtime restarts the worker (new pid) without a second owner.
-7. Start at sign-in (non-elevated shell): enabling it creates exactly one
+10. Start at sign-in (non-elevated shell): enabling it creates exactly one
    `Hachidori` value under `HKCU\...\Run`; enabling again changes nothing;
    unchecking removes it. `go test ./internal/desktop -run RunKey -v` passes. After
    a real sign-out/sign-in the app starts in the background (hidden when Start
    minimized is on) and reaches Ready.
-8. With the runtime uninstalled, a `--background` launch shows the error box, exits
-   1, and does not relaunch itself.
+11. With the runtime uninstalled, a `--background` launch shows the recovery /
+   needs-attention UI rather than silently remaining hidden or relaunching
+   itself.
