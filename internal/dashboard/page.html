@@ -227,6 +227,7 @@ footer.foot { font-size: .78rem; color: var(--faint); text-align: center; paddin
     <a href="/"{{if eq .Nav "runtime"}} aria-current="page"{{end}}>Runtime</a>
     <a href="/workbench"{{if eq .Nav "workbench"}} aria-current="page"{{end}}>Workbench</a>
     <a href="/experiments"{{if eq .Nav "experiments"}} aria-current="page"{{end}}>Experiments</a>
+    <a href="/errors"{{if eq .Nav "errors"}} aria-current="page"{{end}}>Errors</a>
     <a href="/#diagnostics">Diagnostics</a>
   </nav>
   <div class="endpoint"><span>Inference API</span><code>http://{{.APIAddr}}</code><span class="tag">loopback only</span></div>

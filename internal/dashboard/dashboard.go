@@ -1,6 +1,6 @@
 // Package dashboard serves the host-local operator page: runtime/GPU status,
 // worker lifecycle actions, doctor, the SSH reverse-tunnel launcher, the
-// Question Workbench and the Experiment Runner.
+// Question Workbench, the Experiment Runner and the Error Explorer.
 //
 // It keeps no runtime state of its own. Status is the /v1/status document
 // (server.StatusBody), lifecycle actions go through worker.Lifecycle, doctor is
@@ -80,7 +80,8 @@ type Dashboard struct {
 	last   *Action
 	doctor DoctorRun
 
-	exp experiments
+	exp  experiments
+	errs explorer
 }
 
 // Action is the visible outcome of the last state-changing request.
@@ -106,7 +107,7 @@ type Prefs struct {
 	Tunnel tunnel.Spec `json:"tunnel"`
 }
 
-//go:embed page.html workbench.html experiments.html
+//go:embed page.html workbench.html experiments.html errors.html
 var pageFS embed.FS
 
 var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
@@ -126,13 +127,13 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"perQ":      perQuestion,
 	"f4":        func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) },
 	"short":     func(s string) string { return s[:min(len(s), 12)] },
-}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html"))
+}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html"))
 
 // Chrome is what every page's shared header needs: the page title, the
 // active navigation entry and the inference API address.
 type Chrome struct {
 	Title   string
-	Nav     string // runtime | workbench | experiments
+	Nav     string // runtime | workbench | experiments | errors
 	APIAddr string
 	Live    bool // the page refreshes its live status slots
 }
@@ -161,6 +162,10 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /experiments/preflight", d.experimentsPreflight)
 	d.mux.HandleFunc("POST /experiments/run", d.experimentsRun)
 	d.mux.HandleFunc("POST /experiments/export", d.experimentsExport)
+	d.mux.HandleFunc("GET /errors", d.errorsPage)
+	d.mux.HandleFunc("POST /errors/open", d.errorsOpen)
+	d.mux.HandleFunc("POST /errors/use-experiment", d.errorsUseExperiment)
+	d.mux.HandleFunc("POST /errors/export", d.errorsExport)
 	if cfg.Desktop != nil {
 		d.mux.HandleFunc("POST /desktop/prefs", d.desktopPrefs)
 	}

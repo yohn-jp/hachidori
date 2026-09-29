@@ -134,6 +134,10 @@
     <label class="field">Export {{.Report.Schema}} report to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Form.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\report.json"></label>
     <div class="btn-row"><button type="submit" class="btn">Export report</button></div>
   </form>
+  <form method="post" action="/errors/use-experiment" class="inline" style="margin-top:.6rem">
+    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="seq" value="{{.Seq}}">
+    <button type="submit" class="btn">Explore errors</button>
+  </form>
   {{range .Exported}}<p class="note mono">exported to {{.}}</p>{{end}}
   <p class="cmd">Replay with <code>hachidori replay -dataset &lt;dataset&gt; [-questions &lt;definitions&gt;] &lt;report.json&gt;</code>.</p>
   {{end}}
