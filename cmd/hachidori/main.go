@@ -43,6 +43,8 @@ runtime (inference host):
   desktop    (Windows) dashboard in a native WebView2 window with a tray icon;
              closing the window hides it to the tray, Quit stops the runtime
              (--home / HACHIDORI_HOME; --background is used by start at sign-in)
+  (no command) on Windows, hachidori.exe with no arguments opens the desktop:
+             first-run setup with a native folder picker, or normal startup
   doctor     verify the installation, including a real smoke inference
 
 client (caller side, uses HACHIDORI_ENDPOINT):
@@ -70,20 +72,32 @@ func commands() map[string]func([]string) error {
 	}
 }
 
-func main() {
-	if len(os.Args) < 2 {
+func main() { os.Exit(run(os.Args[1:], noArgLaunch)) }
+
+// run dispatches the command line. noArg, when non-nil, is the no-argument
+// Windows desktop entry point. Explicit CLI commands remain unchanged.
+func run(args []string, noArg func() error) int {
+	if len(args) == 0 {
+		if noArg != nil {
+			if err := noArg(); err != nil {
+				fmt.Fprintln(os.Stderr, "hachidori:", err)
+				return 1
+			}
+			return 0
+		}
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
-	run, ok := commands()[os.Args[1]]
+	cmd, ok := commands()[args[0]]
 	if !ok {
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
-	if err := run(os.Args[2:]); err != nil {
+	if err := cmd(args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "hachidori:", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // setupFlags are the flags of `hachidori setup`. A model is selected only by

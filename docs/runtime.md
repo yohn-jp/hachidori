@@ -294,6 +294,70 @@ hard kill (the worker still exits on stdin EOF).
 `hachidori.exe` is a console-subsystem program, so `desktop` started outside a
 terminal shows a console window beside the shell.
 
+## Windows first run and no-argument launch
+
+On Windows, `hachidori.exe` with no arguments is the desktop product entry point
+(`cmd/hachidori/launch_windows.go`; other platforms print the CLI usage exactly
+as before, and every explicit subcommand keeps its CLI behavior). It uses the
+same WebView2 preflight, single-instance guard, window policy and
+`worker`/`server`/`dashboard` authorities as `hachidori desktop`, plus:
+
+1. `home.Discover("")` (explicit env `HACHIDORI_HOME` > bootstrap locator >
+   unconfigured) and `firstrun.Decide`:
+   - no locator: first-run wizard, no runtime, no home, nothing written;
+   - locator naming an installed home: normal startup (`app.Controller.Start`),
+     the window shows the dashboard;
+   - locator naming a home without a valid activation record: the wizard with
+     that home pre-selected;
+   - locator naming a missing/unavailable home, or a malformed locator: a
+     recovery screen that explains what was found and offers the same folder
+     choice. Recovery never installs, recreates or forgets anything by itself.
+2. The window origin is the loopback dashboard address for the whole session.
+   Under `/wizard/` it serves the embedded first-run page (no remote content,
+   Host/Origin/token checks like the dashboard); everything else is the
+   dashboard once the runtime is READY (or, on a normal launch, bound).
+3. The user chooses one storage root with **Browse...**, which runs the native
+   Windows folder dialog (`IFileOpenDialog`, folders only) on the server side
+   and returns only a path; the page cannot supply a path. `firstrun.Validate`
+   then checks it: absolute, not a file, writable (probed with a temporary file
+   that is removed; nothing is created yet), existing Hachidori home detection,
+   and free space only when Windows reports it (no required-space estimate is
+   invented). A non-empty folder that is not a Hachidori home is not mixed with
+   Hachidori's directories: `<chosen>\Hachidori` is used and shown.
+4. A valid existing installation is recognised and offered as **Use this
+   installation**; setup never runs over it.
+5. **Install** passes the explicit device (`cuda` or `cpu`, never changed by
+   Hachidori) and the default catalog model to `app.Controller.Setup`. Progress
+   is the controller's real setup phases (`preparing`, `runtime`, `model`,
+   `activation`); there is no percentage. Setup's log is kept in
+   `HOME/logs/setup.log`.
+6. The bootstrap locator is written (`home.Remember`) only after setup has
+   succeeded, immediately before the runtime is started. A failed or interrupted
+   setup therefore never leaves a locator claiming a finished installation, and
+   a relaunch returns to the screen it started from. If the locator cannot be
+   written, the runtime is not started and the error is shown with Retry.
+7. Start, warmup and READY come from the controller and the supervisor's
+   `/v1/status`; READY shows the model, device and runtime identity of that
+   document, then the window continues to the dashboard.
+8. Failures keep the controller's structured failure (source, class, message,
+   stderr tail). **Retry** repeats setup (one operation at a time) or the
+   runtime start; **Change storage location** returns to selection. Both are
+   available only before a successful activation: once a home has a valid
+   activation record the wizard neither offers nor accepts another location.
+
+WebView2's profile folder is `HOME/cache/webview2` when a home is selected at
+launch. Before any home exists (first run, recovery) it is a temporary folder
+that is removed when the window closes, so nothing Hachidori-owned is left
+outside the selected home except the bootstrap locator.
+
+Closing the window closes the controller: the runtime is stopped. An
+in-progress setup is not interruptible; the process waits for it up to its
+shutdown bound, and setup's atomic publish means an interrupted setup never
+activates a partial runtime. The Windows executable is a console-subsystem
+program, so a double-click also shows a console window; fatal startup errors
+(for example a missing WebView2 Runtime) are additionally shown in a message
+box.
+
 ## Application lifecycle (`internal/app`)
 
 `internal/app` is the platform-neutral application controller used by desktop

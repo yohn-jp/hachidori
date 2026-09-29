@@ -96,6 +96,37 @@ go test ./internal/desktop -v -count=1          # Windows-only tests: instance g
 5. On a machine without the WebView2 Runtime (or with it uninstalled), the
    command fails before any worker starts with the WebView2 diagnostic, and
    nothing is downloaded.
+
+## Windows first-run wizard (manual, real Windows only)
+
+Generic CI and cross-compilation cannot show a WebView2 window, the native
+folder dialog or a GPU. Report every item below as **not checked** unless it was
+run on a real Windows machine with the resulting `hachidori.exe`, and mark the
+GPU items separately.
+
+Prepare a clean user profile: no `%LOCALAPPDATA%\Hachidori\bootstrap.json`, no
+`HACHIDORI_HOME` in the environment, WebView2 Runtime installed.
+
+1. Double-click `hachidori.exe`. A window titled "Hachidori" shows the first-run
+   page; no other terminal input is needed.
+2. **Browse...** opens the normal Windows folder dialog. Choose a folder on a
+   non-system drive. The page shows the chosen path (and free space when
+   reported). No bootstrap file exists yet.
+3. Choose CPU (or CUDA on a supported NVIDIA machine) and **Install**. The page
+   shows the setup phases as they begin, then the runtime warming, then READY
+   with the model, device and runtime identity.
+4. `%LOCALAPPDATA%\Hachidori\bootstrap.json` now names the chosen folder and
+   contains only `schema` and `home`; the heavy state is under the chosen folder.
+5. Close the window; no `python` worker or `msedgewebview2.exe` of this run
+   remains. Double-click again: the dashboard appears and reaches READY without
+   the wizard, from the same home.
+6. Rename the chosen folder and relaunch: a recovery screen names the missing
+   folder and nothing is installed. Rename it back and use Browse to locate it:
+   "Use this installation" starts it without running setup.
+7. Corrupt `bootstrap.json` and relaunch: a diagnostic recovery screen, not an
+   exit.
+8. With the GPU unusable, choose CUDA: setup or startup reports the failure and
+   Retry / Change location are offered; Hachidori never switches to CPU.
 6. Tray: exactly one icon; its tooltip and menu header read Starting, then Ready;
    stopping the worker from the dashboard reads Stopped; forcing a worker failure
    reads Needs attention with a one-time notice, and Open lands on Diagnostics.
