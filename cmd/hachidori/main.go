@@ -56,12 +56,9 @@ client (caller side, uses HACHIDORI_ENDPOINT):
 Run 'hachidori <command> -h' for flags.
 `
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
-	}
-	cmds := map[string]func([]string) error{
+// commands is the command dispatch table; every command in usage must be here.
+func commands() map[string]func([]string) error {
+	return map[string]func([]string) error{
 		"setup": cmdSetup, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
 		"dashboard": func(a []string) error { return runHost("dashboard", a, nil) },
 		"desktop":   func(a []string) error { return cmdDesktop(desktop.Native(), a) },
@@ -70,7 +67,14 @@ func main() {
 		"question":  cmdQuestion,
 		"replay":    cmdReplay,
 	}
-	run, ok := cmds[os.Args[1]]
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	run, ok := commands()[os.Args[1]]
 	if !ok {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)

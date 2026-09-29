@@ -594,7 +594,6 @@ func TestNoPipInstallPath(t *testing.T) {
 	}
 }
 
-
 // RunObserved reports real setup phases in order and stops at the failing phase.
 func TestRunObservedPhases(t *testing.T) {
 	f := newFixture(t)
