@@ -25,6 +25,7 @@ client CLI / any HTTP caller
 | `hachidori decide [--endpoint URL] <request.json\|->` | client | send one v1 decide request |
 | `hachidori eval [--endpoint URL] [--out report.json] <dataset.jsonl>` | client | caller-side evaluation |
 | `hachidori benchmark [--endpoint URL] [--warmup N] [--passes N] [--out report.json] <dataset.jsonl>` | client | eval plus warmup and repeated passes for latency |
+| `hachidori replay [--endpoint URL] [--dataset D] [--case ID]… [--question ID]… [--print] [--out replay.json] <report.json>` | client | reconstruct and re-send recorded decisions (see Evaluation) |
 
 `--home` defaults to `HACHIDORI_HOME`; there is no implicit home. `--endpoint`
 defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
@@ -291,6 +292,43 @@ overall mean confidence, ECE (15 equal-width bins, same binning as
 `laya.common.ece_score`), client round-trip p50/p95 and server inference p50/p95,
 per-observation results keyed by case id and question id, dataset SHA-256.
 Request errors are listed and never scored.
+
+### Decision Evidence (`--out`)
+
+The `--out` report is versioned Decision Evidence (`"schema":
+"hachidori.evidence.v1"`), written only to the caller-chosen local file;
+nothing is stored on the inference host. Besides the aggregates above it holds:
+
+- `served`: the served identity snapshotted from `GET /v1/status` before the
+  run — the status `runtime` object and `worker.provider` object verbatim
+  (without per-start `load_ms`/`warmup_ms`) plus their `identity_sha256`. It is
+  never taken from caller input; eval refuses to start when status does not
+  identify a ready provider and a model.
+- `served_end` and `served_consistent`: status is snapshotted again after the
+  run. If the identity digest changed, the runtime restarted (uptime went
+  backwards) or the end snapshot failed, `served_consistent` is `false` and the
+  command exits non-zero after writing the report; such evidence must not be
+  attributed to a single model.
+- per observation: `question_sha256` (digest of the question exactly as sent,
+  so inline questions stay unambiguous across revisions), optional
+  `question_definition` (identity of a reusable question definition, absent for
+  inline questions), expected, choice, confidence, the full returned
+  `probabilities`, `correct`, `request_ms`, `inference_ms`.
+- `errors`: structured request failures (`phase`, `pass`, `case_id`,
+  `question_id`, `class` — the endpoint error class, `transport`,
+  `missing_result` or `status` — and `message`). They are never scored as
+  incorrect.
+
+`hachidori replay <report.json>` reloads the dataset (the recorded path, or
+`--dataset`), refuses to run when its SHA-256 differs from `dataset_sha256`,
+when a recorded case/question is absent, or when a question's
+`question_sha256` differs, and then rebuilds each selected case's original
+`/v1/decide` request (state and questions only — never expected labels).
+`--print` prints those requests without contacting the endpoint; otherwise
+they are sent through `/v1/decide` and each recorded choice and distribution
+is compared with the replayed one (`hachidori.replay.v1`). `served_matches` is
+`false` when the endpoint now serves a different identity than the recorded
+one.
 
 `testdata/eval/contract-example.jsonl` is a three-case format example, **not**
 benchmark evidence. The coding-agent benchmark from architecture §12 is not in

@@ -42,6 +42,7 @@ client (caller side, uses HACHIDORI_ENDPOINT):
   decide     send a v1 decide request (JSON file or - for stdin)
   eval       evaluate a local JSONL dataset through the endpoint
   benchmark  eval with warmup and repeated passes for latency
+  replay     re-send recorded decisions of an eval/benchmark report
 
 Run 'hachidori <command> -h' for flags.
 `
@@ -56,6 +57,7 @@ func main() {
 		"dashboard": func(a []string) error { return runHost("dashboard", a) },
 		"decide":    cmdDecide, "eval": func(a []string) error { return cmdEval("eval", a) },
 		"benchmark": func(a []string) error { return cmdEval("benchmark", a) },
+		"replay":    cmdReplay,
 	}
 	run, ok := cmds[os.Args[1]]
 	if !ok {
@@ -265,12 +267,14 @@ func cmdEval(name string, args []string) error {
 	if h, err := c.Health(); err != nil || !h.Ready {
 		return fmt.Errorf("endpoint %s not ready (state %q): %v", c.Endpoint, h.State, err)
 	}
-	r := eval.Run(c, cases, opt)
+	r, err := eval.Run(c, cases, opt)
+	if err != nil {
+		return err
+	}
 	r.Endpoint, r.Dataset, r.DatasetSHA256 = c.Endpoint, fs.Arg(0), sum
 	eval.Summary(os.Stdout, r)
 	if *out != "" {
-		b, _ := json.MarshalIndent(r, "", "  ")
-		if err := os.WriteFile(*out, append(b, '\n'), 0o644); err != nil {
+		if err := writeJSON(*out, r); err != nil {
 			return err
 		}
 		fmt.Printf("report written to %s\n", *out)
@@ -278,7 +282,92 @@ func cmdEval(name string, args []string) error {
 	if len(r.Errors) > 0 {
 		return fmt.Errorf("%d request errors", len(r.Errors))
 	}
+	if !r.ServedConsistent {
+		return errors.New("served runtime identity changed during the run; evidence is marked served_consistent=false")
+	}
 	return nil
+}
+
+type listFlag []string
+
+func (l *listFlag) String() string     { return strings.Join(*l, ",") }
+func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
+
+// cmdReplay reconstructs the /v1/decide requests behind recorded evidence
+// from the local dataset, refusing a dataset whose digest differs, and
+// either prints them or re-sends them and compares the results.
+func cmdReplay(args []string) error {
+	fs := flag.NewFlagSet("replay", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "", "endpoint (default: $HACHIDORI_ENDPOINT or "+client.DefaultEndpoint+")")
+	dataset := fs.String("dataset", "", "dataset JSONL (default: the dataset path recorded in the report)")
+	out := fs.String("out", "", "write the replay comparison JSON to this local file instead of stdout")
+	printOnly := fs.Bool("print", false, "print the reconstructed requests without contacting the endpoint")
+	var sel eval.Selection
+	fs.Var((*listFlag)(&sel.Cases), "case", "replay only this case id (repeatable)")
+	fs.Var((*listFlag)(&sel.Questions), "question", "replay only this question id (repeatable)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: hachidori replay [flags] <report.json>")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	r, err := eval.LoadReport(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	path := *dataset
+	if path == "" {
+		path = r.Dataset
+	}
+	cases, sum, err := eval.Load(path)
+	if err != nil {
+		return fmt.Errorf("replay source %q: %w", path, err)
+	}
+	items, err := eval.ReplayRequests(r, cases, sum, sel)
+	if err != nil {
+		return err
+	}
+	if *printOnly {
+		reqs := make([]api.DecideRequest, len(items))
+		for i, it := range items {
+			reqs[i] = it.Request
+		}
+		return printJSON(reqs)
+	}
+	c := client.New(*endpoint)
+	rep, err := eval.Replay(c, r, items)
+	if err != nil {
+		return err
+	}
+	rep.Endpoint = c.Endpoint
+	if *out != "" {
+		if err := writeJSON(*out, rep); err != nil {
+			return err
+		}
+		fmt.Printf("replay written to %s\n", *out)
+	} else if err := printJSON(rep); err != nil {
+		return err
+	}
+	if !rep.ServedMatches {
+		fmt.Fprintln(os.Stderr, "hachidori: note: endpoint serves a different identity than the recorded evidence")
+	}
+	for _, res := range rep.Results {
+		if res.Error != nil {
+			return fmt.Errorf("replay request errors (see output)")
+		}
+	}
+	return nil
+}
+
+func writeJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
 }
 
 func printJSON(v any) error {
