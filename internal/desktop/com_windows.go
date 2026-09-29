@@ -46,6 +46,8 @@ type hresult uint32
 
 func (hr hresult) errno() syscall.Errno { return syscall.Errno(uint32(hr)) }
 
+func normalizeHRESULT(raw uintptr) hresult { return hresult(uint32(raw)) }
+
 // comCall invokes vtable slot of the COM object obj.
 //
 //go:uintptrescapes
@@ -53,7 +55,7 @@ func comCall(obj unsafe.Pointer, slot int, args ...uintptr) hresult {
 	vtbl := *(*unsafe.Pointer)(obj)
 	fn := *(*uintptr)(unsafe.Add(vtbl, uintptr(slot)*unsafe.Sizeof(uintptr(0))))
 	r, _, _ := syscall.SyscallN(fn, append([]uintptr{uintptr(obj)}, args...)...)
-	return hresult(uint32(r))
+	return normalizeHRESULT(r)
 }
 
 // eventHandler is a COM object implementing one ICoreWebView2*EventHandler.
