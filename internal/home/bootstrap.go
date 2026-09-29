@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // BootstrapSchema versions the bootstrap locator record.
@@ -82,7 +83,7 @@ type Locator struct{ Path string }
 // unknown-schema record is an error, never a first run. Load does not check
 // that the stored home exists; see Lookup.
 func (l Locator) Load() (b Bootstrap, found bool, err error) {
-	data, err := os.ReadFile(l.Path)
+	data, err := readBootstrapFile(l.Path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Bootstrap{}, false, nil
 	}
@@ -97,6 +98,24 @@ func (l Locator) Load() (b Bootstrap, found bool, err error) {
 		return Bootstrap{}, false, err
 	}
 	return b, true, nil
+}
+
+
+// readBootstrapFile tolerates the narrow Windows sharing/lock window that can
+// occur while another process atomically replaces the locator. It never retries
+// malformed data or permanent I/O failures, and the total delay is bounded.
+func readBootstrapFile(path string) ([]byte, error) {
+	const attempts = 10
+	var data []byte
+	var err error
+	for i := 0; i < attempts; i++ {
+		data, err = os.ReadFile(path)
+		if err == nil || !retryableBootstrapReadError(err) {
+			return data, err
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return nil, err
 }
 
 func parseBootstrap(data []byte) (Bootstrap, error) {
