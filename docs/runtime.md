@@ -142,6 +142,7 @@ It holds no runtime state of its own:
 | Start / Stop / Restart | `worker.Lifecycle`, which `serve` also uses; Stop leaves the API bound and reporting not ready |
 | Run doctor | `doctor.Run` on the same `HACHIDORI_HOME` (it starts its own temporary worker, as the CLI does) |
 | tunnel | `tunnel.Manager`, `GET /api/tunnel` |
+| Experiment Runner (`/experiments`) | `internal/eval` (`question.Load`, `eval.Load`, `eval.RunEvidence`) run caller-side in the dashboard process against the same inference API address |
 | Question Workbench (`/workbench`) | a caller of the existing `POST /v1/decide` on the dashboard's inference API address; `internal/question` / `internal/api` validation and compilation |
 
 Every state-changing action is a same-origin `POST` carrying a per-process form
@@ -169,6 +170,29 @@ edited question as a new `hachidori.question.v1` file (id, explicit version,
 content) and reports its identity and digest. Exports never replace an existing
 file. The workbench POST has a larger body limit than the other dashboard
 actions; its token, same-origin and loopback checks are the same.
+
+### Experiment Runner
+
+`/experiments` wraps the caller-side evaluation authority for an operator on
+the same machine. The operator enters an absolute local JSONL dataset path,
+optional Question Definition files/directories, warmup and passes
+(`eval.Options`). **Preflight** resolves definitions (`question.Load`) and
+loads and validates the whole dataset (`eval.Load`) without inference. **Run**
+repeats that preflight, checks `/health`, and runs `eval.RunEvidence` in the
+background against the dashboard's inference API address, exactly as
+`hachidori benchmark` does: expected labels stay in the dashboard process and
+only `Case.Request()` projections are sent. The page shows request progress,
+a terminal state (`succeeded`; `failed` for request errors, an inconsistent
+served identity, or no served identity; `aborted`), the report's summary and
+per-question metrics, dataset SHA-256, definition identities and served
+identity.
+
+One experiment runs at a time per dashboard; a second run is refused. The
+report is kept in memory only until the next run; **Export** writes it as
+canonical `hachidori.evidence.v1` JSON (the `eval -out` encoding) to a new file
+at an absolute path, never overwriting, and it can be replayed with
+`hachidori replay`. Dashboard shutdown, and the desktop replacing or closing
+its runtime, abort a running experiment; an aborted run keeps no report.
 
 ### SSH reverse-tunnel launcher
 

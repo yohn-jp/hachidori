@@ -3,6 +3,7 @@ package dashboard
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"html"
 	"io"
 	"net/http"
@@ -28,15 +29,55 @@ type fakeAPI struct {
 	bodies [][]byte
 	paths  []string
 	reply  func(req api.DecideRequest) (int, any)
+	// status serves GET /v1/status (n counts status calls); "" fails.
+	status func(n int) string
+	nstat  int
+	// block, when set, holds every decide request until it is closed or
+	// the request is abandoned.
+	block chan struct{}
+}
+
+func statusDoc(model string, uptime int) string {
+	return fmt.Sprintf(`{"schema":"hachidori.v1","runtime":{"home":"/h","runtime":"cpu-abc","model_id":"laya-base","model":%q,"device":"cpu"},`+
+		`"uptime_s":%d,"worker":{"state":"ready","ready":true,"pid":42,"starts":1,`+
+		`"provider":{"provider":"laya","laya_version":"0.3.21","device":"cpu","load_ms":100,"warmup_ms":3}}}`, model, uptime)
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
+	switch r.URL.Path {
+	case "/health":
+		f.mu.Unlock()
+		w.Write([]byte(`{"ready":true,"state":"ready"}`))
+		return
+	case "/v1/status":
+		n := f.nstat
+		f.nstat++
+		st := f.status
+		f.mu.Unlock()
+		doc := statusDoc("org/laya@rev1", 10+n)
+		if st != nil {
+			doc = st(n)
+		}
+		if doc == "" {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(doc))
+		return
+	}
 	f.bodies = append(f.bodies, b)
 	f.paths = append(f.paths, r.Method+" "+r.URL.Path)
-	reply := f.reply
+	reply, block := f.reply, f.block
 	f.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-r.Context().Done():
+			return
+		}
+	}
 	var req api.DecideRequest
 	_ = json.Unmarshal(b, &req)
 	code, body := http.StatusOK, any(nil)
