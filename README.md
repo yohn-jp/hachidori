@@ -8,18 +8,53 @@ Hachidori does **not** own orchestration policy, repository governance, workspac
 
 See [docs/architecture.md](docs/architecture.md) for the target architecture.
 
-## Quick start
+## Windows quick start
+
+Development releases publish two Windows amd64 assets on the
+[Releases page](https://github.com/yohn-jp/hachidori/releases):
+
+- `hachidori-windows-amd64.exe`
+- `hachidori-windows-amd64.exe.sha256`
+
+Verify the downloaded executable before running it:
+
+```powershell
+$expected = (Get-Content .\hachidori-windows-amd64.exe.sha256).Split()[0].ToLowerInvariant()
+$actual = (Get-FileHash .\hachidori-windows-amd64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "Hachidori SHA-256 mismatch" }
+```
+
+Then double-click `hachidori-windows-amd64.exe` (or run it with no arguments).
+
+On first launch Hachidori:
+
+1. opens the Windows desktop UI;
+2. asks for one storage root for its managed runtime, models, caches, logs, and state;
+3. lets you choose CUDA or CPU and install the private runtime/model;
+4. starts and warms the resident worker;
+5. reaches READY and remains available from the system tray.
+
+Later launches rediscover the selected home automatically. Closing the main
+window hides Hachidori to the tray; **Quit Hachidori** stops the runtime and
+exits. Microsoft WebView2 Runtime is required and is not installed silently by
+Hachidori.
+
+## CLI / development quick start
+
+Explicit CLI commands remain available for development, automation, and
+certification:
 
 ```sh
 go build -o hachidori ./cmd/hachidori
-export HACHIDORI_HOME=/path/to/hachidori-home   # the only mutable root
+export HACHIDORI_HOME=/path/to/hachidori-home   # managed runtime/model state root
 ./hachidori setup --device cuda                 # or --device cpu
 ./hachidori doctor
 ./hachidori serve                               # 127.0.0.1:7843
 # or, with the host-local dashboard and SSH tunnel launcher:
 ./hachidori dashboard                           # API 127.0.0.1:7843, UI http://127.0.0.1:7844/
-# or, on Windows, the same dashboard in a native WebView2 window:
-hachidori.exe desktop --home D:\Hachidori        # needs the WebView2 Runtime; one per user
+
+# Windows: explicit desktop entry into the same composition as no-argument launch
+hachidori.exe desktop --home D:\Hachidori
 
 # caller side
 export HACHIDORI_ENDPOINT=http://127.0.0.1:7843
