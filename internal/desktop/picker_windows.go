@@ -42,7 +42,7 @@ const (
 	fosForceFileSystem = 0x40
 	fosPathMustExist   = 0x800
 	sigdnFileSysPath   = 0x80058000
-	hrCancelled        = 0x800704C7
+	hrCancelled hresult = 0x800704C7
 )
 
 func (winPicker) PickFolder(ctx context.Context, title string) (string, error) {
@@ -76,19 +76,20 @@ func (winPicker) PickFolder(ctx context.Context, title string) (string, error) {
 func showFolderDialog(title string, owner uintptr) (string, error) {
 	var dlg unsafe.Pointer
 	const clsctxInprocServer = 0x1
-	if hr, _, _ := procCoCreateInstance.Call(uintptr(unsafe.Pointer(&clsidFileOpenDialog)), 0, clsctxInprocServer,
-		uintptr(unsafe.Pointer(&iidFileOpenDialog)), uintptr(unsafe.Pointer(&dlg))); hr != sOK {
-		return "", fmt.Errorf("creating the folder dialog: %w", syscall.Errno(hr))
+	if raw, _, _ := procCoCreateInstance.Call(uintptr(unsafe.Pointer(&clsidFileOpenDialog)), 0, clsctxInprocServer,
+		uintptr(unsafe.Pointer(&iidFileOpenDialog)), uintptr(unsafe.Pointer(&dlg))); hresult(uint32(raw)) != sOK {
+		hr := hresult(uint32(raw))
+		return "", fmt.Errorf("creating the folder dialog: %w", hr.errno())
 	}
 	defer comCall(dlg, slotRelease)
 
 	var opts uint32
 	if hr := comCall(dlg, slotDialogGetOpts, uintptr(unsafe.Pointer(&opts))); hr != sOK {
-		return "", syscall.Errno(hr)
+		return "", hr.errno()
 	}
 	opts |= fosPickFolders | fosForceFileSystem | fosPathMustExist
 	if hr := comCall(dlg, slotDialogSetOpts, uintptr(opts)); hr != sOK {
-		return "", syscall.Errno(hr)
+		return "", hr.errno()
 	}
 	if t, err := windows.UTF16PtrFromString(title); err == nil {
 		comCall(dlg, slotDialogSetTitle, uintptr(unsafe.Pointer(t)))
@@ -98,16 +99,16 @@ func showFolderDialog(title string, owner uintptr) (string, error) {
 	case hrCancelled:
 		return "", ErrPickCancelled
 	default:
-		return "", fmt.Errorf("showing the folder dialog: %w", syscall.Errno(hr))
+		return "", fmt.Errorf("showing the folder dialog: %w", hr.errno())
 	}
 	var item unsafe.Pointer
 	if hr := comCall(dlg, slotDialogResult, uintptr(unsafe.Pointer(&item))); hr != sOK || item == nil {
-		return "", fmt.Errorf("reading the folder selection: %w", syscall.Errno(hr))
+		return "", fmt.Errorf("reading the folder selection: %w", hr.errno())
 	}
 	defer comCall(item, slotRelease)
 	var name *uint16
 	if hr := comCall(item, slotItemDisplay, sigdnFileSysPath, uintptr(unsafe.Pointer(&name))); hr != sOK || name == nil {
-		return "", fmt.Errorf("the selection is not a file system folder: %w", syscall.Errno(hr))
+		return "", fmt.Errorf("the selection is not a file system folder: %w", hr.errno())
 	}
 	defer windows.CoTaskMemFree(unsafe.Pointer(name))
 	return windows.UTF16PtrToString(name), nil
