@@ -111,30 +111,33 @@ var errBusy = errors.New("an experiment is already running; wait for it to finis
 // authority. Nothing is sent to the endpoint.
 func preflight(in ExperimentInput) (Preflight, error) {
 	pre := Preflight{Input: in}
-	p, err := absPath(in.Dataset, "dataset")
+	dataset, err := absPath(in.Dataset, "dataset")
 	if err != nil {
 		return pre, err
 	}
-	in.Dataset = p
 	if in.Warmup < 0 || in.Warmup > maxWarmup {
 		return pre, fmt.Errorf("warmup must be 0..%d", maxWarmup)
 	}
 	if in.Passes < 1 || in.Passes > maxPasses {
 		return pre, fmt.Errorf("passes must be 1..%d", maxPasses)
 	}
+	// Only the checked paths are used from here on.
+	var defPaths []string
+	for _, d := range in.Definitions {
+		p, err := absPath(d, "Question Definition")
+		if err != nil {
+			return pre, err
+		}
+		defPaths = append(defPaths, p)
+	}
 	var defs *question.Set
-	for i, d := range in.Definitions {
-		if in.Definitions[i], err = absPath(d, "Question Definition"); err != nil {
+	if len(defPaths) > 0 {
+		if defs, err = question.Load(defPaths...); err != nil {
 			return pre, err
 		}
 	}
-	if len(in.Definitions) > 0 {
-		if defs, err = question.Load(in.Definitions...); err != nil {
-			return pre, err
-		}
-	}
-	pre.Input = in
-	cases, sum, err := eval.Load(in.Dataset, defs)
+	pre.Input = ExperimentInput{Dataset: dataset, Definitions: defPaths, Warmup: in.Warmup, Passes: in.Passes}
+	cases, sum, err := eval.Load(dataset, defs)
 	if err != nil {
 		return pre, err
 	}
