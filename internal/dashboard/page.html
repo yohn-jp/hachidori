@@ -1,10 +1,10 @@
 {{define "open"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>{{.Title}} · Hachidori</title>
+<title>{{t .Title}} · Hachidori</title>
 <style>
 /* ---- tokens ---------------------------------------------------------- */
 :root {
@@ -317,7 +317,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </style>
 </head>
 <body>
-<a class="skip" href="#main">Skip to workspace</a>
+<a class="skip" href="#main">{{t "Skip to workspace"}}</a>
 <div class="shell">
 <header class="appbar">
   <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>Hachidori</a>
@@ -325,14 +325,14 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </header>
 <nav class="sidenav" aria-label="Workspaces">
   <ul>
-    <li><a href="/"{{if eq .Nav "runtime"}} aria-current="page"{{end}}>Runtime</a></li>
-    <li><a href="/workbench"{{if eq .Nav "workbench"}} aria-current="page"{{end}}>Workbench</a></li>
-    <li><a href="/experiments"{{if eq .Nav "experiments"}} aria-current="page"{{end}}>Experiments</a></li>
-    <li><a href="/errors"{{if eq .Nav "evidence"}} aria-current="page"{{end}}>Evidence</a></li>
+    <li><a href="/"{{if eq .Nav "runtime"}} aria-current="page"{{end}}>{{t "Runtime"}}</a></li>
+    <li><a href="/workbench"{{if eq .Nav "workbench"}} aria-current="page"{{end}}>{{t "Workbench"}}</a></li>
+    <li><a href="/experiments"{{if eq .Nav "experiments"}} aria-current="page"{{end}}>{{t "Experiments"}}</a></li>
+    <li><a href="/errors"{{if eq .Nav "evidence"}} aria-current="page"{{end}}>{{t "Evidence"}}</a></li>
   </ul>
   <ul class="nav-support">
-    {{if .HasSettings}}<li><a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>Settings</a></li>
-    {{end}}<li><a href="/diagnostics"{{if eq .Nav "diagnostics"}} aria-current="page"{{end}}>Diagnostics</a></li>
+    {{if .HasSettings}}<li><a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>{{t "Settings"}}</a></li>
+    {{end}}<li><a href="/diagnostics"{{if eq .Nav "diagnostics"}} aria-current="page"{{end}}>{{t "Diagnostics"}}</a></li>
   </ul>
 </nav>
 <main class="workspace" id="main" tabindex="-1">
@@ -350,10 +350,11 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   var shell = document.getElementById("shell-status"), sync = document.getElementById("sync"), text = document.getElementById("sync-text");
   function stamp(ok) {
     if (ok) shell.removeAttribute("data-stale"); else shell.setAttribute("data-stale", "");
-    shell.title = ok ? "" : "status stale: refresh failed";
+    shell.title = ok ? "" : {{t "status stale: refresh failed"}};
     if (!sync) return;
     sync.classList.toggle("tone-warn", !ok);
-    text.textContent = ok ? "live · updated " + new Date().toLocaleTimeString() : "status stale · refresh failed " + new Date().toLocaleTimeString();
+    var now = new Date().toLocaleTimeString();
+    text.textContent = (ok ? {{t "live · updated %s"}} : {{t "status stale · refresh failed %s"}}).replace("%s", now);
   }
   function refresh() {
     fetch("/live", {cache: "no-store"}).then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
@@ -388,23 +389,23 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 {{define "shell"}}{{with .Rt}}<span class="readiness tone-{{.Tone}}" aria-label="runtime {{.Word}}"><span class="dot"></span>{{.Word}}</span>
 {{with .GPU}}<span class="appbar-fact">{{.}}</span>{{end}}
-{{if .Attention}}<a class="attention-link" href="/diagnostics">{{.Attention}} needs attention</a>{{end}}{{end}}{{end}}
+{{if .Attention}}<a class="attention-link" href="/diagnostics">{{.Attention}} {{t "needs attention"}}</a>{{end}}{{end}}{{end}}
 
 {{define "statusbar"}}{{with .Rt}}{{with .Provider}}<span>{{.}}</span>{{end}}{{with .Model}}<span class="mono">{{.}}</span>{{end}}
 {{with .Device}}<span class="opt">{{.}}</span>{{end}}{{with .Memory}}<span class="opt">{{.}}</span>{{end}}{{end}}
-<span class="endpoint">inference API <span class="mono">http://{{.APIAddr}}</span> · loopback only</span>{{end}}
+<span class="endpoint">{{t "inference API"}} <span class="mono">http://{{.APIAddr}}</span> {{t "· loopback only"}}</span>{{end}}
 
-{{define "sync"}}<div class="btn-row" id="sync"><span class="note" id="sync-text" role="status" aria-live="polite">live · 3 s</span><button type="button" class="btn quiet" id="refresh">Refresh</button></div>{{end}}
+{{define "sync"}}<div class="btn-row" id="sync"><span class="note" id="sync-text" role="status" aria-live="polite">{{t "live · 3 s"}}</span><button type="button" class="btn quiet" id="refresh">{{t "Refresh"}}</button></div>{{end}}
 
 {{define "last"}}{{with .}}<div class="last {{if .OK}}tone-ok{{else}}tone-bad{{end}}" role="status">
-  <strong>{{if .OK}}OK{{else}}FAILED{{end}}</strong><span class="what">{{.Name}}</span><span class="msg-text">{{.Message}}</span><time>{{when .Time}}</time>
+  <strong>{{if .OK}}OK{{else}}FAILED{{end}}</strong><span class="what">{{t .Name}}</span><span class="msg-text">{{t .Message}}</span><time>{{when .Time}}</time>
 </div>{{end}}{{end}}
 
 {{/* ---- Runtime: can I use Hachidori now? ---- */}}
 {{define "page"}}{{template "open" .Chrome}}
 <script>if (location.hash === "#diagnostics") location.replace("/diagnostics");</script>
 <header class="ws-head">
-  <div><h1>Runtime</h1><p class="lede">The resident inference runtime on this host.</p></div>
+  <div><h1>{{t "Runtime"}}</h1><p class="lede">{{t "The resident inference runtime on this host."}}</p></div>
   {{template "sync"}}
 </header>
 <div class="slot" data-live="overview">{{template "overview" .}}</div>
@@ -421,164 +422,177 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 <section class="readiness-panel tone-{{.Rt.Tone}}" aria-labelledby="rd-h">
   <div>
-    <h2 class="vh" id="rd-h">Inference runtime</h2>
+    <h2 class="vh" id="rd-h">{{t "Inference runtime"}}</h2>
     <p class="state-word"><span class="dot"></span>{{if $w.Ready}}READY{{else}}{{$w.State}}{{end}}</p>
-    <p class="state-sub">phase {{$w.Phase}}{{with $w.ReadySince}} · ready since {{.}}{{end}}</p>
+    <p class="state-sub">{{t "phase"}} {{$w.Phase}}{{with $w.ReadySince}} {{t "· ready since"}} {{.}}{{end}}</p>
   </div>
   <dl class="identity">
-    <div><dt>Model</dt><dd class="model">{{.S.Runtime.ModelID}}</dd></div>
-    <div><dt>Accelerator</dt><dd>{{get $i "device_name"}}<span class="sub">{{with .Rt.Device}}{{.}} · {{end}}requested {{.S.Runtime.Device}}</span></dd></div>
-    <div><dt>Provider</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd></div>
-    <div><dt>Runtime</dt><dd>{{.S.Runtime.Runtime}}<span class="sub">supervision {{if .Running}}running{{else}}<span class="bad-t">not running</span>{{end}} · API up <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></span></dd></div>
+    <div><dt>{{t "Model"}}</dt><dd class="model">{{.S.Runtime.ModelID}}</dd></div>
+    <div><dt>{{t "Accelerator"}}</dt><dd>{{get $i "device_name"}}<span class="sub">{{with .Rt.Device}}{{.}} · {{end}}{{t "requested"}} {{.S.Runtime.Device}}</span></dd></div>
+    <div><dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd></div>
+    <div><dt>{{t "Runtime"}}</dt><dd>{{.S.Runtime.Runtime}}<span class="sub">{{t "supervision"}} {{if .Running}}{{t "running"}}{{else}}<span class="bad-t">{{t "not running"}}</span>{{end}} {{t "· API up"}} <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></span></dd></div>
   </dl>
   <div class="actions">
-    {{if $w.Ready}}<a class="btn primary" href="/workbench">Open Workbench</a>{{end}}
-    <form method="post" action="/runtime/start" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn{{if not .Running}} primary{{end}}">Start</button></form>
-    <form method="post" action="/runtime/restart" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn{{if and .Running (eq $w.State "failed")}} primary{{end}}">Restart</button></form>
-    <form method="post" action="/runtime/stop" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">Stop</button></form>
+    {{if $w.Ready}}<a class="btn primary" href="/workbench">{{t "Open Workbench"}}</a>{{end}}
+    <form method="post" action="/runtime/start" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn{{if not .Running}} primary{{end}}">{{t "Start"}}</button></form>
+    <form method="post" action="/runtime/restart" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn{{if and .Running (eq $w.State "failed")}} primary{{end}}">{{t "Restart"}}</button></form>
+    <form method="post" action="/runtime/stop" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Stop"}}</button></form>
   </div>
 </section>
 
 <div id="diagnostics">
 {{with alerts .}}
 <section class="attention tone-{{(index . 0).Level}}" aria-labelledby="attn-h">
-  <div class="region-h"><h2 id="attn-h">Needs attention <span class="count">{{len .}}</span></h2><a href="/diagnostics">Open Diagnostics</a></div>
+  <div class="region-h"><h2 id="attn-h">{{t "Needs attention"}} <span class="count">{{len .}}</span></h2><a href="/diagnostics">{{t "Open Diagnostics"}}</a></div>
   <ul>{{range .}}<li class="alert {{.Level}}"><strong>{{.Title}}</strong>{{with .Detail}}<span>{{.}}</span>{{end}}</li>{{end}}</ul>
 </section>
 {{else}}
-<p class="all-clear">No operator attention required. <a href="/diagnostics">Diagnostics</a></p>
+<p class="all-clear">{{t "No operator attention required."}} <a href="/diagnostics">{{t "Diagnostics"}}</a></p>
 {{end}}
 </div>
 
 <section class="region" aria-labelledby="load-h">
-  <div class="region-h"><h2 id="load-h">Load</h2><span class="sub">worker since start</span></div>
+  <div class="region-h"><h2 id="load-h">{{t "Load"}}</h2><span class="sub">{{t "worker since start"}}</span></div>
   {{$q := ratio $w.QueueDepth $w.QueueLimit}}{{$m := gpuMem $a}}
   <dl class="metrics">
-    <div class="metric"><dt>p50 latency</dt><dd>{{ms $w.LatencyP50MS}}</dd></div>
-    <div class="metric"><dt>p95 latency</dt><dd>{{ms $w.LatencyP95MS}}</dd></div>
-    <div class="metric"><dt>Requests</dt><dd>{{$w.Requests}}</dd></div>
-    <div class="metric"><dt>Errors</dt><dd class="{{if errTotal $w.Errors}}warn-t{{end}}">{{errTotal $w.Errors}}</dd></div>
-    <div class="metric meter"><dt>Queue</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
+    <div class="metric"><dt>{{t "p50 latency"}}</dt><dd>{{ms $w.LatencyP50MS}}</dd></div>
+    <div class="metric"><dt>{{t "p95 latency"}}</dt><dd>{{ms $w.LatencyP95MS}}</dd></div>
+    <div class="metric"><dt>{{t "Requests"}}</dt><dd>{{$w.Requests}}</dd></div>
+    <div class="metric"><dt>{{t "Errors"}}</dt><dd class="{{if errTotal $w.Errors}}warn-t{{end}}">{{errTotal $w.Errors}}</dd></div>
+    <div class="metric meter"><dt>{{t "Queue"}}</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
       <div class="bar" role="img" aria-label="queue {{$w.QueueDepth}} of {{$w.QueueLimit}}"><span class="{{if ge $q 100.0}}bad{{else if ge $q 75.0}}warn{{end}}" style="width:{{printf "%.1f" $q}}%"></span></div></div>
-    <div class="metric meter"><dt>GPU memory</dt><dd>{{with $m}}{{printf "%.0f" .Used}}%<small>of {{mib $a "memory_total"}}</small>{{else}}-<small>no device stats</small>{{end}}</dd>
+    <div class="metric meter"><dt>{{t "GPU memory"}}</dt><dd>{{with $m}}{{printf "%.0f" .Used}}%<small>{{t "of"}} {{mib $a "memory_total"}}</small>{{else}}-<small>{{t "no device stats"}}</small>{{end}}</dd>
       {{with $m}}<div class="bar" role="img" aria-label="GPU memory {{printf "%.1f" .Used}}% used"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>{{end}}</div>
   </dl>
-  {{with $w.Errors}}<p class="note" aria-label="errors by class">errors by class: {{range $k, $v := .}}<span class="mono">{{$k}} {{$v}}</span> {{end}}</p>{{end}}
+  {{with $w.Errors}}<p class="note" aria-label="errors by class">{{t "errors by class:"}} {{range $k, $v := .}}<span class="mono">{{$k}} {{$v}}</span> {{end}}</p>{{end}}
 </section>
 
 {{with .Tunnel}}
 <section class="region" aria-labelledby="ct-h">
-  <div class="region-h"><h2 id="ct-h">Caller transport</h2><a href="/diagnostics#transport">Tunnel settings</a></div>
+  <div class="region-h"><h2 id="ct-h">{{t "Caller transport"}}</h2><a href="/diagnostics#transport">{{t "Tunnel settings"}}</a></div>
   <div class="transport-line">
     <span class="badge {{if eq .State "running"}}tone-ok{{else if eq .State "exited"}}tone-bad{{end}}">{{.State}}</span>
-    <span class="mono">{{with .Spec}}{{.Destination}}{{else}}no SSH reverse tunnel{{end}}</span>
+    <span class="mono">{{with .Spec}}{{.Destination}}{{else}}{{t "no SSH reverse tunnel"}}{{end}}</span>
     {{with .Endpoint}}<code class="endpoint-box" title="set on the SSH destination host">HACHIDORI_ENDPOINT={{.}}</code>{{end}}
   </div>
   {{with .LastError}}<p class="note bad-t">{{.}}</p>{{end}}
 </section>
 {{end}}
 
-<p class="note">Worker, environment, path and provider evidence: <a href="/diagnostics#runtime-evidence">Diagnostics</a></p>
+<p class="note">{{t "Worker, environment, path and provider evidence:"}} <a href="/diagnostics#runtime-evidence">{{t "Diagnostics"}}</a></p>
 {{end}}
 
 {{/* ---- Diagnostics: what is wrong with the appliance? ---- */}}
 {{define "settings"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>Settings</h1><p class="lede">Desktop preferences, saved runtime defaults and the model and runtime manager. Nothing here restarts the running runtime unless you choose Restart.</p></div>
+  <div><h1>{{t "Settings"}}</h1><p class="lede">{{t "Desktop preferences, saved runtime defaults and the model and runtime manager. Nothing here restarts the running runtime unless you choose Restart."}}</p></div>
 </header>
 {{template "last" .Last}}
 {{with .Desktop}}
 <section class="region" id="settings-desktop" aria-labelledby="sd-h">
-  <div class="region-h"><h2 id="sd-h">Desktop</h2><span class="sub">tray and sign-in</span></div>
+  <div class="region-h"><h2 id="sd-h">{{t "Desktop"}}</h2><span class="sub">{{t "tray and sign-in"}}</span></div>
   <form method="post" action="/desktop/prefs" class="region">
     <input type="hidden" name="token" value="{{$.Token}}">
     <input type="hidden" name="return" value="settings">
-    <label class="check"><input type="checkbox" name="start_at_sign_in" value="1"{{if .StartAtSignIn}} checked{{end}}> Start Hachidori when I sign in</label>
-    <label class="check"><input type="checkbox" name="start_minimized" value="1"{{if .StartMinimized}} checked{{end}}> Start minimized (in the tray, when started at sign-in)</label>
-    <div class="btn-row"><button type="submit" class="btn">Save desktop preferences</button></div>
+    <label class="check"><input type="checkbox" name="start_at_sign_in" value="1"{{if .StartAtSignIn}} checked{{end}}> {{t "Start Hachidori when I sign in"}}</label>
+    <label class="check"><input type="checkbox" name="start_minimized" value="1"{{if .StartMinimized}} checked{{end}}> {{t "Start minimized (in the tray, when started at sign-in)"}}</label>
+    <div class="btn-row"><button type="submit" class="btn">{{t "Save desktop preferences"}}</button></div>
     {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
   </form>
-  <p class="note">Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). The startup entry itself is the source of truth.</p>
+  <p class="note">{{t "Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). The startup entry itself is the source of truth."}}</p>
 </section>
 {{end}}
 {{with .Set}}
+<section class="region" id="settings-language" aria-labelledby="sl-h">
+  <div class="region-h"><h2 id="sl-h">{{t "Language"}}</h2><span class="sub">{{t "operator interface language"}}</span></div>
+  <form method="post" action="/settings/locale" class="region">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <input type="hidden" name="return" value="settings">
+    <div class="fields">
+      <label class="field">{{t "Display language"}}
+        <select name="locale">{{$l := .Locale}}{{range .Locales}}<option value="{{.}}"{{if eq (print .) $l}} selected{{end}} lang="{{.}}">{{.Name}}</option>{{end}}</select></label>
+    </div>
+    <div class="btn-row"><button type="submit" class="btn">{{t "Save language"}}</button></div>
+  </form>
+  <p class="note">{{t "Only operator-facing text changes. API fields, evidence, identifiers, paths and model output are never translated."}}</p>
+</section>
 <section class="region" id="settings-defaults" aria-labelledby="sr-h">
-  <div class="region-h"><h2 id="sr-h">Runtime defaults</h2><span class="sub">saved values, applied only by an explicit setup</span></div>
+  <div class="region-h"><h2 id="sr-h">{{t "Runtime defaults"}}</h2><span class="sub">{{t "saved values, applied only by an explicit setup"}}</span></div>
   <form method="post" action="/settings/defaults" class="region">
     <input type="hidden" name="token" value="{{$.Token}}">
     <input type="hidden" name="return" value="settings">
     <div class="fields">
-      <label class="field">Default device
+      <label class="field">{{t "Default device"}}
         <select name="device">
-          <option value=""{{if eq .Device ""}} selected{{end}}>no saved default</option>
+          <option value=""{{if eq .Device ""}} selected{{end}}>{{t "no saved default"}}</option>
           <option value="cuda"{{if eq .Device "cuda"}} selected{{end}}>cuda</option>
           <option value="cpu"{{if eq .Device "cpu"}} selected{{end}}>cpu</option>
         </select></label>
-      <label class="field">Default model
+      <label class="field">{{t "Default model"}}
         <select name="model">
-          <option value=""{{if eq .Model ""}} selected{{end}}>no saved default</option>
+          <option value=""{{if eq .Model ""}} selected{{end}}>{{t "no saved default"}}</option>
           {{$m := .Model}}{{range .Models}}<option value="{{.}}"{{if eq . $m}} selected{{end}}>{{.}}</option>{{end}}
         </select></label>
     </div>
-    <div class="btn-row"><button type="submit" class="btn">Save runtime defaults</button></div>
+    <div class="btn-row"><button type="submit" class="btn">{{t "Save runtime defaults"}}</button></div>
     {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
   </form>
-  <p class="note">Running runtime: <span class="mono">{{with $.Rt.Model}}{{.}}{{else}}-{{end}}</span>. Defaults do not change it. Explicit command-line flags and environment inputs always take precedence. No secrets are stored.</p>
+  <p class="note">{{t "Running runtime:"}} <span class="mono">{{with $.Rt.Model}}{{.}}{{else}}-{{end}}</span>{{t ". Defaults do not change it. Explicit command-line flags and environment inputs always take precedence. No secrets are stored."}}</p>
 </section>
 {{end}}
 {{with .Models}}
 <section class="region" id="settings-models" aria-labelledby="sm-h">
-  <div class="region-h"><h2 id="sm-h">Models &amp; runtimes</h2><span class="sub">catalog-pinned identities under HACHIDORI_HOME</span></div>
+  <div class="region-h"><h2 id="sm-h">{{t "Models & runtimes"}}</h2><span class="sub">{{t "catalog-pinned identities under HACHIDORI_HOME"}}</span></div>
   {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
   {{if .RestartRequired}}
   <div class="last tone-bad" role="status" id="restart-required">
-    <strong>RESTART REQUIRED</strong><span class="msg-text">The active runtime/model changed. The running worker still serves what it started with; nothing restarts automatically.</span>
-    <form method="post" action="/settings/models/restart" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><button type="submit" class="btn primary">Restart runtime</button></form>
+    <strong>{{t "RESTART REQUIRED"}}</strong><span class="msg-text">{{t "The active runtime/model changed. The running worker still serves what it started with; nothing restarts automatically."}}</span>
+    <form method="post" action="/settings/models/restart" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><button type="submit" class="btn primary">{{t "Restart runtime"}}</button></form>
   </div>
   {{end}}
   {{with .Busy}}
-  <div class="last" role="status" id="models-busy"><strong>RUNNING</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}{{with .Phase}} · phase: {{.}}{{end}}</span></div>
+  <div class="last" role="status" id="models-busy"><strong>RUNNING</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}{{with .Phase}} {{t "· phase:"}} {{.}}{{end}}</span></div>
   <script>setTimeout(function () { location.reload(); }, 3000);</script>
   {{end}}
   {{with .Last}}
   <div class="last {{if .Failure}}tone-bad{{else}}tone-ok{{end}}" role="status" id="models-last"><strong>{{if .Failure}}FAILED{{else}}DONE{{end}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}{{with .Failure}} · {{.}}{{end}}</span></div>
   {{end}}
-  {{with .Inventory.ActiveErr}}<p class="bad-t">Activation record: {{.}}</p>{{end}}
+  {{with .Inventory.ActiveErr}}<p class="bad-t">{{t "Activation record:"}} {{.}}</p>{{end}}
 
-  <h3>Runtimes</h3>
+  <h3>{{t "Runtimes"}}</h3>
   <div class="table-wrap"><table class="data" id="runtime-inventory">
-    <thead><tr><th>Device</th><th>Identity</th><th>Immutable facts</th><th>Status</th><th>Actions</th></tr></thead>
+    <thead><tr><th>{{t "Device"}}</th><th>{{t "Identity"}}</th><th>{{t "Immutable facts"}}</th><th>{{t "Status"}}</th><th>{{t "Actions"}}</th></tr></thead>
     <tbody>{{range .Runtimes}}
       <tr{{if .Active}} aria-current="true"{{end}}>
         <td class="strong">{{.Device}}</td>
         <td class="mono">{{.ID}}</td>
         <td class="mono">{{.Platform}} · python {{.Python}} · {{.Provider}} · torch {{.Torch}}</td>
-        <td>{{if not .Supported}}<span class="badge tone-bad">unsupported</span>{{else if .Active}}<span class="badge tone-ok">active</span>{{else if .Materialized}}<span class="badge">materialized</span>{{else}}<span class="badge">not materialized</span>{{end}}
-          {{if .Verified}}<span class="tag">verified</span>{{end}}
+        <td>{{if not .Supported}}<span class="badge tone-bad">{{t "unsupported"}}</span>{{else if .Active}}<span class="badge tone-ok">{{t "active"}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
+          {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
           {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
           {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
         <td class="nowrap">{{if .Materialized}}
-          <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Verify</button></form>
-          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" onsubmit="return confirm('Remove this runtime from HACHIDORI_HOME?')"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">Remove</button></form>{{end}}
+          <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
+          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" onsubmit="return confirm({{t "Remove this runtime from HACHIDORI_HOME?"}})"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
         {{end}}</td>
       </tr>{{end}}
     </tbody>
   </table></div>
 
-  <h3>Models</h3>
+  <h3>{{t "Models"}}</h3>
   <div class="table-wrap"><table class="data" id="model-inventory">
-    <thead><tr><th>Model</th><th>Immutable facts</th><th>Status</th><th>Actions</th></tr></thead>
+    <thead><tr><th>{{t "Model"}}</th><th>{{t "Immutable facts"}}</th><th>{{t "Status"}}</th><th>{{t "Actions"}}</th></tr></thead>
     <tbody>{{range .Models}}
       <tr{{if .Active}} aria-current="true"{{end}}>
         <td class="strong">{{.ID}}{{with .Description}}<div class="muted">{{.}}</div>{{end}}</td>
-        <td class="mono">{{.Provider}} · {{.Repo}}@{{.Revision}} · {{.Files}} pinned file(s)</td>
-        <td>{{if .Active}}<span class="badge tone-ok">active</span>{{else if .Materialized}}<span class="badge">materialized</span>{{else}}<span class="badge">not materialized</span>{{end}}
-          {{if .Verified}}<span class="tag">verified</span>{{end}}
+        <td class="mono">{{.Provider}} · {{.Repo}}@{{.Revision}} · {{.Files}} {{t "pinned file(s)"}}</td>
+        <td>{{if .Active}}<span class="badge tone-ok">{{t "active"}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
+          {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
           {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
           {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
         <td class="nowrap">{{if .Materialized}}
-          <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Verify</button></form>
-          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" onsubmit="return confirm('Remove this model from HACHIDORI_HOME?')"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">Remove</button></form>{{end}}
+          <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
+          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" onsubmit="return confirm({{t "Remove this model from HACHIDORI_HOME?"}})"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
         {{end}}</td>
       </tr>{{end}}
     </tbody>
@@ -588,69 +602,69 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <input type="hidden" name="token" value="{{$.Token}}">
     <input type="hidden" name="return" value="settings">
     <div class="fields">
-      <label class="field">Device
+      <label class="field">{{t "Device"}}
         <select name="device">{{range .Devices}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
-      <label class="field">Model
+      <label class="field">{{t "Model"}}
         <select name="model">{{range .ModelIDs}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
     </div>
     <div class="btn-row">
-      <button type="submit" class="btn" formaction="/settings/models/materialize">Materialize</button>
-      <button type="submit" class="btn" formaction="/settings/models/repair">Repair</button>
-      <button type="submit" class="btn primary" formaction="/settings/models/activate">Activate</button>
+      <button type="submit" class="btn" formaction="/settings/models/materialize">{{t "Materialize"}}</button>
+      <button type="submit" class="btn" formaction="/settings/models/repair">{{t "Repair"}}</button>
+      <button type="submit" class="btn primary" formaction="/settings/models/activate">{{t "Activate"}}</button>
     </div>
   </form>
-  <p class="note">Only the catalog's pinned runtime and model identities are listed. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker. A requested device is never replaced by another. The active runtime and model cannot be removed.</p>
+  <p class="note">{{t "Only the catalog's pinned runtime and model identities are listed. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker. A requested device is never replaced by another. The active runtime and model cannot be removed."}}</p>
 </section>
 {{end}}
 {{with .Conns}}
 <section class="region" id="settings-connections" aria-labelledby="sc-h">
-  <div class="region-h"><h2 id="sc-h">Development connections</h2><span class="sub">named SSH reverse-tunnel profiles</span></div>
-  <p class="note">A development host only consumes <code>HACHIDORI_ENDPOINT</code>. A profile is non-secret data: SSH keys, agent, known_hosts and ssh_config stay with the host's own <code>ssh</code> client and are never read, stored or prompted for. One tunnel runs at a time; both ends are loopback-only.</p>
+  <div class="region-h"><h2 id="sc-h">{{t "Development connections"}}</h2><span class="sub">{{t "named SSH reverse-tunnel profiles"}}</span></div>
+  <p class="note">{{t "A development host only consumes"}} <code>HACHIDORI_ENDPOINT</code>{{t ". A profile is non-secret data: SSH keys, agent, known_hosts and ssh_config stay with the host's own"}} <code>ssh</code> {{t "client and are never read, stored or prompted for. One tunnel runs at a time; both ends are loopback-only."}}</p>
   {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
   <div class="slot" id="connections-state">{{template "transport" $}}</div>
   <div class="btn-row">
-    <form method="post" action="/tunnel/disconnect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><button type="submit" class="btn danger">Disconnect</button></form>
+    <form method="post" action="/tunnel/disconnect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><button type="submit" class="btn danger">{{t "Disconnect"}}</button></form>
   </div>
   {{range .Items}}
   <div class="surface" data-connection="{{.Name}}">
-    <div class="region-h"><h3>{{.Name}}</h3>{{if .Running}}<span class="badge tone-ok">connected</span>{{else if .Current}}<span class="badge">{{$.Tunnel.State}}</span>{{end}}</div>
+    <div class="region-h"><h3>{{.Name}}</h3>{{if .Running}}<span class="badge tone-ok">{{t "connected"}}</span>{{else if .Current}}<span class="badge">{{$.Tunnel.State}}</span>{{end}}</div>
     <dl class="kv">
-      <dt>destination</dt><dd>{{.Destination}}</dd>
-      <dt>forward</dt><dd>{{.RemoteBind}}:{{.RemotePort}} → 127.0.0.1:{{.LocalPort}}</dd>
+      <dt>{{t "destination"}}</dt><dd>{{.Destination}}</dd>
+      <dt>{{t "forward"}}</dt><dd>{{.RemoteBind}}:{{.RemotePort}} → 127.0.0.1:{{.LocalPort}}</dd>
     </dl>
-    <p class="note">Set on the development host:</p>
+    <p class="note">{{t "Set on the development host:"}}</p>
     <code class="endpoint-box">HACHIDORI_ENDPOINT={{.Endpoint}}</code>
     <div class="btn-row">
-      <form method="post" action="/settings/connections/connect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn primary">Connect</button></form>
-      <form method="post" action="/settings/connections/reconnect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn">Reconnect</button></form>
-      <form method="post" action="/settings/connections/remove" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn danger">Remove</button></form>
+      <form method="post" action="/settings/connections/connect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn primary">{{t "Connect"}}</button></form>
+      <form method="post" action="/settings/connections/reconnect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn">{{t "Reconnect"}}</button></form>
+      <form method="post" action="/settings/connections/remove" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>
     </div>
-    <details class="inline"><summary>Edit</summary>
+    <details class="inline"><summary>{{t "Edit"}}</summary>
       <form method="post" action="/settings/connections/save">
         <input type="hidden" name="token" value="{{$.Token}}">
         <input type="hidden" name="name" value="{{.Name}}">
         <div class="fields">
-          <label class="field wide">SSH destination<input name="destination" value="{{.Destination}}" required autocomplete="off" spellcheck="false"></label>
-          <label class="field">Remote bind<input name="remote_bind" value="{{.RemoteBind}}" required spellcheck="false"></label>
-          <label class="field">Remote port<input name="remote_port" value="{{.RemotePort}}" inputmode="numeric" required></label>
-          <label class="field">Local Hachidori port<input name="local_port" value="{{.LocalPort}}" inputmode="numeric" required></label>
+          <label class="field wide">{{t "SSH destination"}}<input name="destination" value="{{.Destination}}" required autocomplete="off" spellcheck="false"></label>
+          <label class="field">{{t "Remote bind"}}<input name="remote_bind" value="{{.RemoteBind}}" required spellcheck="false"></label>
+          <label class="field">{{t "Remote port"}}<input name="remote_port" value="{{.RemotePort}}" inputmode="numeric" required></label>
+          <label class="field">{{t "Local Hachidori port"}}<input name="local_port" value="{{.LocalPort}}" inputmode="numeric" required></label>
         </div>
-        <div class="btn-row"><button type="submit" class="btn">Save changes</button></div>
+        <div class="btn-row"><button type="submit" class="btn">{{t "Save changes"}}</button></div>
       </form>
     </details>
   </div>
-  {{else}}<p class="empty">No saved connections.</p>{{end}}
+  {{else}}<p class="empty">{{t "No saved connections."}}</p>{{end}}
   <form method="post" action="/settings/connections/save" class="surface" id="connection-new">
     <input type="hidden" name="token" value="{{$.Token}}">
-    <h3>New connection</h3>
+    <h3>{{t "New connection"}}</h3>
     <div class="fields">
-      <label class="field">Name<input name="name" placeholder="connection-name" required autocomplete="off" spellcheck="false"></label>
-      <label class="field wide">SSH destination<input name="destination" value="{{.New.Destination}}" placeholder="user@host" required autocomplete="off" spellcheck="false"></label>
-      <label class="field">Remote bind<input name="remote_bind" value="{{.New.RemoteBind}}" required spellcheck="false"></label>
-      <label class="field">Remote port<input name="remote_port" value="{{.New.RemotePort}}" inputmode="numeric" required></label>
-      <label class="field">Local Hachidori port<input name="local_port" value="{{.New.LocalPort}}" inputmode="numeric" required></label>
+      <label class="field">{{t "Name"}}<input name="name" placeholder="connection-name" required autocomplete="off" spellcheck="false"></label>
+      <label class="field wide">{{t "SSH destination"}}<input name="destination" value="{{.New.Destination}}" placeholder="user@host" required autocomplete="off" spellcheck="false"></label>
+      <label class="field">{{t "Remote bind"}}<input name="remote_bind" value="{{.New.RemoteBind}}" required spellcheck="false"></label>
+      <label class="field">{{t "Remote port"}}<input name="remote_port" value="{{.New.RemotePort}}" inputmode="numeric" required></label>
+      <label class="field">{{t "Local Hachidori port"}}<input name="local_port" value="{{.New.LocalPort}}" inputmode="numeric" required></label>
     </div>
-    <div class="btn-row"><button type="submit" class="btn">Save connection</button></div>
+    <div class="btn-row"><button type="submit" class="btn">{{t "Save connection"}}</button></div>
   </form>
 </section>
 {{end}}
@@ -658,57 +672,55 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 {{define "diagnostics"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>Diagnostics</h1><p class="lede">Installation checks, worker failures, caller transport and desktop setup for this host.</p></div>
+  <div><h1>{{t "Diagnostics"}}</h1><p class="lede">{{t "Installation checks, worker failures, caller transport and desktop setup for this host."}}</p></div>
   {{template "sync"}}
 </header>
 <div class="slot" data-live="diagnostics">{{template "diagnostics-live" .}}</div>
 
 <section class="region" id="bundle" aria-labelledby="bundle-h">
   <div class="region-h">
-    <div><h2 id="bundle-h">Diagnostic bundle</h2><p class="sub">One local file to attach to an Issue. Nothing is uploaded.</p></div>
-    <form method="post" action="/diagnostics/export" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn">Export bundle</button></form>
+    <div><h2 id="bundle-h">{{t "Diagnostic bundle"}}</h2><p class="sub">{{t "One local file to attach to an Issue. Nothing is uploaded."}}</p></div>
+    <form method="post" action="/diagnostics/export" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn">{{t "Export bundle"}}</button></form>
   </div>
-  <p class="note">Contains version, runtime, model, WebView2, OS and recovery facts and a short tail of Hachidori worker log lines. It never contains request, state or question text, datasets, environment variables, SSH keys or known_hosts, or model files. It is saved under <code>state/diagnostics</code> in the Hachidori home.</p>
+  <p class="note">{{t "Contains version, runtime, model, WebView2, OS and recovery facts and a short tail of Hachidori worker log lines. It never contains request, state or question text, datasets, environment variables, SSH keys or known_hosts, or model files. It is saved under"}} <code>state/diagnostics</code> {{t "in the Hachidori home."}}</p>
 </section>
 
 <section class="region" id="transport" aria-labelledby="transport-h">
-  <div class="region-h"><h2 id="transport-h">Caller transport</h2><span class="sub">SSH reverse tunnel</span></div>
+  <div class="region-h"><h2 id="transport-h">{{t "Caller transport"}}</h2><span class="sub">{{t "SSH reverse tunnel"}}</span></div>
   <div class="transport-grid">
     <div class="slot" data-live="transport">{{template "transport" .}}</div>
     <div class="surface">
       <form method="post" action="/tunnel/connect" id="tunnel-connect">
         <input type="hidden" name="token" value="{{.Token}}">
         <div class="fields">
-          {{with .FormName}}<label class="field">Connection name<input name="name" value="{{.}}" required autocomplete="off" spellcheck="false"></label>{{end}}
-          <label class="field wide">SSH destination<input name="destination" value="{{.Form.Destination}}" placeholder="user@host" required autocomplete="off" spellcheck="false"></label>
-          <label class="field">Remote bind<input name="remote_bind" value="{{.Form.RemoteBind}}" required spellcheck="false"></label>
-          <label class="field">Remote port<input name="remote_port" value="{{.Form.RemotePort}}" inputmode="numeric" required></label>
-          <label class="field">Local Hachidori port<input name="local_port" value="{{.Form.LocalPort}}" inputmode="numeric" required></label>
+          {{with .FormName}}<label class="field">{{t "Connection name"}}<input name="name" value="{{.}}" required autocomplete="off" spellcheck="false"></label>{{end}}
+          <label class="field wide">{{t "SSH destination"}}<input name="destination" value="{{.Form.Destination}}" placeholder="user@host" required autocomplete="off" spellcheck="false"></label>
+          <label class="field">{{t "Remote bind"}}<input name="remote_bind" value="{{.Form.RemoteBind}}" required spellcheck="false"></label>
+          <label class="field">{{t "Remote port"}}<input name="remote_port" value="{{.Form.RemotePort}}" inputmode="numeric" required></label>
+          <label class="field">{{t "Local Hachidori port"}}<input name="local_port" value="{{.Form.LocalPort}}" inputmode="numeric" required></label>
         </div>
       </form>
       <div class="btn-row">
-        <button type="submit" class="btn primary" form="tunnel-connect">Connect</button>
-        <form method="post" action="/tunnel/disconnect" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">Disconnect</button></form>
+        <button type="submit" class="btn primary" form="tunnel-connect">{{t "Connect"}}</button>
+        <form method="post" action="/tunnel/disconnect" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Disconnect"}}</button></form>
       </div>
-      <p class="note">Runs the host's existing <code>ssh</code> client: <code>ssh -N -R &lt;remote-bind&gt;:&lt;remote-port&gt;:127.0.0.1:&lt;local-port&gt; &lt;destination&gt;</code>.
-      Keys, agent, known_hosts and ssh_config stay under the operator's control; failures are shown, never fixed here.</p>
+      <p class="note">{{t "Runs the host's existing"}} <code>ssh</code> {{t "client:"}} <code>ssh -N -R &lt;remote-bind&gt;:&lt;remote-port&gt;:127.0.0.1:&lt;local-port&gt; &lt;destination&gt;</code>{{t ". Keys, agent, known_hosts and ssh_config stay under the operator's control; failures are shown, never fixed here."}}</p>
     </div>
   </div>
 </section>
 
 {{with .Desktop}}
 <section class="region" id="desktop" aria-labelledby="desktop-h">
-  <div class="region-h"><h2 id="desktop-h">Desktop</h2><span class="sub">tray and sign-in</span></div>
-  <p class="muted">Closing this window hides Hachidori to the system tray and the inference runtime keeps running.
-  Use the tray icon to open it again, or choose <strong>Quit Hachidori</strong> from the tray menu to stop the runtime and exit.</p>
+  <div class="region-h"><h2 id="desktop-h">{{t "Desktop"}}</h2><span class="sub">{{t "tray and sign-in"}}</span></div>
+  <p class="muted">{{t "Closing this window hides Hachidori to the system tray and the inference runtime keeps running. Use the tray icon to open it again, or choose"}} <strong>{{t "Quit Hachidori"}}</strong> {{t "from the tray menu to stop the runtime and exit."}}</p>
   <form method="post" action="/desktop/prefs" class="region">
     <input type="hidden" name="token" value="{{$.Token}}">
-    <label class="check"><input type="checkbox" name="start_at_sign_in" value="1"{{if .StartAtSignIn}} checked{{end}}> Start Hachidori when I sign in</label>
-    <label class="check"><input type="checkbox" name="start_minimized" value="1"{{if .StartMinimized}} checked{{end}}> Start minimized (in the tray, when started at sign-in)</label>
-    <div class="btn-row"><button type="submit" class="btn">Save</button></div>
+    <label class="check"><input type="checkbox" name="start_at_sign_in" value="1"{{if .StartAtSignIn}} checked{{end}}> {{t "Start Hachidori when I sign in"}}</label>
+    <label class="check"><input type="checkbox" name="start_minimized" value="1"{{if .StartMinimized}} checked{{end}}> {{t "Start minimized (in the tray, when started at sign-in)"}}</label>
+    <div class="btn-row"><button type="submit" class="btn">{{t "Save"}}</button></div>
     {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
   </form>
-  <p class="note">Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). Unchecking it removes the entry.</p>
+  <p class="note">{{t "Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). Unchecking it removes the entry."}}</p>
 </section>
 {{end}}
 {{template "close" .Chrome}}{{end}}
@@ -717,92 +729,92 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{template "last" .Last}}
 {{with alerts .}}
 <section class="attention tone-{{(index . 0).Level}}" aria-labelledby="dattn-h">
-  <h2 id="dattn-h">Needs attention <span class="count">{{len .}}</span></h2>
+  <h2 id="dattn-h">{{t "Needs attention"}} <span class="count">{{len .}}</span></h2>
   <ul>{{range .}}<li class="alert {{.Level}}"><strong>{{.Title}}</strong>{{with .Detail}}<span>{{.}}</span>{{end}}</li>{{end}}</ul>
 </section>
 {{else}}
-<p class="all-clear">No operator attention required.</p>
+<p class="all-clear">{{t "No operator attention required."}}</p>
 {{end}}
 
 <section class="region" aria-labelledby="doc-h">
   <div class="region-h">
-    <div><h2 id="doc-h">Doctor</h2><p class="sub">Full installation check, including a real smoke inference. Doctor runs its own temporary worker.</p></div>
-    <form method="post" action="/doctor" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn"{{if .Doctor.Running}} disabled{{end}}>Run doctor</button></form>
+    <div><h2 id="doc-h">{{t "Doctor"}}</h2><p class="sub">{{t "Full installation check, including a real smoke inference. Doctor runs its own temporary worker."}}</p></div>
+    <form method="post" action="/doctor" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn"{{if .Doctor.Running}} disabled{{end}}>{{t "Run doctor"}}</button></form>
   </div>
   {{with .Doctor}}{{if .Running}}
-  <div class="doc-sum"><span class="badge tone-active">running</span><span class="muted">since {{when .Started}}&hellip;</span></div>
+  <div class="doc-sum"><span class="badge tone-active">{{t "running"}}</span><span class="muted">{{t "since"}} {{when .Started}}&hellip;</span></div>
   {{else if not .Finished.IsZero}}{{$r := doctorOut .Output}}
   <div class="doc-sum">
-    {{if .OK}}<span class="badge tone-ok">all checks passed</span>{{else}}<span class="badge tone-bad">problems found</span>{{end}}
-    <span class="num ok-t">{{$r.Pass}} pass</span>{{if $r.Fail}}<span class="num bad-t">{{$r.Fail}} fail</span>{{end}}{{if $r.Skip}}<span class="num faint">{{$r.Skip}} skip</span>{{end}}
-    <span class="faint">finished {{when .Finished}}</span>
+    {{if .OK}}<span class="badge tone-ok">{{t "all checks passed"}}</span>{{else}}<span class="badge tone-bad">{{t "problems found"}}</span>{{end}}
+    <span class="num ok-t">{{$r.Pass}} {{t "pass"}}</span>{{if $r.Fail}}<span class="num bad-t">{{$r.Fail}} {{t "fail"}}</span>{{end}}{{if $r.Skip}}<span class="num faint">{{$r.Skip}} {{t "skip"}}</span>{{end}}
+    <span class="faint">{{t "finished"}} {{when .Finished}}</span>
   </div>
-  <details class="inline" data-keep="doctor-output"{{if not .OK}} open{{end}}><summary>Doctor output</summary>
+  <details class="inline" data-keep="doctor-output"{{if not .OK}} open{{end}}><summary>{{t "Doctor output"}}</summary>
   <pre>{{range $r.Lines}}<span class="l{{with .Kind}} {{.}}{{end}}">{{.Text}}</span>{{end}}</pre></details>
-  {{else}}<p class="empty">Not run in this dashboard session.</p>{{end}}{{end}}
+  {{else}}<p class="empty">{{t "Not run in this dashboard session."}}</p>{{end}}{{end}}
 </section>
 
 {{if eq $w.State "restarting"}}
 <section class="attention tone-warn" aria-labelledby="rec-h" data-recovery="recovering">
-  <h2 id="rec-h">Recovering from an unexpected worker exit</h2>
-  <p>The worker exited after it was ready and is being restarted automatically ({{$w.Restarts}} restart{{if ne $w.Restarts 1}}s{{end}} in the current window). Automatic restarts are bounded; if the worker keeps exiting they stop and this page shows what failed.</p>
+  <h2 id="rec-h">{{t "Recovering from an unexpected worker exit"}}</h2>
+  <p>{{t "The worker exited after it was ready and is being restarted automatically ("}}{{$w.Restarts}} {{if eq $w.Restarts 1}}{{t "restart"}}{{else}}{{t "restarts"}}{{end}} {{t "in the current window). Automatic restarts are bounded; if the worker keeps exiting they stop and this page shows what failed."}}</p>
 </section>
 {{else if and (eq $w.State "failed") (gt $w.Restarts 0)}}
 <section class="attention tone-bad" aria-labelledby="rec-h" data-recovery="gave_up">
-  <h2 id="rec-h">Automatic recovery stopped</h2>
-  <p>The worker kept exiting unexpectedly ({{$w.Restarts}} automatic restarts) and will not be restarted again by itself. Read the last worker failure below, then use Restart runtime. The requested device is unchanged; there is no fallback to another device.</p>
+  <h2 id="rec-h">{{t "Automatic recovery stopped"}}</h2>
+  <p>{{t "The worker kept exiting unexpectedly ("}}{{$w.Restarts}} {{t "automatic restarts) and will not be restarted again by itself. Read the last worker failure below, then use Restart runtime. The requested device is unchanged; there is no fallback to another device."}}</p>
 </section>
 {{end}}
 
 {{$i := $w.Info}}{{$a := $w.Accelerator}}
 <details class="disclosure" data-keep="runtime-evidence" id="runtime-evidence">
-  <summary>Runtime evidence<span class="sub mono">{{get $i "provider"}} {{get $i "laya_version"}} · Python {{get $i "python_version"}} · torch {{get $i "torch_version"}}</span></summary>
+  <summary>{{t "Runtime evidence"}}<span class="sub mono">{{get $i "provider"}} {{get $i "laya_version"}} · Python {{get $i "python_version"}} · torch {{get $i "torch_version"}}</span></summary>
   <div class="body">
     {{with gpuMem $a}}<div>
-      <h3>GPU memory</h3>
+      <h3>{{t "GPU memory"}}</h3>
       <div class="bar"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>
       <ul class="legend">
-        <li><span class="sw alloc"></span>allocated<strong>{{mib $a "memory_allocated"}}</strong></li>
-        <li><span class="sw cache"></span>reserved<strong>{{mib $a "memory_reserved"}}</strong></li>
-        <li><span class="sw other"></span>other on device<strong>{{printf "%.1f" .Other}}%</strong></li>
-        <li><span class="sw"></span>free<strong>{{mib $a "memory_free"}}</strong></li>
+        <li><span class="sw alloc"></span>{{t "allocated"}}<strong>{{mib $a "memory_allocated"}}</strong></li>
+        <li><span class="sw cache"></span>{{t "reserved"}}<strong>{{mib $a "memory_reserved"}}</strong></li>
+        <li><span class="sw other"></span>{{t "other on device"}}<strong>{{printf "%.1f" .Other}}%</strong></li>
+        <li><span class="sw"></span>{{t "free"}}<strong>{{mib $a "memory_free"}}</strong></li>
       </ul>
     </div>{{end}}
     <div class="kv-grid">
       <div>
-        <h3>Server &amp; worker</h3>
+        <h3>{{t "Server & worker"}}</h3>
         <dl class="kv">
-          <dt>inference API</dt><dd>http://{{.APIAddr}}</dd>
-          <dt>uptime</dt><dd>{{.S.UptimeS}} s</dd>
-          <dt>supervision</dt><dd>{{if .Running}}running{{else}}not running{{end}}</dd>
-          <dt>worker state</dt><dd>{{$w.State}} (phase {{$w.Phase}})</dd>
-          <dt>ready since</dt><dd>{{with $w.ReadySince}}{{.}}{{else}}-{{end}}</dd>
-          <dt>worker PID</dt><dd>{{if $w.PID}}{{$w.PID}}{{else}}-{{end}}</dd>
-          <dt>starts / restarts</dt><dd>{{$w.Starts}} / {{$w.Restarts}} in window</dd>
-          <dt>requests</dt><dd>{{$w.Requests}}{{range $k, $v := $w.Errors}}; {{$k}} {{$v}}{{end}}</dd>
-          <dt>queue</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
-          <dt>latency</dt><dd>p50 {{ms $w.LatencyP50MS}}, p95 {{ms $w.LatencyP95MS}}</dd>
+          <dt>{{t "inference API"}}</dt><dd>http://{{.APIAddr}}</dd>
+          <dt>{{t "uptime"}}</dt><dd>{{.S.UptimeS}} s</dd>
+          <dt>{{t "supervision"}}</dt><dd>{{if .Running}}{{t "running"}}{{else}}{{t "not running"}}{{end}}</dd>
+          <dt>{{t "worker state"}}</dt><dd>{{$w.State}} {{t "(phase"}} {{$w.Phase}})</dd>
+          <dt>{{t "ready since"}}</dt><dd>{{with $w.ReadySince}}{{.}}{{else}}-{{end}}</dd>
+          <dt>{{t "worker PID"}}</dt><dd>{{if $w.PID}}{{$w.PID}}{{else}}-{{end}}</dd>
+          <dt>{{t "starts / restarts"}}</dt><dd>{{$w.Starts}} / {{$w.Restarts}} {{t "in window"}}</dd>
+          <dt>{{t "requests"}}</dt><dd>{{$w.Requests}}{{range $k, $v := $w.Errors}}; {{$k}} {{$v}}{{end}}</dd>
+          <dt>{{t "queue"}}</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
+          <dt>{{t "latency"}}</dt><dd>p50 {{ms $w.LatencyP50MS}}, p95 {{ms $w.LatencyP95MS}}</dd>
         </dl>
       </div>
       <div>
-        <h3>Runtime &amp; accelerator</h3>
+        <h3>{{t "Runtime & accelerator"}}</h3>
         <dl class="kv">
-          <dt>home</dt><dd>{{.S.Runtime.Home}}</dd>
-          <dt>runtime</dt><dd>{{.S.Runtime.Runtime}}</dd>
-          <dt>model</dt><dd>{{.S.Runtime.ModelID}}</dd>
-          <dt>model artifact</dt><dd>{{.S.Runtime.Model}}</dd>
-          <dt>requested device</dt><dd>{{.S.Runtime.Device}}</dd>
-          <dt>provider</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd>
+          <dt>{{t "home"}}</dt><dd>{{.S.Runtime.Home}}</dd>
+          <dt>{{t "runtime"}}</dt><dd>{{.S.Runtime.Runtime}}</dd>
+          <dt>{{t "model"}}</dt><dd>{{.S.Runtime.ModelID}}</dd>
+          <dt>{{t "model artifact"}}</dt><dd>{{.S.Runtime.Model}}</dd>
+          <dt>{{t "requested device"}}</dt><dd>{{.S.Runtime.Device}}</dd>
+          <dt>{{t "provider"}}</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd>
           <dt>Python</dt><dd>{{get $i "python_version"}}</dd>
           <dt>PyTorch / CUDA</dt><dd>{{get $i "torch_version"}} / {{get $i "torch_cuda"}}</dd>
-          <dt>device / dtype</dt><dd>{{get $i "device"}} {{get $i "dtype"}}</dd>
+          <dt>{{t "device / dtype"}}</dt><dd>{{get $i "device"}} {{get $i "dtype"}}</dd>
           <dt>GPU</dt><dd>{{get $i "device_name"}}</dd>
-          <dt>GPU memory</dt><dd>allocated {{mib $a "memory_allocated"}}, reserved {{mib $a "memory_reserved"}}, free {{mib $a "memory_free"}}, total {{mib $a "memory_total"}}</dd>
-          <dt>load / warmup</dt><dd>{{get $i "load_ms"}} ms / {{get $i "warmup_ms"}} ms</dd>
+          <dt>{{t "GPU memory"}}</dt><dd>{{t "allocated"}} {{mib $a "memory_allocated"}}, reserved {{mib $a "memory_reserved"}}, free {{mib $a "memory_free"}}, total {{mib $a "memory_total"}}</dd>
+          <dt>{{t "load / warmup"}}</dt><dd>{{get $i "load_ms"}} ms / {{get $i "warmup_ms"}} ms</dd>
         </dl>
       </div>
       {{with $i}}<div>
-        <h3>All provider info</h3>
+        <h3>{{t "All provider info"}}</h3>
         <dl class="kv">{{range $k, $v := .}}<dt>{{$k}}</dt><dd>{{$v}}</dd>{{end}}</dl>
       </div>{{end}}
     </div>
@@ -811,9 +823,9 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 {{with $w.LastFailure}}
 <details class="disclosure" data-keep="worker-failure"{{if not $w.Ready}} open{{end}}>
-  <summary>Last worker failure<span class="sub mono bad-t">{{.Class}}</span></summary>
+  <summary>{{t "Last worker failure"}}<span class="sub mono bad-t">{{.Class}}</span></summary>
   <div class="body">
-    <dl class="kv"><dt>class</dt><dd class="bad-t">{{.Class}}</dd><dt>message</dt><dd>{{.Message}}</dd></dl>
+    <dl class="kv"><dt>{{t "class"}}</dt><dd class="bad-t">{{.Class}}</dd><dt>{{t "message"}}</dt><dd>{{.Message}}</dd></dl>
     {{if .Stderr}}<pre>{{range .Stderr}}{{.}}
 {{end}}</pre>{{end}}
   </div>
@@ -823,15 +835,15 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 {{define "transport"}}{{with .Tunnel}}<div class="region">
 <dl class="kv">
-  <dt>state</dt><dd><span class="badge {{if eq .State "running"}}tone-ok{{else if eq .State "exited"}}tone-bad{{end}}">{{.State}}</span></dd>
-  <dt>destination</dt><dd>{{with .Spec}}{{.Destination}}{{else}}-{{end}}</dd>
-  {{with .Spec}}<dt>forward</dt><dd>{{.RemoteBind}}:{{.RemotePort}} → 127.0.0.1:{{.LocalPort}}</dd>{{end}}
+  <dt>{{t "state"}}</dt><dd><span class="badge {{if eq .State "running"}}tone-ok{{else if eq .State "exited"}}tone-bad{{end}}">{{.State}}</span></dd>
+  <dt>{{t "destination"}}</dt><dd>{{with .Spec}}{{.Destination}}{{else}}-{{end}}</dd>
+  {{with .Spec}}<dt>{{t "forward"}}</dt><dd>{{.RemoteBind}}:{{.RemotePort}} → 127.0.0.1:{{.LocalPort}}</dd>{{end}}
   <dt>ssh PID</dt><dd>{{if .PID}}{{.PID}}{{else}}-{{end}}</dd>
-  <dt>started</dt><dd>{{when .Started}}</dd>
-  <dt>exited</dt><dd>{{when .Exited}}</dd>
-  <dt>last error</dt><dd>{{with .LastError}}<span class="bad-t">{{.}}</span>{{else}}-{{end}}</dd>
+  <dt>{{t "started"}}</dt><dd>{{when .Started}}</dd>
+  <dt>{{t "exited"}}</dt><dd>{{when .Exited}}</dd>
+  <dt>{{t "last error"}}</dt><dd>{{with .LastError}}<span class="bad-t">{{.}}</span>{{else}}-{{end}}</dd>
 </dl>
-{{with .Endpoint}}<div><p class="note">Caller endpoint (set on the SSH destination host)</p><code class="endpoint-box">HACHIDORI_ENDPOINT={{.}}</code></div>{{end}}
+{{with .Endpoint}}<div><p class="note">{{t "Caller endpoint (set on the SSH destination host)"}}</p><code class="endpoint-box">HACHIDORI_ENDPOINT={{.}}</code></div>{{end}}
 {{if .Stderr}}<details class="inline" data-keep="tunnel-stderr"{{if eq .State "exited"}} open{{end}}><summary>ssh stderr</summary><pre>{{range .Stderr}}{{.}}
 {{end}}</pre></details>{{end}}
 {{with .Argv}}<details class="inline" data-keep="tunnel-argv"><summary>ssh argv</summary><pre>{{range .}}{{.}} {{end}}</pre></details>{{end}}

@@ -23,6 +23,7 @@ import (
 	"sync"
 
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 )
@@ -86,6 +87,14 @@ func Models() []string {
 	return ids
 }
 
+// ValidateLocale accepts an unset locale ("") or a supported one (en, ja).
+func ValidateLocale(l string) error {
+	if l != "" && !i18n.Valid(l) {
+		return fmt.Errorf("locale %q is not supported (en or ja)", l)
+	}
+	return nil
+}
+
 // Connection is one named Development Connection profile: a declarative,
 // non-secret description of the SSH reverse tunnel that carries a development
 // host's loopback HACHIDORI_ENDPOINT to this host's loopback API. It is
@@ -125,10 +134,12 @@ func (c Connection) Validate() error {
 // record is the on-disk document. Field order is fixed, so the same values
 // always produce the same bytes. Connections is additive: a file without it
 // (written before profiles existed) is the same schema with no profiles.
+// Locale is additive in the same way: absent means no explicit selection.
 type record struct {
 	Schema          string       `json:"schema"`
 	RuntimeDefaults Defaults     `json:"runtime_defaults"`
 	Connections     []Connection `json:"connections,omitempty"`
+	Locale          string       `json:"locale,omitempty"`
 }
 
 // Store is the settings authority. An empty Path keeps its values in memory.
@@ -179,6 +190,9 @@ func (s *Store) load() (record, error) {
 	if err := r.RuntimeDefaults.Validate(); err != nil {
 		return record{}, fmt.Errorf("settings %s: %w", s.Path, err)
 	}
+	if err := ValidateLocale(r.Locale); err != nil {
+		return record{}, fmt.Errorf("settings %s: %w", s.Path, err)
+	}
 	seen := map[string]bool{}
 	for _, c := range r.Connections {
 		if err := c.Validate(); err != nil {
@@ -223,6 +237,32 @@ func (s *Store) SetDefaults(d Defaults) error {
 		return err
 	}
 	return s.update(func(r *record) error { r.RuntimeDefaults = d; return nil })
+}
+
+// Locale reads the explicit operator UI locale selection; "" means none was
+// made. A missing file is not an error.
+func (s *Store) Locale() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.load()
+	return r.Locale, err
+}
+
+// SetLocale validates and stores the operator UI locale ("" clears the
+// selection). It changes presentation only: no runtime, CLI or environment
+// behavior depends on it.
+func (s *Store) SetLocale(l string) error {
+	if err := ValidateLocale(l); err != nil {
+		return err
+	}
+	return s.update(func(r *record) error { r.Locale = l; return nil })
+}
+
+// ResolvedLocale is the operator UI locale: the explicit selection, else the
+// host locale, else English. An unreadable settings file resolves as unset.
+func (s *Store) ResolvedLocale() i18n.Locale {
+	l, _ := s.Locale()
+	return i18n.Resolve(l, i18n.HostLocales()...)
 }
 
 // SaveConnection validates and stores a profile, creating it or replacing the

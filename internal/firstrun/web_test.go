@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/yohn-jp/hachidori/internal/desktop"
+	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -134,5 +135,33 @@ func TestHandlerServesWizardAndProtectsActions(t *testing.T) {
 	}
 	if w = serve(h, "GET", "/wizard/state", nil, nil); w.Code != 200 || !strings.Contains(w.Body.String(), `"stage":"ready"`) {
 		t.Fatalf("state after READY %d %s", w.Code, w.Body)
+	}
+}
+
+// The first-run page renders through the locale catalog; English is the
+// default, and machine values in its script stay untranslated.
+func TestHandlerRendersOperatorLocale(t *testing.T) {
+	f := newFixture(t, Plan{Mode: ModeFirstRun})
+	h := NewHandler(f.flow, func() http.Handler { return nil })
+	en := serve(h, "GET", "/", nil, nil).Body.String()
+	for _, want := range []string{`<html lang="en">`, "Change storage location", `"Installing the runtime":"Installing the runtime"`} {
+		if !strings.Contains(en, want) {
+			t.Errorf("English page lacks %q", want)
+		}
+	}
+	h.Locale = func() i18n.Locale { return i18n.Japanese }
+	ja := serve(h, "GET", "/", nil, nil).Body.String()
+	for _, want := range []string{`<html lang="ja">`, "保存場所を変更", "NVIDIA GPU (CUDA)", `value="cuda"`, `"/wizard/install"`,
+		`"Installing the runtime":"ランタイムをインストール中"`, `"choose a storage folder first":"先に保存フォルダーを選択してください"`} {
+		if !strings.Contains(ja, want) {
+			t.Errorf("Japanese page lacks %q", want)
+		}
+	}
+	if tokenOf(t, h) == "" {
+		t.Fatal("no token")
+	}
+	h.Locale = func() i18n.Locale { return "xx" }
+	if b := serve(h, "GET", "/", nil, nil).Body.String(); !strings.Contains(b, `<html lang="en">`) {
+		t.Error("an unsupported locale does not fall back to English")
 	}
 }

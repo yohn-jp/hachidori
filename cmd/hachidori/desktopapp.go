@@ -278,7 +278,11 @@ func (a *desktopApp) run() error {
 		return err
 	}
 	apiSrv := &http.Server{Handler: sw, ReadHeaderTimeout: 10 * time.Second}
-	dashSrv := &http.Server{Handler: firstrun.NewHandler(flow, sw.dashboard), ReadHeaderTimeout: 10 * time.Second}
+	// First run uses the same settings authority for its locale: it lives
+	// beside desktop.json, so it exists before any home is selected.
+	fr := firstrun.NewHandler(flow, sw.dashboard)
+	fr.Locale = prefs.ResolvedLocale
+	dashSrv := &http.Server{Handler: fr, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 2)
 	go func() { errc <- apiSrv.Serve(apiLn) }()
 	go func() { errc <- dashSrv.Serve(dashLn) }()

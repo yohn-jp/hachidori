@@ -1,7 +1,7 @@
 {{/* ---- Evidence: where does it fail? (route /errors) ---- */}}
 {{define "errors"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>Evidence</h1><p class="lede">Where the model fails in one hachidori.evidence.v1 report. Read-only: opening a report never runs inference or changes it.</p></div>
+  <div><h1>{{t "Evidence"}}</h1><p class="lede">{{t "Where the model fails in one hachidori.evidence.v1 report. Read-only: opening a report never runs inference or changes it."}}</p></div>
   {{with .Src}}<span class="ws-meta mono">{{.Origin}}</span>{{end}}
 </header>
 {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
@@ -10,72 +10,72 @@
 
 {{if not .Src}}
 <section class="surface" aria-labelledby="open-h">
-  <h2 id="open-h">Open evidence</h2>
+  <h2 id="open-h">{{t "Open evidence"}}</h2>
   {{template "evidence-open" .}}
-  <p class="empty">No report open. Open a hachidori.evidence.v1 file or use the current experiment's report.</p>
+  <p class="empty">{{t "No report open. Open a hachidori.evidence.v1 file or use the current experiment's report."}}</p>
 </section>
 {{end}}
 
 {{with .A}}{{$a := .}}
 <section class="region" aria-labelledby="cnt-h">
-  <div class="region-h"><h2 id="cnt-h">Failures</h2><span class="sub">whole report · high confidence = confidence ≥ {{$.C.Threshold}} (analysis control, not a policy)</span></div>
+  <div class="region-h"><h2 id="cnt-h">{{t "Failures"}}</h2><span class="sub">{{t "whole report · high confidence = confidence ≥"}} {{$.C.Threshold}} {{t "(analysis control, not a policy)"}}</span></div>
   <dl class="metrics" aria-label="counts">
-    <div class="metric primary"><dt>Wrong</dt><dd>{{.Wrong}}</dd>{{if .Wrong}}<span class="hint"><a href="/errors?outcome=wrong&amp;th={{$.C.Threshold}}#obs">Show wrong</a></span>{{end}}</div>
-    <div class="metric primary"><dt>High-confidence wrong</dt><dd class="{{if .HighConfWrong}}bad-t{{end}}">{{.HighConfWrong}}</dd>{{if .HighConfWrong}}<span class="hint"><a href="/errors?outcome=high_confidence_wrong&amp;th={{$.C.Threshold}}#obs">Show high-confidence wrong</a></span>{{end}}</div>
-    <div class="metric"><dt>Correct</dt><dd>{{.Correct}}</dd></div>
-    <div class="metric"><dt>Request errors</dt><dd>{{.RequestErrors}}</dd></div>
+    <div class="metric primary"><dt>{{t "Wrong"}}</dt><dd>{{.Wrong}}</dd>{{if .Wrong}}<span class="hint"><a href="/errors?outcome=wrong&amp;th={{$.C.Threshold}}#obs">{{t "Show wrong"}}</a></span>{{end}}</div>
+    <div class="metric primary"><dt>{{t "High-confidence wrong"}}</dt><dd class="{{if .HighConfWrong}}bad-t{{end}}">{{.HighConfWrong}}</dd>{{if .HighConfWrong}}<span class="hint"><a href="/errors?outcome=high_confidence_wrong&amp;th={{$.C.Threshold}}#obs">{{t "Show high-confidence wrong"}}</a></span>{{end}}</div>
+    <div class="metric"><dt>{{t "Correct"}}</dt><dd>{{.Correct}}</dd></div>
+    <div class="metric"><dt>{{t "Request errors"}}</dt><dd>{{.RequestErrors}}</dd></div>
   </dl>
-  {{with .ErrorClasses}}<p class="note" aria-label="request errors by class">request errors by class: {{range .}}<span class="mono">{{.Class}} {{.N}}</span> {{end}}</p>{{end}}
+  {{with .ErrorClasses}}<p class="note" aria-label="request errors by class">{{t "request errors by class:"}} {{range .}}<span class="mono">{{.Class}} {{.N}}</span> {{end}}</p>{{end}}
 </section>
 
 <section class="region" aria-labelledby="pq-h">
-  <div class="region-h"><h2 id="pq-h">Concentration by question</h2><span class="sub">select a question to see its wrong observations</span></div>
-  <div class="table-wrap"><table class="data" aria-label="per-question errors"><thead><tr><th>question</th><th class="num strong">wrong</th><th class="num strong">high-conf wrong</th><th class="num">n</th><th class="num">correct</th><th class="num">missing results</th><th class="num">accuracy</th><th class="num">mean conf</th><th class="num">ECE</th></tr></thead><tbody>
+  <div class="region-h"><h2 id="pq-h">{{t "Concentration by question"}}</h2><span class="sub">{{t "select a question to see its wrong observations"}}</span></div>
+  <div class="table-wrap"><table class="data" aria-label="per-question errors"><thead><tr><th>{{t "question"}}</th><th class="num strong">{{t "wrong"}}</th><th class="num strong">{{t "high-conf wrong"}}</th><th class="num">n</th><th class="num">{{t "correct"}}</th><th class="num">{{t "missing results"}}</th><th class="num">{{t "accuracy"}}</th><th class="num">{{t "mean conf"}}</th><th class="num">ECE</th></tr></thead><tbody>
   {{range .PerQuestion}}{{$share := ratio .Wrong .Stats.N}}<tr><td class="mono"><a href="/errors?q={{.ID}}&amp;outcome=wrong&amp;th={{$.C.Threshold}}#obs">{{.ID}}</a></td><td class="num strong nowrap">{{.Wrong}}<span class="bar" role="img" aria-label="{{printf "%.0f" $share}}% wrong"><span class="bad" style="width:{{printf "%.1f" $share}}%"></span></span></td><td class="num strong{{if .HighConfWrong}} bad-t{{end}}">{{.HighConfWrong}}</td><td class="num">{{.Stats.N}}</td><td class="num">{{.Correct}}</td><td class="num">{{.MissingResults}}</td><td class="num">{{f4 .Stats.Accuracy}}</td><td class="num">{{f4 .Stats.MeanConfidence}}</td><td class="num">{{f4 .Stats.ECE}}</td></tr>{{end}}
   </tbody></table></div>
 </section>
 
 <div class="split narrow-side">
   <section class="pane" aria-labelledby="obs-h" id="obs">
-    <div class="region-h"><h2 id="obs-h">Observations</h2><span class="sub">select a row number to inspect · {{len .Items}} selected{{if gt (len .Items) (len $.Rows)}} · showing the first {{len $.Rows}}; export includes all{{end}}</span></div>
+    <div class="region-h"><h2 id="obs-h">{{t "Observations"}}</h2><span class="sub">{{t "select a row number to inspect ·"}} {{len .Items}} {{t "selected"}}{{if gt (len .Items) (len $.Rows)}} {{t "· showing the first"}} {{len $.Rows}}{{t "; export includes all"}}{{end}}</span></div>
     <form method="get" action="/errors" class="filters" aria-label="filter and sort">
       <div class="fields">
-        <label class="field">Outcome<select name="outcome">
-          <option value=""{{if eq $.C.Outcome ""}} selected{{end}}>any</option>
-          <option value="correct"{{if eq $.C.Outcome "correct"}} selected{{end}}>correct</option>
-          <option value="wrong"{{if eq $.C.Outcome "wrong"}} selected{{end}}>wrong</option>
-          <option value="high_confidence_wrong"{{if eq $.C.Outcome "high_confidence_wrong"}} selected{{end}}>high-confidence wrong</option></select></label>
-        <label class="field">Question<select name="q"><option value="">any</option>{{range .Questions}}<option{{if eq . $.C.Question}} selected{{end}}>{{.}}</option>{{end}}</select></label>
-        <label class="field">High-confidence threshold (analysis only)<input name="th" value="{{$.C.Threshold}}" inputmode="decimal"></label>
-        <label class="field">Sort by<select name="sort">
-          <option value=""{{if eq $.C.Sort ""}} selected{{end}}>report order</option>
-          <option value="confidence"{{if eq $.C.Sort "confidence"}} selected{{end}}>confidence</option>
-          <option value="request_ms"{{if eq $.C.Sort "request_ms"}} selected{{end}}>request latency</option>
-          <option value="inference_ms"{{if eq $.C.Sort "inference_ms"}} selected{{end}}>inference latency</option></select></label>
+        <label class="field">{{t "Outcome"}}<select name="outcome">
+          <option value=""{{if eq $.C.Outcome ""}} selected{{end}}>{{t "any"}}</option>
+          <option value="correct"{{if eq $.C.Outcome "correct"}} selected{{end}}>{{t "correct"}}</option>
+          <option value="wrong"{{if eq $.C.Outcome "wrong"}} selected{{end}}>{{t "wrong"}}</option>
+          <option value="high_confidence_wrong"{{if eq $.C.Outcome "high_confidence_wrong"}} selected{{end}}>{{t "high-confidence wrong"}}</option></select></label>
+        <label class="field">{{t "Question"}}<select name="q"><option value="">{{t "any"}}</option>{{range .Questions}}<option{{if eq . $.C.Question}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+        <label class="field">{{t "High-confidence threshold (analysis only)"}}<input name="th" value="{{$.C.Threshold}}" inputmode="decimal"></label>
+        <label class="field">{{t "Sort by"}}<select name="sort">
+          <option value=""{{if eq $.C.Sort ""}} selected{{end}}>{{t "report order"}}</option>
+          <option value="confidence"{{if eq $.C.Sort "confidence"}} selected{{end}}>{{t "confidence"}}</option>
+          <option value="request_ms"{{if eq $.C.Sort "request_ms"}} selected{{end}}>{{t "request latency"}}</option>
+          <option value="inference_ms"{{if eq $.C.Sort "inference_ms"}} selected{{end}}>{{t "inference latency"}}</option></select></label>
       </div>
-      <details class="inline"{{if or $.C.Expected $.C.Predicted $.C.ErrClass (ne $.C.Min "0") (ne $.C.Max "1")}} open{{end}}><summary>More filters</summary>
+      <details class="inline"{{if or $.C.Expected $.C.Predicted $.C.ErrClass (ne $.C.Min "0") (ne $.C.Max "1")}} open{{end}}><summary>{{t "More filters"}}</summary>
         <div class="fields">
-          <label class="field">Expected<select name="exp"><option value="">any</option>{{range .Expected}}<option{{if eq . $.C.Expected}} selected{{end}}>{{.}}</option>{{end}}</select></label>
-          <label class="field">Predicted<select name="pred"><option value="">any</option>{{range .Predicted}}<option{{if eq . $.C.Predicted}} selected{{end}}>{{.}}</option>{{end}}</select></label>
-          <label class="field">Confidence from<input name="min" value="{{$.C.Min}}" inputmode="decimal"></label>
-          <label class="field">Confidence to<input name="max" value="{{$.C.Max}}" inputmode="decimal"></label>
-          <label class="field">Request error class<select name="eclass"><option value="">any</option>{{range .ErrorClasses}}<option{{if eq .Class $.C.ErrClass}} selected{{end}}>{{.Class}}</option>{{end}}</select></label>
+          <label class="field">{{t "Expected"}}<select name="exp"><option value="">{{t "any"}}</option>{{range .Expected}}<option{{if eq . $.C.Expected}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+          <label class="field">{{t "Predicted"}}<select name="pred"><option value="">{{t "any"}}</option>{{range .Predicted}}<option{{if eq . $.C.Predicted}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+          <label class="field">{{t "Confidence from"}}<input name="min" value="{{$.C.Min}}" inputmode="decimal"></label>
+          <label class="field">{{t "Confidence to"}}<input name="max" value="{{$.C.Max}}" inputmode="decimal"></label>
+          <label class="field">{{t "Request error class"}}<select name="eclass"><option value="">{{t "any"}}</option>{{range .ErrorClasses}}<option{{if eq .Class $.C.ErrClass}} selected{{end}}>{{.Class}}</option>{{end}}</select></label>
         </div>
       </details>
       <div class="btn-row">
-        <label class="check"><input type="checkbox" name="desc" value="1"{{if $.C.Desc}} checked{{end}}> descending</label>
-        <button type="submit" class="btn">Apply</button><a class="btn quiet" href="/errors">Reset</a>
+        <label class="check"><input type="checkbox" name="desc" value="1"{{if $.C.Desc}} checked{{end}}> {{t "descending"}}</label>
+        <button type="submit" class="btn">{{t "Apply"}}</button><a class="btn quiet" href="/errors">{{t "Reset"}}</a>
       </div>
     </form>
 
-    <div class="table-wrap"><table class="data" aria-label="observations"><thead><tr><th class="num">#</th><th>case</th><th>question</th><th>expected</th><th>predicted</th><th class="num">confidence</th><th class="num">request</th><th class="num">inference</th></tr></thead><tbody>
+    <div class="table-wrap"><table class="data" aria-label="observations"><thead><tr><th class="num">#</th><th>{{t "case"}}</th><th>{{t "question"}}</th><th>{{t "expected"}}</th><th>{{t "predicted"}}</th><th class="num">{{t "confidence"}}</th><th class="num">{{t "request"}}</th><th class="num">{{t "inference"}}</th></tr></thead><tbody>
     {{range $.Rows}}<tr{{if and $.Detail (eq $.Detail.Index .Index)}} aria-current="true"{{end}}><td class="num"><a href="/errors?{{$.C.Query}}&amp;obs={{.Index}}#detail" aria-label="inspect observation {{.Index}}">{{.Index}}</a></td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td>{{.Expected}}</td><td>{{.Choice}}{{if not .Correct}} <span class="{{if .HighConfWrong}}bad-t{{else}}warn-t{{end}}" title="{{if .HighConfWrong}}high-confidence wrong{{else}}wrong{{end}}">✗</span>{{end}}</td><td class="num">{{prob .Confidence}}</td><td class="num">{{ms .RequestMS}}</td><td class="num">{{with .InferenceMS}}{{ms .}}{{else}}-{{end}}</td></tr>{{end}}
     </tbody></table></div>
 
     {{with .Errors}}
     <div class="region">
-      <div class="region-h"><h2>Request errors</h2><span class="sub">{{len .}} selected</span></div>
-      <div class="table-wrap"><table class="data" aria-label="request errors"><thead><tr><th>phase</th><th>pass</th><th>case</th><th>question</th><th>class</th><th>message</th></tr></thead><tbody>
+      <div class="region-h"><h2>{{t "Request errors"}}</h2><span class="sub">{{len .}} {{t "selected"}}</span></div>
+      <div class="table-wrap"><table class="data" aria-label="request errors"><thead><tr><th>{{t "phase"}}</th><th>{{t "pass"}}</th><th>{{t "case"}}</th><th>{{t "question"}}</th><th>{{t "class"}}</th><th>{{t "message"}}</th></tr></thead><tbody>
       {{range .}}<tr><td>{{.Phase}}</td><td>{{if .Pass}}{{.Pass}}{{end}}</td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td class="mono">{{.Class}}</td><td>{{.Message}}</td></tr>{{end}}
       </tbody></table></div>
     </div>
@@ -84,34 +84,34 @@
     <form method="post" action="/errors/export" class="path-form">
       <input type="hidden" name="token" value="{{$.Token}}">
       {{range $k, $vs := $.C.Values}}{{range $vs}}<input type="hidden" name="{{$k}}" value="{{.}}">{{end}}{{end}}
-      <label class="field">Export the selection as {{"hachidori.evidence-analysis.v1"}} data to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Export}}" spellcheck="false" autocomplete="off" placeholder="/path/to/errors.json"></label>
-      {{if $.PathPicker}}<button type="submit" class="btn" formaction="/errors/pick" name="pick" value="export" formnovalidate>Choose file</button>{{end}}
-      <button type="submit" class="btn">Export selection</button>
+      <label class="field">{{t "Export the selection as"}} {{"hachidori.evidence-analysis.v1"}} {{t "data to a new file (absolute path; never overwritten)"}}<input name="export_path" value="{{$.Export}}" spellcheck="false" autocomplete="off" placeholder="/path/to/errors.json"></label>
+      {{if $.PathPicker}}<button type="submit" class="btn" formaction="/errors/pick" name="pick" value="export" formnovalidate>{{t "Choose file"}}</button>{{end}}
+      <button type="submit" class="btn">{{t "Export selection"}}</button>
     </form>
   </section>
 
   <aside class="pane pane-side" id="detail" aria-labelledby="det-h">
     <div class="result-pane">
     {{with $.Detail}}
-      <div class="block-h"><h2 id="det-h">Observation {{.Index}}</h2>{{if .Correct}}<span class="badge tone-ok">correct</span>{{else if .HighConfWrong}}<span class="badge tone-bad">high-confidence wrong</span>{{else}}<span class="badge tone-warn">wrong</span>{{end}}</div>
+      <div class="block-h"><h2 id="det-h">{{t "Observation"}} {{.Index}}</h2>{{if .Correct}}<span class="badge tone-ok">{{t "correct"}}</span>{{else if .HighConfWrong}}<span class="badge tone-bad">{{t "high-confidence wrong"}}</span>{{else}}<span class="badge tone-warn">{{t "wrong"}}</span>{{end}}</div>
       <dl class="pair">
-        <div><dt>expected</dt><dd>{{.Expected}}</dd></div>
-        <div><dt>predicted</dt><dd>{{.Choice}}</dd></div>
-        <div><dt>confidence</dt><dd>{{prob .Confidence}}</dd></div>
+        <div><dt>{{t "expected"}}</dt><dd>{{.Expected}}</dd></div>
+        <div><dt>{{t "predicted"}}</dt><dd>{{.Choice}}</dd></div>
+        <div><dt>{{t "confidence"}}</dt><dd>{{prob .Confidence}}</dd></div>
       </dl>
       {{template "dist" (distOf .Probabilities .Choice .Expected)}}
       <dl class="kv">
-        <dt>case</dt><dd>{{.CaseID}}</dd>
-        <dt>question</dt><dd>{{.QuestionID}}</dd>
-        <dt>question sha256</dt><dd>{{.QuestionSHA256}}</dd>
-        {{with .QuestionDefinition}}<dt>definition</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
-        <dt>request latency</dt><dd>{{ms .RequestMS}}</dd>
-        <dt>inference latency</dt><dd>{{with .InferenceMS}}{{ms .}}{{else}}-{{end}}</dd>
-        {{with $.Src.Report.Served}}<dt>served model</dt><dd>{{.Model}}</dd><dt>served identity</dt><dd>{{.Digest}}</dd>{{end}}
+        <dt>{{t "case"}}</dt><dd>{{.CaseID}}</dd>
+        <dt>{{t "question"}}</dt><dd>{{.QuestionID}}</dd>
+        <dt>{{t "question sha256"}}</dt><dd>{{.QuestionSHA256}}</dd>
+        {{with .QuestionDefinition}}<dt>{{t "definition"}}</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
+        <dt>{{t "request latency"}}</dt><dd>{{ms .RequestMS}}</dd>
+        <dt>{{t "inference latency"}}</dt><dd>{{with .InferenceMS}}{{ms .}}{{else}}-{{end}}</dd>
+        {{with $.Src.Report.Served}}<dt>{{t "served model"}}</dt><dd>{{.Model}}</dd><dt>{{t "served identity"}}</dt><dd>{{.Digest}}</dd>{{end}}
       </dl>
     {{else}}
-      <h2 id="det-h">Observation</h2>
-      <p class="empty">Inspect an observation to compare expected and predicted and see its probability distribution.</p>
+      <h2 id="det-h">{{t "Observation"}}</h2>
+      <p class="empty">{{t "Inspect an observation to compare expected and predicted and see its probability distribution."}}</p>
     {{end}}
     </div>
   </aside>
@@ -119,19 +119,19 @@
 {{end}}
 
 {{with .Src}}{{$r := .Report}}
-<details class="disclosure" data-keep="evidence-source"><summary>Evidence source &amp; metadata<span class="sub mono">{{$r.Schema}} · report {{short .SHA256}}</span></summary>
+<details class="disclosure" data-keep="evidence-source"><summary>{{t "Evidence source & metadata"}}<span class="sub mono">{{$r.Schema}} {{t "· report"}} {{short .SHA256}}</span></summary>
   <div class="body">
     <dl class="kv" aria-label="source">
-      <dt>origin</dt><dd>{{.Origin}}</dd>
-      <dt>report sha256</dt><dd>{{.SHA256}}</dd>
-      <dt>schema</dt><dd>{{$r.Schema}}</dd>
-      <dt>dataset</dt><dd>{{$r.Dataset}}</dd>
-      <dt>dataset sha256</dt><dd>{{$r.DatasetSHA256}}</dd>
-      <dt>started at</dt><dd>{{$r.StartedAt}}</dd>
-      {{with $r.Served}}<dt>served model</dt><dd>{{.Model}}</dd><dt>served identity</dt><dd>{{.Digest}}</dd>{{end}}
-      <dt>served consistent</dt><dd>{{if $r.ServedConsistent}}yes{{else}}<span class="bad-t">no</span>{{end}}</dd>
+      <dt>{{t "origin"}}</dt><dd>{{.Origin}}</dd>
+      <dt>{{t "report sha256"}}</dt><dd>{{.SHA256}}</dd>
+      <dt>{{t "schema"}}</dt><dd>{{$r.Schema}}</dd>
+      <dt>{{t "dataset"}}</dt><dd>{{$r.Dataset}}</dd>
+      <dt>{{t "dataset sha256"}}</dt><dd>{{$r.DatasetSHA256}}</dd>
+      <dt>{{t "started at"}}</dt><dd>{{$r.StartedAt}}</dd>
+      {{with $r.Served}}<dt>{{t "served model"}}</dt><dd>{{.Model}}</dd><dt>{{t "served identity"}}</dt><dd>{{.Digest}}</dd>{{end}}
+      <dt>{{t "served consistent"}}</dt><dd>{{if $r.ServedConsistent}}{{t "yes"}}{{else}}<span class="bad-t">{{t "no"}}</span>{{end}}</dd>
     </dl>
-    <h3>Open another report</h3>
+    <h3>{{t "Open another report"}}</h3>
     {{template "evidence-open" $}}
   </div>
 </details>
@@ -142,12 +142,12 @@
 {{define "evidence-open"}}{{if .ExpSeq}}<div class="btn-row">
   <form method="post" action="/errors/use-experiment" class="inline">
     <input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="seq" value="{{.ExpSeq}}">
-    <button type="submit" class="btn{{if not .Src}} primary{{end}}">Use experiment #{{.ExpSeq}} report</button>
+    <button type="submit" class="btn{{if not .Src}} primary{{end}}">{{t "Use experiment #"}}{{.ExpSeq}} {{t "report"}}</button>
   </form>
 </div>{{end}}
 <form method="post" action="/errors/open" class="path-form">
   <input type="hidden" name="token" value="{{.Token}}">
-  <label class="field">Evidence report file (absolute path)<input name="path" value="{{.OpenPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/report.json"></label>
-  {{if .PathPicker}}<button type="submit" class="btn" formaction="/errors/pick" name="pick" value="open" formnovalidate>Choose file</button>{{end}}
-  <button type="submit" class="btn">Open report</button>
+  <label class="field">{{t "Evidence report file (absolute path)"}}<input name="path" value="{{.OpenPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/report.json"></label>
+  {{if .PathPicker}}<button type="submit" class="btn" formaction="/errors/pick" name="pick" value="open" formnovalidate>{{t "Choose file"}}</button>{{end}}
+  <button type="submit" class="btn">{{t "Open report"}}</button>
 </form>{{end}}
