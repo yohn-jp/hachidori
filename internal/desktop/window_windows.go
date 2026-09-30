@@ -45,10 +45,11 @@ const (
 	idcArrow           = 32512
 	colorWindow        = 5
 
-	wmDestroy = 0x0002
-	wmMove    = 0x0003
-	wmSize    = 0x0005
-	wmClose   = 0x0010
+	wmDestroy    = 0x0002
+	wmMove       = 0x0003
+	wmSize       = 0x0005
+	wmClose      = 0x0010
+	wmDPIChanged = 0x02E0
 
 	// Private messages, posted to the window from other goroutines.
 	wmTray     = 0x8000 + 1 // tray icon callback (WM_APP+1)
@@ -118,6 +119,12 @@ var (
 func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 	s := active // only touched on the UI thread after Open publishes it
 	switch m {
+	case wmDPIChanged:
+		applyDPIChange(hwnd, lp)
+		if s != nil && s.chromium != nil {
+			s.chromium.Resize()
+		}
+		return 0
 	case wmSize:
 		if s != nil && s.chromium != nil {
 			s.chromium.Resize()
@@ -348,6 +355,9 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	if err := enablePerMonitorDPI(); err != nil {
+		return fmt.Errorf("enabling per-monitor DPI awareness: %w", err)
+	}
 	switch err := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED); {
 	case err == nil, errors.Is(err, syscall.Errno(1)): // S_OK, S_FALSE
 		defer windows.CoUninitialize()
@@ -387,8 +397,12 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	}
 	defer procUnregisterClassW.Call(uintptr(unsafe.Pointer(cls)), uintptr(inst))
 
+	// The window is per-monitor DPI aware, so its initial size is physical
+	// pixels: scale the logical 1200x860 for the current system DPI.
+	dpi := systemDPI()
 	hwnd, _, e := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(cls)), uintptr(unsafe.Pointer(title)),
-		wsOverlappedWindow, cwUseDefault, cwUseDefault, 1200, 860, 0, 0, uintptr(inst), 0)
+		wsOverlappedWindow, cwUseDefault, cwUseDefault,
+		uintptr(scaleForDPI(1200, dpi)), uintptr(scaleForDPI(860, dpi)), 0, 0, uintptr(inst), 0)
 	if hwnd == 0 {
 		return fmt.Errorf("creating the window: %w", e)
 	}

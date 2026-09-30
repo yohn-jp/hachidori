@@ -82,7 +82,7 @@ code, pre, .mono { font-family: var(--mono); font-size: .92em; }
 .nav-support { padding-top: .9rem; border-top: 1px solid var(--line); }
 
 .workspace { grid-area: main; overflow: auto; padding: 0 2rem 3rem; display: flex; flex-direction: column; gap: 1.6rem; outline: none; }
-.workspace > * { width: 100%; max-width: 96rem; }
+.workspace > * { width: 100%; max-width: min(100%, 88rem); margin-inline: auto; }
 .slot { display: contents; }
 .statusbar { grid-area: status; display: flex; align-items: center; gap: 1.4rem; min-height: 1.75rem; padding: 0 1rem; background: var(--chrome); border-top: 1px solid var(--line);
   font-size: .74rem; color: var(--text-3); white-space: nowrap; overflow: hidden; }
@@ -696,7 +696,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <input type="hidden" name="token" value="{{$.Token}}">
     <h3>New connection</h3>
     <div class="fields">
-      <label class="field">Name<input name="name" placeholder="nixos-dev" required autocomplete="off" spellcheck="false"></label>
+      <label class="field">Name<input name="name" placeholder="connection-name" required autocomplete="off" spellcheck="false"></label>
       <label class="field wide">SSH destination<input name="destination" value="{{.New.Destination}}" placeholder="user@host" required autocomplete="off" spellcheck="false"></label>
       <label class="field">Remote bind<input name="remote_bind" value="{{.New.RemoteBind}}" required spellcheck="false"></label>
       <label class="field">Remote port<input name="remote_port" value="{{.New.RemotePort}}" inputmode="numeric" required></label>
