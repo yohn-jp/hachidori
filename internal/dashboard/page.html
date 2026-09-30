@@ -426,7 +426,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <p class="state-sub">phase {{$w.Phase}}{{with $w.ReadySince}} · ready since {{.}}{{end}}</p>
   </div>
   <dl class="identity">
-    <div><dt>Model</dt><dd class="model" title="model {{.S.Runtime.Model}}">{{.S.Runtime.ModelID}}</dd></div>
+    <div><dt>Model</dt><dd class="model">{{.S.Runtime.ModelID}}</dd></div>
     <div><dt>Accelerator</dt><dd>{{get $i "device_name"}}<span class="sub">{{with .Rt.Device}}{{.}} · {{end}}requested {{.S.Runtime.Device}}</span></dd></div>
     <div><dt>Provider</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd></div>
     <div><dt>Runtime</dt><dd>{{.S.Runtime.Runtime}}<span class="sub">supervision {{if .Running}}running{{else}}<span class="bad-t">not running</span>{{end}} · API up <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></span></dd></div>
@@ -478,59 +478,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </section>
 {{end}}
 
-<details class="disclosure" data-keep="runtime-details">
-  <summary>Environment, memory and lifecycle detail<span class="sub mono">{{get $i "provider"}} {{get $i "laya_version"}} · Python {{get $i "python_version"}} · torch {{get $i "torch_version"}}</span></summary>
-  <div class="body">
-    {{with gpuMem $a}}<div>
-      <h3>GPU memory</h3>
-      <div class="bar"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>
-      <ul class="legend">
-        <li><span class="sw alloc"></span>allocated<strong>{{mib $a "memory_allocated"}}</strong></li>
-        <li><span class="sw cache"></span>reserved<strong>{{mib $a "memory_reserved"}}</strong></li>
-        <li><span class="sw other"></span>other on device<strong>{{printf "%.1f" .Other}}%</strong></li>
-        <li><span class="sw"></span>free<strong>{{mib $a "memory_free"}}</strong></li>
-      </ul>
-    </div>{{end}}
-    <div class="kv-grid">
-      <div>
-        <h3>Server &amp; worker</h3>
-        <dl class="kv">
-          <dt>inference API</dt><dd>http://{{.APIAddr}}</dd>
-          <dt>uptime</dt><dd>{{.S.UptimeS}} s</dd>
-          <dt>supervision</dt><dd>{{if .Running}}running{{else}}not running{{end}}</dd>
-          <dt>worker state</dt><dd>{{$w.State}} (phase {{$w.Phase}})</dd>
-          <dt>ready since</dt><dd>{{with $w.ReadySince}}{{.}}{{else}}-{{end}}</dd>
-          <dt>worker PID</dt><dd>{{if $w.PID}}{{$w.PID}}{{else}}-{{end}}</dd>
-          <dt>starts / restarts</dt><dd>{{$w.Starts}} / {{$w.Restarts}} in window</dd>
-          <dt>requests</dt><dd>{{$w.Requests}}{{range $k, $v := $w.Errors}}; {{$k}} {{$v}}{{end}}</dd>
-          <dt>queue</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
-          <dt>latency</dt><dd>p50 {{ms $w.LatencyP50MS}}, p95 {{ms $w.LatencyP95MS}}</dd>
-        </dl>
-      </div>
-      <div>
-        <h3>Runtime &amp; accelerator</h3>
-        <dl class="kv">
-          <dt>home</dt><dd>{{.S.Runtime.Home}}</dd>
-          <dt>runtime</dt><dd>{{.S.Runtime.Runtime}}</dd>
-          <dt>model</dt><dd>{{.S.Runtime.ModelID}}</dd>
-          <dt>model artifact</dt><dd>{{.S.Runtime.Model}}</dd>
-          <dt>requested device</dt><dd>{{.S.Runtime.Device}}</dd>
-          <dt>provider</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd>
-          <dt>Python</dt><dd>{{get $i "python_version"}}</dd>
-          <dt>PyTorch / CUDA</dt><dd>{{get $i "torch_version"}} / {{get $i "torch_cuda"}}</dd>
-          <dt>device / dtype</dt><dd>{{get $i "device"}} {{get $i "dtype"}}</dd>
-          <dt>GPU</dt><dd>{{get $i "device_name"}}</dd>
-          <dt>GPU memory</dt><dd>allocated {{mib $a "memory_allocated"}}, reserved {{mib $a "memory_reserved"}}, free {{mib $a "memory_free"}}, total {{mib $a "memory_total"}}</dd>
-          <dt>load / warmup</dt><dd>{{get $i "load_ms"}} ms / {{get $i "warmup_ms"}} ms</dd>
-        </dl>
-      </div>
-      {{with $i}}<div>
-        <h3>All provider info</h3>
-        <dl class="kv">{{range $k, $v := .}}<dt>{{$k}}</dt><dd>{{$v}}</dd>{{end}}</dl>
-      </div>{{end}}
-    </div>
-  </div>
-</details>
+<p class="note">Worker, environment, path and provider evidence: <a href="/diagnostics#runtime-evidence">Diagnostics</a></p>
 {{end}}
 
 {{/* ---- Diagnostics: what is wrong with the appliance? ---- */}}
@@ -805,6 +753,61 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <p>The worker kept exiting unexpectedly ({{$w.Restarts}} automatic restarts) and will not be restarted again by itself. Read the last worker failure below, then use Restart runtime. The requested device is unchanged; there is no fallback to another device.</p>
 </section>
 {{end}}
+
+{{$i := $w.Info}}{{$a := $w.Accelerator}}
+<details class="disclosure" data-keep="runtime-evidence" id="runtime-evidence">
+  <summary>Runtime evidence<span class="sub mono">{{get $i "provider"}} {{get $i "laya_version"}} · Python {{get $i "python_version"}} · torch {{get $i "torch_version"}}</span></summary>
+  <div class="body">
+    {{with gpuMem $a}}<div>
+      <h3>GPU memory</h3>
+      <div class="bar"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>
+      <ul class="legend">
+        <li><span class="sw alloc"></span>allocated<strong>{{mib $a "memory_allocated"}}</strong></li>
+        <li><span class="sw cache"></span>reserved<strong>{{mib $a "memory_reserved"}}</strong></li>
+        <li><span class="sw other"></span>other on device<strong>{{printf "%.1f" .Other}}%</strong></li>
+        <li><span class="sw"></span>free<strong>{{mib $a "memory_free"}}</strong></li>
+      </ul>
+    </div>{{end}}
+    <div class="kv-grid">
+      <div>
+        <h3>Server &amp; worker</h3>
+        <dl class="kv">
+          <dt>inference API</dt><dd>http://{{.APIAddr}}</dd>
+          <dt>uptime</dt><dd>{{.S.UptimeS}} s</dd>
+          <dt>supervision</dt><dd>{{if .Running}}running{{else}}not running{{end}}</dd>
+          <dt>worker state</dt><dd>{{$w.State}} (phase {{$w.Phase}})</dd>
+          <dt>ready since</dt><dd>{{with $w.ReadySince}}{{.}}{{else}}-{{end}}</dd>
+          <dt>worker PID</dt><dd>{{if $w.PID}}{{$w.PID}}{{else}}-{{end}}</dd>
+          <dt>starts / restarts</dt><dd>{{$w.Starts}} / {{$w.Restarts}} in window</dd>
+          <dt>requests</dt><dd>{{$w.Requests}}{{range $k, $v := $w.Errors}}; {{$k}} {{$v}}{{end}}</dd>
+          <dt>queue</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
+          <dt>latency</dt><dd>p50 {{ms $w.LatencyP50MS}}, p95 {{ms $w.LatencyP95MS}}</dd>
+        </dl>
+      </div>
+      <div>
+        <h3>Runtime &amp; accelerator</h3>
+        <dl class="kv">
+          <dt>home</dt><dd>{{.S.Runtime.Home}}</dd>
+          <dt>runtime</dt><dd>{{.S.Runtime.Runtime}}</dd>
+          <dt>model</dt><dd>{{.S.Runtime.ModelID}}</dd>
+          <dt>model artifact</dt><dd>{{.S.Runtime.Model}}</dd>
+          <dt>requested device</dt><dd>{{.S.Runtime.Device}}</dd>
+          <dt>provider</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd>
+          <dt>Python</dt><dd>{{get $i "python_version"}}</dd>
+          <dt>PyTorch / CUDA</dt><dd>{{get $i "torch_version"}} / {{get $i "torch_cuda"}}</dd>
+          <dt>device / dtype</dt><dd>{{get $i "device"}} {{get $i "dtype"}}</dd>
+          <dt>GPU</dt><dd>{{get $i "device_name"}}</dd>
+          <dt>GPU memory</dt><dd>allocated {{mib $a "memory_allocated"}}, reserved {{mib $a "memory_reserved"}}, free {{mib $a "memory_free"}}, total {{mib $a "memory_total"}}</dd>
+          <dt>load / warmup</dt><dd>{{get $i "load_ms"}} ms / {{get $i "warmup_ms"}} ms</dd>
+        </dl>
+      </div>
+      {{with $i}}<div>
+        <h3>All provider info</h3>
+        <dl class="kv">{{range $k, $v := .}}<dt>{{$k}}</dt><dd>{{$v}}</dd>{{end}}</dl>
+      </div>{{end}}
+    </div>
+  </div>
+</details>
 
 {{with $w.LastFailure}}
 <details class="disclosure" data-keep="worker-failure"{{if not $w.Ready}} open{{end}}>

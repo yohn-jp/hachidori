@@ -117,8 +117,8 @@ func TestRuntimeLeadsWithReadiness(t *testing.T) {
 	e := newEnv(t)
 	body := e.get(t, "/").Body.String()
 	ready := strings.Index(body, `class="readiness-panel tone-ok"`)
-	details := strings.Index(body, `data-keep="runtime-details"`)
-	if ready < 0 || details < 0 || ready > details {
+	load := strings.Index(body, `id="load-h"`)
+	if ready < 0 || load < 0 || ready > load {
 		t.Fatal("readiness does not lead the runtime workspace")
 	}
 	for _, want := range []string{`<a class="btn primary" href="/workbench">Open Workbench</a>`, "Recovered from worker failure: worker_crash",
@@ -140,6 +140,52 @@ func TestRuntimeLeadsWithReadiness(t *testing.T) {
 	body = e.get(t, "/").Body.String()
 	if !strings.Contains(body, `<button type="submit" class="btn primary">Start</button>`) || strings.Contains(body, "Open Workbench") {
 		t.Error("stopped runtime does not lead with Start")
+	}
+}
+
+// Runtime is the operator summary: readiness, identity, endpoint, load and
+// accelerator memory, once each, and no host paths or raw provider map.
+// Diagnostics projects the same /v1/status document with the full evidence.
+func TestRuntimeSummarySeparatesDiagnosticEvidence(t *testing.T) {
+	e := newEnv(t)
+	st := e.d.cfg.Status()
+	paths := []string{st.Runtime.Home, st.Worker.Info["python_executable"].(string), st.Worker.Info["hf_home"].(string),
+		st.Worker.Info["model_dir"].(string), st.Runtime.Model}
+	rt := e.get(t, "/").Body.String()
+	ov := rt[strings.Index(rt, `class="readiness-panel`):strings.Index(rt, `</main>`)]
+	for _, want := range []string{"laya-base", "NVIDIA GeForce RTX 3060", "laya 0.3.21", "0.1.0-cu128", `id="load-h"`,
+		"p95 latency", "0 / 64", "GPU memory", "of 12288 MiB", `href="/diagnostics#runtime-evidence"`} {
+		if !strings.Contains(ov, want) {
+			t.Errorf("runtime summary lacks %q", want)
+		}
+	}
+	for _, h := range []string{`id="rd-h"`, `id="load-h"`, "<dt>Model</dt>", "<dt>Accelerator</dt>", "<dt>Provider</dt>", "p50 latency"} {
+		if n := strings.Count(ov, h); n != 1 {
+			t.Errorf("runtime summary shows %q %d times", h, n)
+		}
+	}
+	for _, raw := range append(paths, "All provider info", "python_executable", "hf_home", "model_dir", "runtime-details", `data-keep="runtime-evidence"`) {
+		if strings.Contains(ov, raw) {
+			t.Errorf("default runtime surface exposes %q", raw)
+		}
+	}
+	for _, p := range []string{"/diagnostics", "/live"} {
+		diag := e.get(t, p).Body.String()
+		for _, want := range append(paths, `data-keep="runtime-evidence"`, "All provider info", "python_executable", "hf_home", "model_dir",
+			"<dt>worker PID</dt><dd>4242</dd>", "2 / 1 in window", "3.12.11", "2.11.0&#43;cu128 / 12.8", "812.5 ms / 90.1 ms",
+			"allocated 600 MiB, reserved 700 MiB, free 10240 MiB, total 12288 MiB") {
+			if !strings.Contains(diag, want) {
+				t.Errorf("%s lacks diagnostic evidence %q", p, want)
+			}
+		}
+	}
+	// Both surfaces follow the one status document.
+	e.rt.mu.Lock()
+	e.rt.snap.State, e.rt.snap.Ready, e.rt.snap.PID = worker.StateStopped, false, 0
+	e.rt.mu.Unlock()
+	live := e.get(t, "/live").Body.String()
+	if !strings.Contains(live, `<p class="state-word"><span class="dot"></span>stopped</p>`) || !strings.Contains(live, "<dt>worker state</dt><dd>stopped (phase ready)</dd>") {
+		t.Error("runtime summary and diagnostic evidence do not both follow /v1/status")
 	}
 }
 
