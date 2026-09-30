@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/subprocess"
 )
 
 // uvTool is the verified Hachidori-managed uv executable.
@@ -98,6 +99,7 @@ func (u uvTool) run(dir string, env []string, args ...string) error {
 	}
 	fmt.Fprintf(u.log, "uv %s\n", strings.Join(args, " "))
 	cmd := exec.Command(u.exe, args...)
+	subprocess.Configure(cmd)
 	cmd.Env, cmd.Dir = env, dir
 	cmd.Stdout, cmd.Stderr = u.log, u.log
 	if err := cmd.Run(); err != nil {

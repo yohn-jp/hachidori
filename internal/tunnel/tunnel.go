@@ -20,6 +20,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/yohn-jp/hachidori/internal/subprocess"
 )
 
 // Tunnel states.
@@ -181,6 +183,7 @@ func (m *Manager) Connect(s Spec) (started bool, err error) {
 	}
 	argv := s.Args()
 	cmd := exec.Command(exe, argv...)
+	subprocess.Configure(cmd)
 	cmd.Stderr = lineWriter{m}
 	cmd.WaitDelay = time.Second // do not hang on stderr held open by an ssh helper
 	m.mu.Lock()
