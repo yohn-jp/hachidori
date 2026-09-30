@@ -443,3 +443,125 @@ func TestExperimentHistoryDisabledWithoutRoot(t *testing.T) {
 }
 
 func f4(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) }
+
+// saveVariant saves a JSON-cloned copy of r, changed by mut, to history and
+// returns its entry id.
+func saveVariant(t *testing.T, e *env, r *eval.Report, label string, mut func(*eval.Report)) string {
+	t.Helper()
+	b, _ := json.Marshal(r)
+	var c eval.Report
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	mut(&c)
+	out, _ := json.MarshalIndent(c, "", "  ")
+	sm, err := e.d.hist.Save(append(out, '\n'), label, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sm.ID
+}
+
+func TestHistoryCompareDeltasNavigationAndStates(t *testing.T) {
+	e, f, root := historyEnv(t)
+	dataset, defs := expFiles(t)
+	e.post(t, "/experiments/run", runForm(dataset, defs))
+	x := waitExp(t, e)
+	if x.State != ExpSucceeded {
+		t.Fatalf("experiment %+v", x)
+	}
+	a := saveVariant(t, e, x.Report, "base", func(r *eval.Report) {})
+	b := saveVariant(t, e, x.Report, "other", func(r *eval.Report) {
+		r.Endpoint, r.Dataset = "http://elsewhere", "renamed.jsonl" // display names only
+		r.ChoiceAccuracy += 0.25
+		r.RequestLatency.P95 += 5
+	})
+	otherDataset := saveVariant(t, e, x.Report, "ds", func(r *eval.Report) { r.DatasetSHA256 = strings.Repeat("ab", 32) })
+	changedQ := saveVariant(t, e, x.Report, "q", func(r *eval.Report) {
+		for i := range r.Results {
+			if r.Results[i].QuestionID == "x" {
+				r.Results[i].QuestionSHA256 = strings.Repeat("cd", 32)
+			}
+		}
+	})
+	entries := filepath.Join(root, "entries")
+	snapshot := func() string {
+		var s string
+		ids, _ := os.ReadDir(entries)
+		for _, d := range ids {
+			for _, n := range []string{"evidence.json", "meta.json"} {
+				bb, _ := os.ReadFile(filepath.Join(entries, d.Name(), n))
+				s += d.Name() + n + string(bb)
+			}
+		}
+		return s
+	}
+	before, calls := snapshot(), decideCalls(f)
+
+	// Compatible: deterministic deltas, direct navigation to both sources.
+	cmp := func(a, b string) string {
+		return html.UnescapeString(e.post(t, "/history/compare", url.Values{"a": {a}, "b": {b}}).Body.String())
+	}
+	body := cmp(a, b)
+	for _, s := range []string{`data-compare="compatible"`, "+0.2500", "+5.0 ms", "Open A in Evidence", "Open B in Evidence",
+		`name="id" value="` + a + `"`, `name="id" value="` + b + `"`, "per-question deltas", "B - A"} {
+		if !strings.Contains(body, s) {
+			t.Errorf("compatible comparison lacks %q", s)
+		}
+	}
+	if body != cmp(a, b) {
+		t.Error("comparison is not deterministic")
+	}
+	section := strings.ToLower(strings.SplitN(strings.SplitN(body, `data-compare=`, 2)[1], "</section>", 2)[0])
+	for _, bad := range []string{"winner", "better", "worse", "verdict", "best", " passed", " failed"} {
+		if strings.Contains(section, bad) {
+			t.Errorf("comparison contains verdict word %q", bad)
+		}
+	}
+	// The navigation forms open either source in Evidence.
+	for _, id := range []string{a, b} {
+		if rec := e.post(t, "/history/open", url.Values{"id": {id}}); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/errors" {
+			t.Fatalf("open %s: %d", id, rec.Code)
+		}
+	}
+
+	// Different dataset digest: refused, no deltas.
+	body = cmp(a, otherDataset)
+	if !strings.Contains(body, `data-compare="refused"`) || !strings.Contains(body, "dataset_mismatch") || strings.Contains(body, "aggregate deltas") {
+		t.Errorf("dataset mismatch not refused: %s", body)
+	}
+	// Same dataset, one question identity changed: partial; that question has no delta.
+	body = cmp(a, changedQ)
+	if !strings.Contains(body, `data-compare="partial"`) || !strings.Contains(body, "question_identity_mismatch") ||
+		!strings.Contains(body, "question x") || !strings.Contains(body, "aggregate deltas") {
+		t.Errorf("identity mismatch not explicit: %s", body)
+	}
+	if strings.Contains(strings.SplitN(body, "per-question deltas", 2)[1], `<td class="mono">x</td>`) {
+		t.Error("misaligned question got a per-question delta")
+	}
+	// Bad selections are refused with a message.
+	for name, form := range map[string]url.Values{
+		"same":    {"a": {a}, "b": {a}},
+		"missing": {"a": {a}, "b": {"20260101T000000Z-bbbbbbbbbbbb"}},
+		"invalid": {"a": {"../x"}, "b": {b}},
+		"empty":   {"a": {a}},
+	} {
+		if body := e.post(t, "/history/compare", form).Body.String(); !strings.Contains(body, "cannot compare history entries") {
+			t.Errorf("%s selection not refused", name)
+		}
+	}
+	// Reading, comparing and opening changed nothing and never reached inference.
+	if snapshot() != before {
+		t.Error("comparison modified stored history")
+	}
+	if decideCalls(f) != calls {
+		t.Error("comparison reached the inference endpoint")
+	}
+}
+
+func TestHistoryCompareDisabledWithoutRoot(t *testing.T) {
+	e, _ := newWorkbenchEnv(t)
+	if body := e.post(t, "/history/compare", url.Values{"a": {"x"}, "b": {"y"}}).Body.String(); !strings.Contains(body, "not enabled") {
+		t.Fatalf("compare without history: %s", body)
+	}
+}

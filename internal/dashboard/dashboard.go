@@ -154,6 +154,8 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"distOf":    distOf,
 	"perQ":      perQuestion,
 	"f4":        func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) },
+	"sd":        func(v float64) string { return signed(v, "") },
+	"sms":       func(v float64) string { return signed(v, "ms") },
 	"short":     func(s string) string { return s[:min(len(s), 12)] },
 }).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html"))
 
@@ -203,6 +205,7 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /experiments/save", d.experimentsSave)
 	d.mux.HandleFunc("POST /history/open", d.historyOpen)
 	d.mux.HandleFunc("POST /history/delete", d.historyDelete)
+	d.mux.HandleFunc("POST /history/compare", d.historyCompare)
 	d.mux.HandleFunc("GET /errors", d.errorsPage)
 	d.mux.HandleFunc("POST /errors/open", d.errorsOpen)
 	d.mux.HandleFunc("POST /errors/use-experiment", d.errorsUseExperiment)
