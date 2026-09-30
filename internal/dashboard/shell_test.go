@@ -163,6 +163,12 @@ func TestShellLayoutRules(t *testing.T) {
 			t.Errorf("obsolete presentation %q remains", old)
 		}
 	}
+	if strings.Contains(body, `placeholder="nixos-dev"`) {
+		t.Error("new connection form contains a developer-specific placeholder")
+	}
+	if !strings.Contains(body, `max-width: min(100%, 88rem)`) {
+		t.Error("workspace does not constrain its wide-screen measure")
+	}
 	if n := strings.Count(body, "<style>"); n != 1 {
 		t.Errorf("%d stylesheets", n)
 	}
