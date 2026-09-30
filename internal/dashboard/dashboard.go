@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yohn-jp/hachidori/internal/history"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
@@ -53,6 +54,10 @@ type Config struct {
 	Doctor    func(out io.Writer) bool // doctor.Run bound to HACHIDORI_HOME
 	Tunnel    *tunnel.Manager
 	PrefsPath string // non-secret tunnel preferences; empty disables persistence
+	// HistoryDir is the experiment history root beneath HACHIDORI_HOME
+	// (state/history). Empty disables saving and listing experiment history;
+	// experiments then stay memory-only apart from explicit exports.
+	HistoryDir string
 	// Desktop, when set, adds the desktop preferences panel (start at
 	// sign-in, start minimized). It is nil for serve/dashboard.
 	Desktop Desktop
@@ -101,8 +106,10 @@ type Dashboard struct {
 	last   *Action
 	doctor DoctorRun
 
-	exp  experiments
-	errs explorer
+	exp     experiments
+	errs    explorer
+	hist    *history.Store // nil when Config.HistoryDir is empty or unusable
+	histErr string
 }
 
 // Action is the visible outcome of the last state-changing request.
@@ -169,6 +176,12 @@ func New(cfg Config) *Dashboard {
 		panic(err)
 	}
 	d := &Dashboard{cfg: cfg, token: hex.EncodeToString(b), mux: http.NewServeMux()}
+	if cfg.HistoryDir != "" {
+		var err error
+		if d.hist, err = history.Open(cfg.HistoryDir); err != nil {
+			d.histErr = err.Error()
+		}
+	}
 	d.mux.HandleFunc("GET /{$}", d.render("page", "Runtime", "runtime"))
 	d.mux.HandleFunc("GET /diagnostics", d.render("diagnostics", "Diagnostics", "diagnostics"))
 	d.mux.HandleFunc("GET /live", d.render("live", "Runtime", "runtime"))
@@ -187,6 +200,9 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /experiments/preflight", d.experimentsPreflight)
 	d.mux.HandleFunc("POST /experiments/run", d.experimentsRun)
 	d.mux.HandleFunc("POST /experiments/export", d.experimentsExport)
+	d.mux.HandleFunc("POST /experiments/save", d.experimentsSave)
+	d.mux.HandleFunc("POST /history/open", d.historyOpen)
+	d.mux.HandleFunc("POST /history/delete", d.historyDelete)
 	d.mux.HandleFunc("GET /errors", d.errorsPage)
 	d.mux.HandleFunc("POST /errors/open", d.errorsOpen)
 	d.mux.HandleFunc("POST /errors/use-experiment", d.errorsUseExperiment)

@@ -25,6 +25,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/client"
 	"github.com/yohn-jp/hachidori/internal/eval"
+	"github.com/yohn-jp/hachidori/internal/history"
 	"github.com/yohn-jp/hachidori/internal/question"
 )
 
@@ -301,6 +302,13 @@ type expView struct {
 	Msg      string
 	Err      string
 	Exp      *Experiment
+
+	// Experiment history; filled only on full-page renders.
+	HistoryOn       bool
+	HistoryRoot     string
+	History         []history.Summary
+	HistoryProblems []history.Problem
+	HistoryErr      string
 }
 
 // expForm is the run form as typed (kept on errors).
@@ -337,15 +345,32 @@ func formOf(in ExperimentInput) expForm {
 func (d *Dashboard) expView() expView {
 	v := expView{Chrome: d.chrome("Experiments", "experiments"),
 		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr, Exp: d.exp.snapshot(),
-		Form: expForm{Warmup: "0", Passes: "1"}}
+		Form: expForm{Warmup: "0", Passes: "1"}, HistoryOn: d.hist != nil}
 	if v.Exp != nil {
 		v.Form = formOf(v.Exp.Pre.Input)
 	}
 	return v
 }
 
+// expPageView is expView plus the saved-history listing. Listing reads the
+// history root only and never contacts the endpoint; the live fragment does
+// not list history.
+func (d *Dashboard) expPageView() expView {
+	v := d.expView()
+	if d.hist == nil {
+		v.HistoryErr = d.histErr
+		return v
+	}
+	v.HistoryRoot = d.hist.Root()
+	var err error
+	if v.History, v.HistoryProblems, err = d.hist.List(); err != nil {
+		v.HistoryErr = "cannot list history: " + err.Error()
+	}
+	return v
+}
+
 func (d *Dashboard) experimentsPage(w http.ResponseWriter, r *http.Request) {
-	d.renderView(w, "experiments", d.expView())
+	d.renderView(w, "experiments", d.expPageView())
 }
 
 func (d *Dashboard) experimentsLive(w http.ResponseWriter, r *http.Request) {
@@ -359,7 +384,7 @@ func postedForm(r *http.Request) expForm {
 
 // experimentsPreflight validates the selection without inference.
 func (d *Dashboard) experimentsPreflight(w http.ResponseWriter, r *http.Request) {
-	v := d.expView()
+	v := d.expPageView()
 	v.Form = postedForm(r)
 	in, err := v.Form.input()
 	if err == nil {
@@ -377,7 +402,7 @@ func (d *Dashboard) experimentsPreflight(w http.ResponseWriter, r *http.Request)
 // experimentsRun preflights and, when the whole dataset resolves and the
 // endpoint is ready, starts the run in the background.
 func (d *Dashboard) experimentsRun(w http.ResponseWriter, r *http.Request) {
-	v := d.expView()
+	v := d.expPageView()
 	v.Form = postedForm(r)
 	fail := func(err error) {
 		v.Err = err.Error()
@@ -410,7 +435,7 @@ func (d *Dashboard) experimentsRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Dashboard) experimentsExport(w http.ResponseWriter, r *http.Request) {
-	v := d.expView()
+	v := d.expPageView()
 	v.Form.ExportPath = strings.TrimSpace(r.PostFormValue("export_path"))
 	seq, _ := strconv.Atoi(r.PostFormValue("seq"))
 	if p, err := d.exportReport(seq, v.Form.ExportPath); err != nil {
@@ -419,6 +444,86 @@ func (d *Dashboard) experimentsExport(w http.ResponseWriter, r *http.Request) {
 		v.Msg = "wrote " + eval.EvidenceSchema + " report to " + p
 	}
 	v.Exp = d.exp.snapshot()
+	d.renderView(w, "experiments", v)
+}
+
+// experimentsSave stores the current finished experiment's canonical
+// hachidori.evidence.v1 report in the history root. Nothing is saved unless
+// the operator asks; the label and note are kept beside the evidence.
+func (d *Dashboard) experimentsSave(w http.ResponseWriter, r *http.Request) {
+	seq, _ := strconv.Atoi(r.PostFormValue("seq"))
+	msg, err := d.saveExperiment(seq, strings.TrimSpace(r.PostFormValue("label")), nl(strings.TrimSpace(r.PostFormValue("note"))))
+	v := d.expPageView()
+	if err != nil {
+		v.Err = "save to history failed: " + err.Error()
+	} else {
+		v.Msg = msg
+	}
+	d.renderView(w, "experiments", v)
+}
+
+var errNoHistory = errors.New("experiment history is not enabled in this workstation")
+
+func (d *Dashboard) saveExperiment(seq int, label, note string) (string, error) {
+	if d.hist == nil {
+		return "", errNoHistory
+	}
+	x := &d.exp
+	x.mu.Lock()
+	var rep *eval.Report
+	if x.cur != nil && x.cur.Seq == seq && x.cur.State != ExpRunning {
+		rep = x.cur.Report
+	}
+	x.mu.Unlock()
+	if rep == nil {
+		return "", errors.New("no finished experiment report to save")
+	}
+	// The same canonical encoding as the manual export.
+	b, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	sm, err := d.hist.Save(append(b, '\n'), label, note)
+	if err != nil {
+		return "", err
+	}
+	return "saved to history as " + sm.ID, nil
+}
+
+// historyOpen opens one saved entry in the Evidence workspace through the
+// same strict decoding as a report file. It never contacts the endpoint.
+func (d *Dashboard) historyOpen(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PostFormValue("id"))
+	err := errNoHistory
+	if d.hist != nil {
+		var rep eval.Report
+		var sum string
+		if rep, sum, err = d.hist.Open(id); err == nil {
+			d.errs.set(&evidenceSource{Report: rep, SHA256: sum, Origin: "history " + id})
+			http.Redirect(w, r, "/errors", http.StatusSeeOther)
+			return
+		}
+	}
+	v := d.expPageView()
+	v.Err = "cannot open history entry: " + err.Error()
+	d.renderView(w, "experiments", v)
+}
+
+// historyDelete removes one history entry. An already-opened copy stays in
+// memory in the Evidence workspace; exported and source files are never
+// touched.
+func (d *Dashboard) historyDelete(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PostFormValue("id"))
+	err := errNoHistory
+	if d.hist != nil {
+		err = d.hist.Delete(id)
+	}
+	v := d.expPageView()
+	if err != nil {
+		v.Err = "cannot delete history entry: " + err.Error()
+	} else {
+		v.Msg = "deleted history entry " + id + "; exported reports and datasets are untouched"
+	}
 	d.renderView(w, "experiments", v)
 }
 
