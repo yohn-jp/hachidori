@@ -522,6 +522,8 @@ Hachidori should not grow SSH key management, tunnel orchestration, or host prov
 
 The host dashboard's transport launcher (issue #2) stays inside this boundary: it only starts, observes and stops an `ssh` child it created, with a fixed argument vector, using the host's existing SSH client, identity and configuration. The inference runtime itself does not depend on it.
 
+Development Connections (issues #64/#68) name that launcher's inputs. A profile is a non-secret, declarative record (name, destination, loopback remote bind, remote port, local port) persisted by the unified Settings authority in `settings.json`; it holds no key, password, agent or known_hosts material. Live connection state stays exclusively in `tunnel.Manager`: Settings Connect, Disconnect and Reconnect and the Diagnostics tunnel form all save the same profile and drive the same manager, so there is one tunnel authority and at most one managed `ssh` process. The development host remains an endpoint consumer: the window shows the exact `HACHIDORI_ENDPOINT=...` value to set there, and Hachidori installs and discovers nothing on it. Both ends remain loopback-only.
+
 If explicit non-loopback binding is later supported, it must be opt-in and accompanied by an authentication and exposure model appropriate to that deployment.
 
 ## 11. Evaluation architecture
