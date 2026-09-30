@@ -10,7 +10,7 @@
 <div class="slot" data-live="experiment">{{template "experiment" .}}</div>
 
 <section class="region" aria-labelledby="setup-h">
-  <div class="region-h"><h2 id="setup-h">{{if .Exp}}New experiment{{else}}Set up an experiment{{end}}</h2><span class="sub">one experiment at a time · nothing is stored except the reports you export</span></div>
+  <div class="region-h"><h2 id="setup-h">{{if .Exp}}New experiment{{else}}Set up an experiment{{end}}</h2><span class="sub">one experiment at a time · nothing is stored except the reports you export or save to history</span></div>
   <form method="post" action="/experiments/run" class="surface" id="exp-form">
     <input type="hidden" name="token" value="{{.Token}}">
     <label class="field">Dataset (JSONL, absolute path)<input name="dataset" value="{{.Form.Dataset}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\dataset.jsonl" required></label>
@@ -36,6 +36,30 @@
   </dl>
   {{end}}
 </section>
+
+{{if .HistoryOn}}
+<section class="region" aria-labelledby="hist-h">
+  <div class="region-h"><h2 id="hist-h">History</h2><span class="sub mono">{{.HistoryRoot}} · saved only when you choose to</span></div>
+  {{with .HistoryErr}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+  {{if .History}}
+  <div class="table-wrap"><table class="data" aria-label="saved experiments"><thead><tr><th>saved</th><th>label</th><th>dataset</th><th>served model</th><th class="num">accuracy</th><th class="num">ECE</th><th class="num">p50 / p95</th><th class="num">errors</th><th></th></tr></thead><tbody>
+  {{range .History}}<tr>
+    <td>{{.SavedAt}}</td><td>{{.Label}}{{with .Note}}<br><span class="note">{{.}}</span>{{end}}</td>
+    <td class="mono">{{.Dataset}}<br><span class="faint">sha256 {{short .DatasetSHA256}}</span></td>
+    <td class="mono">{{.ServedModel}}{{with .ServedIdentity}}<br><span class="faint">{{short .}}</span>{{end}}{{if not .ServedConsistent}}<br><span class="bad-t">inconsistent</span>{{end}}</td>
+    <td class="num strong">{{f4 .Accuracy}}</td><td class="num">{{f4 .ECE}}</td><td class="num">{{ms .RequestP50MS}} / {{ms .RequestP95MS}}</td>
+    <td class="num{{if .RequestErrors}} bad-t{{end}}">{{.RequestErrors}}</td>
+    <td>
+      <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Open in Evidence</button></form>
+      <form method="post" action="/history/delete" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Delete</button></form>
+    </td>
+  </tr>{{end}}
+  </tbody></table></div>
+  {{else}}<p class="note">No experiment has been saved yet.</p>{{end}}
+  {{range .HistoryProblems}}<div class="msg bad" role="alert">history entry {{.ID}} cannot be read: {{.Reason}}
+    <form method="post" action="/history/delete" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Delete</button></form></div>{{end}}
+</section>
+{{end}}
 <script>
 // While an experiment runs, refresh only its slot.
 (function () {
@@ -101,6 +125,14 @@
       <button type="submit" class="btn">Export report</button>
     </form>
   </div>
+  {{if $.HistoryOn}}
+  <form method="post" action="/experiments/save" class="path-form">
+    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="seq" value="{{.Seq}}">
+    <label class="field">Save to history (optional label)<input name="label" maxlength="200" autocomplete="off" placeholder="baseline"></label>
+    <label class="field">Note (optional)<textarea name="note" rows="2" maxlength="4000"></textarea></label>
+    <button type="submit" class="btn">Save to history</button>
+  </form>
+  {{end}}
   {{range .Exported}}<p class="note mono">exported to {{.}}</p>{{end}}
   {{end}}
 

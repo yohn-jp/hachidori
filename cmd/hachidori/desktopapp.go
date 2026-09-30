@@ -206,7 +206,9 @@ func (a *desktopApp) run() error {
 				Doctor:    func(out io.Writer) bool { return doctor.Run(root, out) },
 				Tunnel:    tun,
 				PrefsPath: h.Path("state", "dashboard.json"),
-				Desktop:   mgr,
+				// Saved experiment history lives under HACHIDORI_HOME only.
+				HistoryDir: h.Path("state", "history"),
+				Desktop:    mgr,
 			})
 			// An experiment of a replaced runtime's dashboard must not keep
 			// running against the next runtime.

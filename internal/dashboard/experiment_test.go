@@ -288,4 +288,158 @@ func TestExperimentRoutesKeepDashboardBoundaries(t *testing.T) {
 	}
 }
 
+// historyEnv is a workbench env whose dashboard also has a history root under
+// its home, like the desktop composition.
+func historyEnv(t *testing.T) (*env, *fakeAPI, string) {
+	t.Helper()
+	e, f := newWorkbenchEnv(t)
+	cfg := e.d.cfg
+	cfg.HistoryDir = filepath.Join(e.home, "state", "history")
+	e.d = New(cfg)
+	return e, f, cfg.HistoryDir
+}
+
+func TestExperimentHistorySaveListOpenDeleteLifecycle(t *testing.T) {
+	e, f, root := historyEnv(t)
+	dataset, defs := expFiles(t)
+	e.post(t, "/experiments/run", runForm(dataset, defs))
+	x := waitExp(t, e)
+	if x.State != ExpSucceeded {
+		t.Fatalf("experiment %+v", x)
+	}
+	// Memory-only until explicitly saved.
+	if _, err := os.Stat(root); err == nil {
+		t.Fatal("history root exists before an explicit save")
+	}
+	page := html.UnescapeString(e.get(t, "/experiments").Body.String())
+	if !strings.Contains(page, "No experiment has been saved yet") || !strings.Contains(page, "/experiments/save") {
+		t.Fatal("history region or save action missing")
+	}
+	exported := filepath.Join(t.TempDir(), "report.json")
+	e.post(t, "/experiments/export", url.Values{"seq": {"1"}, "export_path": {exported}})
+	exportedBefore, _ := os.ReadFile(exported)
+	calls := decideCalls(f)
+
+	body := html.UnescapeString(e.post(t, "/experiments/save", url.Values{"seq": {"1"}, "label": {"baseline <1>"}, "note": {"first"}}).Body.String())
+	if !strings.Contains(body, "saved to history as ") {
+		t.Fatalf("save: %s", body)
+	}
+	// The stored evidence is byte-identical to the canonical export, and the
+	// label lives outside it.
+	dirs, _ := os.ReadDir(filepath.Join(root, "entries"))
+	if len(dirs) != 1 {
+		t.Fatalf("entries %v", dirs)
+	}
+	id := dirs[0].Name()
+	stored, err := os.ReadFile(filepath.Join(root, "entries", id, "evidence.json"))
+	if err != nil || !bytes.Equal(stored, exportedBefore) {
+		t.Fatalf("stored evidence differs from the canonical export: %v", err)
+	}
+	if bytes.Contains(stored, []byte("baseline")) {
+		t.Fatal("label leaked into canonical evidence")
+	}
+	r := x.Report
+	list := html.UnescapeString(e.get(t, "/experiments").Body.String())
+	for _, s := range []string{id, "baseline <1>", "org/laya@rev1", f4(r.ChoiceAccuracy), r.DatasetSHA256[:12], dataset} {
+		if !strings.Contains(list, s) {
+			t.Errorf("history list lacks %q", s)
+		}
+	}
+
+	// A new composition over the same home lists it again, and opens it in
+	// the Evidence workspace.
+	e.d = New(e.d.cfg)
+	if !strings.Contains(e.get(t, "/experiments").Body.String(), id) {
+		t.Fatal("history did not survive a new composition")
+	}
+	rec := e.post(t, "/history/open", url.Values{"id": {id}})
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/errors" {
+		t.Fatalf("open: %d %s", rec.Code, rec.Body)
+	}
+	ev := html.UnescapeString(e.get(t, "/errors").Body.String())
+	if !strings.Contains(ev, "history "+id) || !strings.Contains(ev, r.DatasetSHA256) {
+		t.Fatal("Evidence workspace does not show the opened history entry")
+	}
+	// Listing, opening and saving never called inference.
+	if decideCalls(f) != calls {
+		t.Fatal("history reached the inference endpoint")
+	}
+
+	// Delete removes only the entry.
+	if body := e.post(t, "/history/delete", url.Values{"id": {id}}).Body.String(); !strings.Contains(body, "deleted history entry") {
+		t.Fatalf("delete: %s", body)
+	}
+	if left, _ := os.ReadDir(filepath.Join(root, "entries")); len(left) != 0 {
+		t.Fatalf("entry not deleted: %v", left)
+	}
+	if after, err := os.ReadFile(exported); err != nil || !bytes.Equal(after, exportedBefore) {
+		t.Fatal("exported evidence was touched")
+	}
+	if _, err := os.Stat(dataset); err != nil {
+		t.Fatal("source dataset was touched")
+	}
+	if !strings.Contains(e.get(t, "/experiments").Body.String(), "No experiment has been saved yet") {
+		t.Fatal("deleted entry still listed")
+	}
+}
+
+func TestExperimentHistoryRefusesBadInputAndTraversal(t *testing.T) {
+	e, _, root := historyEnv(t)
+	victim := filepath.Join(e.home, "state", "dashboard.json")
+	os.WriteFile(victim, []byte("{}"), 0o644)
+	// Nothing to save yet.
+	if body := e.post(t, "/experiments/save", url.Values{"seq": {"1"}}).Body.String(); !strings.Contains(body, "no finished experiment report to save") {
+		t.Fatalf("save without a report: %s", body)
+	}
+	dataset, defs := expFiles(t)
+	e.post(t, "/experiments/run", runForm(dataset, defs))
+	waitExp(t, e)
+	e.post(t, "/experiments/save", url.Values{"seq": {"1"}})
+	dirs, _ := os.ReadDir(filepath.Join(root, "entries"))
+	if len(dirs) != 1 {
+		t.Fatalf("entries %v", dirs)
+	}
+	for _, id := range []string{"../../dashboard.json", "..", "../entries/" + dirs[0].Name(), filepath.Join(root, "entries", dirs[0].Name()), ""} {
+		for _, route := range []string{"/history/open", "/history/delete"} {
+			rec := e.post(t, route, url.Values{"id": {id}})
+			if rec.Code == http.StatusSeeOther || !strings.Contains(rec.Body.String(), "invalid history entry id") {
+				t.Errorf("%s %q accepted", route, id)
+			}
+		}
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatal("delete escaped the history root")
+	}
+	if left, _ := os.ReadDir(filepath.Join(root, "entries")); len(left) != 1 {
+		t.Fatal("a refused delete removed the entry")
+	}
+	// A malformed stored entry is reported and cannot be opened.
+	bad := filepath.Join(root, "entries", "20260101T000000Z-bbbbbbbbbbbb")
+	os.MkdirAll(bad, 0o755)
+	os.WriteFile(filepath.Join(bad, "evidence.json"), []byte(`{"schema":"hachidori.evidence.v1","x":1}`), 0o644)
+	if body := e.get(t, "/experiments").Body.String(); !strings.Contains(body, "20260101T000000Z-bbbbbbbbbbbb cannot be read") {
+		t.Error("malformed entry not reported")
+	}
+	if rec := e.post(t, "/history/open", url.Values{"id": {"20260101T000000Z-bbbbbbbbbbbb"}}); rec.Code == http.StatusSeeOther {
+		t.Error("malformed entry opened")
+	}
+}
+
+func TestExperimentHistoryDisabledWithoutRoot(t *testing.T) {
+	e, _ := newWorkbenchEnv(t)
+	dataset, defs := expFiles(t)
+	e.post(t, "/experiments/run", runForm(dataset, defs))
+	waitExp(t, e)
+	page := e.get(t, "/experiments").Body.String()
+	if strings.Contains(page, "/experiments/save") || strings.Contains(page, `id="hist-h"`) {
+		t.Fatal("history UI shown without a history root")
+	}
+	if body := e.post(t, "/experiments/save", url.Values{"seq": {"1"}}).Body.String(); !strings.Contains(body, "not enabled") {
+		t.Fatalf("save without history: %s", body)
+	}
+	if rec := e.post(t, "/history/open", url.Values{"id": {"x"}}); rec.Code == http.StatusSeeOther {
+		t.Fatal("open without history redirected")
+	}
+}
+
 func f4(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) }
