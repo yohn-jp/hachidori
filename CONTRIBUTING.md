@@ -22,6 +22,12 @@ Reuse the existing runtime, API, worker, home, dashboard, desktop, setup, and ev
 
 `HACHIDORI_HOME` is the single mutable runtime root. Keep transport and UI surfaces thin over the same runtime semantics. The Windows desktop shell must not become a second runtime or policy authority.
 
+## Brand assets
+
+`assets/branding/` and `assets/icons/` hold the approved Hachidori brand assets. Do not edit or re-encode them; replace them only with newly approved files.
+
+`cmd/hachidori/rsrc_windows_amd64.syso` embeds `assets/icons/hachidori.ico` as the Windows executable icon. After replacing the icon, regenerate it with `go generate ./cmd/hachidori`; `internal/winres` tests fail while it is stale.
+
 ## Validation
 
 Run focused tests while editing. Before delivery run:
