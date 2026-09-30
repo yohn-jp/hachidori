@@ -13,8 +13,8 @@
   <div class="region-h"><h2 id="setup-h">{{if .Exp}}New experiment{{else}}Set up an experiment{{end}}</h2><span class="sub">one experiment at a time · nothing is stored except the reports you export or save to history</span></div>
   <form method="post" action="/experiments/run" class="surface" id="exp-form">
     <input type="hidden" name="token" value="{{.Token}}">
-    <label class="field">Dataset (JSONL, absolute path)<input name="dataset" value="{{.Form.Dataset}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\dataset.jsonl" required></label>
-    <label class="field">Question Definition files or directories (optional, absolute paths, one per line)<textarea name="definitions" rows="2" spellcheck="false">{{.Form.Definitions}}</textarea></label>
+    <div class="path-form"><label class="field">Dataset (JSONL, absolute path)<input name="dataset" value="{{.Form.Dataset}}" spellcheck="false" autocomplete="off" placeholder="/path/to/dataset.jsonl" required></label>{{if .PathPicker}}<button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="dataset" formnovalidate>Choose file</button>{{end}}</div>
+    <div class="field"><span>Question Definition files or directories (optional, absolute paths, one per line)</span><textarea name="definitions" rows="2" spellcheck="false">{{.Form.Definitions}}</textarea>{{if .PathPicker}}<div class="btn-row"><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-file" formnovalidate>Choose file</button><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-folder" formnovalidate>Choose folder</button></div>{{end}}</div>
     <div class="fields">
       <label class="field">Warmup requests (excluded from latency)<input name="warmup" value="{{.Form.Warmup}}" inputmode="numeric"></label>
       <label class="field">Passes (accuracy uses pass 1)<input name="passes" value="{{.Form.Passes}}" inputmode="numeric"></label>
@@ -133,7 +133,8 @@
     <form method="post" action="/experiments/export" class="path-form">
       <input type="hidden" name="token" value="{{$.Token}}">
       <input type="hidden" name="seq" value="{{.Seq}}">
-      <label class="field">Export {{.Report.Schema}} report to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Form.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\report.json"></label>
+      <label class="field">Export {{.Report.Schema}} report to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Form.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/report.json"></label>
+      {{if $.PathPicker}}<button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="export" formnovalidate>Choose file</button>{{end}}
       <button type="submit" class="btn">Export report</button>
     </form>
   </div>

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -281,5 +282,36 @@ func TestModelManagerOverRealSetupAuthority(t *testing.T) {
 	// Without a home nothing is inspected.
 	if st := (modelManager{ctl: func() *app.Controller { return app.New(app.Config{}) }}).State(); st.Err == "" {
 		t.Fatal("no home is not reported")
+	}
+}
+
+type cancelPathPicker struct{ neverPicker }
+
+func (*cancelPathPicker) PickOpen(context.Context, string) (string, error) {
+	return "", desktop.ErrPickCancelled
+}
+func (*cancelPathPicker) PickSave(context.Context, string) (string, error) {
+	return "", errors.New("dialog broke")
+}
+
+func TestDashboardPathPickerIsDesktopFileCapabilityOnly(t *testing.T) {
+	if p := dashboardPathPicker(&neverPicker{}); p != nil {
+		t.Fatal("a folder-only picker became a dashboard path picker")
+	}
+	if p := dashboardPathPicker(desktop.NativePicker()); p != nil && runtime.GOOS != "windows" {
+		t.Fatal("a platform without native file dialogs exposed a path picker")
+	}
+	p := dashboardPathPicker(&cancelPathPicker{})
+	if p == nil {
+		t.Fatal("a file-capable picker was not exposed")
+	}
+	if _, err := p.PickOpen(context.Background(), ""); !errors.Is(err, dashboard.ErrPickCancelled) {
+		t.Fatalf("cancel = %v, want dashboard.ErrPickCancelled", err)
+	}
+	if _, err := p.PickFolder(context.Background(), ""); !errors.Is(err, dashboard.ErrPickCancelled) {
+		t.Fatalf("folder cancel = %v", err)
+	}
+	if _, err := p.PickSave(context.Background(), ""); err == nil || errors.Is(err, dashboard.ErrPickCancelled) {
+		t.Fatalf("failure = %v, want the picker error", err)
 	}
 }

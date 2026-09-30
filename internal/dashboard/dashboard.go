@@ -12,6 +12,7 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"embed"
@@ -50,6 +51,15 @@ type Lifecycle interface {
 	Running() bool
 }
 
+// PathPicker is the optional desktop capability used by workstation file
+// workflows. Browser hosted dashboards leave it nil and retain typed paths.
+// A dismissed dialog returns ErrPickCancelled.
+type PathPicker interface {
+	PickOpen(context.Context, string) (string, error)
+	PickSave(context.Context, string) (string, error)
+	PickFolder(context.Context, string) (string, error)
+}
+
 // Config wires the dashboard to the existing host authorities.
 type Config struct {
 	APIAddr   string               // the loopback inference API address; the workbench calls it
@@ -82,6 +92,8 @@ type Config struct {
 	// WebView2 is the installed WebView2 Runtime version when the desktop
 	// shell hosts the dashboard; it is only a fact for the diagnostic bundle.
 	WebView2 string
+	// PathPicker is present only in the native desktop composition.
+	PathPicker PathPicker
 }
 
 // Models is the explicit model/runtime maintenance authority. Every method
@@ -270,6 +282,12 @@ func (c Config) hasSettings() bool {
 	return c.Settings != nil || c.Desktop != nil || c.Connections != nil || c.Models != nil
 }
 
+// ErrPickCancelled is a PathPicker's answer when the operator dismisses the
+// dialog; it is intent, not a failure.
+var ErrPickCancelled = errors.New("path selection cancelled")
+
+func pickWasCancelled(err error) bool { return errors.Is(err, ErrPickCancelled) }
+
 // New builds the dashboard.
 func New(cfg Config) *Dashboard {
 	b := make([]byte, 16)
@@ -303,6 +321,7 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /experiments/run", d.experimentsRun)
 	d.mux.HandleFunc("POST /experiments/export", d.experimentsExport)
 	d.mux.HandleFunc("POST /experiments/save", d.experimentsSave)
+	d.mux.HandleFunc("POST /experiments/pick", d.experimentsPick)
 	d.mux.HandleFunc("POST /history/open", d.historyOpen)
 	d.mux.HandleFunc("POST /history/delete", d.historyDelete)
 	d.mux.HandleFunc("POST /history/compare", d.historyCompare)
@@ -310,6 +329,7 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /errors/open", d.errorsOpen)
 	d.mux.HandleFunc("POST /errors/use-experiment", d.errorsUseExperiment)
 	d.mux.HandleFunc("POST /errors/export", d.errorsExport)
+	d.mux.HandleFunc("POST /errors/pick", d.errorsPick)
 	if cfg.hasSettings() {
 		d.mux.HandleFunc("GET /settings", d.settingsPage)
 	}

@@ -313,6 +313,7 @@ type expView struct {
 	// Comparison of two stored entries (POST /history/compare); nil otherwise.
 	CompareA, CompareB string
 	Compare            *compareView
+	PathPicker         bool
 }
 
 // expForm is the run form as typed (kept on errors).
@@ -348,12 +349,66 @@ func formOf(in ExperimentInput) expForm {
 
 func (d *Dashboard) expView() expView {
 	v := expView{Chrome: d.chrome("Experiments", "experiments"),
-		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr, Exp: d.exp.snapshot(),
+		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr, Exp: d.exp.snapshot(), PathPicker: d.cfg.PathPicker != nil,
 		Form: expForm{Warmup: "0", Passes: "1"}, HistoryOn: d.hist != nil}
 	if v.Exp != nil {
 		v.Form = formOf(v.Exp.Pre.Input)
 	}
 	return v
+}
+
+func (d *Dashboard) experimentsPick(w http.ResponseWriter, r *http.Request) {
+	v := d.expPageView()
+	pick := r.PostFormValue("pick")
+	if pick == "export" {
+		// The export form carries only the destination, like
+		// experimentsExport; the run form state stays as shown.
+		v.Form.ExportPath = strings.TrimSpace(r.PostFormValue("export_path"))
+	} else {
+		v.Form = postedForm(r)
+	}
+	if d.cfg.PathPicker == nil {
+		v.Err = "native path selection is unavailable"
+		d.renderView(w, "experiments", v)
+		return
+	}
+	var (
+		path string
+		err  error
+	)
+	switch pick {
+	case "dataset":
+		if path, err = d.cfg.PathPicker.PickOpen(r.Context(), "Choose a dataset"); err == nil {
+			v.Form.Dataset = path
+		}
+	case "definition-file":
+		if path, err = d.cfg.PathPicker.PickOpen(r.Context(), "Choose a Question Definition"); err == nil {
+			v.Form.Definitions = appendLine(v.Form.Definitions, path)
+		}
+	case "definition-folder":
+		if path, err = d.cfg.PathPicker.PickFolder(r.Context(), "Choose a Question Definition folder"); err == nil {
+			v.Form.Definitions = appendLine(v.Form.Definitions, path)
+		}
+	case "export":
+		if path, err = d.cfg.PathPicker.PickSave(r.Context(), "Choose where to save the experiment report"); err == nil {
+			v.Form.ExportPath = path
+		}
+	default:
+		v.Err = "unknown native picker operation"
+	}
+	if err != nil && !pickWasCancelled(err) {
+		v.Err = "choosing a path: " + err.Error()
+	}
+	d.renderView(w, "experiments", v)
+}
+
+// appendLine adds one chosen path to a one-per-line list, keeping the paths
+// already entered.
+func appendLine(list, line string) string {
+	if strings.TrimSpace(list) == "" {
+		return line
+	}
+	return strings.TrimRight(list, "\n") + "\n" + line
 }
 
 // expPageView is expView plus the saved-history listing. Listing reads the

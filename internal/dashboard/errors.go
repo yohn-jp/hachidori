@@ -128,22 +128,23 @@ func (c controls) parse() (float64, explore.Filter, error) {
 // errView is the Evidence workspace's view model (the Error Explorer).
 type errView struct {
 	Chrome
-	Token    string
-	Src      *evidenceSource
-	C        controls
-	A        *explore.Analysis
-	Rows     []explore.Item // at most maxRows of A.Items
-	Detail   *explore.Item
-	OpenPath string
-	Export   string
-	Msg      string
-	Err      string
-	ExpSeq   int // current experiment with a report, 0 if none
+	Token      string
+	Src        *evidenceSource
+	C          controls
+	A          *explore.Analysis
+	Rows       []explore.Item // at most maxRows of A.Items
+	Detail     *explore.Item
+	OpenPath   string
+	Export     string
+	Msg        string
+	Err        string
+	ExpSeq     int // current experiment with a report, 0 if none
+	PathPicker bool
 }
 
 func (d *Dashboard) errView(q url.Values) errView {
 	v := errView{Chrome: d.chrome("Evidence", "evidence"), Token: d.token,
-		Src: d.errs.get(), C: controlsOf(q)}
+		Src: d.errs.get(), C: controlsOf(q), PathPicker: d.cfg.PathPicker != nil}
 	if e := d.exp.snapshot(); e != nil && e.Report != nil && e.State != ExpRunning {
 		v.ExpSeq = e.Seq
 	}
@@ -168,6 +169,42 @@ func (d *Dashboard) errView(q url.Values) errView {
 		}
 	}
 	return v
+}
+
+func (d *Dashboard) errorsPick(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	v := d.errView(r.PostForm)
+	// Keep what was typed; a cancelled choice leaves it as it was.
+	v.OpenPath = strings.TrimSpace(r.PostFormValue("path"))
+	v.Export = strings.TrimSpace(r.PostFormValue("export_path"))
+	if d.cfg.PathPicker == nil {
+		v.Err = "native path selection is unavailable"
+		d.renderView(w, "errors", v)
+		return
+	}
+	var path string
+	var err error
+	switch r.PostFormValue("pick") {
+	case "open":
+		path, err = d.cfg.PathPicker.PickOpen(r.Context(), "Choose an evidence report")
+		if err == nil {
+			v.OpenPath = path
+		}
+	case "export":
+		path, err = d.cfg.PathPicker.PickSave(r.Context(), "Choose where to save the evidence analysis")
+		if err == nil {
+			v.Export = path
+		}
+	default:
+		v.Err = "unknown native picker operation"
+	}
+	if err != nil && !pickWasCancelled(err) {
+		v.Err = "choosing a path: " + err.Error()
+	}
+	d.renderView(w, "errors", v)
 }
 
 func (d *Dashboard) errorsPage(w http.ResponseWriter, r *http.Request) {
