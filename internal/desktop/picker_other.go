@@ -13,3 +13,11 @@ type unsupportedPicker struct{}
 func (unsupportedPicker) PickFolder(context.Context, string) (string, error) {
 	return "", ErrUnsupported
 }
+
+func (unsupportedPicker) PickOpen(context.Context, string) (string, error) {
+	return "", ErrUnsupported
+}
+
+func (unsupportedPicker) PickSave(context.Context, string) (string, error) {
+	return "", ErrUnsupported
+}

@@ -313,6 +313,7 @@ type expView struct {
 	// Comparison of two stored entries (POST /history/compare); nil otherwise.
 	CompareA, CompareB string
 	Compare            *compareView
+	PathPicker         bool
 }
 
 // expForm is the run form as typed (kept on errors).
@@ -348,12 +349,58 @@ func formOf(in ExperimentInput) expForm {
 
 func (d *Dashboard) expView() expView {
 	v := expView{Chrome: d.chrome("Experiments", "experiments"),
-		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr, Exp: d.exp.snapshot(),
+		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr, Exp: d.exp.snapshot(), PathPicker: d.cfg.PathPicker != nil,
 		Form: expForm{Warmup: "0", Passes: "1"}, HistoryOn: d.hist != nil}
 	if v.Exp != nil {
 		v.Form = formOf(v.Exp.Pre.Input)
 	}
 	return v
+}
+
+func (d *Dashboard) experimentsPick(w http.ResponseWriter, r *http.Request) {
+	v := d.expPageView()
+	v.Form = postedForm(r)
+	if d.cfg.PathPicker == nil {
+		v.Err = "native path selection is unavailable"
+		d.renderView(w, "experiments", v)
+		return
+	}
+	var (
+		path string
+		err  error
+	)
+	switch r.PostFormValue("pick") {
+	case "dataset":
+		path, err = d.cfg.PathPicker.PickOpen(r.Context(), "Choose a dataset")
+	case "definition-file":
+		path, err = d.cfg.PathPicker.PickOpen(r.Context(), "Choose a Question Definition")
+		if err == nil {
+			v.Form.Definitions = path
+		}
+	case "definition-folder":
+		path, err = d.cfg.PathPicker.PickFolder(r.Context(), "Choose a Question Definition folder")
+		if err == nil {
+			if v.Form.Definitions == "" {
+				v.Form.Definitions = path
+			} else {
+				v.Form.Definitions += "\n" + path
+			}
+		}
+	case "export":
+		path, err = d.cfg.PathPicker.PickSave(r.Context(), "Choose where to save the experiment report")
+		if err == nil {
+			v.Form.ExportPath = path
+		}
+	default:
+		v.Err = "unknown native picker operation"
+	}
+	if err == nil && r.PostFormValue("pick") == "dataset" {
+		v.Form.Dataset = path
+	}
+	if err != nil && !pickWasCancelled(err) {
+		v.Err = "choosing a path: " + err.Error()
+	}
+	d.renderView(w, "experiments", v)
 }
 
 // expPageView is expView plus the saved-history listing. Listing reads the

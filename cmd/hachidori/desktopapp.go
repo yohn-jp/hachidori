@@ -229,6 +229,7 @@ func (a *desktopApp) run() error {
 				// manager, shared by every runtime's dashboard.
 				Connections: prefs,
 				WebView2:    version,
+				PathPicker:  dashboardPathPicker(a.Picker),
 			})
 			// An experiment of a replaced runtime's dashboard must not keep
 			// running against the next runtime.
@@ -330,6 +331,13 @@ func (a *desktopApp) run() error {
 	_ = dashSrv.Shutdown(shut)
 	_ = apiSrv.Shutdown(shut)
 	return err
+}
+
+func dashboardPathPicker(p desktop.FolderPicker) dashboard.PathPicker {
+	if picker, ok := p.(dashboard.PathPicker); ok {
+		return picker
+	}
+	return nil
 }
 
 // modelManager adapts the application controller to the dashboard's Models

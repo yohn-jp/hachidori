@@ -186,15 +186,16 @@ type wbExport struct {
 // wbView is the workbench page's view model.
 type wbView struct {
 	Chrome
-	Token     string
-	Endpoint  string
-	W         workbench
-	Run       *wbRun
-	Preview   bool
-	Export    *wbExport
-	LoadMsg   string
-	LoadErr   string
-	FormError string
+	Token      string
+	Endpoint   string
+	W          workbench
+	Run        *wbRun
+	Preview    bool
+	Export     *wbExport
+	LoadMsg    string
+	LoadErr    string
+	FormError  string
+	PathPicker bool
 }
 
 // wbQuestionView is what the page shows for one editor row besides its
@@ -236,7 +237,7 @@ func (d *Dashboard) endpoint() *client.Client {
 
 func (d *Dashboard) workbenchView() wbView {
 	return wbView{Chrome: d.chrome("Workbench", "workbench"),
-		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr + "/v1/decide"}
+		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr + "/v1/decide", PathPicker: d.cfg.PathPicker != nil}
 }
 
 func (d *Dashboard) workbenchPage(w http.ResponseWriter, r *http.Request) {
@@ -275,9 +276,15 @@ func (d *Dashboard) workbenchPost(w http.ResponseWriter, r *http.Request) {
 		}
 	case op == "load":
 		d.workbenchLoad(&v)
+	case op == "pick-load":
+		d.workbenchPickLoad(r, &v)
 	case strings.HasPrefix(op, "export:"):
 		if i, ok := index(op, "export:", len(v.W.Questions)); ok {
 			v.Export = exportDefinition(i, v.W.Questions[i])
+		}
+	case strings.HasPrefix(op, "pick-export:"):
+		if i, ok := index(op, "pick-export:", len(v.W.Questions)); ok {
+			d.workbenchPickExport(r, &v, i)
 		}
 	default:
 		v.FormError = "unknown workbench operation"
@@ -286,6 +293,32 @@ func (d *Dashboard) workbenchPost(w http.ResponseWriter, r *http.Request) {
 		v.W.Questions = []wbQuestion{blankQuestion()}
 	}
 	d.renderView(w, "workbench", v)
+}
+
+func (d *Dashboard) workbenchPickLoad(r *http.Request, v *wbView) {
+	if d.cfg.PathPicker == nil {
+		v.FormError = "native path selection is unavailable"
+		return
+	}
+	p, err := d.cfg.PathPicker.PickOpen(r.Context(), "Choose a Question Definition")
+	if err == nil {
+		v.W.LoadPath = p
+	} else if !pickWasCancelled(err) {
+		v.FormError = "choosing a Question Definition: " + err.Error()
+	}
+}
+
+func (d *Dashboard) workbenchPickExport(r *http.Request, v *wbView, i int) {
+	if d.cfg.PathPicker == nil {
+		v.FormError = "native path selection is unavailable"
+		return
+	}
+	p, err := d.cfg.PathPicker.PickSave(r.Context(), "Choose where to save the Question Definition")
+	if err == nil {
+		v.W.Questions[i].ExportPath = p
+	} else if !pickWasCancelled(err) {
+		v.FormError = "choosing an export destination: " + err.Error()
+	}
 }
 
 func index(op, prefix string, n int) (int, bool) {

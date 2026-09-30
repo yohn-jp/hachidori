@@ -84,7 +84,8 @@
     <form method="post" action="/errors/export" class="path-form">
       <input type="hidden" name="token" value="{{$.Token}}">
       {{range $k, $vs := $.C.Values}}{{range $vs}}<input type="hidden" name="{{$k}}" value="{{.}}">{{end}}{{end}}
-      <label class="field">Export the selection as {{"hachidori.evidence-analysis.v1"}} data to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Export}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\errors.json"></label>
+      <label class="field">Export the selection as {{"hachidori.evidence-analysis.v1"}} data to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Export}}" spellcheck="false" autocomplete="off" placeholder="/path/to/errors.json"></label>
+      {{if $.PathPicker}}<button type="submit" class="btn" formaction="/errors/pick" name="pick" value="export">Choose file</button>{{end}}
       <button type="submit" class="btn">Export selection</button>
     </form>
   </section>
@@ -146,6 +147,7 @@
 </div>{{end}}
 <form method="post" action="/errors/open" class="path-form">
   <input type="hidden" name="token" value="{{.Token}}">
-  <label class="field">Evidence report file (absolute path)<input name="path" value="{{.OpenPath}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\report.json"></label>
+  <label class="field">Evidence report file (absolute path)<input name="path" value="{{.OpenPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/report.json"></label>
+  {{if .PathPicker}}<button type="submit" class="btn" formaction="/errors/pick" name="pick" value="open">Choose file</button>{{end}}
   <button type="submit" class="btn">Open report</button>
 </form>{{end}}
