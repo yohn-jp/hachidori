@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/subprocess"
 )
 
 // Failure classes reported by the worker or detected by the supervisor.
@@ -105,6 +106,7 @@ type Process struct {
 // onPhase, if set, observes lifecycle phases (importing, loading, warming).
 func Start(ctx context.Context, cfg Config, onPhase func(string)) (*Process, error) {
 	cmd := exec.Command(cfg.Python, cfg.Args...)
+	subprocess.Configure(cmd)
 	cmd.Env = cfg.Env
 	cmd.Dir = cfg.Dir
 	stdin, err := cmd.StdinPipe()

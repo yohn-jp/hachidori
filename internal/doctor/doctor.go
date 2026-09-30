@@ -20,6 +20,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/subprocess"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -242,6 +243,7 @@ print(json.dumps(d))`
 
 func probe(python string, env []string, code string) (map[string]any, error) {
 	cmd := exec.Command(python, "-I", "-c", code)
+	subprocess.Configure(cmd)
 	cmd.Env = env
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

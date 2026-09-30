@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/subprocess"
 	"github.com/yohn-jp/hachidori/internal/worker/py"
 )
 
@@ -250,6 +251,7 @@ func verifyRuntime(h home.Home, dir string, spec home.RuntimeSpec) (runtimeProbe
 		return p, fmt.Errorf("private python missing: %w", err)
 	}
 	cmd := exec.Command(python, "-I", "-c", runtimeProbeCode)
+	subprocess.Configure(cmd)
 	cmd.Env = h.Env(filepath.Dir(python), true)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
