@@ -639,6 +639,14 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </header>
 <div class="slot" data-live="diagnostics">{{template "diagnostics-live" .}}</div>
 
+<section class="region" id="bundle" aria-labelledby="bundle-h">
+  <div class="region-h">
+    <div><h2 id="bundle-h">Diagnostic bundle</h2><p class="sub">One local file to attach to an Issue. Nothing is uploaded.</p></div>
+    <form method="post" action="/diagnostics/export" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn">Export bundle</button></form>
+  </div>
+  <p class="note">Contains version, runtime, model, WebView2, OS and recovery facts and a short tail of Hachidori worker log lines. It never contains request, state or question text, datasets, environment variables, SSH keys or known_hosts, or model files. It is saved under <code>state/diagnostics</code> in the Hachidori home.</p>
+</section>
+
 <section class="region" id="transport" aria-labelledby="transport-h">
   <div class="region-h"><h2 id="transport-h">Caller transport</h2><span class="sub">SSH reverse tunnel</span></div>
   <div class="transport-grid">

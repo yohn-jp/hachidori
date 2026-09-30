@@ -23,11 +23,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/yohn-jp/hachidori/internal/diagnostics"
 	"github.com/yohn-jp/hachidori/internal/history"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
@@ -70,6 +73,9 @@ type Config struct {
 	// through the same profiles. Profiles are persisted by the settings
 	// authority; the live tunnel stays exclusively in Tunnel.
 	Connections Connections
+	// WebView2 is the installed WebView2 Runtime version when the desktop
+	// shell hosts the dashboard; it is only a fact for the diagnostic bundle.
+	WebView2 string
 }
 
 // Connections stores the named, non-secret Development Connection profiles.
@@ -182,6 +188,8 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"distOf":    distOf,
 	"perQ":      perQuestion,
 	"f4":        func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) },
+	"sd":        func(v float64) string { return signed(v, "") },
+	"sms":       func(v float64) string { return signed(v, "ms") },
 	"short":     func(s string) string { return s[:min(len(s), 12)] },
 }).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html"))
 
@@ -225,6 +233,7 @@ func New(cfg Config) *Dashboard {
 	})
 	d.mux.HandleFunc("POST /runtime/{op}", d.runtimeOp)
 	d.mux.HandleFunc("POST /doctor", d.runDoctor)
+	d.mux.HandleFunc("POST /diagnostics/export", d.exportDiagnostics)
 	d.mux.HandleFunc("GET /workbench", d.workbenchPage)
 	d.mux.HandleFunc("POST /workbench", d.workbenchPost)
 	d.mux.HandleFunc("GET /experiments", d.experimentsPage)
@@ -235,6 +244,7 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /experiments/save", d.experimentsSave)
 	d.mux.HandleFunc("POST /history/open", d.historyOpen)
 	d.mux.HandleFunc("POST /history/delete", d.historyDelete)
+	d.mux.HandleFunc("POST /history/compare", d.historyCompare)
 	d.mux.HandleFunc("GET /errors", d.errorsPage)
 	d.mux.HandleFunc("POST /errors/open", d.errorsOpen)
 	d.mux.HandleFunc("POST /errors/use-experiment", d.errorsUseExperiment)
@@ -539,6 +549,23 @@ func (d *Dashboard) runDoctor(w http.ResponseWriter, r *http.Request) {
 		d.mu.Unlock()
 	}()
 	d.done(w, r, "doctor", nil, "doctor started (it runs its own temporary worker)")
+}
+
+// exportDiagnostics writes one local diagnostic bundle beneath
+// HACHIDORI_HOME/state/diagnostics. It runs only on this explicit operator
+// action, reads nothing but the status document and the bounded worker log
+// tail (internal/diagnostics), and never uploads or serves the archive.
+func (d *Dashboard) exportDiagnostics(w http.ResponseWriter, r *http.Request) {
+	st := d.cfg.Status()
+	root := st.Runtime.Home
+	if root == "" {
+		d.done(w, r, "export diagnostics", fmt.Errorf("no runtime home is active"), "")
+		return
+	}
+	exe, _ := os.Executable()
+	path, err := diagnostics.Export(diagnostics.Source{Status: st, Home: root, WebView2: d.cfg.WebView2, Executable: exe},
+		filepath.Join(root, "state", "diagnostics"))
+	d.done(w, r, "export diagnostics", err, "local diagnostic bundle written: "+path+" (nothing was uploaded)")
 }
 
 // parseSpec reads the tunnel form fields.

@@ -55,6 +55,18 @@
     </td>
   </tr>{{end}}
   </tbody></table></div>
+  {{if gt (len .History) 1}}
+  <form method="post" action="/history/compare" class="surface" aria-label="compare saved experiments">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <div class="fields">
+      <label class="field">Entry A<select name="a" required>{{range .History}}<option value="{{.ID}}"{{if eq .ID $.CompareA}} selected{{end}}>{{.SavedAt}} · {{.Label}} · {{short .EvidenceSHA256}}</option>{{end}}</select></label>
+      <label class="field">Entry B<select name="b" required>{{range .History}}<option value="{{.ID}}"{{if eq .ID $.CompareB}} selected{{end}}>{{.SavedAt}} · {{.Label}} · {{short .EvidenceSHA256}}</option>{{end}}</select></label>
+    </div>
+    <div class="btn-row"><button type="submit" class="btn">Compare stored evidence</button></div>
+    <p class="note">Descriptive only: deltas are B minus A from the stored evidence. Nothing is re-run and no run is ranked.</p>
+  </form>
+  {{end}}
+  {{with .Compare}}{{template "compare" .}}{{end}}
   {{else}}<p class="note">No experiment has been saved yet.</p>{{end}}
   {{range .HistoryProblems}}<div class="msg bad" role="alert">history entry {{.ID}} cannot be read: {{.Reason}}
     <form method="post" action="/history/delete" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Delete</button></form></div>{{end}}
@@ -182,3 +194,49 @@
   {{end}}
 </section>
 {{end}}{{end}}
+
+{{define "compare"}}
+<section class="region" aria-labelledby="cmp-h" data-compare="{{.Status}}">
+  <div class="region-h"><h2 id="cmp-h">Comparison</h2><span class="sub">status: {{.Status}} · deltas are B minus A</span></div>
+  <dl class="kv" aria-label="compared entries">
+    <dt>A</dt><dd class="mono">{{.EntryA.ID}}{{with .EntryA.Label}} · {{.}}{{end}} · evidence sha256 {{.EntryA.EvidenceSHA256}}</dd>
+    <dt>B</dt><dd class="mono">{{.EntryB.ID}}{{with .EntryB.Label}} · {{.}}{{end}} · evidence sha256 {{.EntryB.EvidenceSHA256}}</dd>
+    <dt>dataset sha256 A</dt><dd class="mono">{{.DatasetA}}</dd>
+    <dt>dataset sha256 B</dt><dd class="mono">{{.DatasetB}}</dd>
+  </dl>
+  <div class="btn-row">
+    <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryA.ID}}"><button type="submit" class="btn">Open A in Evidence</button></form>
+    <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryB.ID}}"><button type="submit" class="btn">Open B in Evidence</button></form>
+  </div>
+  {{range .Incompatibility}}<p class="msg bad" role="alert">{{if or (eq .Code "dataset_mismatch") (eq .Code "schema_mismatch")}}comparison refused{{else}}partial comparison{{end}}: {{.Code}}{{with .Question}} · question {{.}}{{end}} · {{.Detail}}</p>{{end}}
+  {{with .Aggregate}}
+  <div class="table-wrap"><table class="data" aria-label="aggregate deltas"><thead><tr><th>metric</th><th class="num">A</th><th class="num">B</th><th class="num">B - A</th></tr></thead><tbody>
+    <tr><td>Accuracy</td><td class="num">{{f4 .Accuracy.A}}</td><td class="num">{{f4 .Accuracy.B}}</td><td class="num">{{sd .Accuracy.Diff}}</td></tr>
+    <tr><td>ECE (15 bins)</td><td class="num">{{f4 .ECE.A}}</td><td class="num">{{f4 .ECE.B}}</td><td class="num">{{sd .ECE.Diff}}</td></tr>
+    <tr><td>Mean confidence</td><td class="num">{{f4 .MeanConfidence.A}}</td><td class="num">{{f4 .MeanConfidence.B}}</td><td class="num">{{sd .MeanConfidence.Diff}}</td></tr>
+    <tr><td>Cases</td><td class="num">{{.Cases.A}}</td><td class="num">{{.Cases.B}}</td><td class="num">{{.Cases.Diff}}</td></tr>
+    <tr><td>Observations</td><td class="num">{{.Observations.A}}</td><td class="num">{{.Observations.B}}</td><td class="num">{{.Observations.Diff}}</td></tr>
+    <tr><td>Request errors</td><td class="num">{{.RequestErrors.A}}</td><td class="num">{{.RequestErrors.B}}</td><td class="num">{{.RequestErrors.Diff}}</td></tr>
+    {{with .RequestLatency}}<tr><td>Request latency samples</td><td class="num">{{.N.A}}</td><td class="num">{{.N.B}}</td><td class="num">{{.N.Diff}}</td></tr>
+    {{if .Available}}<tr><td>Request p50</td><td class="num">{{ms .P50.A}}</td><td class="num">{{ms .P50.B}}</td><td class="num">{{sms .P50.Diff}}</td></tr>
+    <tr><td>Request p95</td><td class="num">{{ms .P95.A}}</td><td class="num">{{ms .P95.B}}</td><td class="num">{{sms .P95.Diff}}</td></tr>
+    <tr><td>Request mean</td><td class="num">{{ms .Mean.A}}</td><td class="num">{{ms .Mean.B}}</td><td class="num">{{sms .Mean.Diff}}</td></tr>{{else}}<tr><td>Request latency</td><td colspan="3" class="faint">not available: a report has no request latency samples</td></tr>{{end}}{{end}}
+    {{with .ServerInference}}<tr><td>Inference latency samples</td><td class="num">{{.N.A}}</td><td class="num">{{.N.B}}</td><td class="num">{{.N.Diff}}</td></tr>
+    {{if .Available}}<tr><td>Inference p50</td><td class="num">{{ms .P50.A}}</td><td class="num">{{ms .P50.B}}</td><td class="num">{{sms .P50.Diff}}</td></tr>
+    <tr><td>Inference p95</td><td class="num">{{ms .P95.A}}</td><td class="num">{{ms .P95.B}}</td><td class="num">{{sms .P95.Diff}}</td></tr>
+    <tr><td>Inference mean</td><td class="num">{{ms .Mean.A}}</td><td class="num">{{ms .Mean.B}}</td><td class="num">{{sms .Mean.Diff}}</td></tr>{{else}}<tr><td>Inference latency</td><td colspan="3" class="faint">not available: a report has no server inference samples</td></tr>{{end}}{{end}}
+  </tbody></table></div>
+  {{end}}
+  {{if .Questions}}
+  <div class="table-wrap"><table class="data" aria-label="per-question deltas (identity-aligned questions only)"><thead><tr><th>question</th><th class="num">n A / B</th><th class="num">accuracy A / B</th><th class="num">accuracy B - A</th><th class="num">ECE A / B</th><th class="num">ECE B - A</th></tr></thead><tbody>
+  {{range .Questions}}<tr><td class="mono">{{.ID}}</td><td class="num">{{.N.A}} / {{.N.B}}</td><td class="num">{{f4 .Accuracy.A}} / {{f4 .Accuracy.B}}</td><td class="num">{{sd .Accuracy.Diff}}</td><td class="num">{{f4 .ECE.A}} / {{f4 .ECE.B}}</td><td class="num">{{sd .ECE.Diff}}</td></tr>{{end}}
+  </tbody></table></div>
+  {{end}}
+  <details class="disclosure"><summary>Run context<span class="sub">may explain differences; never gates the comparison</span></summary>
+    <div class="body kv-grid">
+      <dl class="kv"><dt>A started</dt><dd>{{.A.StartedAt}}</dd><dt>A served model</dt><dd>{{.A.ServedModel}}</dd><dt>A identity</dt><dd class="mono">{{.A.ServedIdentity}}</dd><dt>A warmup / passes</dt><dd>{{.A.WarmupRequests}} / {{.A.Passes}}</dd></dl>
+      <dl class="kv"><dt>B started</dt><dd>{{.B.StartedAt}}</dd><dt>B served model</dt><dd>{{.B.ServedModel}}</dd><dt>B identity</dt><dd class="mono">{{.B.ServedIdentity}}</dd><dt>B warmup / passes</dt><dd>{{.B.WarmupRequests}} / {{.B.Passes}}</dd></dl>
+    </div>
+  </details>
+</section>
+{{end}}
