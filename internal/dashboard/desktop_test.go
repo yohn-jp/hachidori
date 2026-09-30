@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
 type fakeDesktopPrefs struct {
@@ -92,5 +94,38 @@ func TestDesktopPrefsFailureIsShown(t *testing.T) {
 	e.post(t, "/desktop/prefs", url.Values{"start_at_sign_in": {"1"}})
 	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "registry denied") {
 		t.Fatalf("action %+v", a)
+	}
+}
+
+// The diagnostics page says when the worker is being restarted after an
+// unexpected exit and when automatic recovery stopped, instead of only
+// showing a state name.
+func TestDiagnosticsShowsBoundedWorkerRecovery(t *testing.T) {
+	e := newEnv(t)
+	set := func(state string, ready bool, restarts int) {
+		e.rt.mu.Lock()
+		e.rt.snap.State, e.rt.snap.Ready, e.rt.snap.Restarts = state, ready, restarts
+		e.rt.mu.Unlock()
+	}
+	set(worker.StateReady, true, 1)
+	if body := e.get(t, "/diagnostics").Body.String(); strings.Contains(body, "data-recovery=") {
+		t.Error("recovery notice shown for a healthy worker")
+	}
+	set(worker.StateRestarting, false, 2)
+	body := e.get(t, "/diagnostics").Body.String()
+	if !strings.Contains(body, `data-recovery="recovering"`) || !strings.Contains(body, "2 restarts in the current window") {
+		t.Errorf("no recovering notice:\n%s", body)
+	}
+	set(worker.StateFailed, false, 3)
+	body = e.get(t, "/diagnostics").Body.String()
+	for _, want := range []string{`data-recovery="gave_up"`, "Automatic recovery stopped", "no fallback to another device"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("gave-up notice lacks %q", want)
+		}
+	}
+	// A startup failure (never restarted) is not presented as a recovery loop.
+	set(worker.StateFailed, false, 0)
+	if body := e.get(t, "/diagnostics").Body.String(); strings.Contains(body, "data-recovery=") {
+		t.Error("startup failure presented as recovery")
 	}
 }
