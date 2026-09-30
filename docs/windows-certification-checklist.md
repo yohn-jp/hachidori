@@ -1,0 +1,80 @@
+# Windows physical certification checklist
+
+This is the record template for one physical Windows certification run of
+`hachidori.exe`. The procedures live in [certification.md](certification.md);
+this file fixes the outcome vocabulary, the identity that must accompany every
+result and the complete item list.
+
+## Outcome vocabulary
+
+Every item is exactly one of:
+
+| outcome | meaning |
+|---|---|
+| `PASS` | The item was run on a real Windows desktop with the executable identified below, and the expected result was observed. |
+| `FAIL` | The item was run and the expected result was not observed. Record what was seen. |
+| `NOT_CHECKED` | The item was not run on that machine with that executable. This is the default. |
+
+Rules:
+
+- A cross-build, a portable unit test, a Linux run or an emulated environment is
+  never `PASS` for a physical item. Automation may assist (for example
+  `go test ./internal/desktop`), but each physical assertion is made by a person
+  looking at the real Windows desktop.
+- Hardware-dependent items (CUDA) are `NOT_CHECKED` when the hardware does not
+  exist on the machine. Do not substitute CPU results.
+- Do not edit a `FAIL` or `NOT_CHECKED` to `PASS` without a new run that records
+  its own identity block.
+
+## Identity block (fill in once per run)
+
+Every result below is valid only for this identity.
+
+| field | value |
+|---|---|
+| Executable file name | |
+| Executable SHA-256 (`Get-FileHash -Algorithm SHA256`) | |
+| Executable source (release asset name, or local build commit) | |
+| Windows edition, version and build (`winver`) | |
+| CPU / GPU / NVIDIA driver (CUDA items only) | |
+| WebView2 Runtime version (console line `WebView2 Runtime <version>`) | |
+| Device of the home under test (`cpu` / `cuda`) | |
+| Diagnostic bundle file (Diagnostics > Export bundle) | |
+| Run date and operator | |
+
+The diagnostic bundle (`state\diagnostics\hachidori-diagnostics-*.zip` under the
+Hachidori home) records the executable name and SHA-256, runtime, model, device,
+WebView2 version, OS and architecture, and worker recovery state. It is created
+only by **Export bundle** on the Diagnostics page, stays on the machine and is
+safe to attach to an Issue: it excludes request/state/question text, datasets,
+environment variables, SSH keys and known_hosts, and model files. Windows
+edition and build are not in the bundle; take them from `winver`.
+
+## Checklist
+
+Record one outcome per row. Steps refer to the sections in
+[certification.md](certification.md) ("Windows desktop shell", "Windows
+first-run wizard", "Windows recovery boundaries").
+
+| id | item | procedure | outcome | evidence / notes |
+|---|---|---|---|---|
+| W01 | Clean first run | First-run wizard 1: clean profile, double-click, "Hachidori" window shows the first-run page, no companion console | NOT_CHECKED | |
+| W02 | Native folder picker | First-run wizard 2: **Browse...** opens the standard Windows folder dialog and returns the chosen folder (#47 regression: no `No such interface supported`; cancel still leaves nothing chosen) | NOT_CHECKED | |
+| W03 | Install to READY (CPU) | First-run wizard 3-4: CPU install, READY, `bootstrap.json` holds only `schema` and `home` | NOT_CHECKED | |
+| W04 | Remembered-home launch | First-run wizard 5: after Quit, a new double-click reaches READY without the wizard from the same home; wizard 6-7: renamed folder and corrupt `bootstrap.json` give a recovery screen, not an exit | NOT_CHECKED | |
+| W05 | WebView2 navigation and rendering | Desktop shell 1, 3, 5 (#41 regression: a visible first-run launch renders the first-run UI, never a blank white surface; a render-process failure reloads at most 3 times, then one message box and tray notice, and `WebView2 navigation/process failure` lines appear on the console) | NOT_CHECKED | |
+| W06 | Tray and reopen | Desktop shell 2, 4 and wizard 5, 9: close hides to tray with the same worker pid, tray Open restores the same window, a second launch activates it, exactly one tray icon, **Quit Hachidori** frees the ports and leaves no `python` or `msedgewebview2.exe` child | NOT_CHECKED | |
+| W07 | Start at sign-in | Wizard 10: enable creates one `HKCU\...\Run` value `Hachidori`, disable removes it, and after a real sign-out/sign-in the app starts in the background and reaches Ready | NOT_CHECKED | |
+| W08 | Runtime restart | Wizard 9 and Recovery 2: Restart Runtime gives a new worker pid with no second owner; Stop and Quit never restart the worker by themselves | NOT_CHECKED | |
+| W09 | Worker crash and recovery | Recovery 1: end the `python` worker; Diagnostics shows "Recovering from an unexpected worker exit", the worker returns to READY with a new pid; more than 3 kills in 10 minutes ends in Needs attention and "Automatic recovery stopped" until Restart Runtime | NOT_CHECKED | |
+| W10 | WebView2 process failure | Recovery 4: end a `msedgewebview2.exe` render process of this run; bounded reload, then message box and tray notice | NOT_CHECKED | |
+| W11 | Diagnostic bundle export | Diagnostics > Export bundle writes one `.zip` under `state\diagnostics`; it contains only `manifest.json`, `facts.json` and `worker-log-tail.txt`, and the facts show the WebView2 version, the executable SHA-256 matching the identity block, and the recovery state seen in W09 | NOT_CHECKED | |
+| W12 | CPU runtime | Windows RTX host steps 2-3 with `--device cpu`: `setup`, `doctor` all checks pass, real smoke inference | NOT_CHECKED | |
+| W13 | CUDA runtime (hardware required) | Same with `--device cuda` on an NVIDIA GPU with driver 570 or newer; with an unusable GPU the failure is reported and Hachidori never switches to CPU. `NOT_CHECKED` when no such hardware exists | NOT_CHECKED | |
+
+## Recorded state for the change that introduced this checklist
+
+The change that added the diagnostic bundle and this checklist was prepared
+without physical Windows access. Every row above is therefore `NOT_CHECKED`; the
+portable tests and the Windows amd64 non-CGo cross-build/vet reported in the pull
+request are not a `PASS` for any row.

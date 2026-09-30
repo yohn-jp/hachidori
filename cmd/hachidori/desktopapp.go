@@ -216,6 +216,7 @@ func (a *desktopApp) run() error {
 				HistoryDir: h.Path("state", "history"),
 				Desktop:    prefs,
 				Settings:   prefs,
+				WebView2:   version,
 			})
 			// An experiment of a replaced runtime's dashboard must not keep
 			// running against the next runtime.
