@@ -24,3 +24,20 @@ func TestDPIChangeRectValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestScaleForDPI(t *testing.T) {
+	for _, c := range []struct {
+		logical int32
+		dpi     uint32
+		want    int32
+	}{
+		{1200, 96, 1200},
+		{1200, 144, 1800},
+		{860, 192, 1720},
+		{860, 120, 1075},
+	} {
+		if got := scaleForDPI(c.logical, c.dpi); got != c.want {
+			t.Errorf("scaleForDPI(%d, %d) = %d, want %d", c.logical, c.dpi, got, c.want)
+		}
+	}
+}

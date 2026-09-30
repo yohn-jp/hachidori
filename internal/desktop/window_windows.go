@@ -397,8 +397,12 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	}
 	defer procUnregisterClassW.Call(uintptr(unsafe.Pointer(cls)), uintptr(inst))
 
+	// The window is per-monitor DPI aware, so its initial size is physical
+	// pixels: scale the logical 1200x860 for the current system DPI.
+	dpi := systemDPI()
 	hwnd, _, e := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(cls)), uintptr(unsafe.Pointer(title)),
-		wsOverlappedWindow, cwUseDefault, cwUseDefault, 1200, 860, 0, 0, uintptr(inst), 0)
+		wsOverlappedWindow, cwUseDefault, cwUseDefault,
+		uintptr(scaleForDPI(1200, dpi)), uintptr(scaleForDPI(860, dpi)), 0, 0, uintptr(inst), 0)
 	if hwnd == 0 {
 		return fmt.Errorf("creating the window: %w", e)
 	}
