@@ -437,7 +437,9 @@ func TestRecoveryAndRestart(t *testing.T) {
 	if e.state() != Ready {
 		t.Fatalf("state %s", e.state())
 	}
-	// Supervisor gives up; Start recovers with the same binding.
+	// Supervisor gives up; an explicit operator Start recovers on a fresh
+	// binding of the same runtime (the bounded restart budget resets only by
+	// this operator action).
 	e.rt.set(false, worker.StateFailed, "", &worker.FailureView{Class: worker.ClassCrash, Message: "exit 7"})
 	if e.state() != Failed {
 		t.Fatal("not failed")
@@ -445,7 +447,7 @@ func TestRecoveryAndRestart(t *testing.T) {
 	if err := e.c.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if e.state() != Starting || e.opens.Load() != 2 {
+	if e.state() != Starting || e.opens.Load() != 3 {
 		t.Fatalf("state %s opens %d", e.state(), e.opens.Load())
 	}
 	e.rt.set(true, worker.StateReady, "ready", nil)
@@ -658,6 +660,12 @@ func fakeWorker(mode string) {
 		emit(map[string]any{"event": "phase", "phase": "loading"})
 		emit(map[string]any{"event": "fatal", "class": worker.ClassModelLoad, "message": "no weights"})
 		os.Exit(3)
+	}
+	if mode == "crash" {
+		// Ready, then die unexpectedly: the supervisor's bounded recovery.
+		emit(map[string]any{"event": "ready", "info": map[string]any{"provider": "fake"}})
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(9)
 	}
 	emit(map[string]any{"event": "phase", "phase": "warming"})
 	time.Sleep(200 * time.Millisecond)

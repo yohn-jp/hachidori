@@ -657,6 +657,18 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   {{else}}<p class="empty">Not run in this dashboard session.</p>{{end}}{{end}}
 </section>
 
+{{if eq $w.State "restarting"}}
+<section class="attention tone-warn" aria-labelledby="rec-h" data-recovery="recovering">
+  <h2 id="rec-h">Recovering from an unexpected worker exit</h2>
+  <p>The worker exited after it was ready and is being restarted automatically ({{$w.Restarts}} restart{{if ne $w.Restarts 1}}s{{end}} in the current window). Automatic restarts are bounded; if the worker keeps exiting they stop and this page shows what failed.</p>
+</section>
+{{else if and (eq $w.State "failed") (gt $w.Restarts 0)}}
+<section class="attention tone-bad" aria-labelledby="rec-h" data-recovery="gave_up">
+  <h2 id="rec-h">Automatic recovery stopped</h2>
+  <p>The worker kept exiting unexpectedly ({{$w.Restarts}} automatic restarts) and will not be restarted again by itself. Read the last worker failure below, then use Restart runtime. The requested device is unchanged; there is no fallback to another device.</p>
+</section>
+{{end}}
+
 {{with $w.LastFailure}}
 <details class="disclosure" data-keep="worker-failure"{{if not $w.Ready}} open{{end}}>
   <summary>Last worker failure<span class="sub mono bad-t">{{.Class}}</span></summary>
