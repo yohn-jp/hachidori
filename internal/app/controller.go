@@ -15,6 +15,21 @@ import (
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
+// Explicit model/runtime maintenance actions (Operation kinds).
+const (
+	OpMaterialize = "materialize"
+	OpRepair      = "repair"
+	OpActivate    = "activate"
+	OpVerify      = "verify"
+	OpRemove      = "remove"
+)
+
+// Rejections of the maintenance actions.
+var (
+	ErrOperationRunning = errors.New("this action is already running")
+	ErrRestartRequired  = errors.New("the active runtime/model changed; restart the runtime first")
+)
+
 // SetupFunc materializes and activates the runtime under root. It must call
 // onPhase at each real phase boundary it enters (setup.RunObserved does).
 type SetupFunc func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error
@@ -37,6 +52,49 @@ type Config struct {
 	Setup SetupFunc
 	// Installed defaults to home.Home.LoadActive succeeding.
 	Installed InstalledFunc
+	// Maintenance is the setup/home authority for the explicit model and
+	// runtime maintenance actions. Its defaults are the internal/setup
+	// operations on home.Home{Root: root}; tests substitute fakes.
+	Maintenance Maintenance
+}
+
+// Maintenance are the explicit model/runtime operations of the setup/home
+// authority, addressed by home root.
+type Maintenance struct {
+	Inspect     func(root string, verify bool) setup.Inventory
+	Materialize func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error
+	Repair      func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error
+	Activate    func(root, device, model string, log io.Writer) (changed bool, err error)
+	Verify      func(root, kind, id string) error
+	Remove      func(root, kind, id string) error
+}
+
+func (m Maintenance) withDefaults() Maintenance {
+	if m.Inspect == nil {
+		m.Inspect = func(root string, verify bool) setup.Inventory { return setup.Inspect(home.Home{Root: root}, verify) }
+	}
+	if m.Materialize == nil {
+		m.Materialize = func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error {
+			return setup.Materialize(home.Home{Root: root}, device, model, log, onPhase)
+		}
+	}
+	if m.Repair == nil {
+		m.Repair = func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error {
+			return setup.Repair(home.Home{Root: root}, device, model, log, onPhase)
+		}
+	}
+	if m.Activate == nil {
+		m.Activate = func(root, device, model string, log io.Writer) (bool, error) {
+			return setup.Activate(home.Home{Root: root}, device, model, log)
+		}
+	}
+	if m.Verify == nil {
+		m.Verify = func(root, kind, id string) error { return setup.Verify(home.Home{Root: root}, kind, id) }
+	}
+	if m.Remove == nil {
+		m.Remove = func(root, kind, id string) error { return setup.Remove(home.Home{Root: root}, kind, id) }
+	}
+	return m
 }
 
 // SetupParams are the explicit parameters of a setup action.
@@ -52,6 +110,7 @@ type Operation struct {
 	Kind     string    `json:"kind"`
 	Device   string    `json:"device,omitempty"`
 	Model    string    `json:"model,omitempty"`
+	Target   string    `json:"target,omitempty"` // verify/remove: "<kind> <id>"
 	Phase    string    `json:"phase,omitempty"`  // setup: the phase currently/last entered
 	Phases   []string  `json:"phases,omitempty"` // setup: every phase entered, in order
 	Started  time.Time `json:"started"`
@@ -102,12 +161,20 @@ type Recovery struct {
 
 // Snapshot is the application view at one instant.
 type Snapshot struct {
-	State     State          `json:"state"`
-	Home      string         `json:"home,omitempty"`
-	Operation *Operation     `json:"operation,omitempty"`      // in flight
-	Last      *Operation     `json:"last_operation,omitempty"` // most recently finished
-	Failure   *Failure       `json:"failure,omitempty"`        // set iff State is Failed
-	Status    *server.Status `json:"status,omitempty"`         // the /v1/status document, when a runtime is bound
+	State     State      `json:"state"`
+	Home      string     `json:"home,omitempty"`
+	Operation *Operation `json:"operation,omitempty"`      // in flight
+	Last      *Operation `json:"last_operation,omitempty"` // most recently finished
+	Failure   *Failure   `json:"failure,omitempty"`        // set iff State is Failed
+	// Maintenance is the most recently finished model/runtime maintenance
+	// action. Its failure never changes State: the active runtime is
+	// untouched by a failed maintenance action.
+	Maintenance *Operation `json:"last_maintenance,omitempty"`
+	// RestartRequired is set while the running worker was started from a
+	// runtime/model that is no longer the active one: an explicit Activate
+	// changed the activation record and nothing has restarted the worker.
+	RestartRequired bool           `json:"restart_required,omitempty"`
+	Status          *server.Status `json:"status,omitempty"` // the /v1/status document, when a runtime is bound
 	// Recovery is set while an unexpected worker exit is being recovered or
 	// recovery gave up. OperatorStopped is set while the worker is down
 	// because the operator chose Stop (or Quit), so the two are never
@@ -141,7 +208,14 @@ type Controller struct {
 	op     *Operation
 	opDone chan struct{}
 	last   *Operation
-	closed bool
+	// lastMaint is the last finished maintenance action; it is kept apart
+	// from last so a failed maintenance action cannot fail the application.
+	lastMaint *Operation
+	// pending: an explicit Activate changed the activation record under a
+	// running worker. The next Start/Restart rebinds to the new activation;
+	// nothing restarts the worker implicitly.
+	pending bool
+	closed  bool
 	// stopped is set when the operator stopped the worker (Stop or Restart's
 	// stop, Close) and cleared by the next Start/Restart. It is what
 	// distinguishes an operator Stop from a crash.
@@ -163,6 +237,7 @@ func New(cfg Config) *Controller {
 			return err == nil
 		}
 	}
+	cfg.Maintenance = cfg.Maintenance.withDefaults()
 	return &Controller{cfg: cfg, home: cleanHome(cfg.Home), subs: map[int]chan struct{}{}}
 }
 
@@ -180,10 +255,10 @@ func cleanHome(root string) string {
 func (c *Controller) Snapshot() Snapshot {
 	c.mu.Lock()
 	root, rt, stopped := c.home, c.rt, c.stopped
-	op, last := c.op.clone(), c.last.clone()
+	op, last, maint, pending := c.op.clone(), c.last.clone(), c.lastMaint.clone(), c.pending
 	c.mu.Unlock()
 
-	s := Snapshot{Home: root, Operation: op, Last: last}
+	s := Snapshot{Home: root, Operation: op, Last: last, Maintenance: maint}
 	running := false
 	if rt != nil {
 		running = rt.Running()
@@ -203,6 +278,7 @@ func (c *Controller) Snapshot() Snapshot {
 		installed = c.cfg.Installed(root)
 	}
 	s.State, s.Failure = project(root, kind, running, s.Status, lastFail, installed)
+	s.RestartRequired = pending && running
 	s.OperatorStopped = stopped && !running && kind == ""
 	if !s.OperatorStopped {
 		s.Recovery = recoveryOf(kind, running, s.Status)
@@ -286,7 +362,11 @@ func (c *Controller) begin(kind, device, model string) *Operation {
 // finish ends the in-flight action; c.mu must be held.
 func (c *Controller) finish(op *Operation, f *Failure) {
 	op.Finished, op.Failure = time.Now(), f
-	c.last = op
+	if isMaintenance(op.Kind) {
+		c.lastMaint = op
+	} else {
+		c.last = op
+	}
 	c.op = nil
 	close(c.opDone)
 	c.opDone = nil
@@ -307,7 +387,7 @@ func (c *Controller) SetHome(root string) error {
 	if c.rt != nil && c.rt.Running() {
 		return ErrRuntimeBusy
 	}
-	c.home, c.rt, c.last, c.stopped = cleanHome(root), nil, nil, false
+	c.home, c.rt, c.last, c.lastMaint, c.stopped, c.pending = cleanHome(root), nil, nil, nil, false, false
 	c.notify()
 	return nil
 }
@@ -316,8 +396,20 @@ func (c *Controller) SetHome(root string) error {
 // returns once the action is accepted; progress and outcome are observed via
 // Snapshot/Subscribe.
 func (c *Controller) Setup(p SetupParams) error {
+	return c.async(OpSetup, p, true, func(root string, log io.Writer, onPhase func(setup.Phase)) error {
+		return c.cfg.Setup(root, p.Device, p.Model, log, onPhase)
+	}, func() {
+		// The activation may have changed: the next Start rebinds.
+		c.rt = nil
+	})
+}
+
+// async runs one long action in the background. needStopped refuses it while
+// the worker runs (it may change what the worker was started from); after runs
+// with c.mu held on success.
+func (c *Controller) async(kind string, p SetupParams, needStopped bool, run func(root string, log io.Writer, onPhase func(setup.Phase)) error, after func()) error {
 	if p.Device == "" {
-		return errors.New("setup: device is required")
+		return fmt.Errorf("%s: device is required", kind)
 	}
 	log := p.Log
 	if log == nil {
@@ -326,18 +418,21 @@ func (c *Controller) Setup(p SetupParams) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.admit(); err != nil {
-		if errors.Is(err, ErrBusy) && c.op.Kind == OpSetup {
-			return ErrSetupRunning
+		if errors.Is(err, ErrBusy) && c.op.Kind == kind {
+			if kind == OpSetup {
+				return ErrSetupRunning
+			}
+			return ErrOperationRunning
 		}
 		return err
 	}
-	if c.rt != nil && c.rt.Running() {
+	if needStopped && c.rt != nil && c.rt.Running() {
 		return ErrRuntimeBusy
 	}
-	op := c.begin(OpSetup, p.Device, p.Model)
+	op := c.begin(kind, p.Device, p.Model)
 	root := c.home
 	go func() {
-		err := c.cfg.Setup(root, p.Device, p.Model, log, func(ph setup.Phase) {
+		err := run(root, log, func(ph setup.Phase) {
 			c.mu.Lock()
 			op.Phase = string(ph)
 			op.Phases = append(op.Phases, string(ph))
@@ -349,13 +444,133 @@ func (c *Controller) Setup(p SetupParams) error {
 		var f *Failure
 		if err != nil {
 			f = &Failure{Source: SourceSetup, Message: err.Error()}
-		} else {
-			// The activation may have changed: the next Start rebinds.
-			c.rt = nil
+		} else if after != nil {
+			after()
 		}
 		c.finish(op, f)
 	}()
 	return nil
+}
+
+// Materialize downloads/builds and verifies the catalog choice (device,
+// model) through the staged setup authority without activating it. It may run
+// beside a running worker: it never changes the activation record.
+func (c *Controller) Materialize(p SetupParams) error {
+	return c.async(OpMaterialize, p, false, func(root string, log io.Writer, onPhase func(setup.Phase)) error {
+		return c.cfg.Maintenance.Materialize(root, p.Device, p.Model, log, onPhase)
+	}, nil)
+}
+
+// Repair rebuilds an artifact of the catalog choice that fails verification.
+// It is refused while the worker runs, since the artifact may be in use.
+func (c *Controller) Repair(p SetupParams) error {
+	return c.async(OpRepair, p, true, func(root string, log io.Writer, onPhase func(setup.Phase)) error {
+		return c.cfg.Maintenance.Repair(root, p.Device, p.Model, log, onPhase)
+	}, func() { c.rt = nil })
+}
+
+// sync runs one short maintenance action to completion. guard runs with c.mu
+// held before the action begins; after runs with c.mu held when it succeeded.
+func (c *Controller) sync(kind, device, model, target string, guard func() error, run func(root string) error, after func()) error {
+	c.mu.Lock()
+	if err := c.admit(); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if guard != nil {
+		if err := guard(); err != nil {
+			c.mu.Unlock()
+			return err
+		}
+	}
+	op := c.begin(kind, device, model)
+	op.Target = target
+	root := c.home
+	c.mu.Unlock()
+
+	err := run(root)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var f *Failure
+	if err != nil {
+		f = &Failure{Source: SourceSetup, Message: err.Error()}
+	} else if after != nil {
+		after()
+	}
+	c.finish(op, f)
+	return err
+}
+
+// Activate explicitly makes the already materialized, verified choice
+// (device, model) the active runtime and model. It never restarts the
+// worker: when a worker is running, Snapshot.RestartRequired is set and the
+// running worker keeps serving what it started with until Restart. Failure
+// leaves the current activation untouched.
+func (c *Controller) Activate(p SetupParams) error {
+	if p.Device == "" {
+		return errors.New("activate: device is required")
+	}
+	changed := false
+	log := p.Log
+	if log == nil {
+		log = io.Discard
+	}
+	return c.sync(OpActivate, p.Device, p.Model, "", nil, func(root string) (err error) {
+		changed, err = c.cfg.Maintenance.Activate(root, p.Device, p.Model, log)
+		return err
+	}, func() {
+		if !changed {
+			return
+		}
+		if c.rt != nil && c.rt.Running() {
+			c.pending = true
+			return
+		}
+		c.rt = nil
+	})
+}
+
+// Verify re-verifies one catalog artifact ("runtime" or "model") offline.
+func (c *Controller) Verify(kind, id string) error {
+	return c.sync(OpVerify, "", "", kind+" "+id, nil, func(root string) error {
+		return c.cfg.Maintenance.Verify(root, kind, id)
+	}, nil)
+}
+
+// Remove deletes one unused catalog artifact. The setup authority refuses
+// the active runtime/model; the controller additionally refuses while a
+// restart is required, because the running worker then still uses the
+// previously active artifacts.
+func (c *Controller) Remove(kind, id string) error {
+	return c.sync(OpRemove, "", "", kind+" "+id, func() error {
+		if c.pending && c.rt != nil && c.rt.Running() {
+			return ErrRestartRequired
+		}
+		return nil
+	}, func(root string) error {
+		return c.cfg.Maintenance.Remove(root, kind, id)
+	}, nil)
+}
+
+// Inventory reads the typed inventory of the selected home. It is read-only;
+// verify additionally runs the full (expensive) verification.
+func (c *Controller) Inventory(verify bool) (setup.Inventory, error) {
+	c.mu.Lock()
+	root := c.home
+	c.mu.Unlock()
+	if root == "" {
+		return setup.Inventory{}, ErrUnconfigured
+	}
+	return c.cfg.Maintenance.Inspect(root, verify), nil
+}
+
+func isMaintenance(kind string) bool {
+	switch kind {
+	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove:
+		return true
+	}
+	return false
 }
 
 // admit checks the preconditions shared by every action; c.mu must be held.
@@ -394,7 +609,13 @@ func (c *Controller) run(kind string) error {
 		c.mu.Unlock()
 		return nil
 	}
-	if rt != nil && !rt.Running() && rt.Status().Worker.State == worker.StateFailed {
+	var stale Runtime
+	if c.pending && rt != nil {
+		// An explicit Activate changed the activation under this binding:
+		// the operator's Restart (or a Start after the worker went down)
+		// stops the old binding and binds the new activation.
+		stale, rt = rt, nil
+	} else if rt != nil && !rt.Running() && rt.Status().Worker.State == worker.StateFailed {
 		// The supervisor gave up (its restart budget is spent or a start
 		// failed). An explicit operator Start/Restart begins from a fresh
 		// supervisor, so the bounded budget resets by operator action and
@@ -412,6 +633,9 @@ func (c *Controller) run(kind string) error {
 	c.mu.Unlock()
 
 	var f *Failure
+	if stale != nil && stale.Running() {
+		stale.Stop()
+	}
 	if rt == nil {
 		var err error
 		if rt, err = c.cfg.Open(root); err != nil {
@@ -429,6 +653,7 @@ func (c *Controller) run(kind string) error {
 	defer c.mu.Unlock()
 	if f == nil {
 		c.rt = rt
+		c.pending = false
 	}
 	c.finish(op, f)
 	if f != nil {

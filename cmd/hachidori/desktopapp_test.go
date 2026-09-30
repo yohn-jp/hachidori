@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/yohn-jp/hachidori/internal/app"
 	"github.com/yohn-jp/hachidori/internal/dashboard"
 	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/home"
@@ -229,5 +230,56 @@ func TestPreflightFailureStartsNothing(t *testing.T) {
 	a, _, _ := testApp(p, func() (home.Discovery, error) { t.Error("discovery ran"); return home.Discovery{}, nil })
 	if err := a.run(); !errors.Is(err, desktop.ErrWebView2Missing) {
 		t.Fatalf("err %v", err)
+	}
+}
+
+var _ dashboard.Models = modelManager{}
+
+// The dashboard's manager is the application controller over the real setup
+// authority: the inventory lists only catalog identities, an activation
+// whose artifacts are not materialized is refused without writing anything,
+// and removal cannot escape HACHIDORI_HOME or name a non-catalog artifact.
+func TestModelManagerOverRealSetupAuthority(t *testing.T) {
+	root := t.TempDir()
+	h := home.Home{Root: filepath.Join(root, "home")}
+	if err := h.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctl := app.New(app.Config{Home: h.Root})
+	m := modelManager{ctl: func() *app.Controller { return ctl }}
+
+	st := m.State()
+	if st.Err != "" || len(st.Inventory.Runtimes) != len(setup.Devices) || len(st.Inventory.Models) != len(setup.Models) || st.RestartRequired {
+		t.Fatalf("state %+v", st)
+	}
+	for _, r := range st.Inventory.Runtimes {
+		if r.Materialized || r.Active {
+			t.Fatalf("empty home reports %+v", r)
+		}
+	}
+	if err := m.Activate("cuda", setup.DefaultModel); err == nil {
+		t.Fatal("activating an unmaterialized choice succeeded")
+	}
+	if _, err := os.Stat(h.Path("state", "active-runtime.json")); !os.IsNotExist(err) {
+		t.Fatal("failed activation wrote an activation record")
+	}
+	if got := m.State().Last; got == nil || got.Kind != app.OpActivate || got.Failure == "" {
+		t.Fatalf("failure not reported: %+v", got)
+	}
+	for _, c := range [][2]string{{"runtime", "../../outside"}, {"runtime", outside}, {"model", "../outside"}, {"model", ""}, {"runtime", "cuda-notcatalog"}} {
+		if err := m.Remove(c[0], c[1]); err == nil {
+			t.Fatalf("Remove(%v) accepted", c)
+		}
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatal("directory outside the home removed")
+	}
+	// Without a home nothing is inspected.
+	if st := (modelManager{ctl: func() *app.Controller { return app.New(app.Config{}) }}).State(); st.Err == "" {
+		t.Fatal("no home is not reported")
 	}
 }
