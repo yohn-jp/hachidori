@@ -45,6 +45,25 @@ func TestSettingsStoreComposesDesktopPrefs(t *testing.T) {
 	}
 }
 
+// The desktop hosts Development Connection profiles in the same settings
+// store, beside desktop.json, and they survive a restart of the composition.
+func TestSettingsStoreHostsDevelopmentConnections(t *testing.T) {
+	dir := t.TempDir()
+	prefs := filepath.Join(dir, "desktop.json")
+	var _ dashboard.Connections = settingsStore(prefs, nil)
+	c := settings.Connection{Name: "nixos-dev", Destination: "dev@nixos", RemoteBind: "127.0.0.1", RemotePort: 7843, LocalPort: 7843}
+	if err := settingsStore(prefs, nil).SaveConnection(c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := settingsStore(prefs, nil).Connections()
+	if err != nil || len(got) != 1 || got[0] != c {
+		t.Fatalf("after restart: %+v %v", got, err)
+	}
+	if _, err := os.Stat(prefs); !os.IsNotExist(err) {
+		t.Fatalf("saving a profile wrote desktop.json: %v", err)
+	}
+}
+
 // Proof 11 and 12: explicit commands stay CLI commands and the no-argument
 // desktop is reachable only through the platform hook.
 func TestRunDispatch(t *testing.T) {

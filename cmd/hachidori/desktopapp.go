@@ -224,6 +224,11 @@ func (a *desktopApp) run() error {
 				Desktop:    prefs,
 				Settings:   prefs,
 				Models:     models,
+				// Development Connection profiles persist in the same
+				// settings authority; the live tunnel is the one tun
+				// manager, shared by every runtime's dashboard.
+				Connections: prefs,
+				WebView2:    version,
 			})
 			// An experiment of a replaced runtime's dashboard must not keep
 			// running against the next runtime.

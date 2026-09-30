@@ -3,6 +3,9 @@
 // (the per-user startup entry and desktop.json, reached through Desktop) and
 // owns only one new record: schema-versioned, non-secret runtime defaults.
 //
+// It also persists named, non-secret Development Connection profiles (see
+// Connection); the live tunnel stays in tunnel.Manager.
+//
 // Runtime defaults are stored and read with no side effects. Saving them never
 // touches the running worker, the active model, setup or the bootstrap
 // locator; they are only the values a later, explicit setup may propose.
@@ -15,10 +18,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"sync"
 
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tunnel"
 )
 
 // Schema versions the settings record.
@@ -80,14 +86,52 @@ func Models() []string {
 	return ids
 }
 
-// record is the on-disk document. Field order is fixed, so the same values
-// always produce the same bytes.
-type record struct {
-	Schema          string   `json:"schema"`
-	RuntimeDefaults Defaults `json:"runtime_defaults"`
+// Connection is one named Development Connection profile: a declarative,
+// non-secret description of the SSH reverse tunnel that carries a development
+// host's loopback HACHIDORI_ENDPOINT to this host's loopback API. It is
+// exactly a tunnel.Spec plus a name. Live connection state is not part of it;
+// that stays in tunnel.Manager. There is no field for keys, passwords, agents
+// or known_hosts.
+type Connection struct {
+	Name        string `json:"name"`
+	Destination string `json:"destination"`
+	RemoteBind  string `json:"remote_bind"`
+	RemotePort  int    `json:"remote_port"`
+	LocalPort   int    `json:"local_port"`
 }
 
-// Store is the settings authority. An empty Path keeps defaults in memory.
+// MaxConnections bounds the saved profile list.
+const MaxConnections = 32
+
+var connectionNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// Spec is the tunnel description the manager connects.
+func (c Connection) Spec() tunnel.Spec {
+	return tunnel.Spec{Destination: c.Destination, RemoteBind: c.RemoteBind, RemotePort: c.RemotePort, LocalPort: c.LocalPort}
+}
+
+// Endpoint is the HACHIDORI_ENDPOINT value a development host uses.
+func (c Connection) Endpoint() string { return c.Spec().CallerEndpoint() }
+
+// Validate accepts a plain profile name and only what tunnel.Spec accepts:
+// a plain destination and a loopback-to-loopback forward.
+func (c Connection) Validate() error {
+	if !connectionNameRe.MatchString(c.Name) {
+		return fmt.Errorf("invalid connection name %q: use letters, digits, '.', '_' or '-' (up to 64, starting with a letter or digit)", c.Name)
+	}
+	return c.Spec().Validate()
+}
+
+// record is the on-disk document. Field order is fixed, so the same values
+// always produce the same bytes. Connections is additive: a file without it
+// (written before profiles existed) is the same schema with no profiles.
+type record struct {
+	Schema          string       `json:"schema"`
+	RuntimeDefaults Defaults     `json:"runtime_defaults"`
+	Connections     []Connection `json:"connections,omitempty"`
+}
+
+// Store is the settings authority. An empty Path keeps its values in memory.
 type Store struct {
 	// Path is settings.json beside the desktop preferences file.
 	Path string
@@ -95,7 +139,7 @@ type Store struct {
 	Desktop Desktop
 
 	mu  sync.Mutex
-	mem Defaults
+	mem record
 }
 
 // Defaults reads the saved runtime defaults. A missing file is not an error;
@@ -103,45 +147,116 @@ type Store struct {
 func (s *Store) Defaults() (Defaults, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.load()
+	r, err := s.load()
+	return r.RuntimeDefaults, err
 }
 
-func (s *Store) load() (Defaults, error) {
+// Connections lists the saved profiles ordered by name. A missing file is not
+// an error; an unreadable one yields no profiles plus the error.
+func (s *Store) Connections() ([]Connection, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.load()
+	return r.Connections, err
+}
+
+func (s *Store) load() (record, error) {
 	if s.Path == "" {
-		return s.mem, nil
+		r := s.mem
+		r.Connections = append([]Connection(nil), r.Connections...)
+		return r, nil
 	}
 	var r record
 	err := home.ReadJSON(s.Path, &r)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return Defaults{}, nil
+		return record{}, nil
 	case err != nil:
-		return Defaults{}, fmt.Errorf("settings %s: %w", s.Path, err)
+		return record{}, fmt.Errorf("settings %s: %w", s.Path, err)
 	case r.Schema != Schema:
-		return Defaults{}, fmt.Errorf("settings %s: unknown schema %q", s.Path, r.Schema)
+		return record{}, fmt.Errorf("settings %s: unknown schema %q", s.Path, r.Schema)
 	}
 	if err := r.RuntimeDefaults.Validate(); err != nil {
-		return Defaults{}, fmt.Errorf("settings %s: %w", s.Path, err)
+		return record{}, fmt.Errorf("settings %s: %w", s.Path, err)
 	}
-	return r.RuntimeDefaults, nil
+	seen := map[string]bool{}
+	for _, c := range r.Connections {
+		if err := c.Validate(); err != nil {
+			return record{}, fmt.Errorf("settings %s: connection %q: %w", s.Path, c.Name, err)
+		}
+		if seen[c.Name] {
+			return record{}, fmt.Errorf("settings %s: duplicate connection %q", s.Path, c.Name)
+		}
+		seen[c.Name] = true
+	}
+	return r, nil
 }
 
-// SetDefaults validates and stores the runtime defaults. It changes nothing
-// else: no worker, model, setup or startup state is read or written.
-func (s *Store) SetDefaults(d Defaults) error {
-	if err := d.Validate(); err != nil {
-		return err
-	}
+// update applies fn to the current record and stores the result. Nothing is
+// written when fn fails.
+func (s *Store) update(fn func(*record) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	r, err := s.load()
+	if err != nil {
+		return err
+	}
+	if err := fn(&r); err != nil {
+		return err
+	}
+	sort.Slice(r.Connections, func(i, j int) bool { return r.Connections[i].Name < r.Connections[j].Name })
 	if s.Path == "" {
-		s.mem = d
+		s.mem = r
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
 		return err
 	}
-	return home.WriteJSON(s.Path, record{Schema: Schema, RuntimeDefaults: d})
+	r.Schema = Schema
+	return home.WriteJSON(s.Path, r)
+}
+
+// SetDefaults validates and stores the runtime defaults. It changes nothing
+// else: no worker, model, setup, startup or connection state is touched.
+func (s *Store) SetDefaults(d Defaults) error {
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	return s.update(func(r *record) error { r.RuntimeDefaults = d; return nil })
+}
+
+// SaveConnection validates and stores a profile, creating it or replacing the
+// profile of the same name. It never starts, stops or inspects a tunnel.
+func (s *Store) SaveConnection(c Connection) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	return s.update(func(r *record) error {
+		for i := range r.Connections {
+			if r.Connections[i].Name == c.Name {
+				r.Connections[i] = c
+				return nil
+			}
+		}
+		if len(r.Connections) >= MaxConnections {
+			return fmt.Errorf("at most %d connections can be saved", MaxConnections)
+		}
+		r.Connections = append(r.Connections, c)
+		return nil
+	})
+}
+
+// RemoveConnection deletes the named profile.
+func (s *Store) RemoveConnection(name string) error {
+	return s.update(func(r *record) error {
+		for i := range r.Connections {
+			if r.Connections[i].Name == name {
+				r.Connections = append(r.Connections[:i], r.Connections[i+1:]...)
+				return nil
+			}
+		}
+		return fmt.Errorf("connection %q does not exist", name)
+	})
 }
 
 // Prefs reports the desktop preferences through the desktop authority.

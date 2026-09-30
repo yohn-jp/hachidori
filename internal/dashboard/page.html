@@ -654,6 +654,58 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <p class="note">Only the catalog's pinned runtime and model identities are listed. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker. A requested device is never replaced by another. The active runtime and model cannot be removed.</p>
 </section>
 {{end}}
+{{with .Conns}}
+<section class="region" id="settings-connections" aria-labelledby="sc-h">
+  <div class="region-h"><h2 id="sc-h">Development connections</h2><span class="sub">named SSH reverse-tunnel profiles</span></div>
+  <p class="note">A development host only consumes <code>HACHIDORI_ENDPOINT</code>. A profile is non-secret data: SSH keys, agent, known_hosts and ssh_config stay with the host's own <code>ssh</code> client and are never read, stored or prompted for. One tunnel runs at a time; both ends are loopback-only.</p>
+  {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+  <div class="slot" id="connections-state">{{template "transport" $}}</div>
+  <div class="btn-row">
+    <form method="post" action="/tunnel/disconnect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><button type="submit" class="btn danger">Disconnect</button></form>
+  </div>
+  {{range .Items}}
+  <div class="surface" data-connection="{{.Name}}">
+    <div class="region-h"><h3>{{.Name}}</h3>{{if .Running}}<span class="badge tone-ok">connected</span>{{else if .Current}}<span class="badge">{{$.Tunnel.State}}</span>{{end}}</div>
+    <dl class="kv">
+      <dt>destination</dt><dd>{{.Destination}}</dd>
+      <dt>forward</dt><dd>{{.RemoteBind}}:{{.RemotePort}} → 127.0.0.1:{{.LocalPort}}</dd>
+    </dl>
+    <p class="note">Set on the development host:</p>
+    <code class="endpoint-box">HACHIDORI_ENDPOINT={{.Endpoint}}</code>
+    <div class="btn-row">
+      <form method="post" action="/settings/connections/connect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn primary">Connect</button></form>
+      <form method="post" action="/settings/connections/reconnect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn">Reconnect</button></form>
+      <form method="post" action="/settings/connections/remove" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn danger">Remove</button></form>
+    </div>
+    <details class="inline"><summary>Edit</summary>
+      <form method="post" action="/settings/connections/save">
+        <input type="hidden" name="token" value="{{$.Token}}">
+        <input type="hidden" name="name" value="{{.Name}}">
+        <div class="fields">
+          <label class="field wide">SSH destination<input name="destination" value="{{.Destination}}" required autocomplete="off" spellcheck="false"></label>
+          <label class="field">Remote bind<input name="remote_bind" value="{{.RemoteBind}}" required spellcheck="false"></label>
+          <label class="field">Remote port<input name="remote_port" value="{{.RemotePort}}" inputmode="numeric" required></label>
+          <label class="field">Local Hachidori port<input name="local_port" value="{{.LocalPort}}" inputmode="numeric" required></label>
+        </div>
+        <div class="btn-row"><button type="submit" class="btn">Save changes</button></div>
+      </form>
+    </details>
+  </div>
+  {{else}}<p class="empty">No saved connections.</p>{{end}}
+  <form method="post" action="/settings/connections/save" class="surface" id="connection-new">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <h3>New connection</h3>
+    <div class="fields">
+      <label class="field">Name<input name="name" placeholder="nixos-dev" required autocomplete="off" spellcheck="false"></label>
+      <label class="field wide">SSH destination<input name="destination" value="{{.New.Destination}}" placeholder="user@host" required autocomplete="off" spellcheck="false"></label>
+      <label class="field">Remote bind<input name="remote_bind" value="{{.New.RemoteBind}}" required spellcheck="false"></label>
+      <label class="field">Remote port<input name="remote_port" value="{{.New.RemotePort}}" inputmode="numeric" required></label>
+      <label class="field">Local Hachidori port<input name="local_port" value="{{.New.LocalPort}}" inputmode="numeric" required></label>
+    </div>
+    <div class="btn-row"><button type="submit" class="btn">Save connection</button></div>
+  </form>
+</section>
+{{end}}
 {{template "close" .Chrome}}{{end}}
 
 {{define "diagnostics"}}{{template "open" .Chrome}}
@@ -663,6 +715,14 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </header>
 <div class="slot" data-live="diagnostics">{{template "diagnostics-live" .}}</div>
 
+<section class="region" id="bundle" aria-labelledby="bundle-h">
+  <div class="region-h">
+    <div><h2 id="bundle-h">Diagnostic bundle</h2><p class="sub">One local file to attach to an Issue. Nothing is uploaded.</p></div>
+    <form method="post" action="/diagnostics/export" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn">Export bundle</button></form>
+  </div>
+  <p class="note">Contains version, runtime, model, WebView2, OS and recovery facts and a short tail of Hachidori worker log lines. It never contains request, state or question text, datasets, environment variables, SSH keys or known_hosts, or model files. It is saved under <code>state/diagnostics</code> in the Hachidori home.</p>
+</section>
+
 <section class="region" id="transport" aria-labelledby="transport-h">
   <div class="region-h"><h2 id="transport-h">Caller transport</h2><span class="sub">SSH reverse tunnel</span></div>
   <div class="transport-grid">
@@ -671,6 +731,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
       <form method="post" action="/tunnel/connect" id="tunnel-connect">
         <input type="hidden" name="token" value="{{.Token}}">
         <div class="fields">
+          {{with .FormName}}<label class="field">Connection name<input name="name" value="{{.}}" required autocomplete="off" spellcheck="false"></label>{{end}}
           <label class="field wide">SSH destination<input name="destination" value="{{.Form.Destination}}" placeholder="user@host" required autocomplete="off" spellcheck="false"></label>
           <label class="field">Remote bind<input name="remote_bind" value="{{.Form.RemoteBind}}" required spellcheck="false"></label>
           <label class="field">Remote port<input name="remote_port" value="{{.Form.RemotePort}}" inputmode="numeric" required></label>

@@ -309,6 +309,10 @@ type expView struct {
 	History         []history.Summary
 	HistoryProblems []history.Problem
 	HistoryErr      string
+
+	// Comparison of two stored entries (POST /history/compare); nil otherwise.
+	CompareA, CompareB string
+	Compare            *compareView
 }
 
 // expForm is the run form as typed (kept on errors).
@@ -507,6 +511,77 @@ func (d *Dashboard) historyOpen(w http.ResponseWriter, r *http.Request) {
 	v := d.expPageView()
 	v.Err = "cannot open history entry: " + err.Error()
 	d.renderView(w, "experiments", v)
+}
+
+// compareView is a descriptive comparison of two stored history entries. It
+// carries the entries' identities so either source can be opened in Evidence.
+type compareView struct {
+	Token  string
+	EntryA history.Summary
+	EntryB history.Summary
+	eval.Comparison
+}
+
+// compareHistory opens two stored entries read-only and compares them with
+// eval.Compare. It never contacts the endpoint and changes nothing stored.
+func (d *Dashboard) compareHistory(a, b string) (*compareView, error) {
+	if d.hist == nil {
+		return nil, errNoHistory
+	}
+	if a == "" || b == "" {
+		return nil, errors.New("select two history entries to compare")
+	}
+	if a == b {
+		return nil, errors.New("select two different history entries to compare")
+	}
+	ra, sa, err := d.hist.Open(a)
+	if err != nil {
+		return nil, fmt.Errorf("entry A: %w", err)
+	}
+	rb, sb, err := d.hist.Open(b)
+	if err != nil {
+		return nil, fmt.Errorf("entry B: %w", err)
+	}
+	cv := &compareView{Token: d.token, Comparison: eval.Compare(ra, rb),
+		EntryA: history.Summary{ID: a, EvidenceSHA256: sa}, EntryB: history.Summary{ID: b, EvidenceSHA256: sb}}
+	// Operator metadata is display only; it never takes part in the comparison.
+	if list, _, err := d.hist.List(); err == nil {
+		for _, s := range list {
+			switch s.ID {
+			case a:
+				cv.EntryA = s
+			case b:
+				cv.EntryB = s
+			}
+		}
+	}
+	return cv, nil
+}
+
+// historyCompare renders the comparison of two stored entries on the
+// Experiments page. Comparison reads the history root only.
+func (d *Dashboard) historyCompare(w http.ResponseWriter, r *http.Request) {
+	v := d.expPageView()
+	v.CompareA, v.CompareB = strings.TrimSpace(r.PostFormValue("a")), strings.TrimSpace(r.PostFormValue("b"))
+	cv, err := d.compareHistory(v.CompareA, v.CompareB)
+	if err != nil {
+		v.Err = "cannot compare history entries: " + err.Error()
+	} else {
+		v.Compare = cv
+	}
+	d.renderView(w, "experiments", v)
+}
+
+// signed formats a delta with an explicit sign and no judgement.
+func signed(v float64, unit string) string {
+	s := strconv.FormatFloat(v, 'f', 4, 64)
+	if unit == "ms" {
+		s = strconv.FormatFloat(v, 'f', 1, 64) + " ms"
+	}
+	if v > 0 {
+		return "+" + s
+	}
+	return s
 }
 
 // historyDelete removes one history entry. An already-opened copy stays in

@@ -176,7 +176,7 @@ here is covered by portable unit tests (`go test ./internal/app
 non-CGo build/vet; none of that is a physical Windows or GPU PASS. Record each
 item as PASS / FAIL / NOT_CHECKED with the exact `hachidori.exe` identity and
 the Windows and WebView2 versions. Diagnostic bundle export and the physical
-certification run are a separate leaf.
+certification run are recorded through the checklist below.
 
 1. Worker crash: with the worker READY, end the `python` worker process from
    Task Manager. Diagnostics reports "Recovering from an unexpected worker exit",
@@ -196,3 +196,35 @@ certification run are a separate leaf.
    failure` lines. Navigation is still restricted to the loopback dashboard.
 5. Existing first-run, tray, single-instance and start-at-sign-in checks above
    still pass unchanged.
+
+## Diagnostic bundle and physical certification record
+
+**Diagnostic bundle.** Diagnostics > **Export bundle** (an explicit operator
+action; nothing runs in the background) writes one bounded local archive,
+`state/diagnostics/hachidori-diagnostics-<UTC time>.zip` under the Hachidori
+home. It is never uploaded. Its format is versioned
+(`hachidori.diagnostics.manifest/v1`, `hachidori.diagnostics.facts/v1`) and it
+holds exactly three entries:
+
+- `manifest.json`: schema, creation time, per-entry size and SHA-256, and the
+  declared exclusions;
+- `facts.json`: application and executable identity (name, SHA-256, size, Go
+  version), OS and architecture, runtime, model, device, provider/torch/CUDA
+  versions, WebView2 Runtime version (desktop shell only) and worker state with
+  the recovery state (`recovering` / `gave_up`) and last failure class/message;
+- `worker-log-tail.txt`: at most the last 200 lines (512 bytes each) written by
+  Hachidori's own worker log, with the Hachidori home path replaced by a
+  placeholder.
+
+It never contains request, state or question text, datasets or experiment
+contents, environment variables, SSH credentials or known_hosts, model files,
+raw worker stderr or doctor output. `hachidori doctor` output is unchanged.
+
+**Physical certification record.** Every Windows item is recorded in
+[windows-certification-checklist.md](windows-certification-checklist.md) as
+exactly `PASS`, `FAIL` or `NOT_CHECKED`, together with the executable SHA-256,
+Windows build, WebView2 version and device of that run. It covers clean first
+run, the native folder picker (#47), remembered-home launch, WebView2
+navigation and rendering (#41), tray/reopen, start at sign-in, runtime restart,
+worker crash and recovery, CPU, and CUDA when the hardware exists. Cross-builds
+and portable tests never produce `PASS` for a physical item.

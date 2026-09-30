@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -475,7 +477,7 @@ func TestPageFormsAreWiredToActionRoutes(t *testing.T) {
 		got  map[string]string
 		want []string
 	}{"/": {root, []string{"/runtime/start", "/runtime/stop", "/runtime/restart"}},
-		"/diagnostics": {diag, []string{"/doctor", "/tunnel/connect", "/tunnel/disconnect"}}} {
+		"/diagnostics": {diag, []string{"/doctor", "/diagnostics/export", "/tunnel/connect", "/tunnel/disconnect"}}} {
 		if len(want.got) != len(want.want) {
 			t.Errorf("%s forms %v, want %v", page, want.got, want.want)
 		}
@@ -749,5 +751,83 @@ func TestRuntimeRestartRoutesThroughApplicationWhenRequired(t *testing.T) {
 	e.rt.mu.Unlock()
 	if len(lc) != 1 || fm.restart != 1 {
 		t.Fatalf("restart after activation: lifecycle=%v app=%d", lc, fm.restart)
+	}
+}
+
+// bundleFiles reads the only bundle exported under the test home.
+func bundleFiles(t *testing.T, home string) map[string][]byte {
+	t.Helper()
+	dir := filepath.Join(home, "state", "diagnostics")
+	ents, err := os.ReadDir(dir)
+	if err != nil || len(ents) != 1 {
+		t.Fatalf("bundle files = %v, %v", ents, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, ents[0].Name()))
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string][]byte{}
+	for _, f := range zr.File {
+		rc, _ := f.Open()
+		out[f.Name], _ = io.ReadAll(rc)
+		rc.Close()
+	}
+	return out
+}
+
+func TestDiagnosticsExportIsExplicitLocalAndAllowlisted(t *testing.T) {
+	e := newEnv(t)
+	dir := filepath.Join(e.home, "state", "diagnostics")
+	// Rendering Diagnostics never exports; only the token-guarded POST does.
+	body := e.get(t, "/diagnostics").Body.String()
+	if !strings.Contains(body, `action="/diagnostics/export"`) || !strings.Contains(body, "Nothing is uploaded") {
+		t.Error("Diagnostics lacks the export control")
+	}
+	if _, err := os.Stat(dir); err == nil {
+		t.Fatal("a bundle directory exists before any explicit export")
+	}
+	req := httptest.NewRequest("POST", "http://127.0.0.1:7844/diagnostics/export", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	e.d.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("export without the form token = %d", rec.Code)
+	}
+	if _, err := os.Stat(dir); err == nil {
+		t.Fatal("a tokenless request exported a bundle")
+	}
+
+	os.MkdirAll(filepath.Join(e.home, "logs"), 0o755)
+	os.WriteFile(filepath.Join(e.home, "logs", "worker.log"), []byte("[worker] READY\nsecret request body\n"), 0o600)
+	if rec := e.post(t, "/diagnostics/export", nil); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/diagnostics" {
+		t.Fatalf("export = %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if a := e.lastAction(t); !a.OK || !strings.Contains(a.Message, "nothing was uploaded") {
+		t.Fatalf("action = %+v", a)
+	}
+	files := bundleFiles(t, e.home)
+	if len(files) != 3 {
+		t.Fatalf("archive has %d entries, want 3", len(files))
+	}
+	for name, data := range files {
+		if bytes.Contains(data, []byte("secret request body")) || bytes.Contains(data, []byte("Traceback &")) {
+			t.Errorf("%s carries excluded content", name)
+		}
+	}
+	if !bytes.Contains(files["worker-log-tail.txt"], []byte("[worker] READY")) {
+		t.Error("log tail lacks the Hachidori worker line")
+	}
+}
+
+func TestDiagnosticsExportRecordsWebView2Version(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.d.cfg
+	cfg.WebView2 = "154.0.4258.37"
+	e.d = New(cfg)
+	e.post(t, "/diagnostics/export", nil)
+	facts := bundleFiles(t, e.home)["facts.json"]
+	if !bytes.Contains(facts, []byte(`"version": "154.0.4258.37"`)) || !bytes.Contains(facts, []byte(`"recovery": ""`)) {
+		t.Errorf("facts lack WebView2 version / recovery state:\n%s", facts)
 	}
 }

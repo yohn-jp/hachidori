@@ -2,13 +2,17 @@ package dashboard
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/yohn-jp/hachidori/internal/settings"
+	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -374,5 +378,194 @@ func TestSettingsSaveDoesNotTouchRuntime(t *testing.T) {
 	}
 	if rec := e.post(t, "/settings/defaults", url.Values{"token": {"forged"}, "device": {"cpu"}}); rec.Code != http.StatusForbidden {
 		t.Fatalf("forged token: %d", rec.Code)
+	}
+}
+
+// withConnections hosts the Development Connections profiles in the Settings
+// workspace, persisted by the real settings authority at path.
+func withConnections(e *env, path string) *settings.Store {
+	st := &settings.Store{Path: path}
+	cfg := e.d.cfg
+	cfg.Connections = st
+	e.d = New(cfg)
+	return st
+}
+
+func profileForm(name, dest string, remote, local string) url.Values {
+	return url.Values{"name": {name}, "destination": {dest}, "remote_bind": {"127.0.0.1"}, "remote_port": {remote}, "local_port": {local}, "return": {"settings"}}
+}
+
+// A profile can be saved, connected through tunnel.Manager, shown with its
+// exact copy-ready endpoint, disconnected, and restored after a restart, with
+// no credential anywhere in the stored record.
+func TestDevelopmentConnectionLifecycle(t *testing.T) {
+	e := newEnv(t)
+	path := filepath.Join(t.TempDir(), "settings.json")
+	withConnections(e, path)
+
+	if !strings.Contains(navRe.FindString(e.get(t, "/").Body.String()), "/settings") {
+		t.Error("navigation lacks Settings when connections are hosted")
+	}
+	rec := e.post(t, "/settings/connections/save", profileForm("nixos-dev", "dev@nixos", "7843", "7843"))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings" {
+		t.Fatalf("save: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if a := e.lastAction(t); !a.OK || e.tun.Status().State != tunnel.StateIdle {
+		t.Fatalf("saving must not connect: %+v %+v", a, e.tun.Status())
+	}
+	page := e.get(t, "/settings").Body.String()
+	for _, want := range []string{`data-connection="nixos-dev"`, "HACHIDORI_ENDPOINT=http://127.0.0.1:7843",
+		`action="/settings/connections/connect"`, `action="/settings/connections/reconnect"`, `action="/settings/connections/remove"`, `action="/tunnel/disconnect"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("settings lacks %q", want)
+		}
+	}
+
+	e.post(t, "/settings/connections/connect", url.Values{"name": {"nixos-dev"}, "return": {"settings"}})
+	st := e.tun.Status()
+	if a := e.lastAction(t); !a.OK || st.State != tunnel.StateRunning || st.Spec == nil || st.Spec.Destination != "dev@nixos" {
+		t.Fatalf("connect: %+v %+v", a, st)
+	}
+	page = e.get(t, "/settings").Body.String()
+	for _, want := range []string{"connected", "HACHIDORI_ENDPOINT=http://127.0.0.1:7843", fmt.Sprint(st.PID)} {
+		if !strings.Contains(page, want) {
+			t.Errorf("connected settings lacks %q", want)
+		}
+	}
+
+	// A second profile cannot run beside the first (one managed tunnel), and
+	// the connected profile cannot be removed.
+	e.post(t, "/settings/connections/save", profileForm("other", "dev@other", "7900", "7843"))
+	e.post(t, "/settings/connections/connect", url.Values{"name": {"other"}})
+	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "disconnect it first") || e.tun.Status().PID != st.PID {
+		t.Fatalf("second tunnel: %+v", a)
+	}
+	e.post(t, "/settings/connections/remove", url.Values{"name": {"nixos-dev"}})
+	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "disconnect it first") {
+		t.Fatalf("removed a connected profile: %+v", a)
+	}
+
+	// Reconnect goes through the manager: a new ssh child for the profile.
+	e.post(t, "/settings/connections/reconnect", url.Values{"name": {"other"}})
+	if a, st2 := e.lastAction(t), e.tun.Status(); !a.OK || st2.State != tunnel.StateRunning || st2.PID == st.PID || st2.Endpoint != "http://127.0.0.1:7900" {
+		t.Fatalf("reconnect: %+v %+v", a, st2)
+	}
+	rec = e.post(t, "/tunnel/disconnect", url.Values{"return": {"settings"}})
+	if rec.Header().Get("Location") != "/settings" || e.tun.Status().State != tunnel.StateStopped {
+		t.Fatalf("disconnect: %s %+v", rec.Header().Get("Location"), e.tun.Status())
+	}
+
+	// After an application restart the profiles come back from disk.
+	e2 := newEnv(t)
+	withConnections(e2, path)
+	page = e2.get(t, "/settings").Body.String()
+	for _, want := range []string{`data-connection="nixos-dev"`, `data-connection="other"`, "HACHIDORI_ENDPOINT=http://127.0.0.1:7900"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("restored settings lacks %q", want)
+		}
+	}
+	b, _ := os.ReadFile(path)
+	for _, s := range []string{"key", "pass", "identity", "secret", "token", "known_hosts", "BEGIN"} {
+		if strings.Contains(strings.ToLower(string(b)), strings.ToLower(s)) {
+			t.Fatalf("settings contain %q: %s", s, b)
+		}
+	}
+	e.post(t, "/settings/connections/remove", url.Values{"name": {"nixos-dev"}})
+	if a := e.lastAction(t); !a.OK {
+		t.Fatalf("remove: %+v", a)
+	}
+	if cs, _ := (&settings.Store{Path: path}).Connections(); len(cs) != 1 || cs[0].Name != "other" {
+		t.Fatalf("after remove: %+v", cs)
+	}
+}
+
+// Profiles enforce the same loopback-only validation as the manager and store
+// nothing when rejected; a start failure is shown, not fixed.
+func TestDevelopmentConnectionValidationAndFailure(t *testing.T) {
+	e := newEnv(t)
+	path := filepath.Join(t.TempDir(), "settings.json")
+	withConnections(e, path)
+	for name, form := range map[string]url.Values{
+		"public bind": {"name": {"n"}, "destination": {"dev@nixos"}, "remote_bind": {"0.0.0.0"}, "remote_port": {"7843"}, "local_port": {"7843"}},
+		"option dest": {"name": {"n"}, "destination": {"-oProxyCommand=calc"}, "remote_bind": {"127.0.0.1"}, "remote_port": {"7843"}, "local_port": {"7843"}},
+		"bad name":    {"name": {"a b"}, "destination": {"dev@nixos"}, "remote_bind": {"127.0.0.1"}, "remote_port": {"7843"}, "local_port": {"7843"}},
+		"not a port":  {"name": {"n"}, "destination": {"dev@nixos"}, "remote_bind": {"127.0.0.1"}, "remote_port": {"x"}, "local_port": {"7843"}},
+	} {
+		e.post(t, "/settings/connections/save", form)
+		if a := e.lastAction(t); a.OK {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("rejected input wrote settings: %v", err)
+	}
+	e.post(t, "/settings/connections/connect", url.Values{"name": {"missing"}})
+	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "does not exist") {
+		t.Fatalf("unknown profile: %+v", a)
+	}
+
+	e.post(t, "/settings/connections/save", profileForm("nixos-dev", "dev@nixos", "7843", "7843"))
+	e.tun.SSH = "hachidori-no-such-ssh-client"
+	e.post(t, "/settings/connections/connect", url.Values{"name": {"nixos-dev"}})
+	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "ssh client not found") {
+		t.Fatalf("failure not reported: %+v", a)
+	}
+	if page := e.get(t, "/settings").Body.String(); !strings.Contains(page, "ssh client not found") || !strings.Contains(page, "exited") {
+		t.Error("settings does not show the actionable failure")
+	}
+}
+
+// The Diagnostics form is not a second transport path: it saves the same
+// profile in the same settings authority and connects through the same
+// manager, and it no longer writes the legacy dashboard.json.
+func TestDiagnosticsTunnelFormDelegatesToProfiles(t *testing.T) {
+	e := newEnv(t)
+	path := filepath.Join(t.TempDir(), "settings.json")
+	withConnections(e, path)
+	if body := e.get(t, "/diagnostics").Body.String(); !strings.Contains(body, `name="name" value="default"`) {
+		t.Fatal("diagnostics form lacks the connection name")
+	}
+	e.post(t, "/tunnel/connect", url.Values{"name": {"nixos-dev"}, "destination": {"dev@nixos"}, "remote_bind": {"0.0.0.0"}, "remote_port": {"7843"}, "local_port": {"7843"}})
+	if a := e.lastAction(t); a.OK || e.tun.Status().State != tunnel.StateIdle {
+		t.Fatalf("public bind accepted: %+v", a)
+	}
+	e.post(t, "/tunnel/connect", url.Values{"destination": {"dev@nixos"}, "remote_bind": {"127.0.0.1"}, "remote_port": {"7843"}, "local_port": {"7843"}})
+	cs, err := (&settings.Store{Path: path}).Connections()
+	if a := e.lastAction(t); !a.OK || err != nil || len(cs) != 1 || cs[0].Name != "default" || e.tun.Status().State != tunnel.StateRunning {
+		t.Fatalf("connect: %+v %+v %v", a, cs, err)
+	}
+	// The profile is the same one Settings connects, and the running
+	// spec is the profile's spec: one authority.
+	if *e.tun.Status().Spec != cs[0].Spec() {
+		t.Fatalf("manager runs %+v, profile is %+v", *e.tun.Status().Spec, cs[0])
+	}
+	page := e.get(t, "/settings").Body.String()
+	if !strings.Contains(page, `data-connection="default"`) || !strings.Contains(page, "connected") {
+		t.Error("settings does not show the Diagnostics connection as a running profile")
+	}
+	if _, err := os.Stat(e.d.cfg.PrefsPath); !os.IsNotExist(err) {
+		t.Fatalf("dashboard.json written beside the profile store: %v", err)
+	}
+}
+
+// Legacy saved tunnel form values prefill the form while no profile exists and
+// are never rewritten or left as competing state.
+func TestLegacyTunnelPrefsArePrefillOnlyWhenProfilesAreHosted(t *testing.T) {
+	e := newEnv(t)
+	legacy := []byte(`{"tunnel":{"destination":"dev@legacy","remote_bind":"127.0.0.1","remote_port":7000,"local_port":7843}}`)
+	if err := os.WriteFile(e.d.cfg.PrefsPath, legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withConnections(e, filepath.Join(t.TempDir(), "settings.json"))
+	if f := e.d.formDefaults(); f.Destination != "dev@legacy" || f.RemotePort != 7000 {
+		t.Fatalf("legacy prefill: %+v", f)
+	}
+	e.post(t, "/settings/connections/save", profileForm("nixos-dev", "dev@nixos", "7843", "7843"))
+	if f := e.d.formDefaults(); f.Destination != "dev@nixos" {
+		t.Fatalf("saved profile does not take over: %+v", f)
+	}
+	e.post(t, "/tunnel/connect", url.Values{"destination": {"dev@nixos"}, "remote_bind": {"127.0.0.1"}, "remote_port": {"7843"}, "local_port": {"7843"}})
+	if b, _ := os.ReadFile(e.d.cfg.PrefsPath); string(b) != string(legacy) {
+		t.Fatalf("legacy prefs rewritten: %s", b)
 	}
 }

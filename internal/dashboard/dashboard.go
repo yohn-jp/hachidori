@@ -23,11 +23,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/yohn-jp/hachidori/internal/diagnostics"
 	"github.com/yohn-jp/hachidori/internal/history"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
@@ -71,6 +74,14 @@ type Config struct {
 	// (app.Controller over internal/setup); the dashboard never inspects or
 	// deletes directories itself. It is nil for serve/dashboard.
 	Models Models
+	// Connections, when set, adds the Development Connections profiles to
+	// the Settings workspace and makes the Diagnostics tunnel form save
+	// through the same profiles. Profiles are persisted by the settings
+	// authority; the live tunnel stays exclusively in Tunnel.
+	Connections Connections
+	// WebView2 is the installed WebView2 Runtime version when the desktop
+	// shell hosts the dashboard; it is only a fact for the diagnostic bundle.
+	WebView2 string
 }
 
 // Models is the explicit model/runtime maintenance authority. Every method
@@ -124,6 +135,29 @@ type checkResult struct {
 	OK   bool
 	Msg  string
 	Time time.Time
+}
+
+// Connections stores the named, non-secret Development Connection profiles.
+// The dashboard connects them only through tunnel.Manager.
+type Connections interface {
+	Connections() ([]settings.Connection, error)
+	SaveConnection(settings.Connection) error
+	RemoveConnection(name string) error
+}
+
+// ConnectionItem is one saved profile with its relation to the live tunnel.
+type ConnectionItem struct {
+	settings.Connection
+	Endpoint string // the HACHIDORI_ENDPOINT value for the development host
+	Current  bool   // the manager's current/last spec is this profile
+	Running  bool   // ... and its ssh child is alive
+}
+
+// ConnectionsView is the Development Connections view model.
+type ConnectionsView struct {
+	Items []ConnectionItem
+	New   tunnel.Spec // defaults for a new profile
+	Err   string
 }
 
 // Settings reads and stores the saved runtime defaults. The dashboard only
@@ -215,6 +249,8 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"distOf":    distOf,
 	"perQ":      perQuestion,
 	"f4":        func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) },
+	"sd":        func(v float64) string { return signed(v, "") },
+	"sms":       func(v float64) string { return signed(v, "ms") },
 	"short":     func(s string) string { return s[:min(len(s), 12)] },
 }).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html"))
 
@@ -228,6 +264,10 @@ type Chrome struct {
 	Live        bool // the workspace shows the live-refresh indicator
 	HasSettings bool // the Settings workspace is available
 	Rt          shellStatus
+}
+
+func (c Config) hasSettings() bool {
+	return c.Settings != nil || c.Desktop != nil || c.Connections != nil || c.Models != nil
 }
 
 // New builds the dashboard.
@@ -254,6 +294,7 @@ func New(cfg Config) *Dashboard {
 	})
 	d.mux.HandleFunc("POST /runtime/{op}", d.runtimeOp)
 	d.mux.HandleFunc("POST /doctor", d.runDoctor)
+	d.mux.HandleFunc("POST /diagnostics/export", d.exportDiagnostics)
 	d.mux.HandleFunc("GET /workbench", d.workbenchPage)
 	d.mux.HandleFunc("POST /workbench", d.workbenchPost)
 	d.mux.HandleFunc("GET /experiments", d.experimentsPage)
@@ -264,15 +305,22 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /experiments/save", d.experimentsSave)
 	d.mux.HandleFunc("POST /history/open", d.historyOpen)
 	d.mux.HandleFunc("POST /history/delete", d.historyDelete)
+	d.mux.HandleFunc("POST /history/compare", d.historyCompare)
 	d.mux.HandleFunc("GET /errors", d.errorsPage)
 	d.mux.HandleFunc("POST /errors/open", d.errorsOpen)
 	d.mux.HandleFunc("POST /errors/use-experiment", d.errorsUseExperiment)
 	d.mux.HandleFunc("POST /errors/export", d.errorsExport)
-	if cfg.Settings != nil || cfg.Desktop != nil || cfg.Models != nil {
+	if cfg.hasSettings() {
 		d.mux.HandleFunc("GET /settings", d.settingsPage)
 	}
 	if cfg.Models != nil {
 		d.mux.HandleFunc("POST /settings/models/{op}", d.modelsOp)
+	}
+	if cfg.Connections != nil {
+		d.mux.HandleFunc("POST /settings/connections/save", d.connectionSave)
+		d.mux.HandleFunc("POST /settings/connections/remove", d.connectionRemove)
+		d.mux.HandleFunc("POST /settings/connections/connect", d.connectionConnect)
+		d.mux.HandleFunc("POST /settings/connections/reconnect", d.connectionReconnect)
 	}
 	if cfg.Settings != nil {
 		d.mux.HandleFunc("POST /settings/defaults", d.settingsDefaults)
@@ -356,9 +404,13 @@ type view struct {
 	Doctor  DoctorRun
 	Tunnel  tunnel.Status
 	Form    tunnel.Spec
-	Desktop *DesktopView  // nil unless the desktop shell is hosting the dashboard
-	Set     *SettingsView // nil unless the settings authority is configured
-	Models  *ModelsView   // nil unless the model/runtime manager is configured
+	Desktop *DesktopView     // nil unless the desktop shell is hosting the dashboard
+	Set     *SettingsView    // nil unless the settings authority is configured
+	Models  *ModelsView      // nil unless the model/runtime manager is configured
+	Conns   *ConnectionsView // nil unless Development Connections are configured
+	// FormName is the profile the Diagnostics tunnel form saves to; empty
+	// when profiles are not configured.
+	FormName string
 }
 
 // statusView is the part of the runtime view every page's shell needs.
@@ -366,7 +418,7 @@ func (d *Dashboard) statusView(title, nav string) view {
 	d.mu.Lock()
 	last, doc := d.last, d.doctor
 	d.mu.Unlock()
-	v := view{Chrome: Chrome{Title: title, Nav: nav, APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.Settings != nil || d.cfg.Desktop != nil || d.cfg.Models != nil},
+	v := view{Chrome: Chrome{Title: title, Nav: nav, APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings()},
 		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
 	v.Rt = shellOf(v)
 	return v
@@ -378,6 +430,9 @@ func (d *Dashboard) chrome(title, nav string) Chrome { return d.statusView(title
 func (d *Dashboard) view(title, nav string) view {
 	v := d.statusView(title, nav)
 	v.Live, v.Form = true, d.formDefaults()
+	if d.cfg.Connections != nil {
+		v.FormName = d.formName(v.Form)
+	}
 	if d.cfg.Desktop != nil {
 		dv := &DesktopView{}
 		var err error
@@ -389,10 +444,17 @@ func (d *Dashboard) view(title, nav string) view {
 	return v
 }
 
-// formDefaults: the running/last spec, else saved prefs, else defaults.
+// formDefaults: the running/last spec, else the first saved profile, else the
+// legacy saved form values (read-only when profiles are configured), else
+// defaults.
 func (d *Dashboard) formDefaults() tunnel.Spec {
 	if st := d.cfg.Tunnel.Status(); st.Spec != nil {
 		return *st.Spec
+	}
+	if d.cfg.Connections != nil {
+		if cs, err := d.cfg.Connections.Connections(); err == nil && len(cs) > 0 {
+			return cs[0].Spec()
+		}
 	}
 	f := tunnel.Spec{RemoteBind: tunnel.DefaultRemoteBind, RemotePort: tunnel.DefaultPort, LocalPort: tunnel.DefaultPort}
 	if _, p, err := net.SplitHostPort(d.cfg.APIAddr); err == nil {
@@ -408,6 +470,21 @@ func (d *Dashboard) formDefaults() tunnel.Spec {
 	}
 	return f
 }
+
+// formName is the profile name the Diagnostics form saves to: the profile
+// whose spec the form shows, else "default".
+func (d *Dashboard) formName(f tunnel.Spec) string {
+	if cs, err := d.cfg.Connections.Connections(); err == nil {
+		for _, c := range cs {
+			if c.Spec() == f {
+				return c.Name
+			}
+		}
+	}
+	return defaultConnection
+}
+
+const defaultConnection = "default"
 
 func (d *Dashboard) render(name, title, nav string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) { d.renderView(w, name, d.view(title, nav)) }
@@ -500,6 +577,9 @@ func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
 	if d.cfg.Models != nil {
 		v.Models = d.modelsView()
 	}
+	if d.cfg.Connections != nil {
+		v.Conns = d.connectionsView(v.Tunnel)
+	}
 	d.renderView(w, "settings", v)
 }
 
@@ -570,6 +650,19 @@ func (d *Dashboard) modelsOp(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (d *Dashboard) connectionsView(st tunnel.Status) *ConnectionsView {
+	cv := &ConnectionsView{New: d.formDefaults()}
+	cs, err := d.cfg.Connections.Connections()
+	if err != nil {
+		cv.Err = err.Error()
+	}
+	for _, c := range cs {
+		cur := st.Spec != nil && *st.Spec == c.Spec()
+		cv.Items = append(cv.Items, ConnectionItem{Connection: c, Endpoint: c.Endpoint(), Current: cur, Running: cur && st.State == tunnel.StateRunning})
+	}
+	return cv
+}
+
 // settingsDefaults stores the runtime defaults. It only stores: the running
 // worker, the active model and setup are not consulted or changed.
 func (d *Dashboard) settingsDefaults(w http.ResponseWriter, r *http.Request) {
@@ -599,33 +692,153 @@ func (d *Dashboard) runDoctor(w http.ResponseWriter, r *http.Request) {
 	d.done(w, r, "doctor", nil, "doctor started (it runs its own temporary worker)")
 }
 
-func (d *Dashboard) connect(w http.ResponseWriter, r *http.Request) {
+// exportDiagnostics writes one local diagnostic bundle beneath
+// HACHIDORI_HOME/state/diagnostics. It runs only on this explicit operator
+// action, reads nothing but the status document and the bounded worker log
+// tail (internal/diagnostics), and never uploads or serves the archive.
+func (d *Dashboard) exportDiagnostics(w http.ResponseWriter, r *http.Request) {
+	st := d.cfg.Status()
+	root := st.Runtime.Home
+	if root == "" {
+		d.done(w, r, "export diagnostics", fmt.Errorf("no runtime home is active"), "")
+		return
+	}
+	exe, _ := os.Executable()
+	path, err := diagnostics.Export(diagnostics.Source{Status: st, Home: root, WebView2: d.cfg.WebView2, Executable: exe},
+		filepath.Join(root, "state", "diagnostics"))
+	d.done(w, r, "export diagnostics", err, "local diagnostic bundle written: "+path+" (nothing was uploaded)")
+}
+
+// parseSpec reads the tunnel form fields.
+func parseSpec(r *http.Request) (tunnel.Spec, error) {
 	s := tunnel.Spec{Destination: strings.TrimSpace(r.PostFormValue("destination")),
 		RemoteBind: strings.TrimSpace(r.PostFormValue("remote_bind"))}
 	var err error
-	if s.RemotePort, err = strconv.Atoi(r.PostFormValue("remote_port")); err != nil {
-		d.done(w, r, "connect tunnel", fmt.Errorf("remote port: not a number"), "")
+	if s.RemotePort, err = strconv.Atoi(strings.TrimSpace(r.PostFormValue("remote_port"))); err != nil {
+		return s, fmt.Errorf("remote port: not a number")
+	}
+	if s.LocalPort, err = strconv.Atoi(strings.TrimSpace(r.PostFormValue("local_port"))); err != nil {
+		return s, fmt.Errorf("local port: not a number")
+	}
+	return s, nil
+}
+
+func namedConnection(name string, s tunnel.Spec) settings.Connection {
+	return settings.Connection{Name: strings.TrimSpace(name), Destination: s.Destination,
+		RemoteBind: s.RemoteBind, RemotePort: s.RemotePort, LocalPort: s.LocalPort}
+}
+
+// connect is the Diagnostics tunnel form. With profiles configured it connects
+// through tunnel.Manager and saves the form as a profile: the same profile
+// store and the same manager as the Settings workspace, not a second
+// transport path.
+func (d *Dashboard) connect(w http.ResponseWriter, r *http.Request) {
+	s, err := parseSpec(r)
+	if err != nil {
+		d.done(w, r, "connect tunnel", err, "")
 		return
 	}
-	if s.LocalPort, err = strconv.Atoi(r.PostFormValue("local_port")); err != nil {
-		d.done(w, r, "connect tunnel", fmt.Errorf("local port: not a number"), "")
-		return
+	var prof settings.Connection
+	if d.cfg.Connections != nil {
+		prof = namedConnection(r.PostFormValue("name"), s)
+		if prof.Name == "" {
+			prof.Name = defaultConnection
+		}
+		if err := prof.Validate(); err != nil {
+			d.done(w, r, "connect tunnel", err, "")
+			return
+		}
 	}
 	started, err := d.cfg.Tunnel.Connect(s)
 	switch {
 	case err != nil:
 		d.done(w, r, "connect tunnel", err, "")
+		return
 	case !started:
 		d.done(w, r, "connect tunnel", nil, "tunnel already running for this destination; nothing started")
-	default:
-		if d.cfg.PrefsPath != "" {
-			if err := home.WriteJSON(d.cfg.PrefsPath, Prefs{Tunnel: s}); err != nil {
-				d.done(w, r, "connect tunnel", fmt.Errorf("ssh started, but saving preferences failed: %w", err), "")
-				return
-			}
-		}
-		d.done(w, r, "connect tunnel", nil, "ssh started; caller endpoint "+s.CallerEndpoint())
+		return
 	}
+	switch {
+	case d.cfg.Connections != nil:
+		if err := d.cfg.Connections.SaveConnection(prof); err != nil {
+			d.done(w, r, "connect tunnel", fmt.Errorf("ssh started, but saving connection %q failed: %w", prof.Name, err), "")
+			return
+		}
+	case d.cfg.PrefsPath != "":
+		if err := home.WriteJSON(d.cfg.PrefsPath, Prefs{Tunnel: s}); err != nil {
+			d.done(w, r, "connect tunnel", fmt.Errorf("ssh started, but saving preferences failed: %w", err), "")
+			return
+		}
+	}
+	d.done(w, r, "connect tunnel", nil, "ssh started; caller endpoint "+s.CallerEndpoint())
+}
+
+// profile finds the saved profile named in the request.
+func (d *Dashboard) profile(r *http.Request) (settings.Connection, error) {
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	cs, err := d.cfg.Connections.Connections()
+	if err != nil {
+		return settings.Connection{}, err
+	}
+	for _, c := range cs {
+		if c.Name == name {
+			return c, nil
+		}
+	}
+	return settings.Connection{}, fmt.Errorf("connection %q does not exist", name)
+}
+
+func (d *Dashboard) connectionSave(w http.ResponseWriter, r *http.Request) {
+	s, err := parseSpec(r)
+	if err == nil {
+		err = d.cfg.Connections.SaveConnection(namedConnection(r.PostFormValue("name"), s))
+	}
+	d.done(w, r, "save connection", err, "saved; nothing was connected")
+}
+
+func (d *Dashboard) connectionRemove(w http.ResponseWriter, r *http.Request) {
+	c, err := d.profile(r)
+	if err == nil {
+		if st := d.cfg.Tunnel.Status(); st.State == tunnel.StateRunning && st.Spec != nil && *st.Spec == c.Spec() {
+			err = fmt.Errorf("connection %q is connected; disconnect it first", c.Name)
+		} else {
+			err = d.cfg.Connections.RemoveConnection(c.Name)
+		}
+	}
+	d.done(w, r, "remove connection", err, "removed")
+}
+
+func (d *Dashboard) connectionConnect(w http.ResponseWriter, r *http.Request) {
+	c, err := d.profile(r)
+	if err != nil {
+		d.done(w, r, "connect tunnel", err, "")
+		return
+	}
+	started, err := d.cfg.Tunnel.Connect(c.Spec())
+	switch {
+	case err != nil:
+		d.done(w, r, "connect tunnel", err, "")
+	case !started:
+		d.done(w, r, "connect tunnel", nil, "connection "+c.Name+" is already running; nothing started")
+	default:
+		d.done(w, r, "connect tunnel", nil, "ssh started; HACHIDORI_ENDPOINT="+c.Endpoint())
+	}
+}
+
+// connectionReconnect replaces whatever tunnel the manager runs with the
+// profile: Disconnect, then Connect, both through tunnel.Manager.
+func (d *Dashboard) connectionReconnect(w http.ResponseWriter, r *http.Request) {
+	c, err := d.profile(r)
+	if err != nil {
+		d.done(w, r, "reconnect tunnel", err, "")
+		return
+	}
+	d.cfg.Tunnel.Disconnect()
+	if _, err := d.cfg.Tunnel.Connect(c.Spec()); err != nil {
+		d.done(w, r, "reconnect tunnel", err, "")
+		return
+	}
+	d.done(w, r, "reconnect tunnel", nil, "ssh restarted; HACHIDORI_ENDPOINT="+c.Endpoint())
 }
 
 func (d *Dashboard) disconnect(w http.ResponseWriter, r *http.Request) {
