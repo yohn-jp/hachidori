@@ -564,6 +564,40 @@ Updating the environment: edit `runtimespec/pyproject.toml`, run
 `uv lock --directory internal/setup/runtimespec` with the pinned uv version,
 commit both files. Setup runs `uv sync --locked`, which refuses a stale lock.
 
+### Models and runtimes manager
+
+The Windows desktop's Settings workspace has a Models & runtimes section over
+the current single-provider catalog (Laya). It is a view over typed operations
+of `internal/setup` (`Inspect`, `Materialize`, `Verify`, `Repair`, `Activate`,
+`Remove`), reached through `app.Controller`; the dashboard never inspects or
+deletes directories. `serve` and the browser `dashboard` do not offer it, and
+`hachidori setup` is unchanged.
+
+- Inventory lists only catalog-pinned identities: one runtime per device
+  (`cuda`, `cpu`) and every catalog model, each with its immutable facts
+  (runtime identity, platform, Python, provider, torch; model repository,
+  revision, pinned file count) and whether it is supported, materialized,
+  verified and active. Listing is read-only and offline; full verification
+  (interpreter probe, file digests) runs only on an explicit Verify.
+- Materialize and Repair use the same staged, verified path as setup and never
+  write `state/active-runtime.json`; a failure leaves the active state as it
+  was. Materialize may run beside a running worker; Repair is refused while
+  the worker runs. Repair moves an artifact that fails verification aside,
+  rebuilds it, and restores it if the rebuild fails.
+- Activate is explicit and offline: both artifacts must already be
+  materialized and verify, and only then is the activation record replaced. It
+  never restarts the worker. With a running worker the application reports
+  restart required (`restart_required` in the snapshot); Restart, an
+  `app.Controller` action, then stops the old binding and binds the new
+  activation. A requested device is never replaced by another: activating
+  `cuda` without a materialized CUDA runtime fails.
+- Remove deletes one materialized, unused catalog artifact. The active
+  runtime/model, non-catalog names, an unreadable activation record, a
+  restart-required state, and any path that does not resolve to a real
+  directory beneath `HACHIDORI_HOME` are refused.
+- Serving performs no network resolution; only Materialize and Repair use the
+  network.
+
 ## HACHIDORI_HOME
 
 ```text

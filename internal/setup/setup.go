@@ -46,29 +46,47 @@ const (
 // RunObserved is Run with an optional synchronous phase callback. It preserves
 // the same materialization/verification/activation semantics as Run.
 func RunObserved(h home.Home, device, modelID string, log io.Writer, onPhase func(Phase)) error {
+	a, err := reconcile(h, device, modelID, log, onPhase, PhaseActivation)
+	if err != nil {
+		return err
+	}
+	return writeActive(h, a, log)
+}
+
+// PhasePublish is the real boundary at which Materialize publishes a
+// verified runtime. Materialize never activates.
+const PhasePublish Phase = "publish"
+
+// Materialize is Run without activation: it materializes and verifies the
+// runtime for device and the catalog model modelID through the same staged
+// and verified path, publishes them, and leaves state/active-runtime.json
+// untouched. Activation is the separate, explicit Activate.
+func Materialize(h home.Home, device, modelID string, log io.Writer, onPhase func(Phase)) error {
+	_, err := reconcile(h, device, modelID, log, onPhase, PhasePublish)
+	return err
+}
+
+// reconcile materializes and verifies the desired runtime and model and
+// publishes the runtime, entering publishPhase before the publish. It never
+// writes the activation record; it returns the record that would activate
+// exactly what it materialized.
+func reconcile(h home.Home, device, modelID string, log io.Writer, onPhase func(Phase), publishPhase Phase) (home.Active, error) {
 	enter := func(p Phase) {
 		if onPhase != nil {
 			onPhase(p)
 		}
 	}
 	enter(PhasePreparing)
-	spec, err := Desired(device)
+	spec, model, err := choose(device, modelID)
 	if err != nil {
-		return err
-	}
-	model, err := LookupModel(modelID)
-	if err != nil {
-		return err
-	}
-	if model.Provider != providerName {
-		return fmt.Errorf("model %s: provider %q is not supported by runtime provider %s", model.ID, model.Provider, spec.Provider)
+		return home.Active{}, err
 	}
 	if err := h.Ensure(); err != nil {
-		return err
+		return home.Active{}, err
 	}
 	uv, err := ensureUV(h, log)
 	if err != nil {
-		return fmt.Errorf("private uv: %w", err)
+		return home.Active{}, fmt.Errorf("private uv: %w", err)
 	}
 	enter(PhaseRuntime)
 	id := spec.ID()
@@ -76,29 +94,50 @@ func RunObserved(h home.Home, device, modelID string, log io.Writer, onPhase fun
 	stage := ""
 	if _, err := os.Stat(final); err == nil {
 		if err := verifyPublished(h, final, spec); err != nil {
-			return fmt.Errorf("runtime %s exists but failed verification; it is never modified in place (remove %s to rematerialize): %w", id, final, err)
+			return home.Active{}, fmt.Errorf("runtime %s exists but failed verification; it is never modified in place (repair it, or remove %s to rematerialize): %w", id, final, err)
 		}
 		fmt.Fprintf(log, "runtime %s verified, reusing\n", id)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+		return home.Active{}, err
 	} else if stage, err = materializeRuntime(h, uv, spec, log); err != nil {
-		return fmt.Errorf("runtime %s: %w", id, err)
+		return home.Active{}, fmt.Errorf("runtime %s: %w", id, err)
 	}
 	enter(PhaseModel)
 	if err := materializeModel(h, model, log); err != nil {
-		return fmt.Errorf("model %s: %w", model.ID, err)
+		return home.Active{}, fmt.Errorf("model %s: %w", model.ID, err)
 	}
-	enter(PhaseActivation)
+	enter(publishPhase)
 	if stage != "" {
 		if err := os.Rename(stage, final); err != nil {
-			return fmt.Errorf("runtime %s: publish: %w", id, err)
+			return home.Active{}, fmt.Errorf("runtime %s: publish: %w", id, err)
 		}
 		if err := verifyPublished(h, final, spec); err != nil {
-			return fmt.Errorf("runtime %s: published runtime failed verification: %w", id, err)
+			return home.Active{}, fmt.Errorf("runtime %s: published runtime failed verification: %w", id, err)
 		}
 		fmt.Fprintf(log, "runtime %s published\n", id)
 	}
-	a := home.Active{Runtime: id, ModelID: model.ID, Model: ModelDirName(model), Device: device}
+	return home.Active{Runtime: id, ModelID: model.ID, Model: ModelDirName(model), Device: device}, nil
+}
+
+// choose resolves an explicit device and catalog model to the desired
+// runtime spec and model. Only catalog identities resolve; a device is
+// never substituted for another.
+func choose(device, modelID string) (home.RuntimeSpec, home.ModelManifest, error) {
+	spec, err := Desired(device)
+	if err != nil {
+		return spec, home.ModelManifest{}, err
+	}
+	model, err := LookupModel(modelID)
+	if err != nil {
+		return spec, model, err
+	}
+	if model.Provider != providerName {
+		return spec, model, fmt.Errorf("model %s: provider %q is not supported by runtime provider %s", model.ID, model.Provider, spec.Provider)
+	}
+	return spec, model, nil
+}
+
+func writeActive(h home.Home, a home.Active, log io.Writer) error {
 	if err := home.WriteJSON(h.Path("state", "active-runtime.json"), a); err != nil {
 		return err
 	}

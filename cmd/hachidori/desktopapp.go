@@ -192,6 +192,13 @@ func (a *desktopApp) run() error {
 	// runtime defaults, stored beside desktop.json.
 	prefs := settingsStore(a.PrefsPath, mgr)
 
+	// The Models & Runtimes manager acts only through the application
+	// controller (which owns setup, activation state and restart) and the
+	// setup/home inventory behind it; the dashboard gets no filesystem
+	// authority. ctl is assigned below, before anything can open a runtime.
+	var ctl *app.Controller
+	models := modelManager{ctl: func() *app.Controller { return ctl }}
+
 	open := func(root string) (app.Runtime, error) {
 		if a.Open != nil {
 			return a.Open(root)
@@ -216,6 +223,7 @@ func (a *desktopApp) run() error {
 				HistoryDir: h.Path("state", "history"),
 				Desktop:    prefs,
 				Settings:   prefs,
+				Models:     models,
 			})
 			// An experiment of a replaced runtime's dashboard must not keep
 			// running against the next runtime.
@@ -242,7 +250,7 @@ func (a *desktopApp) run() error {
 	if plan.Mode == firstrun.ModeLaunch || plan.Mode == firstrun.ModeResume {
 		selected = plan.Home
 	}
-	ctl := app.New(app.Config{Home: selected, Open: open, Setup: a.Setup, Installed: a.Env.IsInstalled})
+	ctl = app.New(app.Config{Home: selected, Open: open, Setup: a.Setup, Installed: a.Env.IsInstalled})
 	flow := firstrun.New(firstrun.Config{Ctl: ctl, Plan: plan, Picker: a.Picker, Env: a.Env, Remember: a.Remember})
 	startFailed := false
 	if plan.Mode == firstrun.ModeLaunch {
@@ -318,6 +326,47 @@ func (a *desktopApp) run() error {
 	_ = apiSrv.Shutdown(shut)
 	return err
 }
+
+// modelManager adapts the application controller to the dashboard's Models
+// & Runtimes manager. It adds no behavior: every action is the controller's,
+// which delegates to the setup authority and never restarts implicitly.
+type modelManager struct{ ctl func() *app.Controller }
+
+func (m modelManager) State() dashboard.ModelsState {
+	c := m.ctl()
+	snap := c.Snapshot()
+	st := dashboard.ModelsState{RestartRequired: snap.RestartRequired, Busy: modelOp(snap.Operation), Last: modelOp(snap.Maintenance)}
+	inv, err := c.Inventory(false)
+	if err != nil {
+		st.Err = err.Error()
+	}
+	st.Inventory = inv
+	return st
+}
+
+func modelOp(o *app.Operation) *dashboard.ModelOp {
+	if o == nil {
+		return nil
+	}
+	op := &dashboard.ModelOp{Kind: o.Kind, Device: o.Device, Model: o.Model, Target: o.Target, Phase: o.Phase}
+	if o.Failure != nil {
+		op.Failure = o.Failure.Message
+	}
+	return op
+}
+
+func (m modelManager) Verify(kind, id string) error { return m.ctl().Verify(kind, id) }
+func (m modelManager) Materialize(device, model string) error {
+	return m.ctl().Materialize(app.SetupParams{Device: device, Model: model})
+}
+func (m modelManager) Repair(device, model string) error {
+	return m.ctl().Repair(app.SetupParams{Device: device, Model: model})
+}
+func (m modelManager) Activate(device, model string) error {
+	return m.ctl().Activate(app.SetupParams{Device: device, Model: model})
+}
+func (m modelManager) Remove(kind, id string) error { return m.ctl().Remove(kind, id) }
+func (m modelManager) Restart() error               { return m.ctl().Restart() }
 
 // settingsStore is the desktop's settings authority: the desktop preference
 // manager plus the saved runtime defaults in settings.json beside desktop.json.

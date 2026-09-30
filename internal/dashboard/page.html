@@ -536,7 +536,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{/* ---- Diagnostics: what is wrong with the appliance? ---- */}}
 {{define "settings"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>Settings</h1><p class="lede">Desktop preferences and saved runtime defaults. Saving here never restarts, reinstalls or changes the running runtime.</p></div>
+  <div><h1>Settings</h1><p class="lede">Desktop preferences, saved runtime defaults and the model and runtime manager. Nothing here restarts the running runtime unless you choose Restart.</p></div>
 </header>
 {{template "last" .Last}}
 {{with .Desktop}}
@@ -576,6 +576,82 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
   </form>
   <p class="note">Running runtime: <span class="mono">{{with $.Rt.Model}}{{.}}{{else}}-{{end}}</span>. Defaults do not change it. Explicit command-line flags and environment inputs always take precedence. No secrets are stored.</p>
+</section>
+{{end}}
+{{with .Models}}
+<section class="region" id="settings-models" aria-labelledby="sm-h">
+  <div class="region-h"><h2 id="sm-h">Models &amp; runtimes</h2><span class="sub">catalog-pinned identities under HACHIDORI_HOME</span></div>
+  {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+  {{if .RestartRequired}}
+  <div class="last tone-bad" role="status" id="restart-required">
+    <strong>RESTART REQUIRED</strong><span class="msg-text">The active runtime/model changed. The running worker still serves what it started with; nothing restarts automatically.</span>
+    <form method="post" action="/settings/models/restart" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><button type="submit" class="btn primary">Restart runtime</button></form>
+  </div>
+  {{end}}
+  {{with .Busy}}
+  <div class="last" role="status" id="models-busy"><strong>RUNNING</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}{{with .Phase}} · phase: {{.}}{{end}}</span></div>
+  <script>setTimeout(function () { location.reload(); }, 3000);</script>
+  {{end}}
+  {{with .Last}}
+  <div class="last {{if .Failure}}tone-bad{{else}}tone-ok{{end}}" role="status" id="models-last"><strong>{{if .Failure}}FAILED{{else}}DONE{{end}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}{{with .Failure}} · {{.}}{{end}}</span></div>
+  {{end}}
+  {{with .Inventory.ActiveErr}}<p class="bad-t">Activation record: {{.}}</p>{{end}}
+
+  <h3>Runtimes</h3>
+  <div class="table-wrap"><table class="data" id="runtime-inventory">
+    <thead><tr><th>Device</th><th>Identity</th><th>Immutable facts</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>{{range .Runtimes}}
+      <tr{{if .Active}} aria-current="true"{{end}}>
+        <td class="strong">{{.Device}}</td>
+        <td class="mono">{{.ID}}</td>
+        <td class="mono">{{.Platform}} · python {{.Python}} · {{.Provider}} · torch {{.Torch}}</td>
+        <td>{{if not .Supported}}<span class="badge tone-bad">unsupported</span>{{else if .Active}}<span class="badge tone-ok">active</span>{{else if .Materialized}}<span class="badge">materialized</span>{{else}}<span class="badge">not materialized</span>{{end}}
+          {{if .Verified}}<span class="tag">verified</span>{{end}}
+          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
+          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="nowrap">{{if .Materialized}}
+          <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Verify</button></form>
+          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" onsubmit="return confirm('Remove this runtime from HACHIDORI_HOME?')"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">Remove</button></form>{{end}}
+        {{end}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table></div>
+
+  <h3>Models</h3>
+  <div class="table-wrap"><table class="data" id="model-inventory">
+    <thead><tr><th>Model</th><th>Immutable facts</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>{{range .Models}}
+      <tr{{if .Active}} aria-current="true"{{end}}>
+        <td class="strong">{{.ID}}{{with .Description}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="mono">{{.Provider}} · {{.Repo}}@{{.Revision}} · {{.Files}} pinned file(s)</td>
+        <td>{{if .Active}}<span class="badge tone-ok">active</span>{{else if .Materialized}}<span class="badge">materialized</span>{{else}}<span class="badge">not materialized</span>{{end}}
+          {{if .Verified}}<span class="tag">verified</span>{{end}}
+          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
+          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="nowrap">{{if .Materialized}}
+          <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Verify</button></form>
+          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" onsubmit="return confirm('Remove this model from HACHIDORI_HOME?')"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">Remove</button></form>{{end}}
+        {{end}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table></div>
+
+  <form method="post" class="region" id="models-choice">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <input type="hidden" name="return" value="settings">
+    <div class="fields">
+      <label class="field">Device
+        <select name="device">{{range .Devices}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+      <label class="field">Model
+        <select name="model">{{range .ModelIDs}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn" formaction="/settings/models/materialize">Materialize</button>
+      <button type="submit" class="btn" formaction="/settings/models/repair">Repair</button>
+      <button type="submit" class="btn primary" formaction="/settings/models/activate">Activate</button>
+    </div>
+  </form>
+  <p class="note">Only the catalog's pinned runtime and model identities are listed. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker. A requested device is never replaced by another. The active runtime and model cannot be removed.</p>
 </section>
 {{end}}
 {{template "close" .Chrome}}{{end}}

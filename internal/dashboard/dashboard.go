@@ -32,6 +32,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
+	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 )
 
@@ -65,6 +66,64 @@ type Config struct {
 	// defaults (the typed settings authority, internal/settings). Saving
 	// them never touches the running runtime.
 	Settings Settings
+	// Models, when set, adds the Settings workspace's Models & Runtimes
+	// manager. It is the application's typed maintenance authority
+	// (app.Controller over internal/setup); the dashboard never inspects or
+	// deletes directories itself. It is nil for serve/dashboard.
+	Models Models
+}
+
+// Models is the explicit model/runtime maintenance authority. Every method
+// is an operator action; none restarts the worker except Restart.
+type Models interface {
+	State() ModelsState
+	Verify(kind, id string) error
+	Materialize(device, model string) error // asynchronous: returns once accepted
+	Repair(device, model string) error      // asynchronous
+	Activate(device, model string) error    // activation only; the worker keeps running as it is
+	Remove(kind, id string) error
+	Restart() error // the application's restart, which rebinds the active runtime
+}
+
+// ModelsState is the maintenance authority's view at one instant.
+type ModelsState struct {
+	Inventory       setup.Inventory
+	Err             string   // the inventory could not be read
+	Busy            *ModelOp // an action in flight
+	Last            *ModelOp // the most recently finished action
+	RestartRequired bool     // the running worker predates the current activation
+}
+
+// ModelOp describes one maintenance action.
+type ModelOp struct {
+	Kind, Device, Model, Target, Phase string
+	Failure                            string // empty when it succeeded
+}
+
+// ModelsView is the Models & Runtimes view model.
+type ModelsView struct {
+	ModelsState
+	Devices  []string
+	ModelIDs []string
+	Runtimes []RuntimeRow
+	Models   []ModelRow
+}
+
+// RuntimeRow and ModelRow add the last explicit verification to an entry.
+type RuntimeRow struct {
+	setup.RuntimeEntry
+	Check string
+}
+
+type ModelRow struct {
+	setup.ModelEntry
+	Check string
+}
+
+type checkResult struct {
+	OK   bool
+	Msg  string
+	Time time.Time
 }
 
 // Settings reads and stores the saved runtime defaults. The dashboard only
@@ -105,6 +164,8 @@ type Dashboard struct {
 	mu     sync.Mutex
 	last   *Action
 	doctor DoctorRun
+
+	checks map[string]checkResult // last explicit Verify per "<kind> <id>"; guarded by mu
 
 	exp     experiments
 	errs    explorer
@@ -207,8 +268,11 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /errors/open", d.errorsOpen)
 	d.mux.HandleFunc("POST /errors/use-experiment", d.errorsUseExperiment)
 	d.mux.HandleFunc("POST /errors/export", d.errorsExport)
-	if cfg.Settings != nil || cfg.Desktop != nil {
+	if cfg.Settings != nil || cfg.Desktop != nil || cfg.Models != nil {
 		d.mux.HandleFunc("GET /settings", d.settingsPage)
+	}
+	if cfg.Models != nil {
+		d.mux.HandleFunc("POST /settings/models/{op}", d.modelsOp)
 	}
 	if cfg.Settings != nil {
 		d.mux.HandleFunc("POST /settings/defaults", d.settingsDefaults)
@@ -294,6 +358,7 @@ type view struct {
 	Form    tunnel.Spec
 	Desktop *DesktopView  // nil unless the desktop shell is hosting the dashboard
 	Set     *SettingsView // nil unless the settings authority is configured
+	Models  *ModelsView   // nil unless the model/runtime manager is configured
 }
 
 // statusView is the part of the runtime view every page's shell needs.
@@ -301,7 +366,7 @@ func (d *Dashboard) statusView(title, nav string) view {
 	d.mu.Lock()
 	last, doc := d.last, d.doctor
 	d.mu.Unlock()
-	v := view{Chrome: Chrome{Title: title, Nav: nav, APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.Settings != nil || d.cfg.Desktop != nil},
+	v := view{Chrome: Chrome{Title: title, Nav: nav, APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.Settings != nil || d.cfg.Desktop != nil || d.cfg.Models != nil},
 		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
 	v.Rt = shellOf(v)
 	return v
@@ -398,6 +463,12 @@ func (d *Dashboard) runtimeOp(w http.ResponseWriter, r *http.Request) {
 		lc.Stop()
 		d.done(w, r, "stop runtime", nil, "worker stopped; the API stays bound and reports not ready")
 	case "restart":
+		if m := d.cfg.Models; m != nil && m.State().RestartRequired {
+			// The activation changed: only the application's restart
+			// rebinds the worker to it.
+			d.done(w, r, "restart runtime", m.Restart(), "runtime restarting on the active runtime/model")
+			return
+		}
 		lc.Restart()
 		d.done(w, r, "restart runtime", nil, "worker restarting")
 	default:
@@ -426,7 +497,77 @@ func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
 		sv.Device, sv.Model = def.Device, def.Model
 		v.Set = sv
 	}
+	if d.cfg.Models != nil {
+		v.Models = d.modelsView()
+	}
 	d.renderView(w, "settings", v)
+}
+
+func (d *Dashboard) modelsView() *ModelsView {
+	st := d.cfg.Models.State()
+	mv := &ModelsView{ModelsState: st, Devices: setup.Devices}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	check := func(kind, id string) string {
+		c, ok := d.checks[kind+" "+id]
+		switch {
+		case !ok:
+			return ""
+		case c.OK:
+			return "verified " + when(c.Time)
+		}
+		return "failed " + when(c.Time) + ": " + c.Msg
+	}
+	for _, r := range st.Inventory.Runtimes {
+		mv.Runtimes = append(mv.Runtimes, RuntimeRow{r, check(setup.KindRuntime, r.ID)})
+	}
+	for _, m := range st.Inventory.Models {
+		mv.ModelIDs = append(mv.ModelIDs, m.ID)
+		mv.Models = append(mv.Models, ModelRow{m, check(setup.KindModel, m.ID)})
+	}
+	return mv
+}
+
+// modelsOp forwards one explicit Models & Runtimes action to the maintenance
+// authority. The form names only catalog identities; the authority refuses
+// anything else, the active artifacts and any path outside HACHIDORI_HOME.
+func (d *Dashboard) modelsOp(w http.ResponseWriter, r *http.Request) {
+	m := d.cfg.Models
+	device, model := strings.TrimSpace(r.PostFormValue("device")), strings.TrimSpace(r.PostFormValue("model"))
+	kind, id := strings.TrimSpace(r.PostFormValue("kind")), strings.TrimSpace(r.PostFormValue("id"))
+	switch op := r.PathValue("op"); op {
+	case "verify":
+		err := m.Verify(kind, id)
+		c := checkResult{OK: err == nil, Time: time.Now()}
+		if err != nil {
+			c.Msg = err.Error()
+		}
+		d.mu.Lock()
+		if d.checks == nil {
+			d.checks = map[string]checkResult{}
+		}
+		d.checks[kind+" "+id] = c
+		d.mu.Unlock()
+		d.done(w, r, "verify "+kind+" "+id, err, "verified against its pinned identity")
+	case "materialize":
+		d.done(w, r, "materialize", m.Materialize(device, model), "started; it is not activated until you activate it")
+	case "repair":
+		d.done(w, r, "repair", m.Repair(device, model), "started; the active state is unchanged unless the rebuild succeeds")
+	case "activate":
+		d.done(w, r, "activate", m.Activate(device, model), "activated; a running worker keeps its current runtime until you restart it")
+	case "remove":
+		err := m.Remove(kind, id)
+		if err == nil {
+			d.mu.Lock()
+			delete(d.checks, kind+" "+id)
+			d.mu.Unlock()
+		}
+		d.done(w, r, "remove "+kind+" "+id, err, "removed")
+	case "restart":
+		d.done(w, r, "restart runtime", m.Restart(), "runtime restarting on the active runtime/model")
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 // settingsDefaults stores the runtime defaults. It only stores: the running

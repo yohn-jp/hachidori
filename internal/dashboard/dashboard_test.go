@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/server"
+	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -569,5 +571,183 @@ func TestGPUMemoryBreakdown(t *testing.T) {
 	}
 	if gpuMem(nil) != nil || gpuMem(map[string]any{"memory_total": 0.0, "memory_free": 0.0}) != nil {
 		t.Fatal("breakdown without device stats")
+	}
+}
+
+type fakeModels struct {
+	mu      sync.Mutex
+	state   ModelsState
+	calls   []string
+	err     error
+	restart int
+}
+
+func (f *fakeModels) rec(s string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, s)
+	return f.err
+}
+func (f *fakeModels) State() ModelsState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state
+}
+func (f *fakeModels) Verify(kind, id string) error { return f.rec("verify " + kind + " " + id) }
+func (f *fakeModels) Materialize(dev, model string) error {
+	return f.rec("materialize " + dev + " " + model)
+}
+func (f *fakeModels) Repair(dev, model string) error   { return f.rec("repair " + dev + " " + model) }
+func (f *fakeModels) Activate(dev, model string) error { return f.rec("activate " + dev + " " + model) }
+func (f *fakeModels) Remove(kind, id string) error     { return f.rec("remove " + kind + " " + id) }
+func (f *fakeModels) Restart() error                   { f.restart++; return f.rec("restart") }
+
+func modelsInventory() setup.Inventory {
+	return setup.Inventory{
+		Runtimes: []setup.RuntimeEntry{
+			{ID: "cu128-aaaa", Device: "cuda", Platform: "windows/amd64", Python: "3.12.11", Provider: "laya==0.3.21", Torch: "2.11.0+cu128", Supported: true, Materialized: true, Active: true, Verified: true},
+			{ID: "cpu-bbbb", Device: "cpu", Platform: "windows/amd64", Python: "3.12.11", Provider: "laya==0.3.21", Torch: "2.11.0+cpu", Supported: true, Materialized: true},
+		},
+		Models: []setup.ModelEntry{
+			{ID: "laya-base", Provider: "laya", Repo: "convaiinnovations/laya", Revision: "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851", Files: 5, Materialized: true, Active: true},
+			{ID: "laya-other", Provider: "laya", Repo: "example/other", Revision: "1234567890abcdef1234567890abcdef12345678", Files: 1, Materialized: true},
+			{ID: "laya-absent", Provider: "laya", Repo: "example/absent", Revision: "fedcba0987654321fedcba0987654321fedcba09", Files: 1},
+		},
+	}
+}
+
+func withModels(e *env, m Models) {
+	cfg := e.d.cfg
+	cfg.Models = m
+	e.d = New(cfg)
+}
+
+// The manager renders the immutable catalog facts and the typed state,
+// offers removal only for materialized unused artifacts, and exists only
+// when the maintenance authority is hosted.
+func TestModelsManagerView(t *testing.T) {
+	e := newEnv(t)
+	if rec := e.post(t, "/settings/models/activate", url.Values{"device": {"cpu"}}); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("models route without authority: %d", rec.Code)
+	}
+	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory(), RestartRequired: true,
+		Busy: &ModelOp{Kind: "materialize", Device: "cpu", Model: "laya-other", Phase: "model"},
+		Last: &ModelOp{Kind: "verify", Target: "model laya-base", Failure: "sha256 mismatch"}}}
+	withModels(e, fm)
+	body := e.get(t, "/settings").Body.String()
+	for _, want := range []string{`id="settings-models"`, "cu128-aaaa", "windows/amd64 · python 3.12.11 · laya",
+		"convaiinnovations/laya@55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851", "5 pinned file(s)", `<span class="badge tone-ok">active</span>`,
+		`<span class="badge">not materialized</span>`, `id="restart-required"`, `action="/settings/models/restart"`,
+		`id="models-busy"`, "phase: model", `id="models-last"`, "sha256 mismatch",
+		`formaction="/settings/models/materialize"`, `formaction="/settings/models/repair"`, `formaction="/settings/models/activate"`,
+		`<option value="cuda">`, `<option value="laya-absent">`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("manager lacks %q", want)
+		}
+	}
+	// Active artifacts have no Remove action; unused materialized ones do.
+	if n := strings.Count(body, `action="/settings/models/remove"`); n != 2 {
+		t.Errorf("%d remove forms, want 2 (unused runtime, unused model)", n)
+	}
+	for _, bad := range []string{`name="id" value="cu128-aaaa"><button type="submit" class="btn danger"`, `name="id" value="laya-base"><button type="submit" class="btn danger"`, `name="id" value="laya-absent"><button type="submit" class="btn danger"`} {
+		if strings.Contains(body, bad) {
+			t.Errorf("Remove offered for %q", bad)
+		}
+	}
+	if strings.Count(body, `id="settings-models"`) != 1 || !strings.Contains(navRe.FindString(body), "/settings") {
+		t.Error("navigation/section mismatch")
+	}
+}
+
+// Every form action is forwarded to the authority with explicit arguments,
+// returns to Settings, shows refusals, and needs the form token.
+func TestModelsActionsForwarded(t *testing.T) {
+	e := newEnv(t)
+	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory()}}
+	withModels(e, fm)
+	for _, c := range []struct {
+		op   string
+		form url.Values
+		want string
+	}{
+		{"verify", url.Values{"kind": {"model"}, "id": {"laya-base"}}, "verify model laya-base"},
+		{"materialize", url.Values{"device": {"cuda"}, "model": {"laya-base"}}, "materialize cuda laya-base"},
+		{"repair", url.Values{"device": {"cpu"}, "model": {"laya-base"}}, "repair cpu laya-base"},
+		{"activate", url.Values{"device": {"cuda"}, "model": {"laya-other"}}, "activate cuda laya-other"},
+		{"remove", url.Values{"kind": {"runtime"}, "id": {"cpu-bbbb"}}, "remove runtime cpu-bbbb"},
+		{"restart", url.Values{}, "restart"},
+	} {
+		c.form.Set("return", "settings")
+		rec := e.post(t, "/settings/models/"+c.op, c.form)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings" {
+			t.Fatalf("%s: %d %s", c.op, rec.Code, rec.Header().Get("Location"))
+		}
+		if a := e.lastAction(t); !a.OK {
+			t.Fatalf("%s: %+v", c.op, a)
+		}
+		if got := fm.calls[len(fm.calls)-1]; got != c.want {
+			t.Fatalf("%s forwarded %q, want %q", c.op, got, c.want)
+		}
+	}
+	if rec := e.post(t, "/settings/models/format-disk", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown op: %d", rec.Code)
+	}
+	if rec := e.post(t, "/settings/models/remove", url.Values{"token": {"forged"}, "kind": {"model"}, "id": {"laya-other"}}); rec.Code != http.StatusForbidden {
+		t.Fatalf("forged token: %d", rec.Code)
+	}
+	n := len(fm.calls)
+	fm.err = errors.New("the active runtime/model cannot be removed")
+	e.post(t, "/settings/models/remove", url.Values{"kind": {"model"}, "id": {"laya-base"}})
+	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "cannot be removed") || len(fm.calls) != n+1 {
+		t.Fatalf("refusal not shown: %+v", a)
+	}
+	// Activation forwarded no lifecycle call: the worker is untouched.
+	e.rt.mu.Lock()
+	calls := append([]string(nil), e.rt.calls...)
+	e.rt.mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("lifecycle touched: %v", calls)
+	}
+}
+
+// The last explicit verification is shown beside the artifact.
+func TestModelsVerifyResultShown(t *testing.T) {
+	e := newEnv(t)
+	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory()}}
+	withModels(e, fm)
+	fm.err = errors.New("config.json: sha256 bad")
+	e.post(t, "/settings/models/verify", url.Values{"kind": {"model"}, "id": {"laya-other"}})
+	body := e.get(t, "/settings").Body.String()
+	if !strings.Contains(body, "failed") || !strings.Contains(body, "config.json: sha256 bad") {
+		t.Error("failed verification not shown")
+	}
+	fm.err = nil
+	e.post(t, "/settings/models/verify", url.Values{"kind": {"model"}, "id": {"laya-other"}})
+	if !strings.Contains(e.get(t, "/settings").Body.String(), "verified 20") {
+		t.Error("verification result not shown")
+	}
+}
+
+// With a restart required, the Runtime page's Restart goes through the
+// application's restart (which rebinds the activation); otherwise it stays
+// the worker lifecycle's.
+func TestRuntimeRestartRoutesThroughApplicationWhenRequired(t *testing.T) {
+	e := newEnv(t)
+	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory()}}
+	withModels(e, fm)
+	e.post(t, "/runtime/restart", nil)
+	e.rt.mu.Lock()
+	lc := append([]string(nil), e.rt.calls...)
+	e.rt.mu.Unlock()
+	if len(lc) != 1 || fm.restart != 0 {
+		t.Fatalf("plain restart: lifecycle=%v app=%d", lc, fm.restart)
+	}
+	fm.state.RestartRequired = true
+	e.post(t, "/runtime/restart", nil)
+	e.rt.mu.Lock()
+	lc = append([]string(nil), e.rt.calls...)
+	e.rt.mu.Unlock()
+	if len(lc) != 1 || fm.restart != 1 {
+		t.Fatalf("restart after activation: lifecycle=%v app=%d", lc, fm.restart)
 	}
 }
