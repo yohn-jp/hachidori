@@ -189,10 +189,12 @@ func TestRenderedValuesAreEscaped(t *testing.T) {
 	e.post(t, "/doctor", nil)
 	waitDoctor(t, e)
 	e.post(t, "/tunnel/connect", url.Values{"destination": {xss}, "remote_bind": {"127.0.0.1"}, "remote_port": {"1"}, "local_port": {"1"}})
-	body := e.get(t, "/").Body.String()
-	if strings.Contains(body, xss) || strings.Contains(body, "<b>") {
-		t.Fatal("unescaped runtime/error value in page")
+	for _, p := range []string{"/", "/diagnostics", "/live"} {
+		if b := e.get(t, p).Body.String(); strings.Contains(b, xss) || strings.Contains(b, "<b>") {
+			t.Fatalf("unescaped runtime/error value in %s", p)
+		}
 	}
+	body := e.get(t, "/diagnostics").Body.String()
 	// worker last failure + doctor output; the rejected destination is quoted in the action message
 	if n := strings.Count(body, "&lt;script&gt;alert(&#34;x&#34;)&lt;/script&gt;"); n < 2 || !strings.Contains(body, "invalid ssh destination") {
 		t.Fatalf("escaped values missing (%d):\n%s", n, body)
@@ -309,7 +311,7 @@ func TestTunnelConnectDisconnectAndPrefs(t *testing.T) {
 		t.Fatal("page does not carry the form token")
 	}
 	// Form defaults: loopback bind, the API port.
-	body := e.get(t, "/").Body.String()
+	body := e.get(t, "/diagnostics").Body.String()
 	if !strings.Contains(body, `name="remote_bind" value="127.0.0.1"`) || !strings.Contains(body, `name="local_port" value="7843"`) {
 		t.Fatal("form defaults missing")
 	}
@@ -334,10 +336,17 @@ func TestTunnelConnectDisconnectAndPrefs(t *testing.T) {
 	if a := e.lastAction(t); !a.OK || !strings.Contains(a.Message, "nothing started") || e.tun.Status().PID != st.PID {
 		t.Fatalf("duplicate connect: %+v", a)
 	}
-	page := e.get(t, "/").Body.String()
+	page := e.get(t, "/diagnostics").Body.String()
 	for _, want := range []string{"HACHIDORI_ENDPOINT=http://127.0.0.1:7843", fmt.Sprint(st.PID), "dev@nixos"} {
 		if !strings.Contains(page, want) {
-			t.Errorf("page lacks %q", want)
+			t.Errorf("diagnostics lacks %q", want)
+		}
+	}
+	// Runtime keeps the compact transport state: destination and caller endpoint.
+	root := e.get(t, "/").Body.String()
+	for _, want := range []string{"HACHIDORI_ENDPOINT=http://127.0.0.1:7843", "dev@nixos", `href="/diagnostics#transport"`} {
+		if !strings.Contains(root, want) {
+			t.Errorf("runtime lacks %q", want)
 		}
 	}
 
@@ -422,15 +431,17 @@ func assertOnlyPrefsWritten(t *testing.T, home string) {
 
 var formRe = regexp.MustCompile(`(?s)<form\b([^>]*)>(.*?)</form>`)
 
-// Every state-changing control is a same-origin POST form carrying the form
-// token, and the page exposes exactly the existing action routes.
-func TestPageFormsAreWiredToActionRoutes(t *testing.T) {
-	e := newEnv(t)
-	body := e.get(t, "/").Body.String()
+// postForms returns a page's state-changing forms by action, checking that
+// each is a POST carrying the form token.
+func postForms(t *testing.T, e *env, body string) map[string]string {
+	t.Helper()
 	token := `name="token" value="` + e.d.token + `"`
 	got := map[string]string{}
 	for _, m := range formRe.FindAllStringSubmatch(body, -1) {
 		action := regexp.MustCompile(`action="([^"]+)"`).FindStringSubmatch(m[1])
+		if strings.Contains(m[1], `method="get"`) {
+			continue // read-only analysis controls
+		}
 		if action == nil || !strings.Contains(m[1], `method="post"`) {
 			t.Errorf("form without POST action: %s", m[1])
 			continue
@@ -440,13 +451,36 @@ func TestPageFormsAreWiredToActionRoutes(t *testing.T) {
 		}
 		got[action[1]] = m[1] + m[2]
 	}
-	want := []string{"/runtime/start", "/runtime/stop", "/runtime/restart", "/doctor", "/tunnel/connect", "/tunnel/disconnect"}
-	if len(got) != len(want) {
-		t.Errorf("forms %v, want %v", got, want)
+	return got
+}
+
+// Every state-changing control is a same-origin POST form carrying the form
+// token. Runtime exposes the lifecycle actions; Diagnostics exposes doctor
+// and the tunnel launcher.
+func TestPageFormsAreWiredToActionRoutes(t *testing.T) {
+	e := newEnv(t)
+	root := postForms(t, e, e.get(t, "/").Body.String())
+	body := e.get(t, "/diagnostics").Body.String()
+	diag := postForms(t, e, body)
+	got := map[string]string{}
+	for k, v := range root {
+		got[k] = v
 	}
-	for _, a := range want {
-		if _, ok := got[a]; !ok {
-			t.Errorf("no form for %s", a)
+	for k, v := range diag {
+		got[k] = v
+	}
+	for page, want := range map[string]struct {
+		got  map[string]string
+		want []string
+	}{"/": {root, []string{"/runtime/start", "/runtime/stop", "/runtime/restart"}},
+		"/diagnostics": {diag, []string{"/doctor", "/tunnel/connect", "/tunnel/disconnect"}}} {
+		if len(want.got) != len(want.want) {
+			t.Errorf("%s forms %v, want %v", page, want.got, want.want)
+		}
+		for _, a := range want.want {
+			if _, ok := want.got[a]; !ok {
+				t.Errorf("%s: no form for %s", page, a)
+			}
 		}
 	}
 	// The tunnel form keeps the existing field names; its submit control is
@@ -465,16 +499,17 @@ func TestPageFormsAreWiredToActionRoutes(t *testing.T) {
 	e.d.mu.Lock()
 	e.d.doctor.Running = true
 	e.d.mu.Unlock()
-	if !regexp.MustCompile(`(?s)action="/doctor".*?<button[^>]*disabled`).MatchString(e.get(t, "/").Body.String()) {
+	if !regexp.MustCompile(`(?s)action="/doctor".*?<button[^>]*disabled`).MatchString(e.get(t, "/diagnostics").Body.String()) {
 		t.Error("doctor button not disabled while running")
 	}
 }
 
-// The live fragment refreshes every status slot of the page independently
-// and never carries the tunnel form, so refreshes cannot clobber its input.
+// The live fragment refreshes every status slot of the Runtime and
+// Diagnostics workspaces independently and never carries the tunnel form, so
+// refreshes cannot clobber its input.
 func TestLiveFragmentRefreshesPageSlots(t *testing.T) {
 	e := newEnv(t)
-	page, live := e.get(t, "/").Body.String(), e.get(t, "/live").Body.String()
+	page, live := e.get(t, "/").Body.String()+e.get(t, "/diagnostics").Body.String(), e.get(t, "/live").Body.String()
 	slotRe := regexp.MustCompile(`data-live="([a-z]+)"`)
 	slots := slotRe.FindAllStringSubmatch(live, -1)
 	if len(slots) < 2 {
@@ -508,7 +543,7 @@ func TestAttentionSummarizesOperationalProblems(t *testing.T) {
 	e.rt.mu.Lock()
 	e.rt.snap.State, e.rt.snap.Ready = worker.StateStopped, false
 	e.rt.mu.Unlock()
-	v := e.d.view()
+	v := e.d.view("Runtime", "runtime")
 	a := alerts(v)
 	if len(a) < 2 || a[0].Title != "Runtime is not running" || a[0].Level != "bad" || a[1].Level != "bad" {
 		t.Fatalf("alerts %+v", a)
@@ -516,7 +551,7 @@ func TestAttentionSummarizesOperationalProblems(t *testing.T) {
 	e.rt.mu.Lock()
 	e.rt.run, e.rt.snap.State, e.rt.snap.Ready, e.rt.snap.LastFailure = true, worker.StateReady, true, nil
 	e.rt.mu.Unlock()
-	if a := alerts(e.d.view()); len(a) != 0 {
+	if a := alerts(e.d.view("Runtime", "runtime")); len(a) != 0 {
 		t.Fatalf("healthy runtime flagged: %+v", a)
 	}
 	if !strings.Contains(e.get(t, "/live").Body.String(), "No operator attention required") {

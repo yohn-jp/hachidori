@@ -1,31 +1,32 @@
-{{define "experiments"}}{{template "head" .Chrome}}
-<body>
-{{template "topbar" .Chrome}}
-<main>
-<section class="panel" aria-labelledby="exp-h">
-  <div class="panel-h">
-    <h2 id="exp-h">Experiment Runner<span class="sub">caller-side evaluation (eval.RunEvidence) against the resident runtime</span></h2>
-    <span class="faint mono">{{.Endpoint}}</span>
-  </div>
-  <p class="cmd">The dataset and Question Definitions are read here, on this machine, from the local paths you enter; expected labels never leave this page's process.
-  Only each case's state and compiled questions are sent to <code>POST /v1/decide</code>. One experiment runs at a time; nothing is stored except the report files you export.</p>
-  {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
-  {{with .Msg}}<p class="msg ok" role="status">{{.}}</p>{{end}}
-  <form method="post" action="/experiments/run" class="stack" id="exp-form">
+{{/* ---- Experiments: how well does it perform? ---- */}}
+{{define "experiments"}}{{template "open" .Chrome}}
+<header class="ws-head">
+  <div><h1>Experiments</h1><p class="lede">Evaluate the resident model on a labelled dataset. Evaluation runs caller-side in this process; expected labels never leave it.</p></div>
+  <span class="ws-meta mono">{{.Endpoint}}</span>
+</header>
+{{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+{{with .Msg}}<p class="msg ok" role="status">{{.}}</p>{{end}}
+
+<div class="slot" data-live="experiment">{{template "experiment" .}}</div>
+
+<section class="region" aria-labelledby="setup-h">
+  <div class="region-h"><h2 id="setup-h">{{if .Exp}}New experiment{{else}}Set up an experiment{{end}}</h2><span class="sub">one experiment at a time · nothing is stored except the reports you export</span></div>
+  <form method="post" action="/experiments/run" class="surface" id="exp-form">
     <input type="hidden" name="token" value="{{.Token}}">
     <label class="field">Dataset (JSONL, absolute path)<input name="dataset" value="{{.Form.Dataset}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\dataset.jsonl" required></label>
     <label class="field">Question Definition files or directories (optional, absolute paths, one per line)<textarea name="definitions" rows="2" spellcheck="false">{{.Form.Definitions}}</textarea></label>
-    <div class="row">
+    <div class="fields">
       <label class="field">Warmup requests (excluded from latency)<input name="warmup" value="{{.Form.Warmup}}" inputmode="numeric"></label>
       <label class="field">Passes (accuracy uses pass 1)<input name="passes" value="{{.Form.Passes}}" inputmode="numeric"></label>
     </div>
     <div class="btn-row">
-      <button type="submit" class="btn primary"{{with .Exp}}{{if eq .State "running"}} disabled{{end}}{{end}}>Run experiment</button>
+      <button type="submit" data-run class="btn{{if not (and .Exp .Exp.Report)}} primary{{end}}"{{with .Exp}}{{if eq .State "running"}} disabled{{end}}{{end}}>Run experiment</button>
       <button type="submit" class="btn" formaction="/experiments/preflight">Preflight only</button>
     </div>
+    <p class="note">The dataset and definitions are read on this machine from the paths you enter. Only each case's state and compiled questions are sent to <code>POST /v1/decide</code>.</p>
   </form>
   {{with .Pre}}
-  <dl class="kv" style="margin-top:1rem" aria-label="preflight">
+  <dl class="kv" aria-label="preflight">
     <dt>dataset</dt><dd>{{.Input.Dataset}}</dd>
     <dt>dataset sha256</dt><dd>{{.DatasetSHA256}}</dd>
     <dt>cases</dt><dd>{{.Cases}}</dd>
@@ -35,13 +36,8 @@
   </dl>
   {{end}}
 </section>
-
-<div data-live="experiment">{{template "experiment" .}}</div>
-
-<footer class="foot">Host-local operator page · evaluation runs caller-side in this process through internal/eval · reports are exported only to files you name.</footer>
-</main>
 <script>
-// While an experiment runs, refresh only its status slot.
+// While an experiment runs, refresh only its slot.
 (function () {
   function running() { return !!document.querySelector("[data-running]"); }
   function tick() {
@@ -52,96 +48,105 @@
         var dst = document.querySelector('[data-live="experiment"]');
         if (src && dst) dst.innerHTML = src.innerHTML;
         if (!running()) {
-          var b = document.querySelector('#exp-form button.primary');
-          if (b) b.disabled = false;
+          var b = document.querySelector("#exp-form button[data-run]");
+          if (b) { b.disabled = false; b.classList.remove("primary"); }
         }
       }).catch(function () {});
   }
   setInterval(tick, 1500);
 })();
 </script>
-</body>
-</html>
-{{end}}
+{{template "close" .Chrome}}{{end}}
 
 {{define "experiment-live"}}<div data-live="experiment">{{template "experiment" .}}</div>{{end}}
 
 {{define "experiment"}}{{with .Exp}}
-<section class="panel" aria-labelledby="run-h"{{if eq .State "running"}} data-running="1"{{end}}>
-  <div class="panel-h">
-    <h2 id="run-h">Experiment #{{.Seq}}<span class="sub mono">{{.Pre.Input.Dataset}}</span></h2>
-    <span class="pill {{if eq .State "succeeded"}}ok{{else if eq .State "running"}}warn{{else}}bad{{end}}">{{.State}}</span>
+<section class="run {{if eq .State "succeeded"}}tone-ok{{else if eq .State "running"}}tone-active{{else}}tone-bad{{end}}" aria-labelledby="run-h"{{if eq .State "running"}} data-running="1"{{end}}>
+  <div class="run-h">
+    <div><h2 id="run-h">Experiment #{{.Seq}}</h2><p class="sub mono">{{.Pre.Input.Dataset}}</p></div>
+    <p class="state-word compact"><span class="dot"></span>{{.State}}</p>
   </div>
-  <div class="meter" style="margin-top:0">
-    <div class="meter-h"><span>Requests</span><strong>{{.Done}} / {{.Pre.Requests}}</strong></div>
-    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="{{.Pre.Requests}}" aria-valuenow="{{.Done}}"><span class="q" style="width:{{printf "%.1f" .Percent}}%"></span></div>
+  <div>
+    <div class="progress-figures"><span class="big">{{.Done}} / {{.Pre.Requests}}</span><span class="muted">requests</span><span class="faint num">{{printf "%.0f" .Percent}}%</span></div>
+    <div class="bar progress" role="progressbar" aria-label="requests completed" aria-valuemin="0" aria-valuemax="{{.Pre.Requests}}" aria-valuenow="{{.Done}}"><span style="width:{{printf "%.1f" .Percent}}%"></span></div>
+    <p class="note">started {{when .Started}}{{if not .Finished.IsZero}} · finished {{when .Finished}}{{end}}</p>
   </div>
-  <p class="meta mono">started {{when .Started}}{{if not .Finished.IsZero}} · finished {{when .Finished}}{{end}} · dataset sha256 {{.Pre.DatasetSHA256}}</p>
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
 
   {{with .Report}}
-  <dl class="stats" style="grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); margin-top:1rem" aria-label="summary">
-    <div class="stat"><dt>Cases</dt><dd>{{.Cases}}</dd></div>
-    <div class="stat"><dt>Observations</dt><dd>{{.Observations}}</dd></div>
-    <div class="stat"><dt>Request errors</dt><dd class="{{if .Errors}}bad-t{{end}}">{{len .Errors}}</dd></div>
-    <div class="stat"><dt>Accuracy</dt><dd>{{f4 .ChoiceAccuracy}}</dd></div>
-    <div class="stat"><dt>Mean confidence</dt><dd>{{f4 .MeanConfidence}}</dd></div>
-    <div class="stat"><dt>ECE (15 bins)</dt><dd>{{f4 .ECE}}</dd></div>
-    <div class="stat"><dt>Request p50 / p95</dt><dd>{{ms .RequestLatency.P50}}<small>/ {{ms .RequestLatency.P95}} · n={{.RequestLatency.N}}</small></dd></div>
-    <div class="stat"><dt>Inference p50 / p95</dt><dd>{{ms .ServerInference.P50}}<small>/ {{ms .ServerInference.P95}} · n={{.ServerInference.N}}</small></dd></div>
+  <dl class="metrics" aria-label="quality">
+    <div class="metric primary"><dt>Accuracy</dt><dd>{{f4 .ChoiceAccuracy}}</dd></div>
+    <div class="metric primary"><dt>ECE <small>15 bins</small></dt><dd>{{f4 .ECE}}</dd></div>
+    <div class="metric"><dt>Request p50 / p95</dt><dd>{{ms .RequestLatency.P50}}<small>/ {{ms .RequestLatency.P95}} · n={{.RequestLatency.N}}</small></dd></div>
+    <div class="metric"><dt>Inference p50 / p95</dt><dd>{{ms .ServerInference.P50}}<small>/ {{ms .ServerInference.P95}} · n={{.ServerInference.N}}</small></dd></div>
+    <div class="metric"><dt>Request errors</dt><dd class="{{if .Errors}}bad-t{{end}}">{{len .Errors}}</dd></div>
   </dl>
-
-  <h2 style="margin-top:1.2rem">Per question</h2>
-  <table class="data" aria-label="per-question statistics"><thead><tr><th>question</th><th class="num">n</th><th class="num">accuracy</th><th class="num">mean confidence</th><th class="num">ECE</th></tr></thead><tbody>
-  {{range perQ .PerQuestion}}<tr><td class="mono">{{.ID}}</td><td class="num">{{.N}}</td><td class="num">{{f4 .Accuracy}}</td><td class="num">{{f4 .MeanConfidence}}</td><td class="num">{{f4 .ECE}}</td></tr>{{end}}
-  </tbody></table>
-
-  <div class="env-grid" style="margin-top:1.2rem">
-    <div>
-      <h3>Evidence identity</h3>
-      <dl class="kv">
-        <dt>schema</dt><dd>{{.Schema}}</dd>
-        <dt>endpoint</dt><dd>{{.Endpoint}}</dd>
-        <dt>dataset</dt><dd>{{.Dataset}}</dd>
-        <dt>dataset sha256</dt><dd>{{.DatasetSHA256}}</dd>
-        <dt>started at</dt><dd>{{.StartedAt}}</dd>
-        <dt>warmup / passes</dt><dd>{{.WarmupRequests}} / {{.Passes}}</dd>
-        {{range .Definitions}}<dt>definition</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
-      </dl>
-    </div>
-    <div>
-      <h3>Served runtime</h3>
-      <dl class="kv">
-        <dt>consistent</dt><dd>{{if .ServedConsistent}}<span class="ok-t">yes</span>{{else}}<span class="bad-t">no</span>{{end}}</dd>
-        {{with .Served}}<dt>model</dt><dd>{{.Model}}</dd><dt>identity sha256</dt><dd>{{.Digest}}</dd><dt>worker pid / starts</dt><dd>{{.WorkerPID}} / {{.WorkerStarts}}</dd>{{end}}
-        {{with .ServedEnd}}<dt>identity at end</dt><dd>{{.Digest}}</dd>{{end}}
-      </dl>
-    </div>
-  </div>
-
-  {{with .Errors}}
-  <details class="sub" open><summary>Request errors ({{len .}})</summary>
-  <table class="data" aria-label="request errors"><thead><tr><th>phase</th><th>pass</th><th>case</th><th>question</th><th>class</th><th>message</th></tr></thead><tbody>
-  {{range .}}<tr><td>{{.Phase}}</td><td>{{if .Pass}}{{.Pass}}{{end}}</td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td class="mono">{{.Class}}</td><td>{{.Message}}</td></tr>{{end}}
-  </tbody></table></details>
-  {{end}}
+  <dl class="metrics secondary" aria-label="summary">
+    <div class="metric"><dt>Cases</dt><dd>{{.Cases}}</dd></div>
+    <div class="metric"><dt>Observations</dt><dd>{{.Observations}}</dd></div>
+    <div class="metric"><dt>Mean confidence</dt><dd>{{f4 .MeanConfidence}}</dd></div>
+  </dl>
   {{end}}
 
   {{if and .Report (ne .State "running")}}
-  <form method="post" action="/experiments/export" class="row" style="margin-top:1rem">
-    <input type="hidden" name="token" value="{{$.Token}}">
-    <input type="hidden" name="seq" value="{{.Seq}}">
-    <label class="field">Export {{.Report.Schema}} report to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Form.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\report.json"></label>
-    <div class="btn-row"><button type="submit" class="btn">Export report</button></div>
-  </form>
-  <form method="post" action="/errors/use-experiment" class="inline" style="margin-top:.6rem">
-    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="seq" value="{{.Seq}}">
-    <button type="submit" class="btn">Explore errors</button>
-  </form>
+  <div class="run-actions">
+    <form method="post" action="/errors/use-experiment" class="inline">
+      <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="seq" value="{{.Seq}}">
+      <button type="submit" class="btn primary">Investigate in Evidence</button>
+    </form>
+    <form method="post" action="/experiments/export" class="path-form">
+      <input type="hidden" name="token" value="{{$.Token}}">
+      <input type="hidden" name="seq" value="{{.Seq}}">
+      <label class="field">Export {{.Report.Schema}} report to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Form.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\report.json"></label>
+      <button type="submit" class="btn">Export report</button>
+    </form>
+  </div>
   {{range .Exported}}<p class="note mono">exported to {{.}}</p>{{end}}
-  <p class="cmd">Replay with <code>hachidori replay -dataset &lt;dataset&gt; [-questions &lt;definitions&gt;] &lt;report.json&gt;</code>.</p>
+  {{end}}
+
+  {{with .Report}}
+  <div class="region">
+    <h2>Per question</h2>
+    <div class="table-wrap"><table class="data" aria-label="per-question statistics"><thead><tr><th>question</th><th class="num">n</th><th class="num">accuracy</th><th class="num">mean confidence</th><th class="num">ECE</th></tr></thead><tbody>
+    {{range perQ .PerQuestion}}<tr><td class="mono">{{.ID}}</td><td class="num">{{.N}}</td><td class="num strong">{{f4 .Accuracy}}</td><td class="num">{{f4 .MeanConfidence}}</td><td class="num">{{f4 .ECE}}</td></tr>{{end}}
+    </tbody></table></div>
+  </div>
+
+  {{with .Errors}}
+  <details class="disclosure" open><summary>Request errors<span class="sub bad-t">{{len .}}</span></summary>
+  <div class="body table-wrap"><table class="data" aria-label="request errors"><thead><tr><th>phase</th><th>pass</th><th>case</th><th>question</th><th>class</th><th>message</th></tr></thead><tbody>
+  {{range .}}<tr><td>{{.Phase}}</td><td>{{if .Pass}}{{.Pass}}{{end}}</td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td class="mono">{{.Class}}</td><td>{{.Message}}</td></tr>{{end}}
+  </tbody></table></div></details>
+  {{end}}
+
+  <details class="disclosure" data-keep="evidence-identity"><summary>Evidence identity &amp; served runtime<span class="sub mono">{{.Schema}} · dataset {{short .DatasetSHA256}} · served {{if .ServedConsistent}}consistent{{else}}inconsistent{{end}}</span></summary>
+    <div class="body kv-grid">
+      <div>
+        <h3>Evidence identity</h3>
+        <dl class="kv">
+          <dt>schema</dt><dd>{{.Schema}}</dd>
+          <dt>endpoint</dt><dd>{{.Endpoint}}</dd>
+          <dt>dataset</dt><dd>{{.Dataset}}</dd>
+          <dt>dataset sha256</dt><dd>{{.DatasetSHA256}}</dd>
+          <dt>started at</dt><dd>{{.StartedAt}}</dd>
+          <dt>warmup / passes</dt><dd>{{.WarmupRequests}} / {{.Passes}}</dd>
+          {{range .Definitions}}<dt>definition</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
+        </dl>
+      </div>
+      <div>
+        <h3>Served runtime</h3>
+        <dl class="kv">
+          <dt>consistent</dt><dd>{{if .ServedConsistent}}<span class="ok-t">yes</span>{{else}}<span class="bad-t">no</span>{{end}}</dd>
+          {{with .Served}}<dt>model</dt><dd>{{.Model}}</dd><dt>identity sha256</dt><dd>{{.Digest}}</dd><dt>worker pid / starts</dt><dd>{{.WorkerPID}} / {{.WorkerStarts}}</dd>{{end}}
+          {{with .ServedEnd}}<dt>identity at end</dt><dd>{{.Digest}}</dd>{{end}}
+        </dl>
+      </div>
+      <div>
+        <h3>Replay</h3>
+        <p class="note">Replay an exported report with <code>hachidori replay -dataset &lt;dataset&gt; [-questions &lt;definitions&gt;] &lt;report.json&gt;</code>.</p>
+      </div>
+    </div>
+  </details>
   {{end}}
 </section>
-{{else}}
-<p class="muted">No experiment in this dashboard session.</p>
 {{end}}{{end}}

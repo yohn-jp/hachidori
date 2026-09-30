@@ -235,7 +235,7 @@ func (d *Dashboard) endpoint() *client.Client {
 }
 
 func (d *Dashboard) workbenchView() wbView {
-	return wbView{Chrome: Chrome{Title: "Question Workbench", Nav: "workbench", APIAddr: d.cfg.APIAddr},
+	return wbView{Chrome: d.chrome("Workbench", "workbench"),
 		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr + "/v1/decide"}
 }
 

@@ -1,138 +1,151 @@
-{{define "errors"}}{{template "head" .Chrome}}
-<body>
-{{template "topbar" .Chrome}}
-<main>
-<section class="panel" aria-labelledby="err-h">
-  <div class="panel-h">
-    <h2 id="err-h">Error Explorer<span class="sub">read-only analysis of one hachidori.evidence.v1 report</span></h2>
-    {{with .Src}}<span class="faint mono">{{.Origin}}</span>{{end}}
-  </div>
-  <p class="cmd">Opening a report never runs inference and never changes it. The high-confidence threshold below is an analysis control you choose;
-  it is not a policy, a pass/fail threshold or a statement that a model or question is safe to rely on.</p>
-  {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
-  {{with .Msg}}<p class="msg ok" role="status">{{.}}</p>{{end}}
-  <div class="row">
-    <form method="post" action="/errors/open" class="row" style="grid-column: span 2">
-      <input type="hidden" name="token" value="{{.Token}}">
-      <label class="field">Evidence report file (absolute path)<input name="path" value="{{.OpenPath}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\report.json"></label>
-      <div class="btn-row"><button type="submit" class="btn">Open report</button></div>
-    </form>
-    {{if .ExpSeq}}<form method="post" action="/errors/use-experiment" class="inline">
-      <input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="seq" value="{{.ExpSeq}}">
-      <button type="submit" class="btn">Use experiment #{{.ExpSeq}} report</button>
-    </form>{{end}}
-  </div>
-</section>
+{{/* ---- Evidence: where does it fail? (route /errors) ---- */}}
+{{define "errors"}}{{template "open" .Chrome}}
+<header class="ws-head">
+  <div><h1>Evidence</h1><p class="lede">Where the model fails in one hachidori.evidence.v1 report. Read-only: opening a report never runs inference or changes it.</p></div>
+  {{with .Src}}<span class="ws-meta mono">{{.Origin}}</span>{{end}}
+</header>
+{{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+{{with .Msg}}<p class="msg ok" role="status">{{.}}</p>{{end}}
 
-{{with .Src}}{{$r := .Report}}
-<section class="panel" aria-labelledby="src-h">
-  <div class="panel-h"><h2 id="src-h">Source</h2><span class="pill">{{$r.Schema}}</span></div>
-  <dl class="kv">
-    <dt>origin</dt><dd>{{.Origin}}</dd>
-    <dt>report sha256</dt><dd>{{.SHA256}}</dd>
-    <dt>dataset</dt><dd>{{$r.Dataset}}</dd>
-    <dt>dataset sha256</dt><dd>{{$r.DatasetSHA256}}</dd>
-    <dt>started at</dt><dd>{{$r.StartedAt}}</dd>
-    {{with $r.Served}}<dt>served model</dt><dd>{{.Model}}</dd><dt>served identity</dt><dd>{{.Digest}}</dd>{{end}}
-    <dt>served consistent</dt><dd>{{if $r.ServedConsistent}}yes{{else}}<span class="bad-t">no</span>{{end}}</dd>
-  </dl>
+
+{{if not .Src}}
+<section class="surface" aria-labelledby="open-h">
+  <h2 id="open-h">Open evidence</h2>
+  {{template "evidence-open" .}}
+  <p class="empty">No report open. Open a hachidori.evidence.v1 file or use the current experiment's report.</p>
 </section>
 {{end}}
 
 {{with .A}}{{$a := .}}
-<section class="panel" aria-labelledby="cnt-h">
-  <div class="panel-h"><h2 id="cnt-h">Counts<span class="sub">whole report · high confidence = confidence ≥ {{$.C.Threshold}}</span></h2></div>
-  <dl class="stats" style="grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr))" aria-label="counts">
-    <div class="stat"><dt>Correct</dt><dd>{{.Correct}}</dd></div>
-    <div class="stat"><dt>Wrong</dt><dd>{{.Wrong}}</dd></div>
-    <div class="stat"><dt>Request errors</dt><dd>{{.RequestErrors}}</dd></div>
-    <div class="stat"><dt>High-confidence wrong</dt><dd class="{{if .HighConfWrong}}warn-t{{end}}">{{.HighConfWrong}}</dd></div>
+<section class="region" aria-labelledby="cnt-h">
+  <div class="region-h"><h2 id="cnt-h">Failures</h2><span class="sub">whole report · high confidence = confidence ≥ {{$.C.Threshold}} (analysis control, not a policy)</span></div>
+  <dl class="metrics" aria-label="counts">
+    <div class="metric primary"><dt>Wrong</dt><dd>{{.Wrong}}</dd>{{if .Wrong}}<span class="hint"><a href="/errors?outcome=wrong&amp;th={{$.C.Threshold}}#obs">Show wrong</a></span>{{end}}</div>
+    <div class="metric primary"><dt>High-confidence wrong</dt><dd class="{{if .HighConfWrong}}bad-t{{end}}">{{.HighConfWrong}}</dd>{{if .HighConfWrong}}<span class="hint"><a href="/errors?outcome=high_confidence_wrong&amp;th={{$.C.Threshold}}#obs">Show high-confidence wrong</a></span>{{end}}</div>
+    <div class="metric"><dt>Correct</dt><dd>{{.Correct}}</dd></div>
+    <div class="metric"><dt>Request errors</dt><dd>{{.RequestErrors}}</dd></div>
   </dl>
-  <h2 style="margin-top:1rem">Per question</h2>
-  <table class="data" aria-label="per-question errors"><thead><tr><th>question</th><th class="num">n</th><th class="num">correct</th><th class="num">wrong</th><th class="num">high-conf wrong</th><th class="num">missing results</th><th class="num">accuracy</th><th class="num">mean conf</th><th class="num">ECE</th></tr></thead><tbody>
-  {{range .PerQuestion}}<tr><td class="mono">{{.ID}}</td><td class="num">{{.Stats.N}}</td><td class="num">{{.Correct}}</td><td class="num">{{.Wrong}}</td><td class="num">{{.HighConfWrong}}</td><td class="num">{{.MissingResults}}</td><td class="num">{{f4 .Stats.Accuracy}}</td><td class="num">{{f4 .Stats.MeanConfidence}}</td><td class="num">{{f4 .Stats.ECE}}</td></tr>{{end}}
-  </tbody></table>
-  {{with .ErrorClasses}}<ul class="errs" aria-label="request errors by class">{{range .}}<li>{{.Class}} {{.N}}</li>{{end}}</ul>{{end}}
+  {{with .ErrorClasses}}<p class="note" aria-label="request errors by class">request errors by class: {{range .}}<span class="mono">{{.Class}} {{.N}}</span> {{end}}</p>{{end}}
 </section>
 
-<section class="panel" aria-labelledby="flt-h">
-  <div class="panel-h"><h2 id="flt-h">Filter &amp; sort</h2></div>
-  <form method="get" action="/errors" class="stack">
-    <div class="row">
-      <label class="field">Question<select name="q"><option value="">any</option>{{range .Questions}}<option{{if eq . $.C.Question}} selected{{end}}>{{.}}</option>{{end}}</select></label>
-      <label class="field">Expected<select name="exp"><option value="">any</option>{{range .Expected}}<option{{if eq . $.C.Expected}} selected{{end}}>{{.}}</option>{{end}}</select></label>
-      <label class="field">Predicted<select name="pred"><option value="">any</option>{{range .Predicted}}<option{{if eq . $.C.Predicted}} selected{{end}}>{{.}}</option>{{end}}</select></label>
-      <label class="field">Outcome<select name="outcome">
-        <option value=""{{if eq $.C.Outcome ""}} selected{{end}}>any</option>
-        <option value="correct"{{if eq $.C.Outcome "correct"}} selected{{end}}>correct</option>
-        <option value="wrong"{{if eq $.C.Outcome "wrong"}} selected{{end}}>wrong</option>
-        <option value="high_confidence_wrong"{{if eq $.C.Outcome "high_confidence_wrong"}} selected{{end}}>high-confidence wrong</option></select></label>
-    </div>
-    <div class="row">
-      <label class="field">Confidence from<input name="min" value="{{$.C.Min}}" inputmode="decimal"></label>
-      <label class="field">Confidence to<input name="max" value="{{$.C.Max}}" inputmode="decimal"></label>
-      <label class="field">High-confidence threshold (analysis only)<input name="th" value="{{$.C.Threshold}}" inputmode="decimal"></label>
-      <label class="field">Request error class<select name="eclass"><option value="">any</option>{{range .ErrorClasses}}<option{{if eq .Class $.C.ErrClass}} selected{{end}}>{{.Class}}</option>{{end}}</select></label>
-    </div>
-    <div class="row">
-      <label class="field">Sort by<select name="sort">
-        <option value=""{{if eq $.C.Sort ""}} selected{{end}}>report order</option>
-        <option value="confidence"{{if eq $.C.Sort "confidence"}} selected{{end}}>confidence</option>
-        <option value="request_ms"{{if eq $.C.Sort "request_ms"}} selected{{end}}>request latency</option>
-        <option value="inference_ms"{{if eq $.C.Sort "inference_ms"}} selected{{end}}>inference latency</option></select></label>
-      <label class="check field"><input type="checkbox" name="desc" value="1"{{if $.C.Desc}} checked{{end}} style="width:auto"> descending</label>
-      <div class="btn-row"><button type="submit" class="btn primary">Apply</button><a class="btn ghost" href="/errors">Reset</a></div>
-    </div>
-  </form>
+<section class="region" aria-labelledby="pq-h">
+  <div class="region-h"><h2 id="pq-h">Concentration by question</h2><span class="sub">select a question to see its wrong observations</span></div>
+  <div class="table-wrap"><table class="data" aria-label="per-question errors"><thead><tr><th>question</th><th class="num strong">wrong</th><th class="num strong">high-conf wrong</th><th class="num">n</th><th class="num">correct</th><th class="num">missing results</th><th class="num">accuracy</th><th class="num">mean conf</th><th class="num">ECE</th></tr></thead><tbody>
+  {{range .PerQuestion}}{{$share := ratio .Wrong .Stats.N}}<tr><td class="mono"><a href="/errors?q={{.ID}}&amp;outcome=wrong&amp;th={{$.C.Threshold}}#obs">{{.ID}}</a></td><td class="num strong nowrap">{{.Wrong}}<span class="bar" role="img" aria-label="{{printf "%.0f" $share}}% wrong"><span class="bad" style="width:{{printf "%.1f" $share}}%"></span></span></td><td class="num strong{{if .HighConfWrong}} bad-t{{end}}">{{.HighConfWrong}}</td><td class="num">{{.Stats.N}}</td><td class="num">{{.Correct}}</td><td class="num">{{.MissingResults}}</td><td class="num">{{f4 .Stats.Accuracy}}</td><td class="num">{{f4 .Stats.MeanConfidence}}</td><td class="num">{{f4 .Stats.ECE}}</td></tr>{{end}}
+  </tbody></table></div>
 </section>
 
-{{with $.Detail}}
-<section class="panel" aria-labelledby="det-h" id="detail">
-  <div class="panel-h"><h2 id="det-h">Observation {{.Index}}</h2>{{if .Correct}}<span class="pill ok">correct</span>{{else if .HighConfWrong}}<span class="pill bad">high-confidence wrong</span>{{else}}<span class="pill warn">wrong</span>{{end}}</div>
-  <div class="env-grid">
-    <dl class="kv">
-      <dt>case</dt><dd>{{.CaseID}}</dd>
-      <dt>question</dt><dd>{{.QuestionID}}</dd>
-      <dt>question sha256</dt><dd>{{.QuestionSHA256}}</dd>
-      {{with .QuestionDefinition}}<dt>definition</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
-      <dt>expected</dt><dd>{{.Expected}}</dd>
-      <dt>predicted</dt><dd>{{.Choice}}</dd>
-      <dt>confidence</dt><dd>{{prob .Confidence}}</dd>
-      <dt>request latency</dt><dd>{{ms .RequestMS}}</dd>
-      <dt>inference latency</dt><dd>{{with .InferenceMS}}{{ms .}}{{else}}-{{end}}</dd>
-      {{with $.Src.Report.Served}}<dt>served model</dt><dd>{{.Model}}</dd><dt>served identity</dt><dd>{{.Digest}}</dd>{{end}}
+<div class="split narrow-side">
+  <section class="pane" aria-labelledby="obs-h" id="obs">
+    <div class="region-h"><h2 id="obs-h">Observations</h2><span class="sub">select a row number to inspect · {{len .Items}} selected{{if gt (len .Items) (len $.Rows)}} · showing the first {{len $.Rows}}; export includes all{{end}}</span></div>
+    <form method="get" action="/errors" class="filters" aria-label="filter and sort">
+      <div class="fields">
+        <label class="field">Outcome<select name="outcome">
+          <option value=""{{if eq $.C.Outcome ""}} selected{{end}}>any</option>
+          <option value="correct"{{if eq $.C.Outcome "correct"}} selected{{end}}>correct</option>
+          <option value="wrong"{{if eq $.C.Outcome "wrong"}} selected{{end}}>wrong</option>
+          <option value="high_confidence_wrong"{{if eq $.C.Outcome "high_confidence_wrong"}} selected{{end}}>high-confidence wrong</option></select></label>
+        <label class="field">Question<select name="q"><option value="">any</option>{{range .Questions}}<option{{if eq . $.C.Question}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+        <label class="field">High-confidence threshold (analysis only)<input name="th" value="{{$.C.Threshold}}" inputmode="decimal"></label>
+        <label class="field">Sort by<select name="sort">
+          <option value=""{{if eq $.C.Sort ""}} selected{{end}}>report order</option>
+          <option value="confidence"{{if eq $.C.Sort "confidence"}} selected{{end}}>confidence</option>
+          <option value="request_ms"{{if eq $.C.Sort "request_ms"}} selected{{end}}>request latency</option>
+          <option value="inference_ms"{{if eq $.C.Sort "inference_ms"}} selected{{end}}>inference latency</option></select></label>
+      </div>
+      <details class="inline"{{if or $.C.Expected $.C.Predicted $.C.ErrClass (ne $.C.Min "0") (ne $.C.Max "1")}} open{{end}}><summary>More filters</summary>
+        <div class="fields">
+          <label class="field">Expected<select name="exp"><option value="">any</option>{{range .Expected}}<option{{if eq . $.C.Expected}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+          <label class="field">Predicted<select name="pred"><option value="">any</option>{{range .Predicted}}<option{{if eq . $.C.Predicted}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+          <label class="field">Confidence from<input name="min" value="{{$.C.Min}}" inputmode="decimal"></label>
+          <label class="field">Confidence to<input name="max" value="{{$.C.Max}}" inputmode="decimal"></label>
+          <label class="field">Request error class<select name="eclass"><option value="">any</option>{{range .ErrorClasses}}<option{{if eq .Class $.C.ErrClass}} selected{{end}}>{{.Class}}</option>{{end}}</select></label>
+        </div>
+      </details>
+      <div class="btn-row">
+        <label class="check"><input type="checkbox" name="desc" value="1"{{if $.C.Desc}} checked{{end}}> descending</label>
+        <button type="submit" class="btn">Apply</button><a class="btn quiet" href="/errors">Reset</a>
+      </div>
+    </form>
+
+    <div class="table-wrap"><table class="data" aria-label="observations"><thead><tr><th class="num">#</th><th>case</th><th>question</th><th>expected</th><th>predicted</th><th class="num">confidence</th><th class="num">request</th><th class="num">inference</th></tr></thead><tbody>
+    {{range $.Rows}}<tr{{if and $.Detail (eq $.Detail.Index .Index)}} aria-current="true"{{end}}><td class="num"><a href="/errors?{{$.C.Query}}&amp;obs={{.Index}}#detail" aria-label="inspect observation {{.Index}}">{{.Index}}</a></td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td>{{.Expected}}</td><td>{{.Choice}}{{if not .Correct}} <span class="{{if .HighConfWrong}}bad-t{{else}}warn-t{{end}}" title="{{if .HighConfWrong}}high-confidence wrong{{else}}wrong{{end}}">✗</span>{{end}}</td><td class="num">{{prob .Confidence}}</td><td class="num">{{ms .RequestMS}}</td><td class="num">{{with .InferenceMS}}{{ms .}}{{else}}-{{end}}</td></tr>{{end}}
+    </tbody></table></div>
+
+    {{with .Errors}}
+    <div class="region">
+      <div class="region-h"><h2>Request errors</h2><span class="sub">{{len .}} selected</span></div>
+      <div class="table-wrap"><table class="data" aria-label="request errors"><thead><tr><th>phase</th><th>pass</th><th>case</th><th>question</th><th>class</th><th>message</th></tr></thead><tbody>
+      {{range .}}<tr><td>{{.Phase}}</td><td>{{if .Pass}}{{.Pass}}{{end}}</td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td class="mono">{{.Class}}</td><td>{{.Message}}</td></tr>{{end}}
+      </tbody></table></div>
+    </div>
+    {{end}}
+
+    <form method="post" action="/errors/export" class="path-form">
+      <input type="hidden" name="token" value="{{$.Token}}">
+      {{range $k, $vs := $.C.Values}}{{range $vs}}<input type="hidden" name="{{$k}}" value="{{.}}">{{end}}{{end}}
+      <label class="field">Export the selection as {{"hachidori.evidence-analysis.v1"}} data to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Export}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\errors.json"></label>
+      <button type="submit" class="btn">Export selection</button>
+    </form>
+  </section>
+
+  <aside class="pane pane-side" id="detail" aria-labelledby="det-h">
+    <div class="result-pane">
+    {{with $.Detail}}
+      <div class="block-h"><h2 id="det-h">Observation {{.Index}}</h2>{{if .Correct}}<span class="badge tone-ok">correct</span>{{else if .HighConfWrong}}<span class="badge tone-bad">high-confidence wrong</span>{{else}}<span class="badge tone-warn">wrong</span>{{end}}</div>
+      <dl class="pair">
+        <div><dt>expected</dt><dd>{{.Expected}}</dd></div>
+        <div><dt>predicted</dt><dd>{{.Choice}}</dd></div>
+        <div><dt>confidence</dt><dd>{{prob .Confidence}}</dd></div>
+      </dl>
+      {{template "dist" (distOf .Probabilities .Choice .Expected)}}
+      <dl class="kv">
+        <dt>case</dt><dd>{{.CaseID}}</dd>
+        <dt>question</dt><dd>{{.QuestionID}}</dd>
+        <dt>question sha256</dt><dd>{{.QuestionSHA256}}</dd>
+        {{with .QuestionDefinition}}<dt>definition</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
+        <dt>request latency</dt><dd>{{ms .RequestMS}}</dd>
+        <dt>inference latency</dt><dd>{{with .InferenceMS}}{{ms .}}{{else}}-{{end}}</dd>
+        {{with $.Src.Report.Served}}<dt>served model</dt><dd>{{.Model}}</dd><dt>served identity</dt><dd>{{.Digest}}</dd>{{end}}
+      </dl>
+    {{else}}
+      <h2 id="det-h">Observation</h2>
+      <p class="empty">Inspect an observation to compare expected and predicted and see its probability distribution.</p>
+    {{end}}
+    </div>
+  </aside>
+</div>
+{{end}}
+
+{{with .Src}}{{$r := .Report}}
+<details class="disclosure" data-keep="evidence-source"><summary>Evidence source &amp; metadata<span class="sub mono">{{$r.Schema}} · report {{short .SHA256}}</span></summary>
+  <div class="body">
+    <dl class="kv" aria-label="source">
+      <dt>origin</dt><dd>{{.Origin}}</dd>
+      <dt>report sha256</dt><dd>{{.SHA256}}</dd>
+      <dt>schema</dt><dd>{{$r.Schema}}</dd>
+      <dt>dataset</dt><dd>{{$r.Dataset}}</dd>
+      <dt>dataset sha256</dt><dd>{{$r.DatasetSHA256}}</dd>
+      <dt>started at</dt><dd>{{$r.StartedAt}}</dd>
+      {{with $r.Served}}<dt>served model</dt><dd>{{.Model}}</dd><dt>served identity</dt><dd>{{.Digest}}</dd>{{end}}
+      <dt>served consistent</dt><dd>{{if $r.ServedConsistent}}yes{{else}}<span class="bad-t">no</span>{{end}}</dd>
     </dl>
-    <table class="data" aria-label="probabilities" style="align-self:start"><thead><tr><th>choice</th><th class="num">probability</th><th></th></tr></thead><tbody>
-    {{$exp := .Expected}}{{range probs .Probabilities .Choice}}<tr{{if .Chosen}} class="chosen"{{end}}><td>{{.Choice}}{{if eq .Choice $exp}} <span class="faint">(expected)</span>{{end}}</td><td class="num">{{prob .P}}</td><td><span class="pbar"><span style="width:{{pct .P}}"></span></span></td></tr>{{end}}
-    </tbody></table>
+    <h3>Open another report</h3>
+    {{template "evidence-open" $}}
   </div>
-</section>
+</details>
 {{end}}
+{{template "close" .Chrome}}{{end}}
 
-<section class="panel" aria-labelledby="obs-h">
-  <div class="panel-h"><h2 id="obs-h">Observations<span class="sub">{{len .Items}} selected{{if gt (len .Items) (len $.Rows)}} · showing the first {{len $.Rows}}; export includes all{{end}}</span></h2></div>
-  <table class="data" aria-label="observations"><thead><tr><th class="num">#</th><th>case</th><th>question</th><th>expected</th><th>predicted</th><th class="num">confidence</th><th class="num">request</th><th class="num">inference</th><th></th></tr></thead><tbody>
-  {{range $.Rows}}<tr><td class="num">{{.Index}}</td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td>{{.Expected}}</td><td>{{.Choice}}{{if not .Correct}} <span class="{{if .HighConfWrong}}bad-t{{else}}warn-t{{end}}">✗</span>{{end}}</td><td class="num">{{prob .Confidence}}</td><td class="num">{{ms .RequestMS}}</td><td class="num">{{with .InferenceMS}}{{ms .}}{{else}}-{{end}}</td><td><a href="/errors?{{$.C.Query}}&amp;obs={{.Index}}#detail">detail</a></td></tr>{{end}}
-  </tbody></table>
-  {{with .Errors}}
-  <h2 style="margin-top:1rem">Request errors<span class="sub">{{len .}} selected</span></h2>
-  <table class="data" aria-label="request errors"><thead><tr><th>phase</th><th>pass</th><th>case</th><th>question</th><th>class</th><th>message</th></tr></thead><tbody>
-  {{range .}}<tr><td>{{.Phase}}</td><td>{{if .Pass}}{{.Pass}}{{end}}</td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td class="mono">{{.Class}}</td><td>{{.Message}}</td></tr>{{end}}
-  </tbody></table>
-  {{end}}
-  <form method="post" action="/errors/export" class="row" style="margin-top:1rem">
-    <input type="hidden" name="token" value="{{$.Token}}">
-    {{range $k, $vs := $.C.Values}}{{range $vs}}<input type="hidden" name="{{$k}}" value="{{.}}">{{end}}{{end}}
-    <label class="field">Export the selection as analysis data to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Export}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\errors.json"></label>
-    <div class="btn-row"><button type="submit" class="btn">Export selection</button></div>
+{{/* evidence-open chooses the report to investigate. */}}
+{{define "evidence-open"}}{{if .ExpSeq}}<div class="btn-row">
+  <form method="post" action="/errors/use-experiment" class="inline">
+    <input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="seq" value="{{.ExpSeq}}">
+    <button type="submit" class="btn{{if not .Src}} primary{{end}}">Use experiment #{{.ExpSeq}} report</button>
   </form>
-</section>
-{{else}}{{if not .Src}}
-<p class="muted">No report open. Open a hachidori.evidence.v1 file or use the current experiment's report.</p>
-{{end}}{{end}}
-
-<footer class="foot">Host-local operator page · the explorer reads evidence only · exports are {{"hachidori.evidence-analysis.v1"}} documents beside, never over, the source report.</footer>
-</main>
-</body>
-</html>
-{{end}}
+</div>{{end}}
+<form method="post" action="/errors/open" class="path-form">
+  <input type="hidden" name="token" value="{{.Token}}">
+  <label class="field">Evidence report file (absolute path)<input name="path" value="{{.OpenPath}}" spellcheck="false" autocomplete="off" placeholder="C:\experiments\report.json"></label>
+  <button type="submit" class="btn">Open report</button>
+</form>{{end}}

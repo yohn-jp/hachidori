@@ -519,7 +519,7 @@ func TestNavigationLinksWorkbench(t *testing.T) {
 		t.Error("runtime page lacks the navigation")
 	}
 	wb := e.get(t, "/workbench").Body.String()
-	if !strings.Contains(wb, `<a href="/workbench" aria-current="page">Workbench</a>`) || !strings.Contains(wb, `<a href="/#diagnostics">Diagnostics</a>`) {
+	if !strings.Contains(wb, `<a href="/workbench" aria-current="page">Workbench</a>`) || !strings.Contains(wb, `<a href="/diagnostics">Diagnostics</a>`) {
 		t.Error("workbench page lacks the navigation")
 	}
 	if strings.Contains(wb, `id="refresh"`) {
