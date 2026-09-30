@@ -1,12 +1,14 @@
 package dashboard
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -282,5 +284,95 @@ func TestEvidenceInvestigationComposition(t *testing.T) {
 	e2, _ := newWorkbenchEnv(t)
 	if b := e2.get(t, "/errors").Body.String(); !strings.Contains(b, `id="open-h"`) || !strings.Contains(b, `action="/errors/open"`) || strings.Contains(b, `aria-label="observations"`) {
 		t.Error("empty Evidence workspace does not lead with opening a report")
+	}
+}
+
+type fakeSettings struct {
+	def settings.Defaults
+	err error
+}
+
+func (f *fakeSettings) Defaults() (settings.Defaults, error) { return f.def, nil }
+func (f *fakeSettings) SetDefaults(d settings.Defaults) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.def = d
+	return nil
+}
+
+func withSettings(e *env, s Settings, d Desktop) {
+	cfg := e.d.cfg
+	cfg.Settings, cfg.Desktop = s, d
+	e.d = New(cfg)
+}
+
+// The Settings workspace exists only when a settings authority is hosted, is
+// part of the shell navigation and shows desktop preferences and defaults.
+func TestSettingsWorkspaceInShell(t *testing.T) {
+	e := newEnv(t)
+	if strings.Contains(navRe.FindString(e.get(t, "/").Body.String()), "/settings") {
+		t.Error("serve/dashboard navigation offers Settings")
+	}
+	if rec := e.get(t, "/settings"); rec.Code != http.StatusNotFound {
+		t.Fatalf("settings route without authority: %d", rec.Code)
+	}
+	prefs := &fakeDesktopPrefs{signIn: true, minimized: true}
+	withSettings(e, &fakeSettings{def: settings.Defaults{Device: "cpu", Model: "laya-base"}}, prefs)
+	rec := e.get(t, "/settings")
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /settings: %d", rec.Code)
+	}
+	if !strings.Contains(navRe.FindString(body), `<a href="/settings" aria-current="page">Settings</a>`) {
+		t.Error("navigation lacks the current Settings entry")
+	}
+	for _, want := range []string{`name="start_at_sign_in" value="1" checked`, `name="start_minimized" value="1" checked`,
+		`<option value="cpu" selected>`, `<option value="laya-base" selected>`, `action="/settings/defaults"`, `action="/desktop/prefs"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("settings lacks %q", want)
+		}
+	}
+	// Existing workflows stay reachable: Diagnostics keeps the desktop panel.
+	if !strings.Contains(e.get(t, "/diagnostics").Body.String(), `action="/desktop/prefs"`) {
+		t.Error("diagnostics lost the desktop panel")
+	}
+}
+
+// Saving defaults and desktop preferences returns to Settings and never
+// touches the runtime lifecycle.
+func TestSettingsSaveDoesNotTouchRuntime(t *testing.T) {
+	e := newEnv(t)
+	fs, prefs := &fakeSettings{}, &fakeDesktopPrefs{}
+	withSettings(e, fs, prefs)
+	rec := e.post(t, "/settings/defaults", url.Values{"device": {"cpu"}, "model": {"laya-base"}, "return": {"settings"}})
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings" {
+		t.Fatalf("defaults save: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if fs.def != (settings.Defaults{Device: "cpu", Model: "laya-base"}) {
+		t.Fatalf("%+v", fs.def)
+	}
+	rec = e.post(t, "/desktop/prefs", url.Values{"start_minimized": {"1"}, "return": {"settings"}})
+	if rec.Header().Get("Location") != "/settings" || !prefs.minimized {
+		t.Fatalf("desktop save: %s %+v", rec.Header().Get("Location"), prefs)
+	}
+	// Without the return marker the Diagnostics panel keeps its redirect.
+	if rec = e.post(t, "/desktop/prefs", nil); rec.Header().Get("Location") != "/diagnostics" {
+		t.Fatalf("diagnostics redirect: %s", rec.Header().Get("Location"))
+	}
+	e.rt.mu.Lock()
+	calls := append([]string(nil), e.rt.calls...)
+	e.rt.mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("lifecycle touched: %v", calls)
+	}
+	// Refused values are shown; forged tokens are refused.
+	fs.err = errors.New("model refused")
+	e.post(t, "/settings/defaults", url.Values{"device": {"tpu"}})
+	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "model refused") {
+		t.Fatalf("%+v", a)
+	}
+	if rec := e.post(t, "/settings/defaults", url.Values{"token": {"forged"}, "device": {"cpu"}}); rec.Code != http.StatusForbidden {
+		t.Fatalf("forged token: %d", rec.Code)
 	}
 }

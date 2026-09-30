@@ -331,7 +331,8 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <li><a href="/errors"{{if eq .Nav "evidence"}} aria-current="page"{{end}}>Evidence</a></li>
   </ul>
   <ul class="nav-support">
-    <li><a href="/diagnostics"{{if eq .Nav "diagnostics"}} aria-current="page"{{end}}>Diagnostics</a></li>
+    {{if .HasSettings}}<li><a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>Settings</a></li>
+    {{end}}<li><a href="/diagnostics"{{if eq .Nav "diagnostics"}} aria-current="page"{{end}}>Diagnostics</a></li>
   </ul>
 </nav>
 <main class="workspace" id="main" tabindex="-1">
@@ -533,6 +534,52 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{end}}
 
 {{/* ---- Diagnostics: what is wrong with the appliance? ---- */}}
+{{define "settings"}}{{template "open" .Chrome}}
+<header class="ws-head">
+  <div><h1>Settings</h1><p class="lede">Desktop preferences and saved runtime defaults. Saving here never restarts, reinstalls or changes the running runtime.</p></div>
+</header>
+{{template "last" .Last}}
+{{with .Desktop}}
+<section class="region" id="settings-desktop" aria-labelledby="sd-h">
+  <div class="region-h"><h2 id="sd-h">Desktop</h2><span class="sub">tray and sign-in</span></div>
+  <form method="post" action="/desktop/prefs" class="region">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <input type="hidden" name="return" value="settings">
+    <label class="check"><input type="checkbox" name="start_at_sign_in" value="1"{{if .StartAtSignIn}} checked{{end}}> Start Hachidori when I sign in</label>
+    <label class="check"><input type="checkbox" name="start_minimized" value="1"{{if .StartMinimized}} checked{{end}}> Start minimized (in the tray, when started at sign-in)</label>
+    <div class="btn-row"><button type="submit" class="btn">Save desktop preferences</button></div>
+    {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+  </form>
+  <p class="note">Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). The startup entry itself is the source of truth.</p>
+</section>
+{{end}}
+{{with .Set}}
+<section class="region" id="settings-defaults" aria-labelledby="sr-h">
+  <div class="region-h"><h2 id="sr-h">Runtime defaults</h2><span class="sub">saved values, applied only by an explicit setup</span></div>
+  <form method="post" action="/settings/defaults" class="region">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <input type="hidden" name="return" value="settings">
+    <div class="fields">
+      <label class="field">Default device
+        <select name="device">
+          <option value=""{{if eq .Device ""}} selected{{end}}>no saved default</option>
+          <option value="cuda"{{if eq .Device "cuda"}} selected{{end}}>cuda</option>
+          <option value="cpu"{{if eq .Device "cpu"}} selected{{end}}>cpu</option>
+        </select></label>
+      <label class="field">Default model
+        <select name="model">
+          <option value=""{{if eq .Model ""}} selected{{end}}>no saved default</option>
+          {{$m := .Model}}{{range .Models}}<option value="{{.}}"{{if eq . $m}} selected{{end}}>{{.}}</option>{{end}}
+        </select></label>
+    </div>
+    <div class="btn-row"><button type="submit" class="btn">Save runtime defaults</button></div>
+    {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+  </form>
+  <p class="note">Running runtime: <span class="mono">{{with $.Rt.Model}}{{.}}{{else}}-{{end}}</span>. Defaults do not change it. Explicit command-line flags and environment inputs always take precedence. No secrets are stored.</p>
+</section>
+{{end}}
+{{template "close" .Chrome}}{{end}}
+
 {{define "diagnostics"}}{{template "open" .Chrome}}
 <header class="ws-head">
   <div><h1>Diagnostics</h1><p class="lede">Installation checks, worker failures, caller transport and desktop setup for this host.</p></div>

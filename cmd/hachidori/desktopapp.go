@@ -21,6 +21,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/firstrun"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
+	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -186,6 +187,11 @@ func (a *desktopApp) run() error {
 		mgr.Command, _ = desktop.StartupCommand(exe, homeArg)
 	}
 
+	// The typed settings authority composes the desktop preference manager
+	// (start at sign-in stays the OS startup entry) and owns only the saved
+	// runtime defaults, stored beside desktop.json.
+	prefs := settingsStore(a.PrefsPath, mgr)
+
 	open := func(root string) (app.Runtime, error) {
 		if a.Open != nil {
 			return a.Open(root)
@@ -206,7 +212,8 @@ func (a *desktopApp) run() error {
 				Doctor:    func(out io.Writer) bool { return doctor.Run(root, out) },
 				Tunnel:    tun,
 				PrefsPath: h.Path("state", "dashboard.json"),
-				Desktop:   mgr,
+				Desktop:   prefs,
+				Settings:  prefs,
 			})
 			// An experiment of a replaced runtime's dashboard must not keep
 			// running against the next runtime.
@@ -308,6 +315,12 @@ func (a *desktopApp) run() error {
 	_ = dashSrv.Shutdown(shut)
 	_ = apiSrv.Shutdown(shut)
 	return err
+}
+
+// settingsStore is the desktop's settings authority: the desktop preference
+// manager plus the saved runtime defaults in settings.json beside desktop.json.
+func settingsStore(prefsPath string, d settings.Desktop) *settings.Store {
+	return &settings.Store{Path: desktop.SettingsPath(prefsPath), Desktop: d}
 }
 
 func (a *desktopApp) sshExe() string {
