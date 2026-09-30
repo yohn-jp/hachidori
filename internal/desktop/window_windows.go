@@ -332,7 +332,8 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	wndProcOnce.Do(func() { wndProcCB = windows.NewCallback(wndProc) })
 	cursor, _, _ := procLoadCursorW.Call(0, idcArrow)
 	wc := wndClassEx{WndProc: wndProcCB, Instance: inst, Cursor: windows.Handle(cursor),
-		Background: windows.Handle(colorWindow + 1), ClassName: cls}
+		Background: windows.Handle(colorWindow + 1), ClassName: cls,
+		Icon: windows.Handle(appIcon(inst, false)), IconSm: windows.Handle(appIcon(inst, true))}
 	wc.Size = uint32(unsafe.Sizeof(wc))
 	if r, _, e := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
 		return fmt.Errorf("registering the window class: %w", e)
@@ -346,6 +347,7 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	}
 	s.hwnd = hwnd
 	s.tray.hwnd = hwnd
+	s.tray.icon = uintptr(wc.IconSm)
 
 	// A visible launch must make the native parent presentable before WebView2
 	// creates its controller. Creating a controller against a hidden Win32

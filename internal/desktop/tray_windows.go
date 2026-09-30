@@ -84,7 +84,8 @@ type point struct{ X, Y int32 }
 // tray is the notification-area icon of one window.
 type tray struct {
 	hwnd  uintptr
-	msg   uint32 // callback message posted to hwnd
+	icon  uintptr // application icon (appIcon, small)
+	msg   uint32  // callback message posted to hwnd
 	added bool
 }
 
@@ -114,7 +115,7 @@ func (t *tray) add(sum Summary) bool {
 	d := t.data()
 	d.Flags = nifMessage | nifIcon | nifTip
 	d.CallbackMessage = t.msg
-	d.Icon, _, _ = procLoadIconW.Call(0, idiApplication)
+	d.Icon = t.icon
 	copyUTF16(d.Tip[:], sum.Tooltip())
 	r, _, _ := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&d)))
 	t.added = r != 0

@@ -1,4 +1,17 @@
+<p align="center">
+  <img src="./assets/branding/hero.png" alt="Hachidori — Local AI Runtime. Run AI models locally. Fast, flexible, and yours." width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/yohn-jp/hachidori/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/yohn-jp/hachidori/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/yohn-jp/hachidori/releases"><img alt="Release" src="https://img.shields.io/github/v/release/yohn-jp/hachidori?include_prereleases"></a>
+  <a href="./go.mod"><img alt="Go" src="https://img.shields.io/github/go-mod/go-version/yohn-jp/hachidori"></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/github/license/yohn-jp/hachidori"></a>
+</p>
+
 # Hachidori
+
+**Local semantic inference runtime**
 
 Hachidori is a local semantic inference runtime for fast, low-cost, typed semantic observations.
 
@@ -61,6 +74,11 @@ export HACHIDORI_ENDPOINT=http://127.0.0.1:7843
 ./hachidori decide examples/decide.json
 ./hachidori benchmark dataset.jsonl
 ```
+
+The dashboard, which the Windows desktop UI also hosts, adds runtime
+status and Start/Stop/Restart, doctor, the SSH tunnel launcher, and three
+operator surfaces: **Question Workbench**, **Experiment Runner**, and
+**Error Explorer**.
 
 - [docs/runtime.md](docs/runtime.md): CLI, HTTP API, worker lifecycle, `HACHIDORI_HOME` layout, evaluation format.
 - [docs/certification.md](docs/certification.md): certification levels and exact commands for a GPU host.
