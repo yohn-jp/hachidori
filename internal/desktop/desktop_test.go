@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDashboardURL(t *testing.T) {
@@ -171,5 +172,80 @@ func TestPreflightSecondLaunchIsAlreadyRunning(t *testing.T) {
 	release()
 	if want := "detect,acquire,detect,acquire,detect,acquire"; strings.Join(f.calls, ",") != want {
 		t.Fatalf("calls = %v, want %s", f.calls, want)
+	}
+}
+
+func TestNavigationFailureClassification(t *testing.T) {
+	if _, ok := NavigationFailure(true, 0); ok {
+		t.Error("successful navigation reported as failure")
+	}
+	// The navigation policy cancels off-origin loads; that is not a failure.
+	if _, ok := NavigationFailure(false, webErrorOperationCanceled); ok {
+		t.Error("policy-cancelled navigation reported as failure")
+	}
+	f, ok := NavigationFailure(false, 12) // cannot connect: dashboard down
+	if !ok || f.Boundary != BoundaryNavigation || !f.Reloadable || !strings.Contains(f.Detail, "12") {
+		t.Fatalf("failure = %+v, %v", f, ok)
+	}
+}
+
+func TestProcessFailureClassification(t *testing.T) {
+	for kind, want := range map[uint32]struct{ reload, fatal bool }{
+		0: {false, true}, 1: {true, false}, 2: {true, false}, 3: {true, false}, 6: {true, false},
+		4: {false, false}, 5: {false, false}, 9: {false, false},
+	} {
+		f := ProcessFailure(kind)
+		if f.Boundary != BoundaryProcess || f.Reloadable != want.reload || f.Fatal != want.fatal || f.Detail == "" {
+			t.Errorf("kind %d: %+v", kind, f)
+		}
+	}
+}
+
+func TestFailureTrackerBoundsReloadsThenNotifiesOnce(t *testing.T) {
+	now := time.Unix(1000, 0)
+	tr := &FailureTracker{MaxReloads: 2, StableAfter: time.Minute, Now: func() time.Time { return now }}
+	render := ProcessFailure(1)
+	for i := 0; i < 2; i++ {
+		if r := tr.Report(render); !r.Reload || r.Notify {
+			t.Fatalf("failure %d: %+v, want reload", i, r)
+		}
+		now = now.Add(time.Second)
+	}
+	// Budget exhausted: an actionable native notification, never a blank window.
+	r := tr.Report(render)
+	if r.Reload || !r.Notify || !strings.Contains(r.Message, "render process") || !strings.Contains(r.Message, "hachidori dashboard") {
+		t.Fatalf("exhausted: %+v", r)
+	}
+	// Repeated failures neither reload forever nor prompt repeatedly.
+	if r := tr.Report(render); r.Reload || r.Notify {
+		t.Fatalf("after notify: %+v", r)
+	}
+	if got := len(tr.Recent()); got != 4 {
+		t.Fatalf("recorded %d failures, want 4", got)
+	}
+	// Only a stable interval restores the budget.
+	now = now.Add(time.Minute)
+	if r := tr.Report(render); !r.Reload {
+		t.Fatalf("after stable interval: %+v", r)
+	}
+}
+
+func TestFailureTrackerFatalAndBenign(t *testing.T) {
+	tr := &FailureTracker{}
+	if r := tr.Report(ProcessFailure(0)); r.Reload || !r.Notify {
+		t.Fatalf("browser process exit: %+v", r)
+	}
+	if r := tr.Report(ProcessFailure(4)); r.Reload || r.Notify {
+		t.Fatalf("helper process failure: %+v", r)
+	}
+	tr = &FailureTracker{}
+	if r := tr.Report(ControllerFailure(errors.New("error creating controller with 80070005"))); !r.Notify || !strings.Contains(r.Message, "80070005") {
+		t.Fatalf("controller failure: %+v", r)
+	}
+	for i := 0; i < 100; i++ {
+		tr.Report(ProcessFailure(4))
+	}
+	if len(tr.Recent()) != maxRecentFailures {
+		t.Fatalf("recent failures unbounded: %d", len(tr.Recent()))
 	}
 }

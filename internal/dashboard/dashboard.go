@@ -31,6 +31,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/history"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
+	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 )
 
@@ -60,6 +61,25 @@ type Config struct {
 	// Desktop, when set, adds the desktop preferences panel (start at
 	// sign-in, start minimized). It is nil for serve/dashboard.
 	Desktop Desktop
+	// Settings, when set, adds the Settings workspace's saved runtime
+	// defaults (the typed settings authority, internal/settings). Saving
+	// them never touches the running runtime.
+	Settings Settings
+}
+
+// Settings reads and stores the saved runtime defaults. The dashboard only
+// renders and forwards the form; validation and persistence live behind it.
+type Settings interface {
+	Defaults() (settings.Defaults, error)
+	SetDefaults(settings.Defaults) error
+}
+
+// SettingsView is the Settings workspace's runtime-defaults view model.
+type SettingsView struct {
+	Device string
+	Model  string
+	Models []string
+	Err    string
 }
 
 // Desktop reads and applies the per-user desktop preferences. The dashboard
@@ -141,11 +161,12 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 // title, the active workspace, the inference API address and the compact
 // runtime status restated from the /v1/status document.
 type Chrome struct {
-	Title   string
-	Nav     string // runtime | workbench | experiments | evidence | diagnostics
-	APIAddr string
-	Live    bool // the workspace shows the live-refresh indicator
-	Rt      shellStatus
+	Title       string
+	Nav         string // runtime | workbench | experiments | evidence | diagnostics | settings
+	APIAddr     string
+	Live        bool // the workspace shows the live-refresh indicator
+	HasSettings bool // the Settings workspace is available
+	Rt          shellStatus
 }
 
 // New builds the dashboard.
@@ -186,6 +207,12 @@ func New(cfg Config) *Dashboard {
 	d.mux.HandleFunc("POST /errors/open", d.errorsOpen)
 	d.mux.HandleFunc("POST /errors/use-experiment", d.errorsUseExperiment)
 	d.mux.HandleFunc("POST /errors/export", d.errorsExport)
+	if cfg.Settings != nil || cfg.Desktop != nil {
+		d.mux.HandleFunc("GET /settings", d.settingsPage)
+	}
+	if cfg.Settings != nil {
+		d.mux.HandleFunc("POST /settings/defaults", d.settingsDefaults)
+	}
 	if cfg.Desktop != nil {
 		d.mux.HandleFunc("POST /desktop/prefs", d.desktopPrefs)
 	}
@@ -265,7 +292,8 @@ type view struct {
 	Doctor  DoctorRun
 	Tunnel  tunnel.Status
 	Form    tunnel.Spec
-	Desktop *DesktopView // nil unless the desktop shell is hosting the dashboard
+	Desktop *DesktopView  // nil unless the desktop shell is hosting the dashboard
+	Set     *SettingsView // nil unless the settings authority is configured
 }
 
 // statusView is the part of the runtime view every page's shell needs.
@@ -273,7 +301,7 @@ func (d *Dashboard) statusView(title, nav string) view {
 	d.mu.Lock()
 	last, doc := d.last, d.doctor
 	d.mu.Unlock()
-	v := view{Chrome: Chrome{Title: title, Nav: nav, APIAddr: d.cfg.APIAddr},
+	v := view{Chrome: Chrome{Title: title, Nav: nav, APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.Settings != nil || d.cfg.Desktop != nil},
 		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
 	v.Rt = shellOf(v)
 	return v
@@ -338,7 +366,11 @@ func (d *Dashboard) done(w http.ResponseWriter, r *http.Request, name string, er
 	d.mu.Lock()
 	d.last = a
 	d.mu.Unlock()
-	http.Redirect(w, r, returnTo(r.URL.Path), http.StatusSeeOther)
+	dest := returnTo(r.URL.Path)
+	if r.PostFormValue("return") == "settings" {
+		dest = "/settings"
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 // returnTo is the workspace an action's outcome is shown in: lifecycle
@@ -346,6 +378,9 @@ func (d *Dashboard) done(w http.ResponseWriter, r *http.Request, name string, er
 func returnTo(path string) string {
 	if strings.HasPrefix(path, "/runtime/") {
 		return "/"
+	}
+	if strings.HasPrefix(path, "/settings/") {
+		return "/settings"
 	}
 	return "/diagnostics"
 }
@@ -375,6 +410,33 @@ func (d *Dashboard) runtimeOp(w http.ResponseWriter, r *http.Request) {
 func (d *Dashboard) desktopPrefs(w http.ResponseWriter, r *http.Request) {
 	err := d.cfg.Desktop.Set(r.PostFormValue("start_at_sign_in") == "1", r.PostFormValue("start_minimized") == "1")
 	d.done(w, r, "desktop preferences", err, "saved")
+}
+
+// settingsPage renders the Settings workspace: the desktop preferences (through
+// the existing desktop authority) and the saved runtime defaults.
+func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
+	v := d.view("Settings", "settings")
+	v.Live = false
+	if d.cfg.Settings != nil {
+		sv := &SettingsView{Models: settings.Models()}
+		def, err := d.cfg.Settings.Defaults()
+		if err != nil {
+			sv.Err = err.Error()
+		}
+		sv.Device, sv.Model = def.Device, def.Model
+		v.Set = sv
+	}
+	d.renderView(w, "settings", v)
+}
+
+// settingsDefaults stores the runtime defaults. It only stores: the running
+// worker, the active model and setup are not consulted or changed.
+func (d *Dashboard) settingsDefaults(w http.ResponseWriter, r *http.Request) {
+	err := d.cfg.Settings.SetDefaults(settings.Defaults{
+		Device: strings.TrimSpace(r.PostFormValue("device")),
+		Model:  strings.TrimSpace(r.PostFormValue("model")),
+	})
+	d.done(w, r, "runtime defaults", err, "saved; the running runtime is unchanged")
 }
 
 func (d *Dashboard) runDoctor(w http.ResponseWriter, r *http.Request) {

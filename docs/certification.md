@@ -167,3 +167,32 @@ Prepare a clean user profile: no `%LOCALAPPDATA%\Hachidori\bootstrap.json`, no
 11. With the runtime uninstalled, a `--background` launch shows the recovery /
    needs-attention UI rather than silently remaining hidden or relaunching
    itself.
+
+## Windows recovery boundaries (manual, real Windows only)
+
+Status of every item below: **NOT_CHECKED**. The recovery producer described
+here is covered by portable unit tests (`go test ./internal/app
+./internal/desktop ./internal/dashboard ./internal/worker`) and a Windows amd64
+non-CGo build/vet; none of that is a physical Windows or GPU PASS. Record each
+item as PASS / FAIL / NOT_CHECKED with the exact `hachidori.exe` identity and
+the Windows and WebView2 versions. Diagnostic bundle export and the physical
+certification run are a separate leaf.
+
+1. Worker crash: with the worker READY, end the `python` worker process from
+   Task Manager. Diagnostics reports "Recovering from an unexpected worker exit",
+   the worker returns to READY with a new pid, and the app never shows this as
+   an operator Stop. Repeating the kill more than the restart budget (3 within
+   10 minutes) stops the automatic restarts: the tray reads Needs attention and
+   Diagnostics reads "Automatic recovery stopped" with the last worker failure.
+   Restart Runtime (tray or dashboard) then starts a worker with a fresh budget.
+2. Operator Stop / Quit: Stop from the dashboard, or Quit Hachidori, never shows
+   a recovery notice and never restarts the worker by itself.
+3. Device: on a CUDA home whose GPU is unusable the failure is reported and the
+   requested device is unchanged; recovery never switches to CPU.
+4. WebView2: end a `msedgewebview2.exe` render process of this run. The window
+   reloads the loopback dashboard (at most 3 times, then one native message box
+   and tray notice naming the failure); it is never left as only a blank
+   surface. The console logs `WebView2 process failure` / `WebView2 navigation
+   failure` lines. Navigation is still restricted to the loopback dashboard.
+5. Existing first-run, tray, single-instance and start-at-sign-in checks above
+   still pass unchanged.

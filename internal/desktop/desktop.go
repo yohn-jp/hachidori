@@ -18,6 +18,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ErrUnsupported is returned by the Native platform on non-Windows systems.
@@ -160,4 +162,142 @@ func loopback(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// WebViewBoundary names where a WebView2 failure was observed after the
+// environment-created boundary.
+type WebViewBoundary string
+
+const (
+	// BoundaryController: environment/controller creation or configuration.
+	BoundaryController WebViewBoundary = "controller"
+	// BoundaryNavigation: a top-level navigation completed unsuccessfully.
+	BoundaryNavigation WebViewBoundary = "navigation"
+	// BoundaryProcess: a WebView2 browser, renderer or GPU process failed.
+	BoundaryProcess WebViewBoundary = "process"
+)
+
+// WebViewFailure is one observed WebView2 failure. Reloadable failures may be
+// retried by navigating the same loopback URL again; Fatal ones cannot be
+// repaired by the shell. A failure that is neither is only recorded.
+type WebViewFailure struct {
+	Boundary   WebViewBoundary
+	Detail     string
+	Reloadable bool
+	Fatal      bool
+}
+
+// webErrorOperationCanceled is COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED:
+// the navigation policy (or a superseding navigation) cancelled the load. That
+// is a decision, not a failure.
+const webErrorOperationCanceled = 14
+
+// NavigationFailure classifies a NavigationCompleted event. It reports false
+// for a successful load and for a deliberately cancelled one.
+func NavigationFailure(success bool, webErrorStatus int32) (WebViewFailure, bool) {
+	if success || webErrorStatus == webErrorOperationCanceled {
+		return WebViewFailure{}, false
+	}
+	return WebViewFailure{Boundary: BoundaryNavigation, Reloadable: true,
+		Detail: fmt.Sprintf("navigation failed (WebView2 web error status %d)", webErrorStatus)}, true
+}
+
+// ProcessFailure classifies a ProcessFailed event by its
+// COREWEBVIEW2_PROCESS_FAILED_KIND. Renderer, frame-renderer and GPU process
+// failures are repaired by reloading; a browser process exit needs a new
+// WebView2 environment, which only restarting the shell provides; helper
+// process exits are recorded without user-visible action.
+func ProcessFailure(kind uint32) WebViewFailure {
+	f := WebViewFailure{Boundary: BoundaryProcess}
+	switch kind {
+	case 0:
+		f.Detail, f.Fatal = "the WebView2 browser process exited", true
+	case 1:
+		f.Detail, f.Reloadable = "the WebView2 render process exited", true
+	case 2:
+		f.Detail, f.Reloadable = "the WebView2 render process is unresponsive", true
+	case 3:
+		f.Detail, f.Reloadable = "a WebView2 frame render process exited", true
+	case 6:
+		f.Detail, f.Reloadable = "the WebView2 GPU process exited", true
+	default:
+		f.Detail = fmt.Sprintf("a WebView2 helper process failed (kind %d)", kind)
+	}
+	return f
+}
+
+// ControllerFailure is a fatal failure creating or configuring the WebView2
+// controller.
+func ControllerFailure(err error) WebViewFailure {
+	return WebViewFailure{Boundary: BoundaryController, Fatal: true, Detail: err.Error()}
+}
+
+// FailureResponse is what the native shell must do about a reported failure.
+type FailureResponse struct {
+	Reload  bool   // navigate the window to its dashboard URL again
+	Notify  bool   // tell the user through a native surface, not the page
+	Message string // actionable text for Notify
+}
+
+// FailureTracker turns WebView2 failures into bounded, deterministic actions
+// so a renderer or navigation failure is never only a blank window and never
+// an endless reload loop: at most MaxReloads reloads, then one notification.
+// The budget resets only after StableAfter passes without a failure.
+type FailureTracker struct {
+	MaxReloads  int           // 0 selects 3
+	StableAfter time.Duration // 0 selects 2 minutes
+	Now         func() time.Time
+
+	mu       sync.Mutex
+	reloads  int
+	last     time.Time
+	notified bool
+	recent   []WebViewFailure
+}
+
+const maxRecentFailures = 16
+
+// Report records f and decides the response.
+func (t *FailureTracker) Report(f WebViewFailure) FailureResponse {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	limit, stable, now := t.MaxReloads, t.StableAfter, time.Now
+	if limit <= 0 {
+		limit = 3
+	}
+	if stable <= 0 {
+		stable = 2 * time.Minute
+	}
+	if t.Now != nil {
+		now = t.Now
+	}
+	at := now()
+	if !t.last.IsZero() && at.Sub(t.last) >= stable {
+		t.reloads, t.notified = 0, false
+	}
+	t.last = at
+	if t.recent = append(t.recent, f); len(t.recent) > maxRecentFailures {
+		t.recent = t.recent[len(t.recent)-maxRecentFailures:]
+	}
+	switch {
+	case f.Reloadable && t.reloads < limit:
+		t.reloads++
+		return FailureResponse{Reload: true}
+	case f.Fatal || f.Reloadable:
+		if t.notified {
+			return FailureResponse{}
+		}
+		t.notified = true
+		return FailureResponse{Notify: true, Message: "Hachidori cannot display its window: " + f.Detail + ". " +
+			"The runtime is not affected. Quit Hachidori from the tray icon and start it again, " +
+			"or run 'hachidori dashboard' and open the printed loopback URL in a browser."}
+	}
+	return FailureResponse{}
+}
+
+// Recent returns the most recent recorded failures, oldest first.
+func (t *FailureTracker) Recent() []WebViewFailure {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]WebViewFailure(nil), t.recent...)
 }

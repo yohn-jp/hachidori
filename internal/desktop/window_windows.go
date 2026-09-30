@@ -32,6 +32,7 @@ var (
 	procPostMessageW     = user32.NewProc("PostMessageW")
 	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
 	procLoadCursorW      = user32.NewProc("LoadCursorW")
+	procIsWindowVisible  = user32.NewProc("IsWindowVisible")
 )
 
 const (
@@ -53,6 +54,7 @@ const (
 	wmTray     = 0x8000 + 1 // tray icon callback (WM_APP+1)
 	wmRefresh  = 0x8000 + 2 // application state may have changed
 	wmQuitReq  = 0x8000 + 3 // end the session (context cancelled)
+	wmReload   = 0x8000 + 4 // bounded WebView2 reload after a renderer/navigation failure
 	trayNotice = "Hachidori keeps running in the tray. Use the tray icon to open it, or choose Quit Hachidori to exit."
 )
 
@@ -97,6 +99,12 @@ type shell struct {
 	activateMsg uint32 // registered per-user activate message
 	taskbarMsg  uint32 // "TaskbarCreated": explorer restarted, re-add the icon
 	lastLevel   Level
+
+	// WebView2 failure boundary: every failure after the environment was
+	// created is recorded, retried a bounded number of times by reloading
+	// the loopback dashboard, and then surfaced natively.
+	failures FailureTracker
+	navURL   string
 }
 
 var (
@@ -136,6 +144,12 @@ func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 	case wmQuitReq:
 		if s != nil {
 			s.quit()
+		}
+		return 0
+	case wmReload:
+		if s != nil && s.chromium != nil && !s.closed {
+			fmt.Fprintf(os.Stderr, "hachidori: WebView2 reload: %s\n", s.navURL)
+			s.chromium.Navigate(s.navURL)
 		}
 		return 0
 	case wmTray:
@@ -186,6 +200,39 @@ func (s *shell) onClose() {
 	}
 	s.perform(s.res.OnClose())
 }
+
+// webViewFailed records a WebView2 failure and carries out the bounded
+// response: a reload (posted, never run inside the WebView2 event), or a
+// native notification when reloading cannot help. It runs on the UI thread.
+func (s *shell) webViewFailed(f WebViewFailure) {
+	fmt.Fprintf(os.Stderr, "hachidori: WebView2 %s failure: %s\n", f.Boundary, f.Detail)
+	r := s.failures.Report(f)
+	if r.Reload {
+		procPostMessageW.Call(s.hwnd, wmReload, 0, 0)
+	}
+	if r.Notify {
+		s.notifyFailure(r.Message)
+	}
+}
+
+// notifyFailure makes a display failure visible outside the web page: a tray
+// balloon, and a message box when the window is showing (so the user is not
+// left looking at a blank surface). The message box runs off the UI thread.
+func (s *shell) notifyFailure(msg string) {
+	fmt.Fprintln(os.Stderr, "hachidori:", msg)
+	if s.tray.added {
+		s.tray.balloon("Hachidori cannot display its window", msg)
+	}
+	if v, _, _ := procIsWindowVisible.Call(s.hwnd); v != 0 {
+		go native{}.ReportError("Hachidori", msg)
+	}
+}
+
+// navigation completed event args: IUnknown (0-2), get_IsSuccess, get_WebErrorStatus.
+const (
+	slotNavDoneGetIsSuccess      = 3
+	slotNavDoneGetWebErrorStatus = 4
+)
 
 // quit ends the desktop session: the WebView2 controller and tray icon are
 // released and the window is destroyed, which ends the message loop. Open then
@@ -345,7 +392,7 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	if hwnd == 0 {
 		return fmt.Errorf("creating the window: %w", e)
 	}
-	s.hwnd = hwnd
+	s.hwnd, s.navURL = hwnd, w.URL
 	s.tray.hwnd = hwnd
 	s.tray.icon = uintptr(wc.IconSm)
 
@@ -373,18 +420,41 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	// The binding reports fatal WebView2 errors through this callback and
 	// then exits the process; say why before it does.
 	c.SetErrorCallback(func(err error) {
-		fmt.Fprintln(os.Stderr, "hachidori: WebView2 failure:", err)
+		// Controller/environment failures. The binding exits the process
+		// after most of these, so report natively first (a launch with no
+		// console must not just disappear) and end the window session for
+		// the ones that return.
+		f := ControllerFailure(err)
+		fmt.Fprintf(os.Stderr, "hachidori: WebView2 %s failure: %s\n", f.Boundary, f.Detail)
+		s.failures.Report(f)
+		native{}.ReportError("Hachidori", "WebView2 failed: "+f.Detail+". "+
+			"Quit Hachidori and start it again, or run 'hachidori dashboard' and open the printed loopback URL in a browser.")
+		if s.hwnd != 0 {
+			procPostMessageW.Call(s.hwnd, wmQuitReq, 0, 0)
+		}
 	})
-	c.NavigationCompletedCallback = func(_ *edge.ICoreWebView2, _ *edge.ICoreWebView2NavigationCompletedEventArgs) {
-		fmt.Fprintf(os.Stderr, "hachidori: WebView2 navigation completed: %s\n", w.URL)
+	c.NavigationCompletedCallback = func(_ *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
+		var ok, status int32
+		hrOK := comCall(unsafe.Pointer(args), slotNavDoneGetIsSuccess, uintptr(unsafe.Pointer(&ok)))
+		hrSt := comCall(unsafe.Pointer(args), slotNavDoneGetWebErrorStatus, uintptr(unsafe.Pointer(&status)))
+		if hrOK != sOK || hrSt != sOK {
+			fmt.Fprintf(os.Stderr, "hachidori: WebView2 navigation completed (result unreadable: %v, %v): %s\n", hrOK.errno(), hrSt.errno(), w.URL)
+			return
+		}
+		if f, failed := NavigationFailure(ok != 0, status); failed {
+			s.webViewFailed(f)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "hachidori: WebView2 navigation completed: success=%v status=%d %s\n", ok != 0, status, w.URL)
 	}
 	c.ProcessFailedCallback = func(_ *edge.ICoreWebView2, args *edge.ICoreWebView2ProcessFailedEventArgs) {
 		kind, err := args.GetProcessFailedKind()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "hachidori: WebView2 process failure:", err)
+			s.webViewFailed(WebViewFailure{Boundary: BoundaryProcess, Reloadable: true,
+				Detail: "a WebView2 process failed (kind unreadable: " + err.Error() + ")"})
 			return
 		}
-		fmt.Fprintf(os.Stderr, "hachidori: WebView2 process failure: kind=%d\n", kind)
+		s.webViewFailed(ProcessFailure(uint32(kind)))
 	}
 	// The dashboard needs no camera, microphone, geolocation, clipboard or
 	// notification permission.
@@ -393,6 +463,9 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 		return errors.New("embedding WebView2 in the window failed")
 	}
 	s.controller = c.GetController()
+	if s.controller == nil {
+		return errors.New("WebView2 controller was not created")
+	}
 	webview, err := s.controller.GetCoreWebView2()
 	if err != nil {
 		return err

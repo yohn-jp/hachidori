@@ -12,6 +12,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
 // SetupFunc materializes and activates the runtime under root. It must call
@@ -71,6 +72,34 @@ func (o *Operation) clone() *Operation {
 	return &c
 }
 
+// Recovery states. They are additive to State: a Recovery is only present
+// while the application is recovering from, or has given up after, an
+// unexpected exit of the resident worker.
+const (
+	// RecoveryRecovering: the supervisor is restarting a worker that exited
+	// unexpectedly. Attempts are bounded by the supervisor's restart policy.
+	RecoveryRecovering = "recovering"
+	// RecoveryGaveUp: the bounded automatic recovery is exhausted (or the
+	// restart attempt itself failed). Nothing restarts until the operator
+	// acts; the state is Failed / Needs attention.
+	RecoveryGaveUp = "gave_up"
+)
+
+// Recovery describes recovery from an unexpected worker exit. It is derived
+// from the supervisor's status, never from a second restart counter, and it
+// is never present for an operator Stop/Restart/Quit or a startup failure.
+type Recovery struct {
+	State string `json:"state"`
+	// Restarts is the number of automatic restarts the supervisor has made in
+	// its current window. The window is the only automatic reset: it expires
+	// after a stable interval without another exit. An operator Start or
+	// Restart after RecoveryGaveUp binds a fresh supervisor, which is the
+	// explicit-operator reset.
+	Restarts int      `json:"restarts"`
+	Cause    *Failure `json:"cause,omitempty"`
+	Message  string   `json:"message"`
+}
+
 // Snapshot is the application view at one instant.
 type Snapshot struct {
 	State     State          `json:"state"`
@@ -79,6 +108,12 @@ type Snapshot struct {
 	Last      *Operation     `json:"last_operation,omitempty"` // most recently finished
 	Failure   *Failure       `json:"failure,omitempty"`        // set iff State is Failed
 	Status    *server.Status `json:"status,omitempty"`         // the /v1/status document, when a runtime is bound
+	// Recovery is set while an unexpected worker exit is being recovered or
+	// recovery gave up. OperatorStopped is set while the worker is down
+	// because the operator chose Stop (or Quit), so the two are never
+	// confused.
+	Recovery        *Recovery `json:"recovery,omitempty"`
+	OperatorStopped bool      `json:"operator_stopped,omitempty"`
 }
 
 // Controller orchestrates the application actions over the existing
@@ -107,8 +142,12 @@ type Controller struct {
 	opDone chan struct{}
 	last   *Operation
 	closed bool
-	subs   map[int]chan struct{}
-	nextID int
+	// stopped is set when the operator stopped the worker (Stop or Restart's
+	// stop, Close) and cleared by the next Start/Restart. It is what
+	// distinguishes an operator Stop from a crash.
+	stopped bool
+	subs    map[int]chan struct{}
+	nextID  int
 }
 
 // New creates a controller. It starts nothing.
@@ -140,7 +179,7 @@ func cleanHome(root string) string {
 // Snapshot projects the current application state from the authorities.
 func (c *Controller) Snapshot() Snapshot {
 	c.mu.Lock()
-	root, rt := c.home, c.rt
+	root, rt, stopped := c.home, c.rt, c.stopped
 	op, last := c.op.clone(), c.last.clone()
 	c.mu.Unlock()
 
@@ -164,7 +203,48 @@ func (c *Controller) Snapshot() Snapshot {
 		installed = c.cfg.Installed(root)
 	}
 	s.State, s.Failure = project(root, kind, running, s.Status, lastFail, installed)
+	s.OperatorStopped = stopped && !running && kind == ""
+	if !s.OperatorStopped {
+		s.Recovery = recoveryOf(kind, running, s.Status)
+	}
 	return s
+}
+
+// recoveryOf derives the recovery view from the supervisor's status. Only an
+// exit after the worker was READY counts (a restart in progress, a spent
+// restart budget, or a post-start failure class); startup failures such as a
+// missing device are deterministic and reported as plain failures. It is
+// absent while an application action is in flight.
+func recoveryOf(op string, running bool, st *server.Status) *Recovery {
+	if op != "" || st == nil {
+		return nil
+	}
+	w := st.Worker
+	var cause *Failure
+	if w.LastFailure != nil {
+		cause = workerFailure(w.LastFailure)
+	}
+	switch {
+	case running && w.State == worker.StateRestarting:
+		return &Recovery{State: RecoveryRecovering, Restarts: w.Restarts, Cause: cause,
+			Message: "The worker exited unexpectedly and is being restarted automatically."}
+	case w.State == worker.StateFailed && (w.Restarts > 0 || unexpectedExit(w.LastFailure)):
+		return &Recovery{State: RecoveryGaveUp, Restarts: w.Restarts, Cause: cause,
+			Message: "The worker kept exiting unexpectedly and automatic restarts have stopped. " +
+				"Read the failure, then choose Restart Runtime. The requested device is unchanged; there is no fallback to another device."}
+	}
+	return nil
+}
+
+func unexpectedExit(f *worker.FailureView) bool {
+	if f == nil {
+		return false
+	}
+	switch f.Class {
+	case worker.ClassCrash, worker.ClassUnresponsive, worker.ClassProtocolError:
+		return true
+	}
+	return false
 }
 
 // Subscribe returns a channel that receives a (coalesced) signal whenever a
@@ -227,7 +307,7 @@ func (c *Controller) SetHome(root string) error {
 	if c.rt != nil && c.rt.Running() {
 		return ErrRuntimeBusy
 	}
-	c.home, c.rt, c.last = cleanHome(root), nil, nil
+	c.home, c.rt, c.last, c.stopped = cleanHome(root), nil, nil, false
 	c.notify()
 	return nil
 }
@@ -314,11 +394,20 @@ func (c *Controller) run(kind string) error {
 		c.mu.Unlock()
 		return nil
 	}
+	if rt != nil && !rt.Running() && rt.Status().Worker.State == worker.StateFailed {
+		// The supervisor gave up (its restart budget is spent or a start
+		// failed). An explicit operator Start/Restart begins from a fresh
+		// supervisor, so the bounded budget resets by operator action and
+		// only then. The same active runtime (and so the same requested
+		// device) is reopened; nothing is set up or changed.
+		rt = nil
+	}
 	if rt == nil && !c.cfg.Installed(c.home) {
 		c.mu.Unlock()
 		return ErrNotInstalled
 	}
 	op := c.begin(kind, "", "")
+	c.stopped = false
 	root := c.home
 	c.mu.Unlock()
 
@@ -371,6 +460,7 @@ func (c *Controller) Stop() error {
 	c.mu.Unlock()
 	rt.Stop()
 	c.mu.Lock()
+	c.stopped = true
 	c.finish(op, nil)
 	c.mu.Unlock()
 	return nil
@@ -382,6 +472,7 @@ func (c *Controller) Stop() error {
 func (c *Controller) Close(ctx context.Context) error {
 	c.mu.Lock()
 	c.closed = true
+	c.stopped = true
 	done, op := c.opDone, c.op.clone()
 	c.mu.Unlock()
 	if done != nil {
