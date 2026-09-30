@@ -17,7 +17,6 @@ func TestNormalizeHRESULTUsesCOM32BitDomain(t *testing.T) {
 	}
 }
 
-
 func TestFileOpenDialogIIDMatchesWindowsSDK(t *testing.T) {
 	want := [8]byte{0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60}
 	if iidFileOpenDialog.Data1 != 0xD57C7288 ||
