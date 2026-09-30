@@ -177,6 +177,9 @@ func (d *Dashboard) errorsPick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := d.errView(r.PostForm)
+	// Keep what was typed; a cancelled choice leaves it as it was.
+	v.OpenPath = strings.TrimSpace(r.PostFormValue("path"))
+	v.Export = strings.TrimSpace(r.PostFormValue("export_path"))
 	if d.cfg.PathPicker == nil {
 		v.Err = "native path selection is unavailable"
 		d.renderView(w, "errors", v)

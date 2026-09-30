@@ -31,7 +31,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/diagnostics"
 	"github.com/yohn-jp/hachidori/internal/history"
 	"github.com/yohn-jp/hachidori/internal/home"
@@ -54,6 +53,7 @@ type Lifecycle interface {
 
 // PathPicker is the optional desktop capability used by workstation file
 // workflows. Browser hosted dashboards leave it nil and retain typed paths.
+// A dismissed dialog returns ErrPickCancelled.
 type PathPicker interface {
 	PickOpen(context.Context, string) (string, error)
 	PickSave(context.Context, string) (string, error)
@@ -282,7 +282,11 @@ func (c Config) hasSettings() bool {
 	return c.Settings != nil || c.Desktop != nil || c.Connections != nil || c.Models != nil
 }
 
-func pickWasCancelled(err error) bool { return errors.Is(err, desktop.ErrPickCancelled) }
+// ErrPickCancelled is a PathPicker's answer when the operator dismisses the
+// dialog; it is intent, not a failure.
+var ErrPickCancelled = errors.New("path selection cancelled")
+
+func pickWasCancelled(err error) bool { return errors.Is(err, ErrPickCancelled) }
 
 // New builds the dashboard.
 func New(cfg Config) *Dashboard {

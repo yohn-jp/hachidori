@@ -3,6 +3,7 @@ package dashboard
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -524,5 +525,35 @@ func TestNavigationLinksWorkbench(t *testing.T) {
 	}
 	if strings.Contains(wb, `id="refresh"`) {
 		t.Error("workbench page polls live status")
+	}
+}
+
+func TestWorkbenchPickKeepsEditorState(t *testing.T) {
+	e, f := newWorkbenchEnv(t)
+	p := &fakePathPicker{path: "/defs/chosen.json"}
+	withPathPicker(e, p)
+	v := form("state", []string{"scope", "Is it in scope?", "yes", "no"})
+	body := e.post(t, "/workbench", with(v, "op", "pick-load")).Body.String()
+	for _, s := range []string{`name="load_path" value="/defs/chosen.json"`, `name="q0.id" value="scope"`, "Is it in scope?</textarea>"} {
+		if !strings.Contains(body, s) {
+			t.Errorf("load pick: page lacks %q", s)
+		}
+	}
+	dir := t.TempDir()
+	p.path = filepath.Join(dir, "out.json")
+	body = e.post(t, "/workbench", with(v, "op", "pick-export:0")).Body.String()
+	if !strings.Contains(body, `name="q0.export_path" value="`+p.path+`"`) || p.calls[1] != "save" {
+		t.Error("export pick did not fill the destination")
+	}
+	if _, err := os.Stat(p.path); !os.IsNotExist(err) {
+		t.Fatal("choosing a destination wrote the file")
+	}
+	p.err = errors.New("dialog broke")
+	body = e.post(t, "/workbench", with(v, "op", "pick-load")).Body.String()
+	if !strings.Contains(body, "choosing a Question Definition: dialog broke") || !strings.Contains(body, `name="q0.id" value="scope"`) {
+		t.Error("picker failure lost the editor or its error")
+	}
+	if paths, _ := f.calls(); len(paths) != 0 {
+		t.Fatalf("picking reached the endpoint: %v", paths)
 	}
 }

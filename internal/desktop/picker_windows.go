@@ -13,9 +13,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// NativePicker returns the Windows folder picker: the common item dialog
-// (IFileOpenDialog with FOS_PICKFOLDERS), i.e. the normal Windows folder
-// chooser. It is not a custom file browser.
+// NativePicker returns the Windows picker: the common item dialogs
+// (IFileOpenDialog, with FOS_PICKFOLDERS for folders, and IFileSaveDialog).
+// It also implements PathPicker. It is not a custom file browser.
 func NativePicker() FolderPicker { return winPicker{} }
 
 type winPicker struct{}
@@ -40,9 +40,11 @@ const (
 	slotDialogResult   = 20
 	slotItemDisplay    = 5
 
+	fosOverwritePrompt         = 0x2
 	fosPickFolders             = 0x20
 	fosForceFileSystem         = 0x40
 	fosPathMustExist           = 0x800
+	fosFileMustExist           = 0x1000
 	sigdnFileSysPath           = 0x80058000
 	hrCancelled        hresult = 0x800704C7
 )
@@ -73,7 +75,7 @@ func runDialog(ctx context.Context, show func(uintptr) (string, error)) (string,
 		case err == nil, errors.Is(err, syscall.Errno(1)):
 			defer windows.CoUninitialize()
 		default:
-			ch <- result{err: fmt.Errorf("initializing COM for the folder picker: %w", err)}
+			ch <- result{err: fmt.Errorf("initializing COM for the native picker: %w", err)}
 			return
 		}
 		p, err := show(ownerWindow())
@@ -106,8 +108,12 @@ func showFileDialog(title string, owner uintptr, save bool) (string, error) {
 		return "", hr.errno()
 	}
 	opts |= fosForceFileSystem
-	if !save {
-		opts |= fosPathMustExist
+	if save {
+		// Choosing a destination writes nothing; the exporter's
+		// never-overwrite check decides, so do not offer to replace a file.
+		opts &^= fosOverwritePrompt
+	} else {
+		opts |= fosPathMustExist | fosFileMustExist
 	}
 	if hr := comCall(dlg, slotDialogSetOpts, uintptr(opts)); hr != sOK {
 		return "", hr.errno()

@@ -3,6 +3,7 @@ package dashboard
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -829,5 +830,113 @@ func TestDiagnosticsExportRecordsWebView2Version(t *testing.T) {
 	facts := bundleFiles(t, e.home)["facts.json"]
 	if !bytes.Contains(facts, []byte(`"version": "154.0.4258.37"`)) || !bytes.Contains(facts, []byte(`"recovery": ""`)) {
 		t.Errorf("facts lack WebView2 version / recovery state:\n%s", facts)
+	}
+}
+
+// fakePathPicker answers every native choice with path, or err.
+type fakePathPicker struct {
+	path  string
+	err   error
+	calls []string
+}
+
+func (p *fakePathPicker) pick(kind string) (string, error) {
+	p.calls = append(p.calls, kind)
+	return p.path, p.err
+}
+func (p *fakePathPicker) PickOpen(context.Context, string) (string, error)   { return p.pick("open") }
+func (p *fakePathPicker) PickSave(context.Context, string) (string, error)   { return p.pick("save") }
+func (p *fakePathPicker) PickFolder(context.Context, string) (string, error) { return p.pick("folder") }
+
+func withPathPicker(e *env, p PathPicker) {
+	cfg := e.d.cfg
+	cfg.PathPicker = p
+	e.d = New(cfg)
+}
+
+func TestPathPickerButtonsOnlyInDesktopComposition(t *testing.T) {
+	pages := []string{"/workbench", "/experiments", "/errors"}
+	e := newEnv(t)
+	for _, p := range pages {
+		body := e.get(t, p).Body.String()
+		if strings.Contains(body, "/pick") || strings.Contains(body, "pick-load") || strings.Contains(body, `C:\`) {
+			t.Errorf("browser %s shows native picker actions or a Windows example path", p)
+		}
+		if !strings.Contains(body, "absolute path") {
+			t.Errorf("browser %s lost typed path entry", p)
+		}
+	}
+	for _, p := range []string{"/experiments/pick", "/errors/pick"} {
+		if body := e.post(t, p, url.Values{"pick": {"dataset"}}).Body.String(); !strings.Contains(body, "native path selection is unavailable") {
+			t.Errorf("%s without a picker: %s", p, body)
+		}
+	}
+	withPathPicker(e, &fakePathPicker{})
+	for _, p := range pages {
+		body := e.get(t, p).Body.String()
+		if !strings.Contains(body, "Choose file") || !strings.Contains(body, "formnovalidate") {
+			t.Errorf("desktop %s lacks native picker actions", p)
+		}
+	}
+	if body := e.post(t, "/experiments/pick", url.Values{"token": {"stale"}, "pick": {"dataset"}}); body.Code != http.StatusForbidden {
+		t.Errorf("stale token pick = %d", body.Code)
+	}
+}
+
+func TestExperimentsPickKeepsTheForm(t *testing.T) {
+	e := newEnv(t)
+	p := &fakePathPicker{path: "/data/chosen"}
+	withPathPicker(e, p)
+	typed := url.Values{"dataset": {"/data/typed.jsonl"}, "definitions": {"/defs/a.json"}, "warmup": {"2"}, "passes": {"3"}}
+	posted := func(kind string) url.Values {
+		v := url.Values{"pick": {kind}}
+		for k, vs := range typed {
+			v[k] = vs
+		}
+		return v
+	}
+
+	body := e.post(t, "/experiments/pick", posted("dataset")).Body.String()
+	for _, s := range []string{`name="dataset" value="/data/chosen"`, "/defs/a.json</textarea>", `name="warmup" value="2"`, `name="passes" value="3"`} {
+		if !strings.Contains(body, s) {
+			t.Errorf("dataset pick: form lacks %q", s)
+		}
+	}
+	body = e.post(t, "/experiments/pick", posted("definition-file")).Body.String()
+	if !strings.Contains(body, "/defs/a.json\n/data/chosen</textarea>") {
+		t.Error("definition file pick replaced the definitions already entered")
+	}
+	body = e.post(t, "/experiments/pick", posted("definition-folder")).Body.String()
+	if !strings.Contains(body, "/defs/a.json\n/data/chosen</textarea>") || p.calls[len(p.calls)-1] != "folder" {
+		t.Error("definition folder pick did not append a folder")
+	}
+
+	p.err = ErrPickCancelled
+	body = e.post(t, "/experiments/pick", posted("dataset")).Body.String()
+	if !strings.Contains(body, `name="dataset" value="/data/typed.jsonl"`) || strings.Contains(body, "choosing a path") {
+		t.Error("cancellation changed the form or reported a failure")
+	}
+	p.err = errors.New("dialog broke")
+	body = e.post(t, "/experiments/pick", posted("dataset")).Body.String()
+	if !strings.Contains(body, `name="dataset" value="/data/typed.jsonl"`) || !strings.Contains(body, "choosing a path: dialog broke") {
+		t.Error("picker failure lost the form or its error")
+	}
+}
+
+func TestErrorsPickFillsPathsWithoutOpeningOrWriting(t *testing.T) {
+	e := newEnv(t)
+	p := &fakePathPicker{path: "/reports/chosen.json"}
+	withPathPicker(e, p)
+	body := e.post(t, "/errors/pick", url.Values{"pick": {"open"}}).Body.String()
+	if !strings.Contains(body, `name="path" value="/reports/chosen.json"`) || p.calls[0] != "open" {
+		t.Errorf("open pick did not fill the report path")
+	}
+	p.err = ErrPickCancelled
+	body = e.post(t, "/errors/pick", url.Values{"pick": {"open"}, "path": {"/typed.json"}}).Body.String()
+	if strings.Contains(body, "choosing a path") || !strings.Contains(body, `name="path" value="/typed.json"`) {
+		t.Error("cancelled open pick reported a failure or lost the typed path")
+	}
+	if _, err := os.Stat("/reports/chosen.json"); err == nil {
+		t.Fatal("unexpected file")
 	}
 }

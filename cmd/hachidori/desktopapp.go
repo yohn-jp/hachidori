@@ -333,11 +333,35 @@ func (a *desktopApp) run() error {
 	return err
 }
 
+// dashboardPathPicker exposes the native picker to the dashboard when it can
+// choose files, translating a dismissed dialog to the dashboard's
+// cancellation. A folder-only picker leaves typed paths.
 func dashboardPathPicker(p desktop.FolderPicker) dashboard.PathPicker {
-	if picker, ok := p.(dashboard.PathPicker); ok {
-		return picker
+	if picker, ok := p.(desktop.PathPicker); ok {
+		return pathPicker{picker}
 	}
 	return nil
+}
+
+type pathPicker struct{ p desktop.PathPicker }
+
+func pickResult(path string, err error) (string, error) {
+	if errors.Is(err, desktop.ErrPickCancelled) {
+		return "", dashboard.ErrPickCancelled
+	}
+	return path, err
+}
+
+func (a pathPicker) PickOpen(ctx context.Context, title string) (string, error) {
+	return pickResult(a.p.PickOpen(ctx, title))
+}
+
+func (a pathPicker) PickSave(ctx context.Context, title string) (string, error) {
+	return pickResult(a.p.PickSave(ctx, title))
+}
+
+func (a pathPicker) PickFolder(ctx context.Context, title string) (string, error) {
+	return pickResult(a.p.PickFolder(ctx, title))
 }
 
 // modelManager adapts the application controller to the dashboard's Models

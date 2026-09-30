@@ -359,7 +359,14 @@ func (d *Dashboard) expView() expView {
 
 func (d *Dashboard) experimentsPick(w http.ResponseWriter, r *http.Request) {
 	v := d.expPageView()
-	v.Form = postedForm(r)
+	pick := r.PostFormValue("pick")
+	if pick == "export" {
+		// The export form carries only the destination, like
+		// experimentsExport; the run form state stays as shown.
+		v.Form.ExportPath = strings.TrimSpace(r.PostFormValue("export_path"))
+	} else {
+		v.Form = postedForm(r)
+	}
 	if d.cfg.PathPicker == nil {
 		v.Err = "native path selection is unavailable"
 		d.renderView(w, "experiments", v)
@@ -369,38 +376,39 @@ func (d *Dashboard) experimentsPick(w http.ResponseWriter, r *http.Request) {
 		path string
 		err  error
 	)
-	switch r.PostFormValue("pick") {
+	switch pick {
 	case "dataset":
-		path, err = d.cfg.PathPicker.PickOpen(r.Context(), "Choose a dataset")
+		if path, err = d.cfg.PathPicker.PickOpen(r.Context(), "Choose a dataset"); err == nil {
+			v.Form.Dataset = path
+		}
 	case "definition-file":
-		path, err = d.cfg.PathPicker.PickOpen(r.Context(), "Choose a Question Definition")
-		if err == nil {
-			v.Form.Definitions = path
+		if path, err = d.cfg.PathPicker.PickOpen(r.Context(), "Choose a Question Definition"); err == nil {
+			v.Form.Definitions = appendLine(v.Form.Definitions, path)
 		}
 	case "definition-folder":
-		path, err = d.cfg.PathPicker.PickFolder(r.Context(), "Choose a Question Definition folder")
-		if err == nil {
-			if v.Form.Definitions == "" {
-				v.Form.Definitions = path
-			} else {
-				v.Form.Definitions += "\n" + path
-			}
+		if path, err = d.cfg.PathPicker.PickFolder(r.Context(), "Choose a Question Definition folder"); err == nil {
+			v.Form.Definitions = appendLine(v.Form.Definitions, path)
 		}
 	case "export":
-		path, err = d.cfg.PathPicker.PickSave(r.Context(), "Choose where to save the experiment report")
-		if err == nil {
+		if path, err = d.cfg.PathPicker.PickSave(r.Context(), "Choose where to save the experiment report"); err == nil {
 			v.Form.ExportPath = path
 		}
 	default:
 		v.Err = "unknown native picker operation"
 	}
-	if err == nil && r.PostFormValue("pick") == "dataset" {
-		v.Form.Dataset = path
-	}
 	if err != nil && !pickWasCancelled(err) {
 		v.Err = "choosing a path: " + err.Error()
 	}
 	d.renderView(w, "experiments", v)
+}
+
+// appendLine adds one chosen path to a one-per-line list, keeping the paths
+// already entered.
+func appendLine(list, line string) string {
+	if strings.TrimSpace(list) == "" {
+		return line
+	}
+	return strings.TrimRight(list, "\n") + "\n" + line
 }
 
 // expPageView is expView plus the saved-history listing. Listing reads the
