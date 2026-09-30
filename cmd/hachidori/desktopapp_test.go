@@ -14,8 +14,34 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
 )
+
+// The settings authority composes the existing desktop preferences (an existing
+// desktop.json keeps working) and stores runtime defaults beside it without
+// rewriting desktop.json.
+func TestSettingsStoreComposesDesktopPrefs(t *testing.T) {
+	dir := t.TempDir()
+	prefs := filepath.Join(dir, "desktop.json")
+	legacy := `{"schema":"hachidori.desktop/1","start_minimized":true,"close_notice_shown":true}`
+	if err := os.WriteFile(prefs, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := settingsStore(prefs, &desktop.Manager{Path: prefs})
+	if _, min, err := st.Prefs(); err != nil || !min {
+		t.Fatalf("start minimized %v %v", min, err)
+	}
+	if err := st.SetDefaults(settings.Defaults{Device: "cpu", Model: setup.DefaultModel}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "settings.json")); err != nil {
+		t.Fatalf("settings.json not beside desktop.json: %v", err)
+	}
+	if b, _ := os.ReadFile(prefs); string(b) != legacy {
+		t.Fatalf("saving defaults rewrote desktop.json: %s", b)
+	}
+}
 
 // Proof 11 and 12: explicit commands stay CLI commands and the no-argument
 // desktop is reachable only through the platform hook.

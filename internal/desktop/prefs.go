@@ -43,6 +43,15 @@ func PrefsPath() (string, error) {
 	return filepath.Join(filepath.Dir(l.Path), "desktop.json"), nil
 }
 
+// SettingsPath is the application settings file (settings.json) that lives
+// beside the given desktop preferences file. Empty stays empty (in memory).
+func SettingsPath(prefsPath string) string {
+	if prefsPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(prefsPath), "settings.json")
+}
+
 // Manager owns the desktop preferences: the startup entry (through Startup)
 // and the small preferences file. Every operation is idempotent.
 type Manager struct {
