@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -314,7 +315,11 @@ func TestInventoryNeedsHome(t *testing.T) {
 		t.Fatalf("remove without home: %v", err)
 	}
 	e := newMaintEnv(t)
-	if _, err := e.c.Inventory(true); err != nil || !slices.Equal(e.called(), []string{"inspect /h"}) {
+	home, err := filepath.Abs("/h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.c.Inventory(true); err != nil || !slices.Equal(e.called(), []string{"inspect " + filepath.Clean(home)}) {
 		t.Fatalf("inventory: %v %v", err, e.called())
 	}
 }
