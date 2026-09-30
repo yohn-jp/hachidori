@@ -1,7 +1,7 @@
 {{/* ---- Experiments: how well does it perform? ---- */}}
 {{define "experiments"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>Experiments</h1><p class="lede">Evaluate the resident model on a labelled dataset. Evaluation runs caller-side in this process; expected labels never leave it.</p></div>
+  <div><h1>{{t "Experiments"}}</h1><p class="lede">{{t "Evaluate the resident model on a labelled dataset. Evaluation runs caller-side in this process; expected labels never leave it."}}</p></div>
   <span class="ws-meta mono">{{.Endpoint}}</span>
 </header>
 {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
@@ -10,48 +10,48 @@
 <div class="slot" data-live="experiment">{{template "experiment" .}}</div>
 
 <section class="region" aria-labelledby="setup-h">
-  <div class="region-h"><h2 id="setup-h">{{if .Exp}}New experiment{{else}}Set up an experiment{{end}}</h2><span class="sub">one experiment at a time · nothing is stored except the reports you export or save to history</span></div>
+  <div class="region-h"><h2 id="setup-h">{{if .Exp}}{{t "New experiment"}}{{else}}{{t "Set up an experiment"}}{{end}}</h2><span class="sub">{{t "one experiment at a time · nothing is stored except the reports you export or save to history"}}</span></div>
   <form method="post" action="/experiments/run" class="surface" id="exp-form">
     <input type="hidden" name="token" value="{{.Token}}">
-    <div class="path-form"><label class="field">Dataset (JSONL, absolute path)<input name="dataset" value="{{.Form.Dataset}}" spellcheck="false" autocomplete="off" placeholder="/path/to/dataset.jsonl" required></label>{{if .PathPicker}}<button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="dataset" formnovalidate>Choose file</button>{{end}}</div>
-    <div class="field"><span>Question Definition files or directories (optional, absolute paths, one per line)</span><textarea name="definitions" rows="2" spellcheck="false">{{.Form.Definitions}}</textarea>{{if .PathPicker}}<div class="btn-row"><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-file" formnovalidate>Choose file</button><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-folder" formnovalidate>Choose folder</button></div>{{end}}</div>
+    <div class="path-form"><label class="field">{{t "Dataset (JSONL, absolute path)"}}<input name="dataset" value="{{.Form.Dataset}}" spellcheck="false" autocomplete="off" placeholder="/path/to/dataset.jsonl" required></label>{{if .PathPicker}}<button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="dataset" formnovalidate>{{t "Choose file"}}</button>{{end}}</div>
+    <div class="field"><span>{{t "Question Definition files or directories (optional, absolute paths, one per line)"}}</span><textarea name="definitions" rows="2" spellcheck="false">{{.Form.Definitions}}</textarea>{{if .PathPicker}}<div class="btn-row"><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-file" formnovalidate>{{t "Choose file"}}</button><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-folder" formnovalidate>{{t "Choose folder"}}</button></div>{{end}}</div>
     <div class="fields">
-      <label class="field">Warmup requests (excluded from latency)<input name="warmup" value="{{.Form.Warmup}}" inputmode="numeric"></label>
-      <label class="field">Passes (accuracy uses pass 1)<input name="passes" value="{{.Form.Passes}}" inputmode="numeric"></label>
+      <label class="field">{{t "Warmup requests (excluded from latency)"}}<input name="warmup" value="{{.Form.Warmup}}" inputmode="numeric"></label>
+      <label class="field">{{t "Passes (accuracy uses pass 1)"}}<input name="passes" value="{{.Form.Passes}}" inputmode="numeric"></label>
     </div>
     <div class="btn-row">
-      <button type="submit" data-run class="btn{{if not (and .Exp .Exp.Report)}} primary{{end}}"{{with .Exp}}{{if eq .State "running"}} disabled{{end}}{{end}}>Run experiment</button>
-      <button type="submit" class="btn" formaction="/experiments/preflight">Preflight only</button>
+      <button type="submit" data-run class="btn{{if not (and .Exp .Exp.Report)}} primary{{end}}"{{with .Exp}}{{if eq .State "running"}} disabled{{end}}{{end}}>{{t "Run experiment"}}</button>
+      <button type="submit" class="btn" formaction="/experiments/preflight">{{t "Preflight only"}}</button>
     </div>
-    <p class="note">The dataset and definitions are read on this machine from the paths you enter. Only each case's state and compiled questions are sent to <code>POST /v1/decide</code>.</p>
+    <p class="note">{{t "The dataset and definitions are read on this machine from the paths you enter. Only each case's state and compiled questions are sent to"}} <code>POST /v1/decide</code>.</p>
   </form>
   {{with .Pre}}
   <dl class="kv" aria-label="preflight">
-    <dt>dataset</dt><dd>{{.Input.Dataset}}</dd>
-    <dt>dataset sha256</dt><dd>{{.DatasetSHA256}}</dd>
-    <dt>cases</dt><dd>{{.Cases}}</dd>
-    <dt>questions</dt><dd>{{range $i, $q := .Questions}}{{if $i}}, {{end}}{{$q}}{{end}}</dd>
-    {{range .Definitions}}<dt>definition</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
-    <dt>requests</dt><dd>{{.Requests}} ({{.Input.Warmup}} warmup + {{.Input.Passes}} × {{.Cases}})</dd>
+    <dt>{{t "dataset"}}</dt><dd>{{.Input.Dataset}}</dd>
+    <dt>{{t "dataset sha256"}}</dt><dd>{{.DatasetSHA256}}</dd>
+    <dt>{{t "cases"}}</dt><dd>{{.Cases}}</dd>
+    <dt>{{t "questions"}}</dt><dd>{{range $i, $q := .Questions}}{{if $i}}, {{end}}{{$q}}{{end}}</dd>
+    {{range .Definitions}}<dt>{{t "definition"}}</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
+    <dt>{{t "requests"}}</dt><dd>{{.Requests}} ({{.Input.Warmup}} {{t "warmup +"}} {{.Input.Passes}} × {{.Cases}})</dd>
   </dl>
   {{end}}
 </section>
 
 {{if .HistoryOn}}
 <section class="region" aria-labelledby="hist-h">
-  <div class="region-h"><h2 id="hist-h">History</h2><span class="sub mono">{{.HistoryRoot}} · saved only when you choose to</span></div>
+  <div class="region-h"><h2 id="hist-h">{{t "History"}}</h2><span class="sub mono">{{.HistoryRoot}} {{t "· saved only when you choose to"}}</span></div>
   {{with .HistoryErr}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   {{if .History}}
-  <div class="table-wrap"><table class="data" aria-label="saved experiments"><thead><tr><th>saved</th><th>label</th><th>dataset</th><th>served model</th><th class="num">accuracy</th><th class="num">ECE</th><th class="num">p50 / p95</th><th class="num">errors</th><th></th></tr></thead><tbody>
+  <div class="table-wrap"><table class="data" aria-label="saved experiments"><thead><tr><th>{{t "saved"}}</th><th>{{t "label"}}</th><th>{{t "dataset"}}</th><th>{{t "served model"}}</th><th class="num">{{t "accuracy"}}</th><th class="num">ECE</th><th class="num">p50 / p95</th><th class="num">{{t "errors"}}</th><th></th></tr></thead><tbody>
   {{range .History}}<tr>
     <td>{{.SavedAt}}</td><td>{{.Label}}{{with .Note}}<br><span class="note">{{.}}</span>{{end}}</td>
     <td class="mono">{{.Dataset}}<br><span class="faint">sha256 {{short .DatasetSHA256}}</span></td>
-    <td class="mono">{{.ServedModel}}{{with .ServedIdentity}}<br><span class="faint">{{short .}}</span>{{end}}{{if not .ServedConsistent}}<br><span class="bad-t">inconsistent</span>{{end}}</td>
+    <td class="mono">{{.ServedModel}}{{with .ServedIdentity}}<br><span class="faint">{{short .}}</span>{{end}}{{if not .ServedConsistent}}<br><span class="bad-t">{{t "inconsistent"}}</span>{{end}}</td>
     <td class="num strong">{{f4 .Accuracy}}</td><td class="num">{{f4 .ECE}}</td><td class="num">{{ms .RequestP50MS}} / {{ms .RequestP95MS}}</td>
     <td class="num{{if .RequestErrors}} bad-t{{end}}">{{.RequestErrors}}</td>
     <td>
-      <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Open in Evidence</button></form>
-      <form method="post" action="/history/delete" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Delete</button></form>
+      <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Open in Evidence"}}</button></form>
+      <form method="post" action="/history/delete" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Delete"}}</button></form>
     </td>
   </tr>{{end}}
   </tbody></table></div>
@@ -59,17 +59,17 @@
   <form method="post" action="/history/compare" class="surface" aria-label="compare saved experiments">
     <input type="hidden" name="token" value="{{$.Token}}">
     <div class="fields">
-      <label class="field">Entry A<select name="a" required>{{range .History}}<option value="{{.ID}}"{{if eq .ID $.CompareA}} selected{{end}}>{{.SavedAt}} · {{.Label}} · {{short .EvidenceSHA256}}</option>{{end}}</select></label>
-      <label class="field">Entry B<select name="b" required>{{range .History}}<option value="{{.ID}}"{{if eq .ID $.CompareB}} selected{{end}}>{{.SavedAt}} · {{.Label}} · {{short .EvidenceSHA256}}</option>{{end}}</select></label>
+      <label class="field">{{t "Entry A"}}<select name="a" required>{{range .History}}<option value="{{.ID}}"{{if eq .ID $.CompareA}} selected{{end}}>{{.SavedAt}} · {{.Label}} · {{short .EvidenceSHA256}}</option>{{end}}</select></label>
+      <label class="field">{{t "Entry B"}}<select name="b" required>{{range .History}}<option value="{{.ID}}"{{if eq .ID $.CompareB}} selected{{end}}>{{.SavedAt}} · {{.Label}} · {{short .EvidenceSHA256}}</option>{{end}}</select></label>
     </div>
-    <div class="btn-row"><button type="submit" class="btn">Compare stored evidence</button></div>
-    <p class="note">Descriptive only: deltas are B minus A from the stored evidence. Nothing is re-run and no run is ranked.</p>
+    <div class="btn-row"><button type="submit" class="btn">{{t "Compare stored evidence"}}</button></div>
+    <p class="note">{{t "Descriptive only: deltas are B minus A from the stored evidence. Nothing is re-run and no run is ranked."}}</p>
   </form>
   {{end}}
   {{with .Compare}}{{template "compare" .}}{{end}}
-  {{else}}<p class="note">No experiment has been saved yet.</p>{{end}}
-  {{range .HistoryProblems}}<div class="msg bad" role="alert">history entry {{.ID}} cannot be read: {{.Reason}}
-    <form method="post" action="/history/delete" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">Delete</button></form></div>{{end}}
+  {{else}}<p class="note">{{t "No experiment has been saved yet."}}</p>{{end}}
+  {{range .HistoryProblems}}<div class="msg bad" role="alert">{{t "history entry"}} {{.ID}} {{t "cannot be read:"}} {{.Reason}}
+    <form method="post" action="/history/delete" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Delete"}}</button></form></div>{{end}}
 </section>
 {{end}}
 <script>
@@ -99,28 +99,28 @@
 {{define "experiment"}}{{with .Exp}}
 <section class="run {{if eq .State "succeeded"}}tone-ok{{else if eq .State "running"}}tone-active{{else}}tone-bad{{end}}" aria-labelledby="run-h"{{if eq .State "running"}} data-running="1"{{end}}>
   <div class="run-h">
-    <div><h2 id="run-h">Experiment #{{.Seq}}</h2><p class="sub mono">{{.Pre.Input.Dataset}}</p></div>
+    <div><h2 id="run-h">{{t "Experiment #"}}{{.Seq}}</h2><p class="sub mono">{{.Pre.Input.Dataset}}</p></div>
     <p class="state-word compact"><span class="dot"></span>{{.State}}</p>
   </div>
   <div>
-    <div class="progress-figures"><span class="big">{{.Done}} / {{.Pre.Requests}}</span><span class="muted">requests</span><span class="faint num">{{printf "%.0f" .Percent}}%</span></div>
+    <div class="progress-figures"><span class="big">{{.Done}} / {{.Pre.Requests}}</span><span class="muted">{{t "requests"}}</span><span class="faint num">{{printf "%.0f" .Percent}}%</span></div>
     <div class="bar progress" role="progressbar" aria-label="requests completed" aria-valuemin="0" aria-valuemax="{{.Pre.Requests}}" aria-valuenow="{{.Done}}"><span style="width:{{printf "%.1f" .Percent}}%"></span></div>
-    <p class="note">started {{when .Started}}{{if not .Finished.IsZero}} · finished {{when .Finished}}{{end}}</p>
+    <p class="note">{{t "started"}} {{when .Started}}{{if not .Finished.IsZero}} {{t "· finished"}} {{when .Finished}}{{end}}</p>
   </div>
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
 
   {{with .Report}}
   <dl class="metrics" aria-label="quality">
-    <div class="metric primary"><dt>Accuracy</dt><dd>{{f4 .ChoiceAccuracy}}</dd></div>
-    <div class="metric primary"><dt>ECE <small>15 bins</small></dt><dd>{{f4 .ECE}}</dd></div>
-    <div class="metric"><dt>Request p50 / p95</dt><dd>{{ms .RequestLatency.P50}}<small>/ {{ms .RequestLatency.P95}} · n={{.RequestLatency.N}}</small></dd></div>
-    <div class="metric"><dt>Inference p50 / p95</dt><dd>{{ms .ServerInference.P50}}<small>/ {{ms .ServerInference.P95}} · n={{.ServerInference.N}}</small></dd></div>
-    <div class="metric"><dt>Request errors</dt><dd class="{{if .Errors}}bad-t{{end}}">{{len .Errors}}</dd></div>
+    <div class="metric primary"><dt>{{t "Accuracy"}}</dt><dd>{{f4 .ChoiceAccuracy}}</dd></div>
+    <div class="metric primary"><dt>ECE <small>{{t "15 bins"}}</small></dt><dd>{{f4 .ECE}}</dd></div>
+    <div class="metric"><dt>{{t "Request p50 / p95"}}</dt><dd>{{ms .RequestLatency.P50}}<small>/ {{ms .RequestLatency.P95}} · n={{.RequestLatency.N}}</small></dd></div>
+    <div class="metric"><dt>{{t "Inference p50 / p95"}}</dt><dd>{{ms .ServerInference.P50}}<small>/ {{ms .ServerInference.P95}} · n={{.ServerInference.N}}</small></dd></div>
+    <div class="metric"><dt>{{t "Request errors"}}</dt><dd class="{{if .Errors}}bad-t{{end}}">{{len .Errors}}</dd></div>
   </dl>
   <dl class="metrics secondary" aria-label="summary">
-    <div class="metric"><dt>Cases</dt><dd>{{.Cases}}</dd></div>
-    <div class="metric"><dt>Observations</dt><dd>{{.Observations}}</dd></div>
-    <div class="metric"><dt>Mean confidence</dt><dd>{{f4 .MeanConfidence}}</dd></div>
+    <div class="metric"><dt>{{t "Cases"}}</dt><dd>{{.Cases}}</dd></div>
+    <div class="metric"><dt>{{t "Observations"}}</dt><dd>{{.Observations}}</dd></div>
+    <div class="metric"><dt>{{t "Mean confidence"}}</dt><dd>{{f4 .MeanConfidence}}</dd></div>
   </dl>
   {{end}}
 
@@ -128,67 +128,67 @@
   <div class="run-actions">
     <form method="post" action="/errors/use-experiment" class="inline">
       <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="seq" value="{{.Seq}}">
-      <button type="submit" class="btn primary">Investigate in Evidence</button>
+      <button type="submit" class="btn primary">{{t "Investigate in Evidence"}}</button>
     </form>
     <form method="post" action="/experiments/export" class="path-form">
       <input type="hidden" name="token" value="{{$.Token}}">
       <input type="hidden" name="seq" value="{{.Seq}}">
-      <label class="field">Export {{.Report.Schema}} report to a new file (absolute path; never overwritten)<input name="export_path" value="{{$.Form.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/report.json"></label>
-      {{if $.PathPicker}}<button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="export" formnovalidate>Choose file</button>{{end}}
-      <button type="submit" class="btn">Export report</button>
+      <label class="field">{{t "Export"}} {{.Report.Schema}} {{t "report to a new file (absolute path; never overwritten)"}}<input name="export_path" value="{{$.Form.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/report.json"></label>
+      {{if $.PathPicker}}<button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="export" formnovalidate>{{t "Choose file"}}</button>{{end}}
+      <button type="submit" class="btn">{{t "Export report"}}</button>
     </form>
   </div>
   {{if $.HistoryOn}}
   <form method="post" action="/experiments/save" class="path-form">
     <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="seq" value="{{.Seq}}">
-    <label class="field">Save to history (optional label)<input name="label" maxlength="200" autocomplete="off" placeholder="baseline"></label>
-    <label class="field">Note (optional)<textarea name="note" rows="2" maxlength="4000"></textarea></label>
-    <button type="submit" class="btn">Save to history</button>
+    <label class="field">{{t "Save to history (optional label)"}}<input name="label" maxlength="200" autocomplete="off" placeholder="baseline"></label>
+    <label class="field">{{t "Note (optional)"}}<textarea name="note" rows="2" maxlength="4000"></textarea></label>
+    <button type="submit" class="btn">{{t "Save to history"}}</button>
   </form>
   {{end}}
-  {{range .Exported}}<p class="note mono">exported to {{.}}</p>{{end}}
+  {{range .Exported}}<p class="note mono">{{t "exported to"}} {{.}}</p>{{end}}
   {{end}}
 
   {{with .Report}}
   <div class="region">
-    <h2>Per question</h2>
-    <div class="table-wrap"><table class="data" aria-label="per-question statistics"><thead><tr><th>question</th><th class="num">n</th><th class="num">accuracy</th><th class="num">mean confidence</th><th class="num">ECE</th></tr></thead><tbody>
+    <h2>{{t "Per question"}}</h2>
+    <div class="table-wrap"><table class="data" aria-label="per-question statistics"><thead><tr><th>{{t "question"}}</th><th class="num">n</th><th class="num">{{t "accuracy"}}</th><th class="num">{{t "mean confidence"}}</th><th class="num">ECE</th></tr></thead><tbody>
     {{range perQ .PerQuestion}}<tr><td class="mono">{{.ID}}</td><td class="num">{{.N}}</td><td class="num strong">{{f4 .Accuracy}}</td><td class="num">{{f4 .MeanConfidence}}</td><td class="num">{{f4 .ECE}}</td></tr>{{end}}
     </tbody></table></div>
   </div>
 
   {{with .Errors}}
-  <details class="disclosure" open><summary>Request errors<span class="sub bad-t">{{len .}}</span></summary>
-  <div class="body table-wrap"><table class="data" aria-label="request errors"><thead><tr><th>phase</th><th>pass</th><th>case</th><th>question</th><th>class</th><th>message</th></tr></thead><tbody>
+  <details class="disclosure" open><summary>{{t "Request errors"}}<span class="sub bad-t">{{len .}}</span></summary>
+  <div class="body table-wrap"><table class="data" aria-label="request errors"><thead><tr><th>{{t "phase"}}</th><th>{{t "pass"}}</th><th>{{t "case"}}</th><th>{{t "question"}}</th><th>{{t "class"}}</th><th>{{t "message"}}</th></tr></thead><tbody>
   {{range .}}<tr><td>{{.Phase}}</td><td>{{if .Pass}}{{.Pass}}{{end}}</td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td class="mono">{{.Class}}</td><td>{{.Message}}</td></tr>{{end}}
   </tbody></table></div></details>
   {{end}}
 
-  <details class="disclosure" data-keep="evidence-identity"><summary>Evidence identity &amp; served runtime<span class="sub mono">{{.Schema}} · dataset {{short .DatasetSHA256}} · served {{if .ServedConsistent}}consistent{{else}}inconsistent{{end}}</span></summary>
+  <details class="disclosure" data-keep="evidence-identity"><summary>{{t "Evidence identity & served runtime"}}<span class="sub mono">{{.Schema}} {{t "· dataset"}} {{short .DatasetSHA256}} {{t "· served"}} {{if .ServedConsistent}}{{t "consistent"}}{{else}}{{t "inconsistent"}}{{end}}</span></summary>
     <div class="body kv-grid">
       <div>
-        <h3>Evidence identity</h3>
+        <h3>{{t "Evidence identity"}}</h3>
         <dl class="kv">
-          <dt>schema</dt><dd>{{.Schema}}</dd>
-          <dt>endpoint</dt><dd>{{.Endpoint}}</dd>
-          <dt>dataset</dt><dd>{{.Dataset}}</dd>
-          <dt>dataset sha256</dt><dd>{{.DatasetSHA256}}</dd>
-          <dt>started at</dt><dd>{{.StartedAt}}</dd>
-          <dt>warmup / passes</dt><dd>{{.WarmupRequests}} / {{.Passes}}</dd>
-          {{range .Definitions}}<dt>definition</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
+          <dt>{{t "schema"}}</dt><dd>{{.Schema}}</dd>
+          <dt>{{t "endpoint"}}</dt><dd>{{.Endpoint}}</dd>
+          <dt>{{t "dataset"}}</dt><dd>{{.Dataset}}</dd>
+          <dt>{{t "dataset sha256"}}</dt><dd>{{.DatasetSHA256}}</dd>
+          <dt>{{t "started at"}}</dt><dd>{{.StartedAt}}</dd>
+          <dt>{{t "warmup / passes"}}</dt><dd>{{.WarmupRequests}} / {{.Passes}}</dd>
+          {{range .Definitions}}<dt>{{t "definition"}}</dt><dd>{{.ID}}@{{.Version}} · {{.Digest}}</dd>{{end}}
         </dl>
       </div>
       <div>
-        <h3>Served runtime</h3>
+        <h3>{{t "Served runtime"}}</h3>
         <dl class="kv">
-          <dt>consistent</dt><dd>{{if .ServedConsistent}}<span class="ok-t">yes</span>{{else}}<span class="bad-t">no</span>{{end}}</dd>
-          {{with .Served}}<dt>model</dt><dd>{{.Model}}</dd><dt>identity sha256</dt><dd>{{.Digest}}</dd><dt>worker pid / starts</dt><dd>{{.WorkerPID}} / {{.WorkerStarts}}</dd>{{end}}
-          {{with .ServedEnd}}<dt>identity at end</dt><dd>{{.Digest}}</dd>{{end}}
+          <dt>{{t "consistent"}}</dt><dd>{{if .ServedConsistent}}<span class="ok-t">{{t "yes"}}</span>{{else}}<span class="bad-t">{{t "no"}}</span>{{end}}</dd>
+          {{with .Served}}<dt>{{t "model"}}</dt><dd>{{.Model}}</dd><dt>identity sha256</dt><dd>{{.Digest}}</dd><dt>{{t "worker pid / starts"}}</dt><dd>{{.WorkerPID}} / {{.WorkerStarts}}</dd>{{end}}
+          {{with .ServedEnd}}<dt>{{t "identity at end"}}</dt><dd>{{.Digest}}</dd>{{end}}
         </dl>
       </div>
       <div>
-        <h3>Replay</h3>
-        <p class="note">Replay an exported report with <code>hachidori replay -dataset &lt;dataset&gt; [-questions &lt;definitions&gt;] &lt;report.json&gt;</code>.</p>
+        <h3>{{t "Replay"}}</h3>
+        <p class="note">{{t "Replay an exported report with"}} <code>hachidori replay -dataset &lt;dataset&gt; [-questions &lt;definitions&gt;] &lt;report.json&gt;</code>.</p>
       </div>
     </div>
   </details>
@@ -198,45 +198,45 @@
 
 {{define "compare"}}
 <section class="region" aria-labelledby="cmp-h" data-compare="{{.Status}}">
-  <div class="region-h"><h2 id="cmp-h">Comparison</h2><span class="sub">status: {{.Status}} · deltas are B minus A</span></div>
+  <div class="region-h"><h2 id="cmp-h">{{t "Comparison"}}</h2><span class="sub">{{t "status:"}} {{.Status}} {{t "· deltas are B minus A"}}</span></div>
   <dl class="kv" aria-label="compared entries">
-    <dt>A</dt><dd class="mono">{{.EntryA.ID}}{{with .EntryA.Label}} · {{.}}{{end}} · evidence sha256 {{.EntryA.EvidenceSHA256}}</dd>
-    <dt>B</dt><dd class="mono">{{.EntryB.ID}}{{with .EntryB.Label}} · {{.}}{{end}} · evidence sha256 {{.EntryB.EvidenceSHA256}}</dd>
-    <dt>dataset sha256 A</dt><dd class="mono">{{.DatasetA}}</dd>
-    <dt>dataset sha256 B</dt><dd class="mono">{{.DatasetB}}</dd>
+    <dt>A</dt><dd class="mono">{{.EntryA.ID}}{{with .EntryA.Label}} · {{.}}{{end}} {{t "· evidence sha256"}} {{.EntryA.EvidenceSHA256}}</dd>
+    <dt>B</dt><dd class="mono">{{.EntryB.ID}}{{with .EntryB.Label}} · {{.}}{{end}} {{t "· evidence sha256"}} {{.EntryB.EvidenceSHA256}}</dd>
+    <dt>{{t "dataset sha256 A"}}</dt><dd class="mono">{{.DatasetA}}</dd>
+    <dt>{{t "dataset sha256 B"}}</dt><dd class="mono">{{.DatasetB}}</dd>
   </dl>
   <div class="btn-row">
-    <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryA.ID}}"><button type="submit" class="btn">Open A in Evidence</button></form>
-    <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryB.ID}}"><button type="submit" class="btn">Open B in Evidence</button></form>
+    <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryA.ID}}"><button type="submit" class="btn">{{t "Open A in Evidence"}}</button></form>
+    <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryB.ID}}"><button type="submit" class="btn">{{t "Open B in Evidence"}}</button></form>
   </div>
-  {{range .Incompatibility}}<p class="msg bad" role="alert">{{if or (eq .Code "dataset_mismatch") (eq .Code "schema_mismatch")}}comparison refused{{else}}partial comparison{{end}}: {{.Code}}{{with .Question}} · question {{.}}{{end}} · {{.Detail}}</p>{{end}}
+  {{range .Incompatibility}}<p class="msg bad" role="alert">{{if or (eq .Code "dataset_mismatch") (eq .Code "schema_mismatch")}}{{t "comparison refused"}}{{else}}{{t "partial comparison"}}{{end}}: {{.Code}}{{with .Question}} {{t "· question"}} {{.}}{{end}} · {{.Detail}}</p>{{end}}
   {{with .Aggregate}}
-  <div class="table-wrap"><table class="data" aria-label="aggregate deltas"><thead><tr><th>metric</th><th class="num">A</th><th class="num">B</th><th class="num">B - A</th></tr></thead><tbody>
-    <tr><td>Accuracy</td><td class="num">{{f4 .Accuracy.A}}</td><td class="num">{{f4 .Accuracy.B}}</td><td class="num">{{sd .Accuracy.Diff}}</td></tr>
-    <tr><td>ECE (15 bins)</td><td class="num">{{f4 .ECE.A}}</td><td class="num">{{f4 .ECE.B}}</td><td class="num">{{sd .ECE.Diff}}</td></tr>
-    <tr><td>Mean confidence</td><td class="num">{{f4 .MeanConfidence.A}}</td><td class="num">{{f4 .MeanConfidence.B}}</td><td class="num">{{sd .MeanConfidence.Diff}}</td></tr>
-    <tr><td>Cases</td><td class="num">{{.Cases.A}}</td><td class="num">{{.Cases.B}}</td><td class="num">{{.Cases.Diff}}</td></tr>
-    <tr><td>Observations</td><td class="num">{{.Observations.A}}</td><td class="num">{{.Observations.B}}</td><td class="num">{{.Observations.Diff}}</td></tr>
-    <tr><td>Request errors</td><td class="num">{{.RequestErrors.A}}</td><td class="num">{{.RequestErrors.B}}</td><td class="num">{{.RequestErrors.Diff}}</td></tr>
-    {{with .RequestLatency}}<tr><td>Request latency samples</td><td class="num">{{.N.A}}</td><td class="num">{{.N.B}}</td><td class="num">{{.N.Diff}}</td></tr>
-    {{if .Available}}<tr><td>Request p50</td><td class="num">{{ms .P50.A}}</td><td class="num">{{ms .P50.B}}</td><td class="num">{{sms .P50.Diff}}</td></tr>
-    <tr><td>Request p95</td><td class="num">{{ms .P95.A}}</td><td class="num">{{ms .P95.B}}</td><td class="num">{{sms .P95.Diff}}</td></tr>
-    <tr><td>Request mean</td><td class="num">{{ms .Mean.A}}</td><td class="num">{{ms .Mean.B}}</td><td class="num">{{sms .Mean.Diff}}</td></tr>{{else}}<tr><td>Request latency</td><td colspan="3" class="faint">not available: a report has no request latency samples</td></tr>{{end}}{{end}}
-    {{with .ServerInference}}<tr><td>Inference latency samples</td><td class="num">{{.N.A}}</td><td class="num">{{.N.B}}</td><td class="num">{{.N.Diff}}</td></tr>
-    {{if .Available}}<tr><td>Inference p50</td><td class="num">{{ms .P50.A}}</td><td class="num">{{ms .P50.B}}</td><td class="num">{{sms .P50.Diff}}</td></tr>
-    <tr><td>Inference p95</td><td class="num">{{ms .P95.A}}</td><td class="num">{{ms .P95.B}}</td><td class="num">{{sms .P95.Diff}}</td></tr>
-    <tr><td>Inference mean</td><td class="num">{{ms .Mean.A}}</td><td class="num">{{ms .Mean.B}}</td><td class="num">{{sms .Mean.Diff}}</td></tr>{{else}}<tr><td>Inference latency</td><td colspan="3" class="faint">not available: a report has no server inference samples</td></tr>{{end}}{{end}}
+  <div class="table-wrap"><table class="data" aria-label="aggregate deltas"><thead><tr><th>{{t "metric"}}</th><th class="num">A</th><th class="num">B</th><th class="num">B - A</th></tr></thead><tbody>
+    <tr><td>{{t "Accuracy"}}</td><td class="num">{{f4 .Accuracy.A}}</td><td class="num">{{f4 .Accuracy.B}}</td><td class="num">{{sd .Accuracy.Diff}}</td></tr>
+    <tr><td>{{t "ECE (15 bins)"}}</td><td class="num">{{f4 .ECE.A}}</td><td class="num">{{f4 .ECE.B}}</td><td class="num">{{sd .ECE.Diff}}</td></tr>
+    <tr><td>{{t "Mean confidence"}}</td><td class="num">{{f4 .MeanConfidence.A}}</td><td class="num">{{f4 .MeanConfidence.B}}</td><td class="num">{{sd .MeanConfidence.Diff}}</td></tr>
+    <tr><td>{{t "Cases"}}</td><td class="num">{{.Cases.A}}</td><td class="num">{{.Cases.B}}</td><td class="num">{{.Cases.Diff}}</td></tr>
+    <tr><td>{{t "Observations"}}</td><td class="num">{{.Observations.A}}</td><td class="num">{{.Observations.B}}</td><td class="num">{{.Observations.Diff}}</td></tr>
+    <tr><td>{{t "Request errors"}}</td><td class="num">{{.RequestErrors.A}}</td><td class="num">{{.RequestErrors.B}}</td><td class="num">{{.RequestErrors.Diff}}</td></tr>
+    {{with .RequestLatency}}<tr><td>{{t "Request latency samples"}}</td><td class="num">{{.N.A}}</td><td class="num">{{.N.B}}</td><td class="num">{{.N.Diff}}</td></tr>
+    {{if .Available}}<tr><td>{{t "Request p50"}}</td><td class="num">{{ms .P50.A}}</td><td class="num">{{ms .P50.B}}</td><td class="num">{{sms .P50.Diff}}</td></tr>
+    <tr><td>{{t "Request p95"}}</td><td class="num">{{ms .P95.A}}</td><td class="num">{{ms .P95.B}}</td><td class="num">{{sms .P95.Diff}}</td></tr>
+    <tr><td>{{t "Request mean"}}</td><td class="num">{{ms .Mean.A}}</td><td class="num">{{ms .Mean.B}}</td><td class="num">{{sms .Mean.Diff}}</td></tr>{{else}}<tr><td>{{t "Request latency"}}</td><td colspan="3" class="faint">{{t "not available: a report has no request latency samples"}}</td></tr>{{end}}{{end}}
+    {{with .ServerInference}}<tr><td>{{t "Inference latency samples"}}</td><td class="num">{{.N.A}}</td><td class="num">{{.N.B}}</td><td class="num">{{.N.Diff}}</td></tr>
+    {{if .Available}}<tr><td>{{t "Inference p50"}}</td><td class="num">{{ms .P50.A}}</td><td class="num">{{ms .P50.B}}</td><td class="num">{{sms .P50.Diff}}</td></tr>
+    <tr><td>{{t "Inference p95"}}</td><td class="num">{{ms .P95.A}}</td><td class="num">{{ms .P95.B}}</td><td class="num">{{sms .P95.Diff}}</td></tr>
+    <tr><td>{{t "Inference mean"}}</td><td class="num">{{ms .Mean.A}}</td><td class="num">{{ms .Mean.B}}</td><td class="num">{{sms .Mean.Diff}}</td></tr>{{else}}<tr><td>{{t "Inference latency"}}</td><td colspan="3" class="faint">{{t "not available: a report has no server inference samples"}}</td></tr>{{end}}{{end}}
   </tbody></table></div>
   {{end}}
   {{if .Questions}}
-  <div class="table-wrap"><table class="data" aria-label="per-question deltas (identity-aligned questions only)"><thead><tr><th>question</th><th class="num">n A / B</th><th class="num">accuracy A / B</th><th class="num">accuracy B - A</th><th class="num">ECE A / B</th><th class="num">ECE B - A</th></tr></thead><tbody>
+  <div class="table-wrap"><table class="data" aria-label="per-question deltas (identity-aligned questions only)"><thead><tr><th>{{t "question"}}</th><th class="num">{{t "n A / B"}}</th><th class="num">{{t "accuracy A / B"}}</th><th class="num">{{t "accuracy B - A"}}</th><th class="num">ECE A / B</th><th class="num">ECE B - A</th></tr></thead><tbody>
   {{range .Questions}}<tr><td class="mono">{{.ID}}</td><td class="num">{{.N.A}} / {{.N.B}}</td><td class="num">{{f4 .Accuracy.A}} / {{f4 .Accuracy.B}}</td><td class="num">{{sd .Accuracy.Diff}}</td><td class="num">{{f4 .ECE.A}} / {{f4 .ECE.B}}</td><td class="num">{{sd .ECE.Diff}}</td></tr>{{end}}
   </tbody></table></div>
   {{end}}
-  <details class="disclosure"><summary>Run context<span class="sub">may explain differences; never gates the comparison</span></summary>
+  <details class="disclosure"><summary>{{t "Run context"}}<span class="sub">{{t "may explain differences; never gates the comparison"}}</span></summary>
     <div class="body kv-grid">
-      <dl class="kv"><dt>A started</dt><dd>{{.A.StartedAt}}</dd><dt>A served model</dt><dd>{{.A.ServedModel}}</dd><dt>A identity</dt><dd class="mono">{{.A.ServedIdentity}}</dd><dt>A warmup / passes</dt><dd>{{.A.WarmupRequests}} / {{.A.Passes}}</dd></dl>
-      <dl class="kv"><dt>B started</dt><dd>{{.B.StartedAt}}</dd><dt>B served model</dt><dd>{{.B.ServedModel}}</dd><dt>B identity</dt><dd class="mono">{{.B.ServedIdentity}}</dd><dt>B warmup / passes</dt><dd>{{.B.WarmupRequests}} / {{.B.Passes}}</dd></dl>
+      <dl class="kv"><dt>{{t "A started"}}</dt><dd>{{.A.StartedAt}}</dd><dt>{{t "A served model"}}</dt><dd>{{.A.ServedModel}}</dd><dt>{{t "A identity"}}</dt><dd class="mono">{{.A.ServedIdentity}}</dd><dt>{{t "A warmup / passes"}}</dt><dd>{{.A.WarmupRequests}} / {{.A.Passes}}</dd></dl>
+      <dl class="kv"><dt>{{t "B started"}}</dt><dd>{{.B.StartedAt}}</dd><dt>{{t "B served model"}}</dt><dd>{{.B.ServedModel}}</dd><dt>{{t "B identity"}}</dt><dd class="mono">{{.B.ServedIdentity}}</dd><dt>{{t "B warmup / passes"}}</dt><dd>{{.B.WarmupRequests}} / {{.B.Passes}}</dd></dl>
     </div>
   </details>
 </section>

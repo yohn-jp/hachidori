@@ -15,12 +15,21 @@ import (
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/desktop"
+	"github.com/yohn-jp/hachidori/internal/i18n"
 )
 
 //go:embed page.html
 var pageSrc string
 
-var page = template.Must(template.New("page").Parse(pageSrc))
+// pages holds the first-run page once per supported locale; "t" is the
+// locale's catalog lookup.
+var pages = func() map[i18n.Locale]*template.Template {
+	m := map[i18n.Locale]*template.Template{}
+	for _, l := range i18n.Supported {
+		m[l] = template.Must(template.New("page").Funcs(template.FuncMap{"t": l.T}).Parse(pageSrc))
+	}
+	return m
+}()
 
 // Handler is the loopback HTTP surface of the desktop window. Under /wizard/
 // it serves the first-run/recovery screen and its actions; every other path
@@ -33,6 +42,11 @@ type Handler struct {
 	home  func() http.Handler // the desktop home; nil result: not bound yet
 	token string
 	mux   *http.ServeMux
+
+	// Locale resolves the operator UI locale per request; nil is English.
+	// The desktop resolves it through the typed settings authority, which
+	// exists before any Hachidori home is selected.
+	Locale func() i18n.Locale
 }
 
 // NewHandler builds the handler. home returns the dashboard handler bound to
@@ -92,8 +106,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) render(w http.ResponseWriter, r *http.Request) {
+	loc := i18n.English
+	if h.Locale != nil && pages[h.Locale()] != nil {
+		loc = h.Locale()
+	}
 	var buf bytes.Buffer
-	if err := page.Execute(&buf, struct{ Token string }{h.token}); err != nil {
+	data := struct {
+		Token string
+		Lang  i18n.Locale
+		L     map[string]string
+	}{h.token, loc, loc.Table(i18n.FirstRunScript)}
+	if err := pages[loc].Execute(&buf, data); err != nil {
 		http.Error(w, "render: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

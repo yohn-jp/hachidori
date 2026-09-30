@@ -25,18 +25,18 @@ type alert struct {
 // first. It only restates what the status fragments already show in detail.
 func alerts(v view) []alert {
 	var bad, warn []alert
-	w := v.S.Worker
+	w, t := v.S.Worker, v.Lang.T
 	switch {
 	case !v.Running:
-		bad = append(bad, alert{"bad", "Runtime is not running",
-			"The inference API stays bound and reports not ready until the runtime is started."})
+		bad = append(bad, alert{"bad", t("Runtime is not running"),
+			t("The inference API stays bound and reports not ready until the runtime is started.")})
 	case w.State == worker.StateFailed:
-		bad = append(bad, alert{"bad", "Worker failed", "Phase " + w.Phase + "."})
+		bad = append(bad, alert{"bad", t("Worker failed"), t("Phase %s.", w.Phase)})
 	}
 	if f := w.LastFailure; f != nil {
-		a := alert{"bad", "Last worker failure: " + f.Class, f.Message}
+		a := alert{"bad", t("Last worker failure: %s", f.Class), f.Message}
 		if w.Ready {
-			a.Level, a.Title = "warn", "Recovered from worker failure: "+f.Class
+			a.Level, a.Title = "warn", t("Recovered from worker failure: %s", f.Class)
 		}
 		if a.Level == "bad" {
 			bad = append(bad, a)
@@ -45,20 +45,20 @@ func alerts(v view) []alert {
 		}
 	}
 	if w.QueueLimit > 0 && w.QueueDepth >= w.QueueLimit {
-		warn = append(warn, alert{"warn", "Inference queue is full",
-			fmt.Sprintf("%d of %d slots in use.", w.QueueDepth, w.QueueLimit)})
+		warn = append(warn, alert{"warn", t("Inference queue is full"),
+			t("%d of %d slots in use.", w.QueueDepth, w.QueueLimit)})
 	}
 	if m := gpuMem(w.Accelerator); m != nil && m.Used >= 95 {
-		warn = append(warn, alert{"warn", "GPU memory pressure", fmt.Sprintf("%.1f%% of device memory in use.", m.Used)})
+		warn = append(warn, alert{"warn", t("GPU memory pressure"), t("%.1f%% of device memory in use.", m.Used)})
 	}
-	switch t := v.Tunnel; {
-	case t.State == tunnel.StateExited:
-		bad = append(bad, alert{"bad", "SSH tunnel exited", t.LastError})
-	case t.LastError != "":
-		warn = append(warn, alert{"warn", "SSH tunnel error", t.LastError})
+	switch tn := v.Tunnel; {
+	case tn.State == tunnel.StateExited:
+		bad = append(bad, alert{"bad", t("SSH tunnel exited"), tn.LastError})
+	case tn.LastError != "":
+		warn = append(warn, alert{"warn", t("SSH tunnel error"), tn.LastError})
 	}
 	if d := v.Doctor; !d.Running && !d.Finished.IsZero() && !d.OK {
-		bad = append(bad, alert{"bad", "Doctor found problems", "See the doctor report in Diagnostics."})
+		bad = append(bad, alert{"bad", t("Doctor found problems"), t("See the doctor report in Diagnostics.")})
 	}
 	return append(bad, warn...)
 }

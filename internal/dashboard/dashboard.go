@@ -34,6 +34,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/diagnostics"
 	"github.com/yohn-jp/hachidori/internal/history"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
@@ -172,19 +173,25 @@ type ConnectionsView struct {
 	Err   string
 }
 
-// Settings reads and stores the saved runtime defaults. The dashboard only
-// renders and forwards the form; validation and persistence live behind it.
+// Settings reads and stores the saved runtime defaults and the operator UI
+// locale selection. The dashboard only renders and forwards the form;
+// validation and persistence live behind it.
 type Settings interface {
 	Defaults() (settings.Defaults, error)
 	SetDefaults(settings.Defaults) error
+	Locale() (string, error) // "" when no explicit selection was made
+	SetLocale(string) error
 }
 
-// SettingsView is the Settings workspace's runtime-defaults view model.
+// SettingsView is the Settings workspace's runtime-defaults and language
+// view model.
 type SettingsView struct {
-	Device string
-	Model  string
-	Models []string
-	Err    string
+	Device  string
+	Model   string
+	Models  []string
+	Err     string
+	Locale  string // the explicit selection; "" follows the host
+	Locales []i18n.Locale
 }
 
 // Desktop reads and applies the per-user desktop preferences. The dashboard
@@ -245,7 +252,10 @@ type Prefs struct {
 //go:embed page.html workbench.html experiments.html errors.html
 var pageFS embed.FS
 
-var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
+// pageBase parses the workstation templates once; "t" is the catalog lookup,
+// bound per locale in pages.
+var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
+	"t":         i18n.English.T,
 	"get":       get,
 	"mib":       mib,
 	"ms":        func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) + " ms" },
@@ -266,12 +276,23 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"short":     func(s string) string { return s[:min(len(s), 12)] },
 }).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html"))
 
+// pages are the workstation templates for each supported locale. Rendering
+// goes through the catalog, never through rewriting rendered HTML.
+var pages = func() map[i18n.Locale]*template.Template {
+	m := map[i18n.Locale]*template.Template{}
+	for _, l := range i18n.Supported {
+		m[l] = template.Must(pageBase.Clone()).Funcs(template.FuncMap{"t": l.T})
+	}
+	return m
+}()
+
 // Chrome is what the shared workstation shell needs on every page: the page
 // title, the active workspace, the inference API address and the compact
 // runtime status restated from the /v1/status document.
 type Chrome struct {
 	Title       string
 	Nav         string // runtime | workbench | experiments | evidence | diagnostics | settings
+	Lang        i18n.Locale
 	APIAddr     string
 	Live        bool // the workspace shows the live-refresh indicator
 	HasSettings bool // the Settings workspace is available
@@ -344,6 +365,7 @@ func New(cfg Config) *Dashboard {
 	}
 	if cfg.Settings != nil {
 		d.mux.HandleFunc("POST /settings/defaults", d.settingsDefaults)
+		d.mux.HandleFunc("POST /settings/locale", d.settingsLocale)
 	}
 	if cfg.Desktop != nil {
 		d.mux.HandleFunc("POST /desktop/prefs", d.desktopPrefs)
@@ -438,7 +460,7 @@ func (d *Dashboard) statusView(title, nav string) view {
 	d.mu.Lock()
 	last, doc := d.last, d.doctor
 	d.mu.Unlock()
-	v := view{Chrome: Chrome{Title: title, Nav: nav, APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings()},
+	v := view{Chrome: Chrome{Title: title, Nav: nav, Lang: d.locale(), APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings()},
 		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
 	v.Rt = shellOf(v)
 	return v
@@ -510,9 +532,19 @@ func (d *Dashboard) render(name, title, nav string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) { d.renderView(w, name, d.view(title, nav)) }
 }
 
+// locale is the operator UI locale: the explicit selection saved by the
+// settings authority, else the host locale, else English.
+func (d *Dashboard) locale() i18n.Locale {
+	saved := ""
+	if d.cfg.Settings != nil {
+		saved, _ = d.cfg.Settings.Locale()
+	}
+	return i18n.Resolve(saved, i18n.HostLocales()...)
+}
+
 func (d *Dashboard) renderView(w http.ResponseWriter, name string, v any) {
 	var buf bytes.Buffer
-	if err := page.ExecuteTemplate(&buf, name, v); err != nil {
+	if err := pages[d.locale()].ExecuteTemplate(&buf, name, v); err != nil {
 		http.Error(w, "render: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -586,11 +618,12 @@ func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
 	v := d.view("Settings", "settings")
 	v.Live = false
 	if d.cfg.Settings != nil {
-		sv := &SettingsView{Models: settings.Models()}
+		sv := &SettingsView{Models: settings.Models(), Locales: i18n.Supported}
 		def, err := d.cfg.Settings.Defaults()
 		if err != nil {
 			sv.Err = err.Error()
 		}
+		sv.Locale, _ = d.cfg.Settings.Locale()
 		sv.Device, sv.Model = def.Device, def.Model
 		v.Set = sv
 	}
@@ -691,6 +724,12 @@ func (d *Dashboard) settingsDefaults(w http.ResponseWriter, r *http.Request) {
 		Model:  strings.TrimSpace(r.PostFormValue("model")),
 	})
 	d.done(w, r, "runtime defaults", err, "saved; the running runtime is unchanged")
+}
+
+// settingsLocale stores the operator UI locale selection. It changes only
+// presentation; the next render uses it.
+func (d *Dashboard) settingsLocale(w http.ResponseWriter, r *http.Request) {
+	d.done(w, r, "language", d.cfg.Settings.SetLocale(strings.TrimSpace(r.PostFormValue("locale"))), "saved")
 }
 
 func (d *Dashboard) runDoctor(w http.ResponseWriter, r *http.Request) {

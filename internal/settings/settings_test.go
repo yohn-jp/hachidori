@@ -136,3 +136,56 @@ func TestModelsAreTheCatalog(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 }
+
+// The operator UI locale is an additive field of the same record: a legacy
+// file without it loads unchanged, a selection survives a restart, and only
+// en/ja (or unset) are accepted.
+func TestLocaleIsAdditiveAndPersisted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	legacy := `{"schema":"hachidori.settings/1","runtime_defaults":{"device":"cpu"}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &Store{Path: path}
+	if l, err := s.Locale(); err != nil || l != "" {
+		t.Fatalf("legacy locale %q %v", l, err)
+	}
+	if d, err := s.Defaults(); err != nil || d.Device != DeviceCPU {
+		t.Fatalf("legacy defaults %+v %v", d, err)
+	}
+	if err := s.SetLocale("fr"); err == nil {
+		t.Fatal("unsupported locale accepted")
+	}
+	if err := s.SetLocale("ja"); err != nil {
+		t.Fatal(err)
+	}
+	r := &Store{Path: path} // a new process reads the file
+	if l, err := r.Locale(); err != nil || l != "ja" {
+		t.Fatalf("after restart %q %v", l, err)
+	}
+	if d, _ := r.Defaults(); d.Device != DeviceCPU {
+		t.Fatalf("setting the locale changed the defaults: %+v", d)
+	}
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_MESSAGES", "")
+	t.Setenv("LANG", "en_US.UTF-8")
+	if got := r.ResolvedLocale(); got != "ja" {
+		t.Fatalf("explicit selection does not win: %q", got)
+	}
+	if err := r.SetLocale(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.ResolvedLocale(); got != "en" {
+		t.Fatalf("unset locale resolves to %q", got)
+	}
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), `"locale"`) {
+		t.Fatalf("cleared locale still written: %s", b)
+	}
+	if err := os.WriteFile(path, []byte(`{"schema":"hachidori.settings/1","runtime_defaults":{},"locale":"xx"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Locale(); err == nil {
+		t.Fatal("invalid stored locale accepted")
+	}
+}

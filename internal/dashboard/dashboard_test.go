@@ -93,6 +93,10 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	exe, _ := os.Executable()
 	t.Setenv("HACHIDORI_FAKE_SSH", "run")
+	// The host locale must not pick the operator UI language for tests.
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_MESSAGES", "")
+	t.Setenv("LANG", "C.UTF-8")
 	home := t.TempDir()
 	os.MkdirAll(filepath.Join(home, "state"), 0o755)
 	rt := &fakeRuntime{run: true, snap: worker.Snapshot{
