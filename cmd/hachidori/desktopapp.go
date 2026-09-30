@@ -216,6 +216,10 @@ func (a *desktopApp) run() error {
 				HistoryDir: h.Path("state", "history"),
 				Desktop:    prefs,
 				Settings:   prefs,
+				// Development Connection profiles persist in the same
+				// settings authority; the live tunnel is the one tun
+				// manager, shared by every runtime's dashboard.
+				Connections: prefs,
 			})
 			// An experiment of a replaced runtime's dashboard must not keep
 			// running against the next runtime.
