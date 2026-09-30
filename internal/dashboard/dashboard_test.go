@@ -93,13 +93,19 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	exe, _ := os.Executable()
 	t.Setenv("HACHIDORI_FAKE_SSH", "run")
+	// The host locale must not pick the operator UI language for tests.
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_MESSAGES", "")
+	t.Setenv("LANG", "C.UTF-8")
 	home := t.TempDir()
 	os.MkdirAll(filepath.Join(home, "state"), 0o755)
 	rt := &fakeRuntime{run: true, snap: worker.Snapshot{
 		State: worker.StateReady, Phase: "ready", Ready: true, PID: 4242, Starts: 2, Restarts: 1, Requests: 17,
 		Errors: map[string]int64{"not_ready": 1}, QueueDepth: 0, QueueLimit: 64, LatencyP50MS: 25.3, LatencyP95MS: 30.5,
 		Info: worker.Info{"provider": "laya", "laya_version": "0.3.21", "torch_version": "2.11.0+cu128", "torch_cuda": "12.8",
-			"python_version": "3.12.11", "device": "cuda:0", "device_name": "NVIDIA GeForce RTX 3060", "load_ms": 812.5, "warmup_ms": 90.1},
+			"python_version": "3.12.11", "device": "cuda:0", "device_name": "NVIDIA GeForce RTX 3060", "load_ms": 812.5, "warmup_ms": 90.1,
+			"python_executable": filepath.Join(home, "runtime", "python.exe"), "hf_home": filepath.Join(home, "cache", "hf"),
+			"model_dir": filepath.Join(home, "models", "laya")},
 		Accelerator: map[string]any{"memory_allocated": float64(600 << 20), "memory_reserved": float64(700 << 20),
 			"memory_free": float64(10 << 30), "memory_total": float64(12 << 30)},
 		LastFailure: &worker.FailureView{Class: worker.ClassCrash, Message: xss, Stderr: []string{"Traceback & <b>"}},
@@ -172,8 +178,8 @@ func TestStatusIsTheV1StatusDocument(t *testing.T) {
 	if rec.Code != 200 || fmt.Sprint(a) != fmt.Sprint(b) || a["worker"] == nil {
 		t.Fatalf("dashboard status differs from /v1/status:\n%v\n%v", a, b)
 	}
-	// The page renders values from that same document.
-	body := e.get(t, "/").Body.String()
+	// Runtime and Diagnostics render values from that same document.
+	body := e.get(t, "/").Body.String() + e.get(t, "/diagnostics").Body.String()
 	for _, want := range []string{"READY", "4242", "2 / 1", "17", "p50 25.3 ms, p95 30.5 ms", "laya 0.3.21", "convaiinnovations--laya/55cf4c4e", "laya-base",
 		"0.1.0-cu128", "3.12.11", "2.11.0&#43;cu128 / 12.8", "NVIDIA GeForce RTX 3060", "allocated 600 MiB, reserved 700 MiB, free 10240 MiB, total 12288 MiB",
 		"812.5 ms / 90.1 ms", "worker_crash", "0 / 64"} {

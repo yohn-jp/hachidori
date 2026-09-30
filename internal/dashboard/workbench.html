@@ -1,7 +1,7 @@
 {{/* ---- Workbench: what does the model think? ---- */}}
 {{define "workbench"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>Workbench</h1><p class="lede">Ask the resident model one or more choice questions about a bounded state. Nothing is stored and there are no expected labels.</p></div>
+  <div><h1>{{t "Workbench"}}</h1><p class="lede">{{t "Ask the resident model one or more choice questions about a bounded state. Nothing is stored and there are no expected labels."}}</p></div>
   <span class="ws-meta mono">POST {{.Endpoint}}</span>
 </header>
 
@@ -11,54 +11,54 @@
 
   {{/* Run is the first submit control, so Enter in any field runs. */}}
   <div class="toolbar" role="toolbar" aria-label="Workbench actions">
-    <button type="submit" class="btn primary" name="op" value="run">Run</button>
-    <button type="submit" class="btn" name="op" value="preview">Validate &amp; show request</button>
+    <button type="submit" class="btn primary" name="op" value="run">{{t "Run"}}</button>
+    <button type="submit" class="btn" name="op" value="preview">{{t "Validate & show request"}}</button>
     <span class="spacer"></span>
-    <button type="submit" class="btn quiet" name="op" value="add">Add question</button>
+    <button type="submit" class="btn quiet" name="op" value="add">{{t "Add question"}}</button>
   </div>
 
   <div class="split">
     <div class="pane">
       {{with .FormError}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
       <section class="block" aria-labelledby="state-h">
-        <div class="block-h"><h2 id="state-h">State</h2><span class="sub num">{{len .W.State}} bytes</span></div>
-        <textarea name="state" rows="9" spellcheck="false" aria-labelledby="state-h" placeholder="the bounded state the questions are asked about">{{.W.State}}</textarea>
+        <div class="block-h"><h2 id="state-h">{{t "State"}}</h2><span class="sub num">{{len .W.State}} {{t "bytes"}}</span></div>
+        <textarea name="state" rows="9" spellcheck="false" aria-labelledby="state-h" placeholder="{{t "the bounded state the questions are asked about"}}">{{.W.State}}</textarea>
       </section>
 
       {{range $i, $q := .W.Questions}}{{$qv := $.Question $i}}
       <section class="question" aria-label="question {{$i}}">
         <div class="block-h">
-          <h2>Question {{$i}}{{with $q.ID}} <span class="sub mono">{{.}}</span>{{end}}</h2>
+          <h2>{{t "Question"}} {{$i}}{{with $q.ID}} <span class="sub mono">{{.}}</span>{{end}}</h2>
           <div class="btn-row">
-            {{with $q.Loaded}}{{if $qv.Modified}}<span class="badge tone-warn">modified since load</span>{{else}}<span class="badge tone-ok">matches loaded definition</span>{{end}}{{end}}
-            <button type="submit" class="btn danger quiet" name="op" value="remove:{{$i}}">Remove</button>
+            {{with $q.Loaded}}{{if $qv.Modified}}<span class="badge tone-warn">{{t "modified since load"}}</span>{{else}}<span class="badge tone-ok">{{t "matches loaded definition"}}</span>{{end}}{{end}}
+            <button type="submit" class="btn danger quiet" name="op" value="remove:{{$i}}">{{t "Remove"}}</button>
           </div>
         </div>
         {{with $q.Loaded}}<input type="hidden" name="q{{$i}}.loaded_id" value="{{.ID}}"><input type="hidden" name="q{{$i}}.loaded_version" value="{{.Version}}"><input type="hidden" name="q{{$i}}.loaded_digest" value="{{.Digest}}">{{end}}
-        <label class="field">Question id<input name="q{{$i}}.id" value="{{$q.ID}}" spellcheck="false" autocomplete="off"></label>
-        <label class="field">Instructions<textarea name="q{{$i}}.instructions" rows="3">{{$q.Instructions}}</textarea></label>
+        <label class="field">{{t "Question id"}}<input name="q{{$i}}.id" value="{{$q.ID}}" spellcheck="false" autocomplete="off"></label>
+        <label class="field">{{t "Instructions"}}<textarea name="q{{$i}}.instructions" rows="3">{{$q.Instructions}}</textarea></label>
         <input type="hidden" name="q{{$i}}.nc" value="{{len $q.Choices}}">
         <div class="choices">
-          <span class="h">Choice label</span><span class="h">Description (optional)</span>
+          <span class="h">{{t "Choice label"}}</span><span class="h">{{t "Description (optional)"}}</span>
           {{range $j, $c := $q.Choices}}
           <input name="q{{$i}}.c{{$j}}.label" value="{{$c.Label}}" aria-label="question {{$i}} choice {{$j}} label" spellcheck="false" autocomplete="off">
           <input name="q{{$i}}.c{{$j}}.desc" value="{{$c.Desc}}" aria-label="question {{$i}} choice {{$j}} description" autocomplete="off">
           {{end}}
         </div>
-        <div class="btn-row"><button type="submit" class="btn quiet" name="op" value="choices:{{$i}}">Add choice rows</button></div>
+        <div class="btn-row"><button type="submit" class="btn quiet" name="op" value="choices:{{$i}}">{{t "Add choice rows"}}</button></div>
 
-        <details class="inline"{{with $.Export}}{{if eq .Index $i}} open{{end}}{{end}}><summary>Definition identity &amp; export</summary>
+        <details class="inline"{{with $.Export}}{{if eq .Index $i}} open{{end}}{{end}}><summary>{{t "Definition identity & export"}}</summary>
           <div class="region">
-            {{with $q.Loaded}}<p class="note mono">loaded {{.ID}}@{{.Version}} · {{.Digest}}</p>{{end}}
-            {{with $qv.Identity}}<p class="note mono">current {{.ID}}@{{.Version}} · {{.Digest}}</p>{{else}}<p class="note bad-t">not exportable: {{$qv.DefErr}}</p>{{end}}
+            {{with $q.Loaded}}<p class="note mono">{{t "loaded"}} {{.ID}}@{{.Version}} · {{.Digest}}</p>{{end}}
+            {{with $qv.Identity}}<p class="note mono">{{t "current"}} {{.ID}}@{{.Version}} · {{.Digest}}</p>{{else}}<p class="note bad-t">{{t "not exportable:"}} {{$qv.DefErr}}</p>{{end}}
             <div class="fields">
-              <label class="field">Definition version (export only)<input name="q{{$i}}.version" value="{{$q.Version}}" inputmode="numeric"></label>
-              <label class="field">New file (absolute path; never overwritten)<input name="q{{$i}}.export_path" value="{{$q.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/my.question.json"></label>
-              <div class="btn-row">{{if $.PathPicker}}<button type="submit" class="btn" name="op" value="pick-export:{{$i}}" formnovalidate>Choose file</button>{{end}}<button type="submit" class="btn" name="op" value="export:{{$i}}">Export</button></div>
+              <label class="field">{{t "Definition version (export only)"}}<input name="q{{$i}}.version" value="{{$q.Version}}" inputmode="numeric"></label>
+              <label class="field">{{t "New file (absolute path; never overwritten)"}}<input name="q{{$i}}.export_path" value="{{$q.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/my.question.json"></label>
+              <div class="btn-row">{{if $.PathPicker}}<button type="submit" class="btn" name="op" value="pick-export:{{$i}}" formnovalidate>{{t "Choose file"}}</button>{{end}}<button type="submit" class="btn" name="op" value="export:{{$i}}">{{t "Export"}}</button></div>
             </div>
             {{with $.Export}}{{if eq .Index $i}}
               {{if .Err}}<p class="msg bad" role="alert">{{.Err}}</p>
-              {{else}}<p class="msg ok" role="status">wrote {{.Identity.ID}}@{{.Identity.Version}} ({{.Identity.Digest}}) to {{.Path}}</p>
+              {{else}}<p class="msg ok" role="status">{{t "wrote"}} {{.Identity.ID}}@{{.Identity.Version}} ({{.Identity.Digest}}{{t ") to"}} {{.Path}}</p>
               <textarea readonly rows="8" aria-label="exported definition" spellcheck="false">{{.JSON}}</textarea>{{end}}
             {{end}}{{end}}
           </div>
@@ -70,42 +70,42 @@
     <aside class="pane pane-side" aria-labelledby="result-h">
       <div class="result-pane">
         <div class="block-h">
-          <h2 id="result-h">{{if .Preview}}Request preview{{else}}Result{{end}}</h2>
-          {{with .Run}}{{if .Invalid}}<span class="badge tone-bad">invalid · not sent</span>
-          {{else if .Err}}<span class="badge tone-bad">failed</span>
-          {{else if .Response}}<span class="badge tone-ok">{{len .Response.Results}} results</span>
-          {{else}}<span class="badge">valid · not sent</span>{{end}}{{end}}
+          <h2 id="result-h">{{if .Preview}}{{t "Request preview"}}{{else}}{{t "Result"}}{{end}}</h2>
+          {{with .Run}}{{if .Invalid}}<span class="badge tone-bad">{{t "invalid · not sent"}}</span>
+          {{else if .Err}}<span class="badge tone-bad">{{t "failed"}}</span>
+          {{else if .Response}}<span class="badge tone-ok">{{len .Response.Results}} {{t "results"}}</span>
+          {{else}}<span class="badge">{{t "valid · not sent"}}</span>{{end}}{{end}}
         </div>
         {{with .Run}}
           {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
-          {{with .Response}}<p class="note mono">schema {{.Schema}}{{with .Timing}} · inference {{ms .InferenceMS}} · server total {{ms .TotalMS}}{{end}} · round trip {{ms $.Run.TookMS}}</p>{{end}}
+          {{with .Response}}<p class="note mono">{{t "schema"}} {{.Schema}}{{with .Timing}} {{t "· inference"}} {{ms .InferenceMS}} {{t "· server total"}} {{ms .TotalMS}}{{end}} {{t "· round trip"}} {{ms $.Run.TookMS}}</p>{{end}}
         {{end}}
         {{range $i, $q := .W.Questions}}{{with ($.Question $i).Result}}
         <div class="result" aria-label="result for question {{$i}}">
-          <span class="sub">Question {{$i}}{{with $q.ID}} · <span class="mono">{{.}}</span>{{end}}</span>
-          <div class="result-choice"><span class="choice">{{.Choice}}</span><span class="conf">confidence <strong>{{prob .Confidence}}</strong></span></div>
+          <span class="sub">{{t "Question"}} {{$i}}{{with $q.ID}} · <span class="mono">{{.}}</span>{{end}}</span>
+          <div class="result-choice"><span class="choice">{{.Choice}}</span><span class="conf">{{t "confidence"}} <strong>{{prob .Confidence}}</strong></span></div>
           {{template "dist" (distOf .Probabilities .Choice "")}}
         </div>
         {{end}}{{end}}
-        {{if not .Run}}<p class="empty">Run sends the state and every question as one <code>POST /v1/decide</code>. The chosen answer, its confidence and the full probability distribution appear here.</p>{{end}}
+        {{if not .Run}}<p class="empty">{{t "Run sends the state and every question as one"}} <code>POST /v1/decide</code>{{t ". The chosen answer, its confidence and the full probability distribution appear here."}}</p>{{end}}
       </div>
 
       {{with .Run}}{{with .Wire}}
-      <details class="disclosure" data-keep="wire"{{if $.Preview}} open{{end}}><summary>Exact request JSON<span class="sub">the POST /v1/decide body{{if $.Run.Sent}} that was sent{{end}}</span></summary>
+      <details class="disclosure" data-keep="wire"{{if $.Preview}} open{{end}}><summary>{{t "Exact request JSON"}}<span class="sub">{{t "the POST /v1/decide body"}}{{if $.Run.Sent}} {{t "that was sent"}}{{end}}</span></summary>
         <div class="body"><textarea readonly rows="8" aria-label="exact request JSON" spellcheck="false">{{.}}</textarea></div>
       </details>
       {{end}}{{end}}
 
-      <details class="disclosure"{{if or .LoadErr .LoadMsg}} open{{end}}><summary>Load Question Definition<span class="sub">one hachidori.question.v1 file</span></summary>
+      <details class="disclosure"{{if or .LoadErr .LoadMsg}} open{{end}}><summary>{{t "Load Question Definition"}}<span class="sub">{{t "one hachidori.question.v1 file"}}</span></summary>
         <div class="body">
           <div class="path-form">
-            <label class="field">Definition file (absolute path)<input name="load_path" value="{{.W.LoadPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/my.question.json"></label>
-            {{if .PathPicker}}<button type="submit" class="btn" name="op" value="pick-load" formnovalidate>Choose file</button>{{end}}
-            <button type="submit" class="btn" name="op" value="load">Load into editor</button>
+            <label class="field">{{t "Definition file (absolute path)"}}<input name="load_path" value="{{.W.LoadPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/my.question.json"></label>
+            {{if .PathPicker}}<button type="submit" class="btn" name="op" value="pick-load" formnovalidate>{{t "Choose file"}}</button>{{end}}
+            <button type="submit" class="btn" name="op" value="load">{{t "Load into editor"}}</button>
           </div>
           {{with .LoadErr}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
           {{with .LoadMsg}}<p class="msg ok" role="status">{{.}}</p>{{end}}
-          <p class="note">The file is read once, validated with the same rules as <code>hachidori question</code>, and projected into the editor. It is not stored or watched.</p>
+          <p class="note">{{t "The file is read once, validated with the same rules as"}} <code>hachidori question</code>{{t ", and projected into the editor. It is not stored or watched."}}</p>
         </div>
       </details>
     </aside>
@@ -116,6 +116,6 @@
 {{/* dist is one probability distribution, most likely first; the chosen
      answer is emphasised and the expected label (evidence only) marked. */}}
 {{define "dist"}}<table class="dist" aria-label="probabilities">
-<thead class="vh"><tr><th>choice</th><th>distribution</th><th>probability</th></tr></thead><tbody>
-{{$exp := .Expected}}{{range .Rows}}<tr{{if .Chosen}} class="chosen"{{end}}><td class="label">{{.Choice}}{{if and $exp (eq .Choice $exp)}} <span class="tag">(expected)</span>{{end}}</td><td><span class="track"><span style="width:{{pct .P}}"></span></span></td><td class="num">{{prob .P}}</td></tr>{{end}}
+<thead class="vh"><tr><th>{{t "choice"}}</th><th>{{t "distribution"}}</th><th>{{t "probability"}}</th></tr></thead><tbody>
+{{$exp := .Expected}}{{range .Rows}}<tr{{if .Chosen}} class="chosen"{{end}}><td class="label">{{.Choice}}{{if and $exp (eq .Choice $exp)}} <span class="tag">{{t "(expected)"}}</span>{{end}}</td><td><span class="track"><span style="width:{{pct .P}}"></span></span></td><td class="num">{{prob .P}}</td></tr>{{end}}
 </tbody></table>{{end}}

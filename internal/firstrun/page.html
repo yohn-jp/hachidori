@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -29,27 +29,27 @@
 <body>
 <main>
   <h1>Hachidori</h1>
-  <div class="muted">Local semantic inference on this computer.</div>
+  <div class="muted">{{t "Local semantic inference on this computer."}}</div>
 
   <div id="notice" class="card bad" hidden></div>
 
   <section id="select" class="card" hidden>
-    <strong>Where should Hachidori keep its models and runtime?</strong>
-    <p class="muted">Hachidori stores the model and its runtime locally, in one folder you choose. It manages everything inside that folder; you only pick the folder. Choose a drive with plenty of free space.</p>
-    <div class="path" id="path">No folder selected</div>
+    <strong>{{t "Where should Hachidori keep its models and runtime?"}}</strong>
+    <p class="muted">{{t "Hachidori stores the model and its runtime locally, in one folder you choose. It manages everything inside that folder; you only pick the folder. Choose a drive with plenty of free space."}}</p>
+    <div class="path" id="path">{{t "No folder selected"}}</div>
     <div id="detail" class="muted"></div>
     <div id="problem" class="bad"></div>
     <div class="row">
-      <button id="browse" type="button">Browse...</button>
+      <button id="browse" type="button">{{t "Browse..."}}</button>
     </div>
     <fieldset class="row" style="border:0;padding:0" id="devices">
-      <label><input type="radio" name="device" value="cuda" checked> NVIDIA GPU (CUDA)</label>
-      <label><input type="radio" name="device" value="cpu"> CPU only</label>
+      <label><input type="radio" name="device" value="cuda" checked> {{t "NVIDIA GPU (CUDA)"}}</label>
+      <label><input type="radio" name="device" value="cpu"> {{t "CPU only"}}</label>
     </fieldset>
-    <div class="muted" id="devnote">Hachidori never switches from GPU to CPU on its own: if the GPU cannot be used, setup or startup reports the problem.</div>
+    <div class="muted" id="devnote">{{t "Hachidori never switches from GPU to CPU on its own: if the GPU cannot be used, setup or startup reports the problem."}}</div>
     <div class="row">
-      <button id="install" class="primary" type="button" disabled>Install</button>
-      <button id="use" class="primary" type="button" hidden>Use this installation</button>
+      <button id="install" class="primary" type="button" disabled>{{t "Install"}}</button>
+      <button id="use" class="primary" type="button" hidden>{{t "Use this installation"}}</button>
     </div>
   </section>
 
@@ -62,23 +62,25 @@
   <section id="ready" class="card" hidden>
     <strong class="ok">READY</strong>
     <div id="identity" class="muted"></div>
-    <div class="row"><button id="open" class="primary" type="button">Open Hachidori</button></div>
+    <div class="row"><button id="open" class="primary" type="button">{{t "Open Hachidori"}}</button></div>
   </section>
 
   <section id="failed" class="card" hidden>
-    <strong class="bad">Needs attention</strong>
+    <strong class="bad">{{t "Needs attention"}}</strong>
     <div id="fmsg"></div>
     <pre id="fdetail"></pre>
     <div class="muted" id="flog"></div>
     <div class="row">
-      <button id="retry" class="primary" type="button">Retry</button>
-      <button id="change" type="button" hidden>Change storage location</button>
+      <button id="retry" class="primary" type="button">{{t "Retry"}}</button>
+      <button id="change" type="button" hidden>{{t "Change storage location"}}</button>
     </div>
   </section>
   <div id="error" class="bad" style="margin-top:12px"></div>
 </main>
 <script>
 const TOKEN = "{{.Token}}";
+const L = {{.L}};
+const tr = s => (s && L[s]) || s;
 const $ = id => document.getElementById(id);
 let last = null, redirecting = false, devInit = false;
 
@@ -87,11 +89,11 @@ async function post(path, extra) {
   for (const k in (extra || {})) fd.set(k, extra[k]);
   const r = await fetch(path, { method: "POST", body: new URLSearchParams(fd) });
   const j = await r.json().catch(() => ({}));
-  $("error").textContent = r.ok ? "" : (j.error || ("request failed: " + r.status));
+  $("error").textContent = r.ok ? "" : (tr(j.error) || (tr("request failed: ") + r.status));
   if (r.ok) render(j); else refresh();
 }
 async function refresh() {
-  try { const r = await fetch("/wizard/state"); render(await r.json()); } catch (e) { $("error").textContent = "Lost contact with Hachidori."; }
+  try { const r = await fetch("/wizard/state"); render(await r.json()); } catch (e) { $("error").textContent = tr("Lost contact with Hachidori."); }
 }
 function gib(b) { return (b / 1073741824).toFixed(1) + " GiB"; }
 function show(id, on) { $(id).hidden = !on; }
@@ -105,13 +107,13 @@ function render(v) {
   show("failed", v.stage === "failed");
   if (v.stage === "select") {
     const s = v.selection;
-    $("path").textContent = s ? s.picked : "No folder selected";
+    $("path").textContent = s ? s.picked : tr("No folder selected");
     let d = "";
     if (s && s.home) {
-      if (s.nested) d += "Hachidori will use the folder " + s.home + ". ";
-      if (s.existing) d += "An existing Hachidori installation was found (" + s.existing.model_id + ", " + s.existing.device + "). ";
-      d += s.free_bytes != null ? "Free space: " + gib(s.free_bytes) + ". " : "Free space could not be determined. ";
-      d += "The space required is not calculated in advance.";
+      if (s.nested) d += tr("Hachidori will use the folder ") + s.home + tr(". ");
+      if (s.existing) d += tr("An existing Hachidori installation was found (") + s.existing.model_id + ", " + s.existing.device + tr("). ");
+      d += s.free_bytes != null ? tr("Free space: ") + gib(s.free_bytes) + tr(". ") : tr("Free space could not be determined. ");
+      d += tr("The space required is not calculated in advance.");
     }
     $("detail").textContent = d;
     $("problem").textContent = s && s.problem ? s.problem : "";
@@ -123,22 +125,22 @@ function render(v) {
     if (!devInit) { devInit = true; for (const r of document.getElementsByName("device")) r.checked = r.value === v.device; }
   }
   if (v.stage === "installing" || v.stage === "starting") {
-    $("ptitle").textContent = v.stage === "installing" ? "Installing Hachidori" : "Starting the model";
+    $("ptitle").textContent = v.stage === "installing" ? tr("Installing Hachidori") : tr("Starting the model");
     const ol = $("phases"); ol.textContent = "";
-    const label = { preparing: "Preparing the storage folder", runtime: "Installing the runtime", model: "Installing the model", activation: "Activating" };
+    const label = { preparing: tr("Preparing the storage folder"), runtime: tr("Installing the runtime"), model: tr("Installing the model"), activation: tr("Activating") };
     for (const p of (v.phases || [])) { const li = document.createElement("li"); li.className = p.status; li.textContent = label[p.name] || p.name; ol.appendChild(li); }
-    $("worker").textContent = v.stage === "starting" ? "Runtime: " + (v.worker || "starting") : "This can take several minutes. Setup reports each stage as it begins.";
+    $("worker").textContent = v.stage === "starting" ? tr("Runtime: ") + (v.worker || "starting") : tr("This can take several minutes. Setup reports each stage as it begins.");
   }
   if (v.stage === "ready") {
     const i = v.identity;
-    $("identity").textContent = i ? "Model " + i.model_id + " on " + i.device + " (runtime " + i.runtime + ") in " + i.home : "";
+    $("identity").textContent = i ? tr("Model ") + i.model_id + tr(" on ") + i.device + tr(" (runtime ") + i.runtime + tr(") in ") + i.home : "";
     if (!redirecting) { redirecting = true; setTimeout(() => { location.href = "/"; }, 2500); }
   }
   if (v.stage === "failed") {
     const f = v.failure || {};
-    $("fmsg").textContent = f.message || "The last action failed.";
+    $("fmsg").textContent = tr(f.message) || tr("The last action failed.");
     $("fdetail").textContent = (f.class ? f.class + "\n" : "") + (f.stderr_tail || []).join("\n");
-    $("flog").textContent = v.setup_log ? "Details are kept in " + v.setup_log : "";
+    $("flog").textContent = v.setup_log ? tr("Details are kept in ") + v.setup_log : "";
     $("retry").disabled = !v.can_retry; show("change", v.can_change);
   }
 }

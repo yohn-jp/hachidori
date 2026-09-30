@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
@@ -117,8 +119,8 @@ func TestRuntimeLeadsWithReadiness(t *testing.T) {
 	e := newEnv(t)
 	body := e.get(t, "/").Body.String()
 	ready := strings.Index(body, `class="readiness-panel tone-ok"`)
-	details := strings.Index(body, `data-keep="runtime-details"`)
-	if ready < 0 || details < 0 || ready > details {
+	load := strings.Index(body, `id="load-h"`)
+	if ready < 0 || load < 0 || ready > load {
 		t.Fatal("readiness does not lead the runtime workspace")
 	}
 	for _, want := range []string{`<a class="btn primary" href="/workbench">Open Workbench</a>`, "Recovered from worker failure: worker_crash",
@@ -140,6 +142,52 @@ func TestRuntimeLeadsWithReadiness(t *testing.T) {
 	body = e.get(t, "/").Body.String()
 	if !strings.Contains(body, `<button type="submit" class="btn primary">Start</button>`) || strings.Contains(body, "Open Workbench") {
 		t.Error("stopped runtime does not lead with Start")
+	}
+}
+
+// Runtime is the operator summary: readiness, identity, endpoint, load and
+// accelerator memory, once each, and no host paths or raw provider map.
+// Diagnostics projects the same /v1/status document with the full evidence.
+func TestRuntimeSummarySeparatesDiagnosticEvidence(t *testing.T) {
+	e := newEnv(t)
+	st := e.d.cfg.Status()
+	paths := []string{st.Runtime.Home, st.Worker.Info["python_executable"].(string), st.Worker.Info["hf_home"].(string),
+		st.Worker.Info["model_dir"].(string), st.Runtime.Model}
+	rt := e.get(t, "/").Body.String()
+	ov := rt[strings.Index(rt, `class="readiness-panel`):strings.Index(rt, `</main>`)]
+	for _, want := range []string{"laya-base", "NVIDIA GeForce RTX 3060", "laya 0.3.21", "0.1.0-cu128", `id="load-h"`,
+		"p95 latency", "0 / 64", "GPU memory", "of 12288 MiB", `href="/diagnostics#runtime-evidence"`} {
+		if !strings.Contains(ov, want) {
+			t.Errorf("runtime summary lacks %q", want)
+		}
+	}
+	for _, h := range []string{`id="rd-h"`, `id="load-h"`, "<dt>Model</dt>", "<dt>Accelerator</dt>", "<dt>Provider</dt>", "p50 latency"} {
+		if n := strings.Count(ov, h); n != 1 {
+			t.Errorf("runtime summary shows %q %d times", h, n)
+		}
+	}
+	for _, raw := range append(paths, "All provider info", "python_executable", "hf_home", "model_dir", "runtime-details", `data-keep="runtime-evidence"`) {
+		if strings.Contains(ov, raw) {
+			t.Errorf("default runtime surface exposes %q", raw)
+		}
+	}
+	for _, p := range []string{"/diagnostics", "/live"} {
+		diag := e.get(t, p).Body.String()
+		for _, want := range append(paths, `data-keep="runtime-evidence"`, "All provider info", "python_executable", "hf_home", "model_dir",
+			"<dt>worker PID</dt><dd>4242</dd>", "2 / 1 in window", "3.12.11", "2.11.0&#43;cu128 / 12.8", "812.5 ms / 90.1 ms",
+			"allocated 600 MiB, reserved 700 MiB, free 10240 MiB, total 12288 MiB") {
+			if !strings.Contains(diag, want) {
+				t.Errorf("%s lacks diagnostic evidence %q", p, want)
+			}
+		}
+	}
+	// Both surfaces follow the one status document.
+	e.rt.mu.Lock()
+	e.rt.snap.State, e.rt.snap.Ready, e.rt.snap.PID = worker.StateStopped, false, 0
+	e.rt.mu.Unlock()
+	live := e.get(t, "/live").Body.String()
+	if !strings.Contains(live, `<p class="state-word"><span class="dot"></span>stopped</p>`) || !strings.Contains(live, "<dt>worker state</dt><dd>stopped (phase ready)</dd>") {
+		t.Error("runtime summary and diagnostic evidence do not both follow /v1/status")
 	}
 }
 
@@ -300,6 +348,16 @@ func TestEvidenceInvestigationComposition(t *testing.T) {
 type fakeSettings struct {
 	def settings.Defaults
 	err error
+	loc string
+}
+
+func (f *fakeSettings) Locale() (string, error) { return f.loc, nil }
+func (f *fakeSettings) SetLocale(l string) error {
+	if err := settings.ValidateLocale(l); err != nil {
+		return err
+	}
+	f.loc = l
+	return nil
 }
 
 func (f *fakeSettings) Defaults() (settings.Defaults, error) { return f.def, nil }
@@ -573,5 +631,118 @@ func TestLegacyTunnelPrefsArePrefillOnlyWhenProfilesAreHosted(t *testing.T) {
 	e.post(t, "/tunnel/connect", url.Values{"destination": {"dev@nixos"}, "remote_bind": {"127.0.0.1"}, "remote_port": {"7843"}, "local_port": {"7843"}})
 	if b, _ := os.ReadFile(e.d.cfg.PrefsPath); string(b) != string(legacy) {
 		t.Fatalf("legacy prefs rewritten: %s", b)
+	}
+}
+
+var machineAttrRe = regexp.MustCompile(`\b(?:action|formaction|name|value|href|id|data-live|data-keep)="[^"]*"`)
+
+// The operator UI renders English or Japanese through the catalog. The
+// selection persists through the settings authority and applies to every
+// workspace and live refresh; forms, handlers, identifiers, paths and
+// evidence are byte-identical in both locales.
+func TestOperatorLocaleRendering(t *testing.T) {
+	e := newEnv(t)
+	fs := &fakeSettings{}
+	withSettings(e, fs, nil)
+	withPathPicker(e, &fakePathPicker{path: "/data/chosen"})
+	pages := []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings", "/live"}
+	render := func() map[string]string {
+		m := map[string]string{}
+		for _, p := range pages {
+			rec := e.get(t, p)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s: %d", p, rec.Code)
+			}
+			m[p] = rec.Body.String()
+		}
+		return m
+	}
+	en := render()
+	if !strings.Contains(en["/"], `<html lang="en">`) || !strings.Contains(en["/"], `<a href="/" aria-current="page">Runtime</a>`) ||
+		strings.Contains(en["/settings"], ` selected lang="`) {
+		t.Fatal("English is not the default rendering")
+	}
+
+	if rec := e.post(t, "/settings/locale", url.Values{"locale": {"ja"}, "return": {"settings"}}); rec.Code != http.StatusSeeOther || fs.loc != "ja" {
+		t.Fatalf("select ja: %d, stored %q", rec.Code, fs.loc)
+	}
+	ja := render()
+	for _, p := range pages {
+		if p != "/live" && !strings.Contains(ja[p], `<html lang="ja">`) {
+			t.Errorf("%s is not rendered in Japanese", p)
+		}
+		for _, want := range []string{"laya-base", "NVIDIA GeForce RTX 3060", "laya 0.3.21"} {
+			if !strings.Contains(ja[p], want) {
+				t.Errorf("ja %s lacks machine identity %q", p, want)
+			}
+		}
+		if a, b := machineAttrRe.FindAllString(en[p], -1), machineAttrRe.FindAllString(ja[p], -1); strings.Join(a, "\n") != strings.Join(b, "\n") {
+			t.Errorf("%s: forms, identifiers or routes differ between locales", p)
+		}
+	}
+	for p, want := range map[string]string{
+		"/":            `<a href="/" aria-current="page">ランタイム</a>`,
+		"/workbench":   `<h1>ワークベンチ</h1>`,
+		"/experiments": `実験を実行`,
+		"/errors":      `エビデンスレポートファイル（絶対パス）`,
+		"/diagnostics": `<summary>ランタイムのエビデンス`,
+		"/settings":    `<option value="ja" selected lang="ja">日本語</option>`,
+		"/live":        `ワーカー障害から復旧: worker_crash`,
+	} {
+		if !strings.Contains(ja[p], want) {
+			t.Errorf("ja %s lacks %q", p, want)
+		}
+	}
+	if !strings.Contains(ja["/settings"], `<span class="what">言語</span><span class="msg-text">保存しました</span>`) {
+		t.Error("the locale action outcome is not rendered through the catalog")
+	}
+	// The #98 hierarchy holds in Japanese: no host paths on Runtime, full
+	// evidence on Diagnostics.
+	home := e.d.cfg.Status().Runtime.Home
+	if strings.Contains(ja["/"], home) || strings.Contains(ja["/"], "python_executable") || !strings.Contains(ja["/diagnostics"], home) ||
+		!strings.Contains(ja["/diagnostics"], "python_executable") {
+		t.Error("Runtime/Diagnostics hierarchy differs in Japanese")
+	}
+	// Native path selection goes through the same handler in Japanese.
+	body := e.post(t, "/experiments/pick", url.Values{"pick": {"dataset"}}).Body.String()
+	if !strings.Contains(body, `name="dataset" value="/data/chosen"`) || !strings.Contains(body, "ファイルを選択") {
+		t.Error("native picker does not fill the form in Japanese")
+	}
+	// A message without a Japanese entry falls back to its English text.
+	e.post(t, "/settings/locale", url.Values{"locale": {"fr"}, "return": {"settings"}})
+	if s := e.get(t, "/settings").Body.String(); fs.loc != "ja" || !strings.Contains(s, `<span class="what">言語</span><span class="msg-text">locale &#34;fr&#34; is not supported (en or ja)</span>`) {
+		t.Error("an unsupported locale was stored or its error was not shown untranslated")
+	}
+	// Switching back restores English exactly.
+	e.post(t, "/settings/locale", url.Values{"locale": {"en"}})
+	if b := e.get(t, "/workbench").Body.String(); !strings.Contains(b, `<html lang="en">`) || !strings.Contains(b, "<h1>Workbench</h1>") {
+		t.Error("English not restored")
+	}
+}
+
+var catalogRefRe = regexp.MustCompile(`\{\{t "((?:[^"\\]|\\.)*)"`)
+
+// Every operator message the workstation templates render has a Japanese
+// entry; English needs none because it is the message ID.
+func TestWorkstationTemplatesAreCatalogued(t *testing.T) {
+	n := 0
+	for _, f := range []string{"page.html", "workbench.html", "experiments.html", "errors.html"} {
+		b, err := pageFS.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range catalogRefRe.FindAllStringSubmatch(string(b), -1) {
+			msg, err := strconv.Unquote(`"` + m[1] + `"`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n++
+			if !i18n.Japanese.Has(msg) {
+				t.Errorf("%s: %q has no Japanese entry", f, msg)
+			}
+		}
+	}
+	if n < 300 {
+		t.Errorf("only %d catalogued messages", n)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/dashboard"
 	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
 )
@@ -313,5 +314,25 @@ func TestDashboardPathPickerIsDesktopFileCapabilityOnly(t *testing.T) {
 	}
 	if _, err := p.PickSave(context.Background(), ""); err == nil || errors.Is(err, dashboard.ErrPickCancelled) {
 		t.Fatalf("failure = %v, want the picker error", err)
+	}
+}
+
+// The operator UI locale is stored by the same settings authority beside
+// desktop.json, exists before any home is selected (first run resolves it
+// there too), and survives a restart of the composition.
+func TestSettingsStorePersistsOperatorLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_MESSAGES", "")
+	t.Setenv("LANG", "C.UTF-8")
+	prefs := filepath.Join(t.TempDir(), "desktop.json")
+	var _ dashboard.Settings = settingsStore(prefs, nil)
+	if got := settingsStore(prefs, nil).ResolvedLocale(); got != i18n.English {
+		t.Fatalf("unset locale resolves to %q", got)
+	}
+	if err := settingsStore(prefs, nil).SetLocale("ja"); err != nil {
+		t.Fatal(err)
+	}
+	if got := settingsStore(prefs, nil).ResolvedLocale(); got != i18n.Japanese {
+		t.Fatalf("after restart: %q", got)
 	}
 }
