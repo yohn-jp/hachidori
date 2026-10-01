@@ -191,6 +191,38 @@ func TestRuntimeSummarySeparatesDiagnosticEvidence(t *testing.T) {
 	}
 }
 
+// The Runtime summary must not let a model id collapse into a column of single
+// characters (#119). The panel's blocks wrap onto their own rows rather than
+// share one grid row whose fr track can shrink to zero, the identity columns
+// have a real minimum width, and identity values wrap without
+// overflow-wrap:anywhere, which would drop their minimum content width to one
+// character.
+func TestRuntimeSummaryKeepsModelIdsReadable(t *testing.T) {
+	e := newEnv(t)
+	body := e.get(t, "/").Body.String()
+	for _, want := range []string{
+		`.readiness-panel { display: flex; flex-wrap: wrap;`,
+		`.identity { flex: 3 1 22rem; min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));`,
+		`.identity > div { min-width: 0; }`,
+		`.identity dd { margin: .1rem 0 0; font-weight: 580; overflow-wrap: break-word; }`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("runtime summary stylesheet lacks %q", want)
+		}
+	}
+	for _, ln := range strings.Split(body, "\n") {
+		if strings.HasPrefix(ln, ".readiness-panel {") && strings.Contains(ln, "grid-template-columns") {
+			t.Errorf("runtime summary is a fixed-track grid again: %s", ln)
+		}
+		if strings.HasPrefix(ln, ".identity dd {") && strings.Contains(ln, "overflow-wrap: anywhere") {
+			t.Errorf("identity values may collapse to one character per line: %s", ln)
+		}
+		if strings.Contains(ln, ".readiness-panel {") && strings.Contains(ln, "grid-template-columns") {
+			t.Errorf("a responsive rule re-imposes grid tracks on the runtime summary: %s", ln)
+		}
+	}
+}
+
 // The workstation defines its narrow-window layout and honours reduced
 // motion; it has no second design system.
 func TestShellLayoutRules(t *testing.T) {

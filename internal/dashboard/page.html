@@ -152,14 +152,20 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 .items > .item:last-child { border-bottom: 1px solid var(--line); }
 
 /* ---- runtime ---------------------------------------------------------- */
-.readiness-panel { display: grid; grid-template-columns: minmax(13rem, auto) minmax(0, 1fr) auto; gap: var(--sp-5) var(--sp-7); align-items: center; padding: var(--sp-5);
+.readiness-panel { display: flex; flex-wrap: wrap; gap: var(--sp-5) var(--sp-7); align-items: center; padding: var(--sp-5);
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: inset 3px 0 0 var(--tone); }
 .state-sub { margin-top: .35rem; font-size: var(--fs-small); color: var(--text-2); }
-.identity { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem 1.75rem; margin: 0; }
-.identity dd { margin: .1rem 0 0; font-weight: 580; overflow-wrap: anywhere; }
+/* The panel's three blocks wrap onto their own rows instead of competing for
+   one grid row, and the identity columns have a real minimum, so a model id is
+   never squeezed to a column of single characters. */
+.readiness-panel > :first-child { flex: 1 1 13rem; min-width: 0; }
+.identity { flex: 3 1 22rem; min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: .7rem 1.75rem; margin: 0; }
+.identity > div { min-width: 0; }
+.identity dd { margin: .1rem 0 0; font-weight: 580; overflow-wrap: break-word; }
 .identity dd.model { font-family: var(--mono); font-size: var(--fs-heading); }
 .identity dd .sub { display: block; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--sp-2); }
+.readiness-panel > .actions { flex: 0 1 auto; margin-left: auto; }
 .attention { display: grid; gap: .6rem; padding: var(--sp-3) var(--sp-4); border-radius: var(--r-lg); border: 1px solid color-mix(in srgb, var(--tone) 45%, var(--line)); background: var(--tone-soft); }
 .attention.tone-warn { background: transparent; }
 .attention ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .45rem; }
@@ -217,8 +223,6 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 @media (max-width: 1180px) {
   .split, .split.narrow-side { grid-template-columns: minmax(0, 1fr); }
   .pane-side { position: static; max-height: none; overflow: visible; }
-  .readiness-panel { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
-  .readiness-panel .actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
 /* Below 820px the navigation becomes a horizontal strip under the title
    bar, so the workspace keeps the full window width. */
@@ -231,13 +235,12 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   .sidenav a[aria-current="page"] { box-shadow: inset 0 -2px 0 var(--accent); }
   .workspace { padding: 0 var(--sp-4) var(--sp-6); gap: var(--sp-5); }
   .appbar-fact, .statusbar .opt { display: none; }
-  .readiness-panel { grid-template-columns: minmax(0, 1fr); }
   .transport-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 520px) {
   .state-word { font-size: var(--fs-figure); }
   .metric.primary dd { font-size: var(--fs-figure); }
-  .identity, .pair { grid-template-columns: minmax(0, 1fr); }
+  .pair { grid-template-columns: minmax(0, 1fr); }
   .kv { grid-template-columns: minmax(0, 1fr); gap: 0; } .kv dd { margin-bottom: .35rem; }
   .path-form { grid-template-columns: minmax(0, 1fr); }
   .choices { grid-template-columns: minmax(0, 1fr); }
