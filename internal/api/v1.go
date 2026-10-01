@@ -31,11 +31,17 @@ type Question struct {
 }
 
 // DecideRequest asks every question against one state.
+//
+// Model optionally names the resident that must answer, by its stable
+// Hachidori catalog model ID (never a repository or revision). Omitted, the
+// request takes the default route exactly as before; named, it is served by
+// that resident or fails explicitly, and is never redirected to another.
 type DecideRequest struct {
 	Schema    string         `json:"schema"`
 	State     string         `json:"state"`
 	Questions []Question     `json:"questions"`
 	Options   map[string]any `json:"options,omitempty"`
+	Model     string         `json:"model,omitempty"`
 }
 
 // Result is one typed observation. Confidence is the calibrated probability
@@ -49,10 +55,21 @@ type Result struct {
 }
 
 // DecideResponse carries one result per question, in request order.
+//
+// Served identifies the resident that answered a directly targeted request;
+// it is omitted for the default route.
 type DecideResponse struct {
 	Schema  string   `json:"schema"`
 	Results []Result `json:"results"`
 	Timing  *Timing  `json:"timing,omitempty"` // omitted inside batch responses
+	Served  *Served  `json:"served,omitempty"`
+}
+
+// Served is the Hachidori catalog identity of the resident that answered:
+// stable provenance only, with no provider prompt or tokenization detail.
+type Served struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider"`
 }
 
 // Timing reports server-side latency. InferenceMS is time spent inside the
@@ -63,9 +80,14 @@ type Timing struct {
 }
 
 // BatchRequest batches independent decide requests.
+//
+// Model optionally targets every request of the batch at one resident (see
+// DecideRequest.Model). A batch is served by one resident, so a request that
+// names a different model is invalid.
 type BatchRequest struct {
 	Schema   string          `json:"schema"`
 	Requests []DecideRequest `json:"requests"`
+	Model    string          `json:"model,omitempty"`
 }
 
 // BatchResponse is aligned with BatchRequest.Requests by index.
@@ -73,6 +95,7 @@ type BatchResponse struct {
 	Schema    string           `json:"schema"`
 	Responses []DecideResponse `json:"responses"`
 	Timing    Timing           `json:"timing"`
+	Served    *Served          `json:"served,omitempty"`
 }
 
 // Error classes (architecture §15).
@@ -112,6 +135,9 @@ func (r *DecideRequest) Validate() error {
 	}
 	if strings.TrimSpace(r.State) == "" {
 		return fmt.Errorf("state must not be empty")
+	}
+	if err := validModelRef(r.Model); err != nil {
+		return err
 	}
 	if len(r.Questions) == 0 || len(r.Questions) > MaxQuestions {
 		return fmt.Errorf("questions must contain 1..%d entries", MaxQuestions)
@@ -168,12 +194,50 @@ func (b *BatchRequest) Validate() error {
 	if len(b.Requests) == 0 || len(b.Requests) > MaxBatchRequests {
 		return fmt.Errorf("requests must contain 1..%d entries", MaxBatchRequests)
 	}
+	if err := validModelRef(b.Model); err != nil {
+		return err
+	}
 	for i := range b.Requests {
 		if b.Requests[i].Schema == "" {
 			b.Requests[i].Schema = SchemaV1
 		}
 		if err := b.Requests[i].Validate(); err != nil {
 			return fmt.Errorf("requests[%d]: %w", i, err)
+		}
+	}
+	_, err := b.Target()
+	return err
+}
+
+// Target is the model a batch is directed at: its own Model, or the one
+// every request names, "" for the default route. Requests naming different
+// models are invalid: one batch is served by one resident.
+func (b *BatchRequest) Target() (string, error) {
+	target := b.Model
+	for i, r := range b.Requests {
+		switch {
+		case r.Model == "" || r.Model == target:
+		case target == "":
+			target = r.Model
+		default:
+			return "", fmt.Errorf("requests[%d]: model %q differs from model %q of the same batch", i, r.Model, target)
+		}
+	}
+	return target, nil
+}
+
+// maxModelRef bounds a model reference; catalog IDs are short.
+const maxModelRef = 128
+
+// validModelRef checks the shape of a model selector: a stable catalog
+// identity token. Whether it names a resident is the runtime's decision.
+func validModelRef(m string) error {
+	if len(m) > maxModelRef {
+		return fmt.Errorf("model must be at most %d bytes", maxModelRef)
+	}
+	for _, c := range m {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
+			return fmt.Errorf("model must be a catalog model ID (letters, digits, '-', '_', '.')")
 		}
 	}
 	return nil

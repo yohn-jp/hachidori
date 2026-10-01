@@ -310,8 +310,9 @@ func cmdStatus(args []string) error {
 func cmdDecide(args []string) error {
 	fs := flag.NewFlagSet("decide", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "", "endpoint (default: $HACHIDORI_ENDPOINT or "+client.DefaultEndpoint+")")
+	model := fs.String("model", "", "catalog model ID of the resident that must answer ("+strings.Join(modelIDs(), ", ")+"); overrides the request's model. Without one the default resident answers. A model that is not resident or not ready fails; it is never answered by another")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: hachidori decide [-endpoint URL] <request.json|->")
+		fmt.Fprintln(fs.Output(), "usage: hachidori decide [-endpoint URL] [-model ID] <request.json|->")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -335,6 +336,9 @@ func cmdDecide(args []string) error {
 	}
 	if req.Schema == "" {
 		req.Schema = api.SchemaV1
+	}
+	if *model != "" {
+		req.Model = *model
 	}
 	resp, err := client.New(*endpoint).Decide(req)
 	if err != nil {

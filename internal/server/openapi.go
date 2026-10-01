@@ -86,7 +86,7 @@ func buildOpenAPI() obj {
 				"operationId": "decide",
 				"tags":        []string{"decide"},
 				"summary":     "Answer questions about one state.",
-				"description": "Asks every question against one state and returns one result per question, in request order. Unknown fields are rejected.",
+				"description": "Asks every question against one state and returns one result per question, in request order. Without model, the default resident answers (unchanged). With model, exactly that resident answers and the response names it in served; a model that is not resident is a request_invalid error and a resident that is not ready is a not_ready error, never answered by another model. Unknown fields are rejected.",
 				"requestBody": obj{"required": true, "content": jsonContent(ref("DecideRequest"))},
 				"responses":   postResponses(ref("DecideResponse"), "The question results."),
 			}},
@@ -94,7 +94,7 @@ func buildOpenAPI() obj {
 				"operationId": "decideBatch",
 				"tags":        []string{"decide"},
 				"summary":     "Answer questions about several states.",
-				"description": "Runs independent decide requests; responses are aligned with requests by index. Requests sharing a question set share forward passes. Unknown fields are rejected.",
+				"description": "Runs independent decide requests; responses are aligned with requests by index. Requests sharing a question set share forward passes. A batch is served by one resident: model on the batch (or the same model on its requests) targets it exactly as for /v1/decide. Unknown fields are rejected.",
 				"requestBody": obj{"required": true, "content": jsonContent(ref("BatchRequest"))},
 				"responses":   postResponses(ref("BatchResponse"), "One response per request, in request order."),
 			}},
@@ -113,7 +113,7 @@ func buildOpenAPI() obj {
 				"operationId": "status",
 				"tags":        []string{"runtime"},
 				"summary":     "Report runtime, worker and counter status.",
-				"description": "The runtime status document, including the active runtime, model and provider. It never waits for an inference.",
+				"description": "The runtime status document, including the active runtime, model and provider. For a multi-resident runtime residents lists every resident with its own state; runtime and worker stay the default resident's. It never waits for an inference.",
 				"responses": obj{
 					"200": obj{"description": "The status document.", "content": jsonContent(ref("Status"))},
 					"403": forbidden(),
@@ -161,8 +161,8 @@ func postResponses(success obj, desc string) obj {
 }
 
 var errorMeaning = map[string]string{
-	api.ErrRequestInvalid:  "request_invalid: schema or limit violation, unknown field, or malformed JSON.",
-	api.ErrNotReady:        "not_ready: the worker is starting, restarting or failed.",
+	api.ErrRequestInvalid:  "request_invalid: schema or limit violation, unknown field, malformed JSON, or a model that is not resident.",
+	api.ErrNotReady:        "not_ready: the worker (or the targeted resident) is starting, restarting, failed or stopped.",
 	api.ErrCapacity:        "capacity: more requests are queued or in flight than the runtime accepts.",
 	api.ErrInferenceFailed: "inference_failed: the healthy worker failed this request.",
 	api.ErrWorkerFailure:   "worker_failure: the worker crashed, hung or violated its protocol.",
@@ -203,19 +203,27 @@ func schemas() obj {
 			"schema":  schemaConst(),
 			"results": obj{"type": "array", "items": ref("Result"), "description": "Results in question order, ids preserved."},
 			"timing":  ref("Timing"),
+			"served":  ref("Served"),
 		}, "schema", "results"),
 
 		"BatchRequest": object("Independent decide requests.", obj{
 			"schema": schemaConst(),
 			"requests": obj{"type": "array", "minItems": 1, "maxItems": api.MaxBatchRequests, "items": ref("BatchItem"),
 				"description": "Decide requests; each entry is validated like a /v1/decide request."},
+			"model": modelRef(),
 		}, "schema", "requests"),
 
 		"BatchResponse": object("Responses aligned with the request entries by index.", obj{
 			"schema":    schemaConst(),
 			"responses": obj{"type": "array", "items": ref("DecideResponse"), "description": "One response per request entry, in request order."},
 			"timing":    ref("Timing"),
+			"served":    ref("Served"),
 		}, "schema", "responses", "timing"),
+
+		"Served": object("The resident that answered a directly targeted request, by its stable Hachidori catalog identity. No provider prompt or tokenization detail is exposed.", obj{
+			"model":    str("Catalog model identity."),
+			"provider": str("Provider kind that loads the model."),
+		}, "model", "provider"),
 
 		"ErrorBody": object("Structured error envelope; an error never carries results.", obj{
 			"schema": schemaConst(),
@@ -237,7 +245,17 @@ func schemas() obj {
 			"runtime":  ref("Runtime"),
 			"uptime_s": obj{"type": "integer", "minimum": 0, "description": "Seconds since the API began serving."},
 			"worker":   ref("Worker"),
+			"residents": obj{"type": "array", "items": ref("ResidentStatus"),
+				"description": "Every resident of a multi-resident runtime, default first, each with its own independent state. Absent for a single worker."},
 		}, "schema", "runtime", "uptime_s", "worker"),
+
+		"ResidentStatus": object("One resident: its stable catalog identity and the status of its own supervised worker. A failed or stopped resident does not change another's entry.", obj{
+			"model":    str("Catalog model identity; the value of model that targets this resident."),
+			"provider": str("Provider kind that loads the model."),
+			"default":  obj{"type": "boolean", "description": "True for the resident that answers requests without a model."},
+			"running":  obj{"type": "boolean", "description": "True while the resident's supervision is running (false after an operator stop)."},
+			"status":   ref("Status"),
+		}, "model", "provider", "running", "status"),
 
 		"Runtime": object("The active runtime.", obj{
 			"home":     str("The HACHIDORI_HOME path."),
@@ -292,6 +310,7 @@ func decideRequest(schemaRequired bool) obj {
 		"questions": obj{"type": "array", "minItems": 1, "maxItems": api.MaxQuestions, "items": ref("Question"),
 			"description": "Questions to answer; ids must be unique within the request."},
 		"options": openObject("Reserved. Accepted and currently has no effect."),
+		"model":   modelRef(),
 	}, req...)
 }
 
@@ -307,4 +326,10 @@ func errorClasses() []string {
 
 func workerStates() []string {
 	return []string{worker.StateStarting, worker.StateReady, worker.StateRestarting, worker.StateFailed, worker.StateStopped}
+}
+
+// modelRef is the optional direct-selection property of a decide request.
+func modelRef() obj {
+	return obj{"type": "string", "minLength": 1, "maxLength": 128,
+		"description": "Optional. A stable Hachidori catalog model ID (a model value listed in GET /v1/status), never a repository or revision. Omitted, the default resident answers. Present, only that resident answers; the response names it in served. A model that is not resident is request_invalid and one that is not ready is not_ready: the request is never redirected to another resident."}
 }

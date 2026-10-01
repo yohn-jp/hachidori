@@ -64,3 +64,50 @@ func TestWireSchemaV1(t *testing.T) {
 		t.Fatalf("response wire form\n got %s\nwant %s", b, want)
 	}
 }
+
+// The model selector is optional and additive: absent it the wire form is the
+// v1 one above; present it must be a catalog-ID-shaped token, never a
+// repository or revision reference.
+func TestModelSelector(t *testing.T) {
+	r := valid()
+	if b, _ := json.Marshal(r); strings.Contains(string(b), "model") {
+		t.Fatalf("an unrouted request carries a model field: %s", b)
+	}
+	for _, ok := range []string{"", "laya-base", "opendecider-nano", "a_b.c-1"} {
+		r.Model = ok
+		if err := r.Validate(); err != nil {
+			t.Errorf("model %q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"org/repo", "org/repo@rev", " laya-base", "a b", "https://x/y", "mé", strings.Repeat("x", 129)} {
+		r.Model = bad
+		if r.Validate() == nil {
+			t.Errorf("model %q accepted", bad)
+		}
+	}
+	for _, tc := range []struct {
+		batch string
+		items []string
+		want  string
+		ok    bool
+	}{
+		{"", []string{"", ""}, "", true},
+		{"a", []string{"", ""}, "a", true},
+		{"", []string{"a", "a"}, "a", true},
+		{"", []string{"", "a"}, "a", true},
+		{"a", []string{"a", ""}, "a", true},
+		{"a", []string{"b"}, "", false},
+		{"", []string{"a", "b"}, "", false},
+	} {
+		b := BatchRequest{Schema: SchemaV1, Model: tc.batch}
+		for _, m := range tc.items {
+			r := valid()
+			r.Model = m
+			b.Requests = append(b.Requests, r)
+		}
+		got, err := b.Target()
+		if (err == nil) != tc.ok || got != tc.want || (b.Validate() == nil) != tc.ok {
+			t.Errorf("batch %+v: target %q err %v", tc, got, err)
+		}
+	}
+}

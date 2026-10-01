@@ -295,6 +295,7 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"ms":        func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) + " ms" },
 	"when":      when,
 	"alerts":    alerts,
+	"tone":      stateTone,
 	"gpuMem":    gpuMem,
 	"ratio":     ratio,
 	"errTotal":  errTotal,

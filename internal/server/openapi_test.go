@@ -423,6 +423,8 @@ func TestOpenAPISchemasMatchGoTypes(t *testing.T) {
 		{"Health", reflect.TypeFor[api.Health](), nil},
 		{"Status", reflect.TypeFor[Status](), nil},
 		{"Runtime", reflect.TypeFor[Runtime](), nil},
+		{"Served", reflect.TypeFor[api.Served](), nil},
+		{"ResidentStatus", reflect.TypeFor[ResidentStatus](), nil},
 		{"Worker", reflect.TypeFor[worker.Snapshot](), nil},
 		{"Failure", reflect.TypeFor[worker.FailureView](), nil},
 	}
@@ -790,4 +792,91 @@ func TestOpenAPIResponsesMatchHandlers(t *testing.T) {
 		t.Errorf("403: %d %q", w.Code, w.Header().Get("Content-Type"))
 	}
 	at(t, d, "paths", "/v1/decide", "post", "responses", "403", "content", "text/plain")
+}
+
+// routerFake is a Decider with two residents, enough to pin the documented
+// direct-selection and multi-resident status shapes against the handlers.
+type routerFake struct {
+	fullFake
+	residents []ResidentStatus
+}
+
+func (r *routerFake) Identity(model string) (api.Served, bool) {
+	for _, s := range r.residents {
+		if s.Model == model {
+			return api.Served{Model: s.Model, Provider: s.Provider}, true
+		}
+	}
+	return api.Served{}, false
+}
+
+func (r *routerFake) DecideOn(_ string, items []worker.Item) ([][]api.Result, float64, error) {
+	return r.fullFake.Decide(items)
+}
+
+func (r *routerFake) ResidentStatuses() []ResidentStatus { return r.residents }
+
+func TestOpenAPIDirectSelectionAndResidentsMatchHandlers(t *testing.T) {
+	d := loadDoc(t)
+	c := checker{t, d}
+	snap := worker.Snapshot{State: worker.StateReady, Phase: "ready", Ready: true, PID: 42, Errors: map[string]int64{}, QueueLimit: 64}
+	rs := func(model, provider string, def bool) ResidentStatus {
+		return ResidentStatus{Model: model, Provider: provider, Default: def, Running: true,
+			Status: Status{Schema: api.SchemaV1, Runtime: Runtime{ModelID: model, Device: "cuda"}, Worker: snap}}
+	}
+	f := &routerFake{fullFake: fullFake{fake: fake{ready: true}, snap: snap},
+		residents: []ResidentStatus{rs("m1", "p1", true), rs("m2", "p2", false)}}
+	h := Handler(f, Runtime{ModelID: "m1", Device: "cuda"})
+	schema := func(path, method string) map[string]any {
+		return at(t, d, "paths", path, method, "responses", "200", "content", "application/json", "schema").(map[string]any)
+	}
+	q := `{"id":"a","type":"choice","instructions":"i","choices":["x","y"]}`
+	one := func(model string) string {
+		sel := ""
+		if model != "" {
+			sel = `,"model":"` + model + `"`
+		}
+		return `{"schema":"hachidori.v1","state":"s","questions":[` + q + `]` + sel + `}`
+	}
+	validate := func(what string, schema map[string]any, body string) {
+		t.Helper()
+		var v any
+		if err := json.Unmarshal([]byte(body), &v); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if errs := c.validate(schema, v); len(errs) > 0 {
+			t.Errorf("%s violates the document: %v\n%s", what, errs, body)
+		}
+	}
+	// Requests with a selector are valid per the document and accepted.
+	validate("direct request", c.schema("DecideRequest"), one("m2"))
+	batch := `{"schema":"hachidori.v1","model":"m2","requests":[` + one("") + `]}`
+	validate("direct batch", c.schema("BatchRequest"), batch)
+
+	rec, m := do(h, "POST", "/v1/decide", one("m2"))
+	if served, _ := m["served"].(map[string]any); rec.Code != 200 || served["model"] != "m2" || served["provider"] != "p2" {
+		t.Fatalf("direct decide: %d %s", rec.Code, rec.Body)
+	}
+	validate("direct decide response", schema("/v1/decide", "post"), rec.Body.String())
+	rec, m = do(h, "POST", "/v1/decide/batch", batch)
+	if served, _ := m["served"].(map[string]any); rec.Code != 200 || served["model"] != "m2" {
+		t.Fatalf("direct batch: %d %s", rec.Code, rec.Body)
+	}
+	validate("direct batch response", schema("/v1/decide/batch", "post"), rec.Body.String())
+	rec, m = do(h, "POST", "/v1/decide", one(""))
+	if _, has := m["served"]; rec.Code != 200 || has {
+		t.Fatalf("default route: %d %s", rec.Code, rec.Body)
+	}
+	if rec, m = do(h, "POST", "/v1/decide", one("m3")); rec.Code != 400 || errClass(m) != api.ErrRequestInvalid {
+		t.Fatalf("unknown resident: %d %s", rec.Code, rec.Body)
+	}
+	if rec, m = do(h, "POST", "/v1/decide", one("a/b")); rec.Code != 400 {
+		t.Fatalf("repository selector: %d %s", rec.Code, rec.Body)
+	}
+
+	rec, m = do(h, "GET", "/v1/status", "")
+	validate("multi-resident status", schema("/v1/status", "get"), rec.Body.String())
+	if res, _ := m["residents"].([]any); len(res) != 2 {
+		t.Fatalf("status residents: %s", rec.Body)
+	}
 }

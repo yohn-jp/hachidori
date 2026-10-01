@@ -35,6 +35,22 @@ type Decider interface {
 	Snapshot() worker.Snapshot
 }
 
+// Router is implemented by a Decider that keeps several residents. DecideOn
+// serves items on exactly the named resident (a stable catalog model ID) and
+// nothing else: a model that is not resident is a request_invalid error, one
+// that is not ready is not_ready for itself, and neither is ever answered by
+// another resident. Identity reports the catalog identity of a resident.
+type Router interface {
+	DecideOn(model string, items []worker.Item) ([][]api.Result, float64, error)
+	Identity(model string) (api.Served, bool)
+}
+
+// Residents is implemented by a Decider that can report every resident; the
+// status document then lists all of them.
+type Residents interface {
+	ResidentStatuses() []ResidentStatus
+}
+
 // Runtime describes the active runtime for status.
 type Runtime struct {
 	Home    string `json:"home"`
@@ -78,13 +94,13 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
-		res, ms, err := d.Decide([]worker.Item{{State: req.State, Questions: req.Questions}})
+		res, ms, served, err := decideTargeted(d, rt, req.Model, []worker.Item{{State: req.State, Questions: req.Questions}})
 		if err != nil {
 			writeWorkerErr(w, sc, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, api.DecideResponse{Schema: api.SchemaV1, Results: res[0],
-			Timing: &api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}})
+			Timing: &api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}, Served: served})
 	})
 	mux.HandleFunc("POST /v1/decide/batch", func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
@@ -100,18 +116,55 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 		for i, q := range req.Requests {
 			items[i] = worker.Item{State: q.State, Questions: q.Questions}
 		}
-		res, ms, err := d.Decide(items)
+		target, _ := req.Target() // validated above
+		res, ms, served, err := decideTargeted(d, rt, target, items)
 		if err != nil {
 			writeWorkerErr(w, sc, err)
 			return
 		}
-		out := api.BatchResponse{Schema: api.SchemaV1, Timing: api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}}
+		out := api.BatchResponse{Schema: api.SchemaV1, Timing: api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}, Served: served}
 		for _, rs := range res {
 			out.Responses = append(out.Responses, api.DecideResponse{Schema: api.SchemaV1, Results: rs})
 		}
 		writeJSON(w, http.StatusOK, out)
 	})
 	return mux
+}
+
+// decideTargeted runs items on the resident the caller named, or on the
+// default route when model is empty (the unchanged compatibility path, which
+// reports no provenance). A named model is served by that resident only: a
+// Router answers for its own members; a single-worker Decider answers only
+// for the model it serves. Anything else is a request_invalid error, never a
+// different resident.
+func decideTargeted(d Decider, rt Runtime, model string, items []worker.Item) ([][]api.Result, float64, *api.Served, error) {
+	if model == "" {
+		res, ms, err := d.Decide(items)
+		return res, ms, nil, err
+	}
+	if r, ok := d.(Router); ok {
+		served, known := r.Identity(model)
+		if !known {
+			return nil, 0, nil, &worker.RequestError{Class: api.ErrRequestInvalid, Message: "model " + model + " is not resident"}
+		}
+		res, ms, err := r.DecideOn(model, items)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		return res, ms, &served, nil
+	}
+	if model != rt.ModelID {
+		return nil, 0, nil, &worker.RequestError{Class: api.ErrRequestInvalid, Message: "model " + model + " is not resident"}
+	}
+	served := api.Served{Model: rt.ModelID}
+	if m, err := setup.LookupModel(rt.ModelID); err == nil {
+		served.Provider = m.Provider
+	}
+	res, ms, err := d.Decide(items)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	return res, ms, &served, nil
 }
 
 // hostLocal enforces the same host-local boundary as the dashboard on the
@@ -160,16 +213,37 @@ func LoopbackHost(hostport string) bool {
 
 // Status is the GET /v1/status document. The host dashboard renders this
 // same document rather than keeping its own view of the runtime.
+//
+// Runtime and Worker are the default resident's (the compatibility route,
+// unchanged). Residents lists every resident of a multi-resident runtime,
+// default first, each with its own runtime identity and worker snapshot
+// (state, PID, device, dtype, load and warmup timing, counters, queue,
+// latency and accelerator evidence); it is absent for a single worker.
 type Status struct {
-	Schema  string          `json:"schema"`
-	Runtime Runtime         `json:"runtime"`
-	UptimeS int             `json:"uptime_s"`
-	Worker  worker.Snapshot `json:"worker"`
+	Schema    string           `json:"schema"`
+	Runtime   Runtime          `json:"runtime"`
+	UptimeS   int              `json:"uptime_s"`
+	Worker    worker.Snapshot  `json:"worker"`
+	Residents []ResidentStatus `json:"residents,omitempty"`
+}
+
+// ResidentStatus is one resident's view in Status.Residents: the status of
+// that resident's own supervisor, under its stable catalog identity.
+type ResidentStatus struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider"`
+	Default  bool   `json:"default,omitempty"`
+	Running  bool   `json:"running"`
+	Status   Status `json:"status"`
 }
 
 // StatusBody builds the status document for a runtime serving since started.
 func StatusBody(d Decider, rt Runtime, started time.Time) Status {
-	return Status{Schema: api.SchemaV1, Runtime: rt, UptimeS: int(time.Since(started).Seconds()), Worker: d.Snapshot()}
+	st := Status{Schema: api.SchemaV1, Runtime: rt, UptimeS: int(time.Since(started).Seconds()), Worker: d.Snapshot()}
+	if r, ok := d.(Residents); ok {
+		st.Residents = r.ResidentStatuses()
+	}
+	return st
 }
 
 // CheckLoopback refuses non-loopback binds: remote exposure needs an
