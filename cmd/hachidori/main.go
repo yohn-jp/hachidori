@@ -158,18 +158,22 @@ func runHost(name string, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Resolve the active runtime before opening the log: a home that was never
+	// set up has no logs directory, and the operator needs to be told to run
+	// setup, not shown a missing-path error from the log file.
+	cfg, info, err := server.WorkerConfig(h, nil)
+	if err != nil {
+		return err
+	}
 	logf, err := os.OpenFile(h.Path("logs", "worker.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
 	defer logf.Close()
+	cfg.Log = logf
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, info, err := server.WorkerConfig(h, logf)
-	if err != nil {
-		return err
-	}
 	sup := worker.NewSupervisor(cfg, worker.DefaultPolicy)
 	lc := worker.NewLifecycle(ctx, sup)
 	lc.Start()

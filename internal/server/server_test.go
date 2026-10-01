@@ -45,7 +45,9 @@ const body = `{"schema":"hachidori.v1","state":"s","questions":[{"id":"q","type"
 
 func do(h http.Handler, method, path, b string) (*httptest.ResponseRecorder, map[string]any) {
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(b)))
+	req := httptest.NewRequest(method, path, strings.NewReader(b))
+	req.Host = DefaultListen
+	h.ServeHTTP(rec, req)
 	var m map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &m)
 	return rec, m
@@ -124,6 +126,61 @@ func TestCheckLoopback(t *testing.T) {
 	for _, a := range []string{"0.0.0.0:7843", ":7843", "192.168.1.2:7843"} {
 		if CheckLoopback(a) == nil {
 			t.Errorf("%s accepted", a)
+		}
+	}
+}
+
+func TestAPIIsHostLocal(t *testing.T) {
+	f := &fake{ready: true}
+	h := Handler(f, Runtime{Home: "/srv/hachidori"})
+	cases := []struct {
+		name    string
+		method  string
+		path    string
+		host    string
+		headers map[string]string
+		code    int
+	}{
+		{"loopback ip", "GET", "/v1/status", "127.0.0.1:7843", nil, 200},
+		{"localhost", "GET", "/v1/status", "localhost:7843", nil, 200},
+		{"ipv6 loopback", "GET", "/health", "[::1]:7843", nil, 200},
+		{"no origin header (non-browser caller)", "POST", "/v1/decide", "127.0.0.1:7843", nil, 200},
+		{"same origin", "POST", "/v1/decide", "127.0.0.1:7843", map[string]string{"Origin": "http://127.0.0.1:7843"}, 200},
+		// DNS rebinding: the page's own name resolves to 127.0.0.1.
+		{"rebound status", "GET", "/v1/status", "attacker.example:7843", nil, 403},
+		{"rebound health", "GET", "/health", "attacker.example", nil, 403},
+		{"rebound decide", "POST", "/v1/decide", "attacker.example:7843", nil, 403},
+		// A no-preflight cross-site POST from a page in the operator's browser.
+		{"cross-origin post", "POST", "/v1/decide", "127.0.0.1:7843", map[string]string{"Origin": "https://attacker.example"}, 403},
+		{"opaque origin post", "POST", "/v1/decide/batch", "127.0.0.1:7843", map[string]string{"Origin": "null"}, 403},
+		{"cross-site fetch metadata", "POST", "/v1/decide", "127.0.0.1:7843", map[string]string{"Sec-Fetch-Site": "cross-site"}, 403},
+	}
+	for _, c := range cases {
+		b := ""
+		if c.method == "POST" {
+			b = body
+			if strings.HasSuffix(c.path, "/batch") {
+				b = `{"schema":"hachidori.v1","requests":[` + body + `]}`
+			}
+		}
+		req := httptest.NewRequest(c.method, c.path, strings.NewReader(b))
+		req.Host = c.host
+		for k, v := range c.headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		before := f.calls
+		h.ServeHTTP(rec, req)
+		if rec.Code != c.code {
+			t.Errorf("%s: status %d, want %d (%s)", c.name, rec.Code, c.code, rec.Body)
+		}
+		if c.code == 403 {
+			if f.calls != before {
+				t.Errorf("%s: a refused request reached the worker", c.name)
+			}
+			if strings.Contains(rec.Body.String(), "/srv/hachidori") {
+				t.Errorf("%s: refusal leaks the home path: %s", c.name, rec.Body)
+			}
 		}
 	}
 }

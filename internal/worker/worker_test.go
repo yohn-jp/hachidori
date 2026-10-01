@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +41,13 @@ func TestHelperWorker(t *testing.T) {
 		time.Sleep(time.Minute)
 	case "hang_start":
 		time.Sleep(time.Minute)
+	case "huge_stderr":
+		// One line the scanner accepts but the tail must bound, then one
+		// beyond the scanner limit. A worker whose stderr is no longer read
+		// blocks in these writes and never reaches ready.
+		fmt.Fprintln(os.Stderr, strings.Repeat("a", 100<<10))
+		fmt.Fprintln(os.Stderr, strings.Repeat("b", 2<<20))
+		fmt.Fprintln(os.Stderr, "after the long line")
 	}
 	for _, ph := range []string{"importing", "loading", "warming"} {
 		emit(map[string]any{"event": "phase", "phase": ph})
@@ -155,6 +165,45 @@ func TestDieCapturesStderr(t *testing.T) {
 	}
 }
 
+func TestStderrLongLineKeepsWorkerDrainedAndTailBounded(t *testing.T) {
+	var log strings.Builder
+	cfg := fakeConfig(t, "huge_stderr")
+	cfg.StartTimeout = 3 * time.Second
+	cfg.Log = &lockedWriter{w: &log}
+	p, err := Start(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatalf("a long stderr line stalled the worker: %v", err)
+	}
+	defer p.Close()
+	if _, _, err := p.Decide([]Item{item}); err != nil {
+		t.Fatal(err)
+	}
+	var sawNotice bool
+	for _, l := range p.tail.lines() {
+		if len(l) > maxTailLine+len("...") {
+			t.Fatalf("tail keeps a %d byte line", len(l))
+		}
+		sawNotice = sawNotice || strings.Contains(l, "exceeded the capture limit")
+	}
+	if !sawNotice {
+		t.Errorf("tail does not say a line was dropped: %q", p.tail.lines())
+	}
+	if !strings.Contains(log.String(), strings.Repeat("a", 100<<10)) {
+		t.Error("the worker log lost the line the tail truncated")
+	}
+}
+
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(b)
+}
+
 func TestCrashIsWorkerFailureNotResult(t *testing.T) {
 	p, err := Start(context.Background(), fakeConfig(t, "crash_on_decide"), nil)
 	if err != nil {
@@ -255,6 +304,54 @@ func TestSupervisorRestartsWithinBudget(t *testing.T) {
 	<-done // budget exhausted: supervisor gives up
 	if s.State() != StateFailed || s.LastFailure().Class != ClassCrash {
 		t.Fatalf("state %s failure %+v", s.State(), s.LastFailure())
+	}
+}
+
+func TestSupervisorRunAfterGivingUpHasAFreshRestartBudget(t *testing.T) {
+	s := NewSupervisor(fakeConfig(t, "crash_on_decide"), Policy{MaxRestarts: 1, Window: time.Hour, Backoff: 10 * time.Millisecond, QueueDepth: 2})
+	crash := func(ctx context.Context) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() { s.Run(ctx); close(done) }()
+		waitState(t, s, StateReady)
+		_, _, _ = s.Decide([]Item{item})
+		// The first exit is retried within the budget; the exit after that
+		// exhausts it.
+		deadline := time.Now().Add(5 * time.Second)
+		for !(s.Ready() && s.Snapshot().Restarts == 1) {
+			if time.Now().After(deadline) {
+				t.Fatalf("no restart: state %s", s.State())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		_, _, _ = s.Decide([]Item{item})
+		<-done
+		if s.State() != StateFailed {
+			t.Fatalf("state %s, want failed (budget exhausted)", s.State())
+		}
+	}
+	crash(context.Background())
+	// The operator's Restart runs the supervisor again. Its budget is fresh,
+	// so the first exit is retried again instead of ending in failed at once.
+	crash(context.Background())
+	if got := s.Snapshot().Starts; got != 4 {
+		t.Fatalf("starts = %d, want 4 (two per run)", got)
+	}
+}
+
+func TestSupervisorStopDuringStartupIsNotAFailure(t *testing.T) {
+	s := NewSupervisor(fakeConfig(t, "hang_start"), Policy{QueueDepth: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.Run(ctx)
+	if s.State() != StateStopped {
+		t.Fatalf("state %s, want stopped", s.State())
+	}
+	if f := s.LastFailure(); f != nil {
+		t.Fatalf("a stop requested during startup was recorded as a failure: %+v", f)
+	}
+	if s.Snapshot().LastFailure != nil {
+		t.Fatal("the status document reports the stop as a failure")
 	}
 }
 

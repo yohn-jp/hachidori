@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -110,6 +111,38 @@ func installedApp(t *testing.T, p desktop.Platform, background bool) (*desktopAp
 	a.Startup = noStartup{}
 	a.Background = background
 	return a, rt, opens
+}
+
+// A loopback port that is already taken ends the launch before any runtime is
+// bound or started: nothing is left running when run returns.
+func TestListenFailureStartsNoRuntime(t *testing.T) {
+	for _, taken := range []string{"api", "dashboard"} {
+		t.Run(taken, func(t *testing.T) {
+			busy, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer busy.Close()
+			f := &fakeDesktop{}
+			a, rt, opens := installedApp(t, f, false)
+			if taken == "api" {
+				a.APIAddr = busy.Addr().String()
+			} else {
+				a.DashAddr = busy.Addr().String()
+			}
+			err = a.run()
+			if err == nil || !strings.Contains(err.Error(), busy.Addr().String()) {
+				t.Fatalf("run = %v, want the address-in-use error naming %s", err, busy.Addr())
+			}
+			starts, _, _ := rt.counts()
+			if starts != 0 || opens.Load() != 0 || f.opened != 0 {
+				t.Fatalf("runtime started %d, bound %d, windows %d; a launch that cannot serve must start nothing", starts, opens.Load(), f.opened)
+			}
+			if f.held {
+				t.Fatal("the single-instance guard was not released")
+			}
+		})
+	}
 }
 
 // A duplicate launch, from either entry, activates the running instance and

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
@@ -48,6 +49,10 @@ func Handler(d Decider, rt Runtime) http.Handler { return HandlerSince(d, rt, ti
 // HandlerSince is Handler with an explicit serving start time, so that other
 // host surfaces can report the same uptime via StatusBody.
 func HandlerSince(d Decider, rt Runtime, started time.Time) http.Handler {
+	return hostLocal(routes(d, rt, started))
+}
+
+func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		h := api.Health{Ready: d.Ready(), State: d.State()}
@@ -104,6 +109,50 @@ func HandlerSince(d Decider, rt Runtime, started time.Time) http.Handler {
 		writeJSON(w, http.StatusOK, out)
 	})
 	return mux
+}
+
+// hostLocal enforces the same host-local boundary as the dashboard on the
+// public API: the Host header must name a loopback address (a DNS-rebinding
+// page resolves its own name to 127.0.0.1 and would otherwise read
+// /v1/status, which carries the HACHIDORI_HOME path), and a state-changing
+// request must not come from another web origin (a page in the operator's
+// browser can send a no-preflight POST to /v1/decide). Callers of this API
+// are not browsers, and the API sends no CORS headers, so nothing legitimate
+// is refused.
+func hostLocal(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !LoopbackHost(r.Host) {
+			http.Error(w, "host-local: Host must be a loopback address", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
+				http.Error(w, "cross-origin request refused", http.StatusForbidden)
+				return
+			}
+			if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" && s != "none" {
+				http.Error(w, "cross-site request refused", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// LoopbackHost reports whether a Host header value (host or host:port) names
+// a loopback address. It is the one host-local policy shared by the API, the
+// dashboard and the first-run screen.
+func LoopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Status is the GET /v1/status document. The host dashboard renders this

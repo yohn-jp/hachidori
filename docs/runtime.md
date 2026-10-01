@@ -42,6 +42,12 @@ defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
 | `POST /v1/decide` | `200` | one state, 1–32 `choice` questions |
 | `POST /v1/decide/batch` | `200` | 1–64 decide requests; requests sharing a question set share forward passes |
 
+The API is host-local like the dashboard: a request whose `Host` is not a
+loopback address is refused with `403` (DNS rebinding), and so is a `POST` that
+carries a cross-origin `Origin` or `Sec-Fetch-Site: cross-site` (a web page in
+the operator's browser). Non-browser callers, including SSH-forwarded ones that
+use `127.0.0.1` or `localhost`, send neither and are unaffected.
+
 Request:
 
 ```json

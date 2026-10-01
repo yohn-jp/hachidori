@@ -64,6 +64,12 @@ func (s *Supervisor) Run(ctx context.Context) {
 	if s.state == StateStopped || s.state == StateFailed {
 		s.state = StateStarting
 	}
+	// Every Run is an operator action (Lifecycle.Start or Restart, or the
+	// first start): the bounded restart budget begins afresh, as it does
+	// when the desktop binds a new supervisor after the operator's Restart.
+	// Without this, a Restart after the supervisor gave up leaves the old
+	// window full and the next exit is not retried at all.
+	s.restarts = nil
 	s.mu.Unlock()
 	for {
 		s.mu.Lock()
@@ -73,10 +79,14 @@ func (s *Supervisor) Run(ctx context.Context) {
 		p, err := Start(ctx, s.cfg, func(ph string) { s.mu.Lock(); s.phase = ph; s.mu.Unlock() })
 		if err != nil {
 			s.mu.Lock()
-			s.lastFail = asFailure(err)
-			s.state = StateFailed
 			if ctx.Err() != nil {
+				// A stop requested during startup is the operator's
+				// decision, not a worker failure: it must not appear as the
+				// last failure or raise a failure alert.
 				s.state = StateStopped
+			} else {
+				s.lastFail = asFailure(err)
+				s.state = StateFailed
 			}
 			s.mu.Unlock()
 			return

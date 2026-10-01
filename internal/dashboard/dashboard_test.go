@@ -166,7 +166,7 @@ func TestStatusIsTheV1StatusDocument(t *testing.T) {
 	e := newEnv(t)
 	rec := e.get(t, "/api/status")
 	api := httptest.NewRecorder()
-	e.api.ServeHTTP(api, httptest.NewRequest("GET", "/v1/status", nil))
+	e.api.ServeHTTP(api, httptest.NewRequest("GET", "http://127.0.0.1:7843/v1/status", nil))
 	var a, b map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &a)
 	json.Unmarshal(api.Body.Bytes(), &b)

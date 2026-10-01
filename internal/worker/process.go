@@ -317,15 +317,27 @@ func (p *Process) readStdout(r io.Reader) {
 	_, _ = io.Copy(io.Discard, r)
 }
 
+// maxTailLine bounds one retained stderr line. The tail is republished by
+// /v1/status and the dashboard, so one pathological line must not grow them.
+// The full line still goes to the worker log.
+const maxTailLine = 4 << 10
+
 func (p *Process) copyStderr(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
 		line := sc.Text()
-		p.tail.add(line)
+		p.tail.add(truncate(line, maxTailLine))
 		if p.cfg.Log != nil {
 			fmt.Fprintln(p.cfg.Log, line)
 		}
+	}
+	// A line over the scanner limit ends the scan with the pipe still open.
+	// Keep draining it: a worker blocked writing stderr stops answering and
+	// would be misreported as unresponsive.
+	if err := sc.Err(); err != nil {
+		p.tail.add("worker stderr line exceeded the capture limit: " + err.Error())
+		_, _ = io.Copy(io.Discard, r)
 	}
 }
 

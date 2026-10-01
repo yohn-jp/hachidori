@@ -334,7 +334,17 @@ func newScrubber(home string) scrubber {
 		if p = strings.TrimRight(p, `/\`); p == "" {
 			return
 		}
-		pairs = append(pairs, p, placeholder, filepath.ToSlash(p), placeholder)
+		// Native, slash and backslash-doubled spellings (the slash form is
+		// derived the same way on every platform). Python quotes the
+		// filename of an OSError with repr(), so a Windows path in a worker
+		// failure message arrives as C:\\Users\\name\\....
+		seen := map[string]bool{}
+		for _, form := range []string{p, strings.ReplaceAll(p, `\`, `/`), strings.ReplaceAll(p, `\`, `\\`)} {
+			if !seen[form] {
+				seen[form] = true
+				pairs = append(pairs, form, placeholder)
+			}
+		}
 	}
 	add(home, "<HACHIDORI_HOME>")
 	if uh, err := os.UserHomeDir(); err == nil {
