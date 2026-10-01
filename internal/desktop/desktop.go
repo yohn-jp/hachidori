@@ -15,12 +15,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
+
+// processStart approximates the process start (package initialization) for
+// the startup marks below.
+var processStart = time.Now()
+
+// StartupMark logs one startup milestone to w with the time since the
+// process started, so the startup budgets in docs/desktop.md can be read
+// from a physical Windows launch without a profiler.
+func StartupMark(w io.Writer, stage string) {
+	fmt.Fprintf(w, "hachidori: startup %s +%dms\n", stage, time.Since(processStart).Milliseconds())
+}
 
 // ErrUnsupported is returned by the Native platform on non-Windows systems.
 var ErrUnsupported = errors.New("hachidori desktop is only available on Windows; " +

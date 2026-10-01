@@ -306,9 +306,15 @@ type expView struct {
 	// Experiment history; filled only on full-page renders.
 	HistoryOn       bool
 	HistoryRoot     string
-	History         []history.Summary
+	History         []history.Summary // every entry, newest first (Compare lists all)
 	HistoryProblems []history.Problem
 	HistoryErr      string
+	// HistoryRows is the page of History the table renders: at most
+	// historyPage entries from HistoryFrom; HistoryPrev and HistoryNext are
+	// the neighbouring page offsets, -1 when there is none.
+	HistoryRows              []history.Summary
+	HistoryFrom              int
+	HistoryPrev, HistoryNext int
 
 	// Comparison of two stored entries (POST /history/compare); nil otherwise.
 	CompareA, CompareB string
@@ -414,8 +420,17 @@ func appendLine(list, line string) string {
 // expPageView is expView plus the saved-history listing. Listing reads the
 // history root only and never contacts the endpoint; the live fragment does
 // not list history.
-func (d *Dashboard) expPageView() expView {
+func (d *Dashboard) expPageView() expView { return d.expPageAt(0) }
+
+// historyPage bounds the saved-history rows rendered at once, so the
+// Experiments workspace stays one bounded document however much history
+// accumulates; older entries stay reachable page by page and in Compare.
+const historyPage = 100
+
+// expPageAt is expPageView showing the history table page at offset from.
+func (d *Dashboard) expPageAt(from int) expView {
 	v := d.expView()
+	v.HistoryPrev, v.HistoryNext = -1, -1
 	if d.hist == nil {
 		v.HistoryErr = d.histErr
 		return v
@@ -425,11 +440,20 @@ func (d *Dashboard) expPageView() expView {
 	if v.History, v.HistoryProblems, err = d.hist.List(); err != nil {
 		v.HistoryErr = "cannot list history: " + err.Error()
 	}
+	from = min(max(from, 0), max(len(v.History)-1, 0)) / historyPage * historyPage
+	v.HistoryFrom, v.HistoryRows = from, v.History[from:min(from+historyPage, len(v.History))]
+	if from > 0 {
+		v.HistoryPrev = from - historyPage
+	}
+	if from+historyPage < len(v.History) {
+		v.HistoryNext = from + historyPage
+	}
 	return v
 }
 
 func (d *Dashboard) experimentsPage(w http.ResponseWriter, r *http.Request) {
-	d.renderView(w, "experiments", d.expPageView())
+	from, _ := strconv.Atoi(r.URL.Query().Get("history"))
+	d.renderView(w, "experiments", d.expPageAt(from))
 }
 
 func (d *Dashboard) experimentsLive(w http.ResponseWriter, r *http.Request) {

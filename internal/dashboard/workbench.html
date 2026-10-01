@@ -5,12 +5,12 @@
   <span class="ws-meta mono">POST {{.Endpoint}}</span>
 </header>
 
-<form method="post" action="/workbench" id="wb">
+<form method="post" action="/workbench" id="wb" data-busy="result-pane">
   <input type="hidden" name="token" value="{{.Token}}">
   <input type="hidden" name="nq" value="{{len .W.Questions}}">
 
   {{/* Run is the first submit control, so Enter in any field runs. */}}
-  <div class="toolbar" role="toolbar" aria-label="Workbench actions">
+  <div class="toolbar" role="toolbar" aria-label="{{t "Workbench actions"}}">
     <button type="submit" class="btn primary" name="op" value="run">{{t "Run"}}</button>
     <button type="submit" class="btn" name="op" value="preview">{{t "Validate & show request"}}</button>
     <span class="spacer"></span>
@@ -26,7 +26,7 @@
       </section>
 
       {{range $i, $q := .W.Questions}}{{$qv := $.Question $i}}
-      <section class="question" aria-label="question {{$i}}">
+      <section class="question" aria-label="{{t "Question"}} {{$i}}">
         <div class="block-h">
           <h2>{{t "Question"}} {{$i}}{{with $q.ID}} <span class="sub mono">{{.}}</span>{{end}}</h2>
           <div class="btn-row">
@@ -41,8 +41,8 @@
         <div class="choices">
           <span class="h">{{t "Choice label"}}</span><span class="h">{{t "Description (optional)"}}</span>
           {{range $j, $c := $q.Choices}}
-          <input name="q{{$i}}.c{{$j}}.label" value="{{$c.Label}}" aria-label="question {{$i}} choice {{$j}} label" spellcheck="false" autocomplete="off">
-          <input name="q{{$i}}.c{{$j}}.desc" value="{{$c.Desc}}" aria-label="question {{$i}} choice {{$j}} description" autocomplete="off">
+          <input name="q{{$i}}.c{{$j}}.label" value="{{$c.Label}}" aria-label="{{t "Question"}} {{$i}} · {{t "Choice label"}} {{$j}}" spellcheck="false" autocomplete="off">
+          <input name="q{{$i}}.c{{$j}}.desc" value="{{$c.Desc}}" aria-label="{{t "Question"}} {{$i}} · {{t "Description (optional)"}} {{$j}}" autocomplete="off">
           {{end}}
         </div>
         <div class="btn-row"><button type="submit" class="btn quiet" name="op" value="choices:{{$i}}">{{t "Add choice rows"}}</button></div>
@@ -59,7 +59,7 @@
             {{with $.Export}}{{if eq .Index $i}}
               {{if .Err}}<p class="msg bad" role="alert">{{.Err}}</p>
               {{else}}<p class="msg ok" role="status">{{t "wrote"}} {{.Identity.ID}}@{{.Identity.Version}} ({{.Identity.Digest}}{{t ") to"}} {{.Path}}</p>
-              <textarea readonly rows="8" aria-label="exported definition" spellcheck="false">{{.JSON}}</textarea>{{end}}
+              <textarea readonly rows="8" aria-label="{{t "Exported definition"}}" spellcheck="false">{{.JSON}}</textarea>{{end}}
             {{end}}{{end}}
           </div>
         </details>
@@ -68,7 +68,7 @@
     </div>
 
     <aside class="pane pane-side" aria-labelledby="result-h">
-      <div class="result-pane">
+      <div class="result-pane" id="result-pane">
         <div class="block-h">
           <h2 id="result-h">{{if .Preview}}{{t "Request preview"}}{{else}}{{t "Result"}}{{end}}</h2>
           {{with .Run}}{{if .Invalid}}<span class="badge tone-bad">{{t "invalid · not sent"}}</span>
@@ -81,7 +81,7 @@
           {{with .Response}}<p class="note mono">{{t "schema"}} {{.Schema}}{{with .Timing}} {{t "· inference"}} {{ms .InferenceMS}} {{t "· server total"}} {{ms .TotalMS}}{{end}} {{t "· round trip"}} {{ms $.Run.TookMS}}</p>{{end}}
         {{end}}
         {{range $i, $q := .W.Questions}}{{with ($.Question $i).Result}}
-        <div class="result" aria-label="result for question {{$i}}">
+        <div class="result" role="group" aria-label="{{t "Result"}} · {{t "Question"}} {{$i}}">
           <span class="sub">{{t "Question"}} {{$i}}{{with $q.ID}} · <span class="mono">{{.}}</span>{{end}}</span>
           <div class="result-choice"><span class="choice">{{.Choice}}</span><span class="conf">{{t "confidence"}} <strong>{{prob .Confidence}}</strong></span></div>
           {{template "dist" (distOf .Probabilities .Choice "")}}
@@ -92,7 +92,7 @@
 
       {{with .Run}}{{with .Wire}}
       <details class="disclosure" data-keep="wire"{{if $.Preview}} open{{end}}><summary>{{t "Exact request JSON"}}<span class="sub">{{t "the POST /v1/decide body"}}{{if $.Run.Sent}} {{t "that was sent"}}{{end}}</span></summary>
-        <div class="body"><textarea readonly rows="8" aria-label="exact request JSON" spellcheck="false">{{.}}</textarea></div>
+        <div class="body"><textarea readonly rows="8" aria-label="{{t "Exact request JSON"}}" spellcheck="false">{{.}}</textarea></div>
       </details>
       {{end}}{{end}}
 
@@ -115,7 +115,7 @@
 
 {{/* dist is one probability distribution, most likely first; the chosen
      answer is emphasised and the expected label (evidence only) marked. */}}
-{{define "dist"}}<table class="dist" aria-label="probabilities">
+{{define "dist"}}<table class="dist" aria-label="{{t "probability"}}">
 <thead class="vh"><tr><th>{{t "choice"}}</th><th>{{t "distribution"}}</th><th>{{t "probability"}}</th></tr></thead><tbody>
 {{$exp := .Expected}}{{range .Rows}}<tr{{if .Chosen}} class="chosen"{{end}}><td class="label">{{.Choice}}{{if and $exp (eq .Choice $exp)}} <span class="tag">{{t "(expected)"}}</span>{{end}}</td><td><span class="track"><span style="width:{{pct .P}}"></span></span></td><td class="num">{{prob .P}}</td></tr>{{end}}
 </tbody></table>{{end}}

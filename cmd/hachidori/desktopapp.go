@@ -313,6 +313,7 @@ func (a *desktopApp) run() error {
 			if plan.Mode == firstrun.ModeLaunch {
 				openURL = desktop.OpenURL(dashURL, res.Summary())
 			}
+			desktop.StartupMark(a.Stderr, "shell composed")
 			err = a.Platform.Open(ctx, desktop.Window{Title: "Hachidori", URL: openURL, DataDir: dataDir, Policy: pol,
 				Resident: res, StartHidden: hidden})
 			res.Wait()
