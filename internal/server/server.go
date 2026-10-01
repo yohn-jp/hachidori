@@ -94,7 +94,7 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
-		res, ms, served, err := decideTargeted(d, rt, req.Model, []worker.Item{{State: req.State, Questions: req.Questions}})
+		res, ms, served, err := decideTargeted(d, rt, api.ModelRef(req.Model), []worker.Item{{State: req.State, Questions: req.Questions}})
 		if err != nil {
 			writeWorkerErr(w, sc, err)
 			return

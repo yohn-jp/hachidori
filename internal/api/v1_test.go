@@ -73,17 +73,28 @@ func TestModelSelector(t *testing.T) {
 	if b, _ := json.Marshal(r); strings.Contains(string(b), "model") {
 		t.Fatalf("an unrouted request carries a model field: %s", b)
 	}
-	for _, ok := range []string{"", "laya-base", "opendecider-nano", "a_b.c-1"} {
-		r.Model = ok
+	if err := r.Validate(); err != nil {
+		t.Errorf("omitted model: %v", err)
+	}
+	for _, ok := range []string{"laya-base", "opendecider-nano", "a_b.c-1"} {
+		r.Model = &ok
 		if err := r.Validate(); err != nil {
 			t.Errorf("model %q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"org/repo", "org/repo@rev", " laya-base", "a b", "https://x/y", "mé", strings.Repeat("x", 129)} {
-		r.Model = bad
+	// An explicitly empty selector is invalid; it is not an omitted one.
+	for _, bad := range []string{"", " ", " laya-base", "org/repo", "org/repo@rev", "a b", "https://x/y", "mé", strings.Repeat("x", 129)} {
+		r.Model = &bad
 		if r.Validate() == nil {
 			t.Errorf("model %q accepted", bad)
 		}
+	}
+	// omitted is the zero selector; "-" marks nothing, "" marks an explicit empty string.
+	sel := func(m string) *string {
+		if m == "-" {
+			return nil
+		}
+		return &m
 	}
 	for _, tc := range []struct {
 		batch string
@@ -91,23 +102,47 @@ func TestModelSelector(t *testing.T) {
 		want  string
 		ok    bool
 	}{
-		{"", []string{"", ""}, "", true},
-		{"a", []string{"", ""}, "a", true},
-		{"", []string{"a", "a"}, "a", true},
-		{"", []string{"", "a"}, "a", true},
-		{"a", []string{"a", ""}, "a", true},
+		{"-", []string{"-", "-"}, "", true},
+		{"a", []string{"-", "-"}, "a", true},
+		{"-", []string{"a", "a"}, "a", true},
+		{"-", []string{"-", "a"}, "a", true},
+		{"a", []string{"a", "-"}, "a", true},
 		{"a", []string{"b"}, "", false},
-		{"", []string{"a", "b"}, "", false},
+		{"-", []string{"a", "b"}, "", false},
+		{"", []string{"-"}, "", false},
+		{"-", []string{""}, "", false},
+		{"-", []string{"-", ""}, "", false},
+		{"a", []string{""}, "", false},
+		{"-", []string{"a", ""}, "", false},
+		{"-", []string{" "}, "", false},
 	} {
-		b := BatchRequest{Schema: SchemaV1, Model: tc.batch}
+		b := BatchRequest{Schema: SchemaV1, Model: sel(tc.batch)}
 		for _, m := range tc.items {
 			r := valid()
-			r.Model = m
+			r.Model = sel(m)
 			b.Requests = append(b.Requests, r)
 		}
-		got, err := b.Target()
-		if (err == nil) != tc.ok || got != tc.want || (b.Validate() == nil) != tc.ok {
-			t.Errorf("batch %+v: target %q err %v", tc, got, err)
+		if (b.Validate() == nil) != tc.ok {
+			t.Errorf("batch %+v: validate %v", tc, b.Validate())
 		}
+		if tc.ok {
+			if got, err := b.Target(); err != nil || got != tc.want {
+				t.Errorf("batch %+v: target %q err %v", tc, got, err)
+			}
+		}
+	}
+}
+
+// The wire form distinguishes an omitted selector from an explicit empty one.
+func TestModelSelectorWireForm(t *testing.T) {
+	var r DecideRequest
+	if err := json.Unmarshal([]byte(`{"schema":"hachidori.v1"}`), &r); err != nil || r.Model != nil {
+		t.Fatalf("omitted decoded as %v, err %v", r.Model, err)
+	}
+	if err := json.Unmarshal([]byte(`{"schema":"hachidori.v1","model":""}`), &r); err != nil || r.Model == nil || *r.Model != "" {
+		t.Fatalf("empty decoded as %v, err %v", r.Model, err)
+	}
+	if b, _ := json.Marshal(r); !strings.Contains(string(b), `"model":""`) {
+		t.Fatalf("explicit empty selector lost on the wire: %s", b)
 	}
 }

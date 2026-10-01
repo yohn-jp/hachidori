@@ -62,9 +62,9 @@ func (f *fakeResidents) Decide(req api.DecideRequest) (api.DecideResponse, error
 	defer f.mu.Unlock()
 	f.total++
 	if f.onDecide != nil {
-		f.onDecide(f, req.Model, f.total)
+		f.onDecide(f, api.ModelRef(req.Model), f.total)
 	}
-	id := req.Model
+	id := api.ModelRef(req.Model)
 	if f.misroute != "" {
 		id = f.misroute
 	}
@@ -453,7 +453,7 @@ type failingOn struct {
 }
 
 func (g *failingOn) Decide(r api.DecideRequest) (api.DecideResponse, error) {
-	if r.Model == g.model && r.State == g.state {
+	if api.ModelRef(r.Model) == g.model && r.State == g.state {
 		return api.DecideResponse{}, fmt.Errorf("worker_failure")
 	}
 	return g.fakeResidents.Decide(r)
@@ -592,7 +592,7 @@ func TestResidentSummaryHasNoVerdict(t *testing.T) {
 func TestSingleModelEvaluationUnchanged(t *testing.T) {
 	s := &stub{answers: map[string]string{"a": "yes"}}
 	r := Run(s, []Case{{ID: "c", State: "a", Questions: []api.Question{q("x")}, Expected: map[string]string{"x": "yes"}}}, Options{})
-	if r.Schema != EvidenceSchema || s.seen[0].Model != "" {
+	if r.Schema != EvidenceSchema || s.seen[0].Model != nil {
 		t.Fatalf("%+v", s.seen[0])
 	}
 	raw, _ := json.Marshal(r)

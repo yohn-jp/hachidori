@@ -331,5 +331,5 @@ func workerStates() []string {
 // modelRef is the optional direct-selection property of a decide request.
 func modelRef() obj {
 	return obj{"type": "string", "minLength": 1, "maxLength": 128,
-		"description": "Optional. A stable Hachidori catalog model ID (a model value listed in GET /v1/status), never a repository or revision. Omitted, the default resident answers. Present, only that resident answers; the response names it in served. A model that is not resident is request_invalid and one that is not ready is not_ready: the request is never redirected to another resident."}
+		"description": "Optional. A stable Hachidori catalog model ID (a model value listed in GET /v1/status), never a repository or revision. Omitted, the default resident answers. An explicitly empty string is not an omitted selector: it is request_invalid. Present and non-empty, only that resident answers; the response names it in served. A model that is not resident is request_invalid and one that is not ready is not_ready: the request is never redirected to another resident."}
 }

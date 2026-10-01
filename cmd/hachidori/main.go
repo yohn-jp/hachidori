@@ -349,7 +349,7 @@ func cmdDecide(args []string) error {
 		req.Schema = api.SchemaV1
 	}
 	if *model != "" {
-		req.Model = *model
+		req.Model = model
 	}
 	resp, err := client.New(*endpoint).Decide(req)
 	if err != nil {

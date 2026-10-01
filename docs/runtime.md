@@ -100,10 +100,13 @@ A non-default model that is not materialized comes up `failed` with its
 cause, without affecting the others.
 
 Routing is explicit and additive. A request with no `model` is answered by the
-default resident exactly as before, and its response is unchanged. A request
+default resident exactly as before, and its response is unchanged. Omitting
+`model` is the only way to ask for the default route: an explicitly empty
+`"model": ""` is `request_invalid` (`400`), never an omitted selector. A request
 with `model` (a stable Hachidori catalog model ID, for example `laya-base` or
-`opendecider-nano`; never a repository or revision, and any other shape is
-`request_invalid`) is answered by that resident only:
+`opendecider-nano`; never a repository or revision, and any other shape,
+including a blank or whitespace-only value, is `request_invalid`) is answered by
+that resident only:
 
 - the response carries `served: {"model", "provider"}`, the catalog identity of
   the resident that answered (no provider prompt or tokenization detail);
@@ -114,7 +117,9 @@ with `model` (a stable Hachidori catalog model ID, for example `laya-base` or
   never starts, restarts or reloads a worker: alternating between residents
   leaves each one's PID, `starts` and loaded model unchanged;
 - a batch is served by one resident: `model` on the batch, or the same `model`
-  on its requests; different models in one batch are `request_invalid`;
+  on its requests; different models in one batch are `request_invalid`, and an
+  explicitly empty `model` on the batch or on any request is `request_invalid`
+  exactly as for a single request;
 - a single-worker `serve` accepts `model` only for the model it runs.
 
 `GET /v1/status` keeps `runtime` and `worker` as the default resident's and adds
