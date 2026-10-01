@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"regexp"
 	"testing"
 	"time"
 
@@ -33,4 +35,32 @@ func BenchmarkLaunchToWindow(b *testing.B) {
 		}
 	}
 	b.ReportMetric(float64(total.Microseconds())/float64(b.N), "µs-to-window/op")
+}
+
+// The startup marks have one origin: the epoch the entry point supplies.
+// The composition marks from it and hands the same epoch to the window.
+func TestStartupMarksUseTheEntryEpoch(t *testing.T) {
+	f := &fakeDesktop{}
+	a, _, _ := installedApp(t, f, false)
+	var log bytes.Buffer
+	a.Stderr = &log
+	a.Epoch = desktop.Epoch(time.Now())
+	var got desktop.Epoch
+	f.open = func(_ context.Context, w desktop.Window) error {
+		got = w.Epoch
+		if r := w.Resident; r != nil {
+			r.Wait()
+			r.OnMenu(desktop.MenuQuit)
+		}
+		return nil
+	}
+	if err := a.launch(); err != nil {
+		t.Fatal(err)
+	}
+	if got != a.Epoch {
+		t.Error("the window was not given the entry epoch")
+	}
+	if !regexp.MustCompile(`hachidori: startup shell composed \+\d+ms since entry\n`).MatchString(log.String()) {
+		t.Errorf("no entry-relative mark in %q", log.String())
+	}
 }

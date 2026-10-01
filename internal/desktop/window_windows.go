@@ -446,7 +446,7 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	if !w.StartHidden {
 		procShowWindow.Call(hwnd, swShowNormal)
 		procUpdateWindow.Call(hwnd)
-		StartupMark(os.Stderr, "native window shown")
+		w.Epoch.Mark(os.Stderr, "native window shown")
 	}
 
 	destroyed := false
@@ -490,7 +490,7 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 		}
 		if !s.firstNav {
 			s.firstNav = true
-			StartupMark(os.Stderr, "first navigation completed")
+			w.Epoch.Mark(os.Stderr, "first navigation completed")
 		}
 		fmt.Fprintf(os.Stderr, "hachidori: WebView2 navigation completed: success=%v status=%d %s\n", ok != 0, status, w.URL)
 	}
@@ -528,7 +528,7 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	}
 	s.chromium = c
 	s.visible = true // a new controller is visible
-	StartupMark(os.Stderr, "WebView2 controller ready")
+	w.Epoch.Mark(os.Stderr, "WebView2 controller ready")
 	c.Resize()
 	// A resident shell starts in the tray only if the tray icon really exists;
 	// otherwise a hidden window would be unreachable.

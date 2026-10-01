@@ -105,7 +105,7 @@ Perceived performance is part of the contract.
 
 CUDA and provider probing happen inside the worker process, after the window exists; the UI shows `starting` until the worker is ready. The model inventory is read only when Settings renders. History is read only when Experiments renders.
 
-**Startup marks.** The desktop logs startup milestones to stderr with the time since process start:
+**Startup marks.** The desktop logs startup milestones to stderr as `+Nms since entry`. The epoch is `desktop.Epoch`, taken as the first statement of `main` and passed explicitly to the composition and the window. It is executable entry, not OS process creation. The OS loader and Go runtime initialization before `main` are not measured, and the budgets below are defined from entry. The marks are:
 
 - `hachidori: startup shell composed +Nms`
 - `native window shown`
@@ -121,8 +121,8 @@ A physical Windows run records the startup budgets from these marks, with no pro
 
 | Budget | Target | Evidence (reference: i5-14600KF, Linux, Go 1.26; server/Go side only) |
 |---|---|---|
-| Process start → first visible native window | ≤ 1 s cold, ≤ 500 ms warm | Go composition to the window request: **0.13 ms** (`BenchmarkLaunchToWindow`, fake WebView2/runtime). The WebView2 part is **NOT_CHECKED**: it needs physical Windows (startup marks). |
-| Process start → first meaningful shell | ≤ 1.5 s cold | Runtime document render **0.18 ms**, 36 KB. WebView2 navigation is **NOT_CHECKED**. |
+| Executable entry → first visible native window | ≤ 1 s cold, ≤ 500 ms warm | Go composition to the window request: **0.13 ms** (`BenchmarkLaunchToWindow`, fake WebView2/runtime). The WebView2 part is **NOT_CHECKED**: it needs physical Windows (startup marks). |
+| Executable entry → first meaningful shell | ≤ 1.5 s cold | Runtime document render **0.18 ms**, 36 KB. WebView2 navigation is **NOT_CHECKED**. |
 | Shell → interactive navigation / workspace switch | ≤ 300 ms | Workspace documents render in 0.1–0.25 ms (31–42 KB). WebView2 parse/paint is **NOT_CHECKED**. |
 | Warm launch | ≤ 500 ms to a shown window | A second launch activates the running instance (no new runtime). **NOT_CHECKED** on Windows. |
 | Runtime refresh | ≤ 100 ms server per poll | `/live` **0.19 ms**, 8 KB. The client now skips unchanged slots and hidden windows. |

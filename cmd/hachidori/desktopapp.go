@@ -59,6 +59,8 @@ type desktopApp struct {
 	// but only while the application is READY; setup, recovery and a failed
 	// start are always shown.
 	Background bool
+	// Epoch is the executable entry time; startup marks are measured from it.
+	Epoch desktop.Epoch
 }
 
 // newDesktopApp builds the production composition. homeFlag is an explicit
@@ -72,6 +74,7 @@ func newDesktopApp(p desktop.Platform, pk desktop.FolderPicker, st desktop.Start
 		APIAddr:  server.DefaultListen, DashAddr: dashboard.DefaultListen,
 		Stderr:  os.Stderr,
 		Startup: st, PrefsPath: prefsPath, SSH: "ssh",
+		Epoch: entry,
 	}
 }
 
@@ -313,8 +316,8 @@ func (a *desktopApp) run() error {
 			if plan.Mode == firstrun.ModeLaunch {
 				openURL = desktop.OpenURL(dashURL, res.Summary())
 			}
-			desktop.StartupMark(a.Stderr, "shell composed")
-			err = a.Platform.Open(ctx, desktop.Window{Title: "Hachidori", URL: openURL, DataDir: dataDir, Policy: pol,
+			a.Epoch.Mark(a.Stderr, "shell composed")
+			err = a.Platform.Open(ctx, desktop.Window{Title: "Hachidori", URL: openURL, DataDir: dataDir, Policy: pol, Epoch: a.Epoch,
 				Resident: res, StartHidden: hidden})
 			res.Wait()
 			stop()

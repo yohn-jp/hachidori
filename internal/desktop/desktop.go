@@ -23,15 +23,20 @@ import (
 	"time"
 )
 
-// processStart approximates the process start (package initialization) for
-// the startup marks below.
-var processStart = time.Now()
+// Epoch is the origin of the startup marks: the instant the executable's
+// main function was entered, taken there by the caller. It is not the OS
+// process creation time (Go does not provide one); loader and runtime
+// initialization before main are outside the measurement.
+type Epoch time.Time
 
-// StartupMark logs one startup milestone to w with the time since the
-// process started, so the startup budgets in docs/desktop.md can be read
-// from a physical Windows launch without a profiler.
-func StartupMark(w io.Writer, stage string) {
-	fmt.Fprintf(w, "hachidori: startup %s +%dms\n", stage, time.Since(processStart).Milliseconds())
+// Mark logs one startup milestone to w as the time since e, so the startup
+// budgets in docs/desktop.md can be read from a physical Windows launch
+// without a profiler. A zero epoch (no entry time supplied) logs nothing.
+func (e Epoch) Mark(w io.Writer, stage string) {
+	if time.Time(e).IsZero() {
+		return
+	}
+	fmt.Fprintf(w, "hachidori: startup %s +%dms since entry\n", stage, time.Since(time.Time(e)).Milliseconds())
 }
 
 // ErrUnsupported is returned by the Native platform on non-Windows systems.
@@ -68,6 +73,9 @@ type Window struct {
 	// StartHidden starts in the tray without showing the window (only
 	// meaningful with Resident).
 	StartHidden bool
+	// Epoch is the executable entry time the shell's startup marks are
+	// measured from.
+	Epoch Epoch
 }
 
 // Platform is the OS surface the shell needs. Native returns the real one;

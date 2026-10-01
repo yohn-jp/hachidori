@@ -249,3 +249,17 @@ func TestFailureTrackerFatalAndBenign(t *testing.T) {
 		t.Fatalf("recent failures unbounded: %d", len(tr.Recent()))
 	}
 }
+
+// Without an entry epoch there is no origin, so nothing is logged rather
+// than a duration measured from an implicit package-initialization time.
+func TestEpochMarkNeedsAnExplicitOrigin(t *testing.T) {
+	var b strings.Builder
+	Epoch{}.Mark(&b, "shell composed")
+	if b.Len() != 0 {
+		t.Fatalf("zero epoch logged %q", b.String())
+	}
+	Epoch(time.Now()).Mark(&b, "shell composed")
+	if !strings.HasPrefix(b.String(), "hachidori: startup shell composed +") || !strings.HasSuffix(b.String(), "ms since entry\n") {
+		t.Fatalf("mark %q", b.String())
+	}
+}
