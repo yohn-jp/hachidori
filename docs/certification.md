@@ -101,7 +101,7 @@ refuses a mismatch). Record, per model:
 | measure | where it comes from |
 |---|---|
 | accuracy, mean confidence, ECE (15 bins) | the benchmark report |
-| calibration beyond ECE (Brier) | not produced by the benchmark report; compute it from the report's per-observation probabilities and expected labels, or record "not available" |
+| calibration beyond ECE (Brier, NLL) | not produced by the single-model benchmark report; use the resident comparison below, or compute it from the report's per-observation probabilities and expected labels, or record "not available" |
 | high-confidence errors | the Errors workspace over the report (outcome `high_confidence_wrong` at a stated confidence threshold) |
 | p50 / p95 latency | the benchmark report (server inference and client round trip) |
 | cold load and warmup time | `hachidori status`, `provider.load_ms` and `provider.warmup_ms` of a freshly started worker |
@@ -115,6 +115,57 @@ the fixed corpus, with latency, load/warmup and VRAM reported alongside. Without
 that record the default stays `laya-base`. A failure of the candidate to load,
 warm up or stay on the requested CUDA device is a `FAIL`, never a fallback to CPU.
 
+### Resident comparison without reload (#123)
+
+When both models are resident at once (multi-resident serving, see
+[runtime.md](runtime.md)), one command evaluates them on the same dataset and
+Question Definitions while both stay loaded; no activation, restart or reload
+happens between the model passes:
+
+```powershell
+hachidori benchmark --questions <defs> --models laya-base,opendecider-nano --warmup 5 --passes 5 --out comparison.json <corpus.jsonl>
+# optional declared controls (defaults in parentheses):
+#   --high-confidence 0.9  --thresholds 0.5,0.6,0.7,0.8,0.9,0.95,0.99
+#   --length-edges 256,512,1024,2048,4096,8192,16384  --family question_id=family
+```
+
+`eval` takes the same flags (one pass, no warmup). Without `--models` both
+commands are unchanged and write ordinary `hachidori.evidence.v1` evidence.
+
+Every model is targeted directly by its catalog ID (`model` on the decide
+request); a model that is not running or not ready stops the run before any
+request, and an answer whose `served` provenance is not the targeted model is an
+error that is never scored. The report is `hachidori.resident-comparison.v1`, a
+separate document: v1 evidence and history entries are unchanged and
+`ModelRun.Evidence` turns any run into a plain v1 report.
+
+What it records, per model (from the report, no manual computation):
+
+| measure | field |
+|---|---|
+| identity: catalog model, provider, revision, runtime, digest | `model`, `provider`, `identity` (the resident's own status), and `served_model`/`served_provider`/`identity_sha256` on every observation |
+| same inputs | `alignment` (`aligned` or `refused` with every difference listed), `input_sha256`, `sent_sha256` (digest of every normalized request actually sent, model selector excluded) |
+| accuracy, macro-F1 | `quality.accuracy`, `quality.macro_f1` (mean F1 over (question, label) classes) |
+| ECE, Brier, NLL | `quality.calibration` (15 bins; Brier is the multi-class sum of squared errors; NLL clips p at 1e-15). Null, never 0, when undefined; `probability_undefined` counts the observations they skip |
+| high-confidence errors | `quality.high_confidence` at the declared threshold (wrong and confidence >= threshold): count, rate of all observations, rate of high-confidence answers |
+| threshold x coverage x conditional accuracy | `quality.thresholds` |
+| per question, per family | `per_question`, `per_family` (families are declared with `--family`; others are `unassigned`) |
+| latency by input length | `length_buckets`: cases, requests, errors, accuracy and request/inference p50/p95 per range of state characters; every bucket is present for every model |
+| p50 / p95 | `request_latency` (client round trip) and `inference_latency` (server), warm requests of all passes, warmup excluded |
+| cold load and warmup | `startup.load_ms`, `startup.warmup_ms` from the resident status, read before the first request; never part of request latency |
+| resident and peak accelerator memory | `memory`: samples before the run, after warmup, after every pass and after all runs; `resident_*` is the after-warmup reading, `peak_*` the highest sampled value (a sampled maximum, not continuous). Absent, not zero, for a resident without accelerator statistics |
+| request and error counts | `requests`, `succeeded`, `error_count`, `errors_by_class`, `errors` |
+| no reload | `resident_stable` per model and `residents_stable` overall: identity, PID, worker start count, load/warmup timing unchanged and uptime not reset between the status read before the first request and the one after the last |
+
+The input-length buckets are how the long-input behaviour of OpenDecider-nano
+(its context is 2,048 tokens) is measured reproducibly: put long and short
+states in the same corpus and read latency and accuracy per bucket. The edges
+are state characters, not tokens; token counts and `state truncated` log lines
+remain provider-internal and are still read from `logs/worker.log`.
+
+The comparison states measurements only. It produces no winner, ranking, pass or
+fail, and a default-model change still needs the recorded decision above.
+
 ### Recorded state for the change that introduced OpenDecider-nano
 
 | item | outcome | note |
@@ -122,6 +173,7 @@ warm up or stay on the requested CUDA device is a `FAIL`, never a fallback to CP
 | portable tests, race, vet, Windows amd64 build/vet | see the pull request | stubs and fixtures only; no real model download in CI |
 | real OpenDecider-nano on CPU, Linux (setup, doctor, serve, status, decide, switch to and from Laya) | run by the author in a scratch home on one Linux CPU host | functional evidence only; not a comparison and not a performance claim |
 | comparative run, Laya vs OpenDecider-nano, fixed Hachidori corpus | NOT_CHECKED | the external corpus is not in this repository; no comparative evidence exists, so the default is unchanged |
+| resident comparison (#123) on real models, including physical Windows / RTX 3060 | NOT_CHECKED | implemented and tested with fake residents only; running it with both real models resident is user-side and never inferred from CI |
 | physical Windows, RTX 3060, OpenDecider-nano (materialize, activate, restart, CUDA load/warmup, latency, VRAM) | NOT_CHECKED | user-side; never inferred from CI or the Linux run |
 
 ## Linux GPU host

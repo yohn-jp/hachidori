@@ -147,5 +147,9 @@ func classify(err error) (string, string) {
 	if errors.As(err, &ae) {
 		return ae.Class, ae.Message
 	}
+	var sm *ServedMismatchError
+	if errors.As(err, &sm) {
+		return ErrClassServedMismatch, sm.Error()
+	}
 	return ErrClassTransport, err.Error()
 }
