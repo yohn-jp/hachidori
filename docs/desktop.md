@@ -28,27 +28,35 @@ Visual priorities, in order:
 
 | Family | Tokens | Rule |
 |---|---|---|
-| Typography | `--fs-display` 34px (the one state or figure a workspace is about), `--fs-title` 22px (h1), `--fs-figure` 24px (result or progress), `--fs-value` 18px (metric), `--fs-heading` 15px (h2), `--fs-body` 14px, `--fs-small` 13px (notes, secondary facts), `--fs-label` 11px uppercase (column, metric and group labels), `--fs-code` 13px mono (paths, identifiers, raw evidence) | All sizes are `rem` against `html { font-size: 100% }`, so the operator's text-size preference scales the UI. Numbers are tabular. |
+| Typography | `--fs-display` 34px (the one metric a workspace is about), `--fs-title` 22px (h1), `--fs-figure` 24px (the operational state word, a result or a progress figure), `--fs-value` 18px (metric), `--fs-heading` 15px (h2), `--fs-body` 14px, `--fs-small` 13px (notes, secondary facts), `--fs-label` 11px uppercase (column, metric and group labels), `--fs-code` 13px mono (paths, identifiers, raw evidence) | All sizes are `rem` against `html { font-size: 100% }`, so the operator's text-size preference scales the UI. Numbers are tabular. |
 | Spacing | `--sp-1`…`--sp-7` = 4, 8, 12, 16, 24, 32, 40px | Spacing and alignment separate content before borders or fills do. |
 | Measure | `--measure` 72ch for prose (ledes, notes, empty states); `--ws-max` 88rem workspace width | Tables and evidence may use the full workspace width. Prose may not. |
-| Geometry | `--ctl-h` 32px for every button, input, select, nav item and disclosure summary; `--r` 6px for controls; `--r-lg` 8px for surfaces; `--r-pill` for badges | The only elevation is a 1px `--line` border. No shadows except the 3px state edge on the Runtime readiness panel and an Experiments run. |
+| Geometry | `--ctl-h` 32px for every button, input, select, nav item and disclosure summary; `--r` 6px for controls; `--r-lg` 8px and `--shadow-pop` for transient surfaces that sit above the page (dialogs, popovers); `--r-pill` for badges; `--col-min` 14rem, the narrowest column that may hold a label and a machine identity | Content is never grouped by radius, fill or shadow. The only elevation is `--shadow-pop`, and only for a surface that genuinely occupies a higher plane. The focus ring is the only other shadow. |
 | Color roles | `--bg`, `--chrome`, `--surface`, `--raised`, `--inset`; `--text`, `--text-2`, `--text-3`; `--line`, `--line-2`; `--accent` | Dark is the default. Light follows `prefers-color-scheme`. Every text role meets WCAG AA (≥ 4.5:1) on every background role in both themes. The old `--text-3` measured 3.3–4.2:1 and was raised. |
 | Semantic state | `.tone-ok`, `.tone-warn`, `.tone-bad`, `.tone-idle`, `.tone-active` set `--tone` and `--tone-soft` | Shown through one vocabulary: `.badge`, `.state-word`, `.dot`, `.msg.{ok,warn,bad}`, `.last` (action outcome), `.attention` / `.alert`. The same state never gets a different treatment on another surface. |
 | Focus | `--focus` (2px accent outline), `--focus-ring` | Every interactive element has `:focus-visible`. Under Windows contrast themes (`forced-colors: active`), focus becomes a `Highlight` outline. States carried by fills get borders. |
 | Motion | `--dur-fast` .12s, `--dur` .2s, `--ease` | See §2. |
 
-**Containers.** A surface (card) marks a unit of operator focus only:
+**Composition before containers.** The page is the canvas. Hierarchy comes from type, spacing, alignment and hairline rules, in this order of operational weight:
 
-- the Runtime readiness panel
-- an Experiments run
-- the Workbench result pane and its question editors
-- the empty-state "Open evidence" task
+1. Primary operational state: readiness or failure, the current model, critical actions (`.state-word`, `.actions`).
+2. Technical state: provider, device, runtime identity, resident models, lifecycle (`.spec`, `table.data`).
+3. Telemetry: latency, requests, errors, memory, transport (`.metrics`).
 
-Forms, lists of like objects and secondary regions are not boxed:
+Shared primitives (`internal/ui/system.css`):
 
-- Forms stack on the region (`.stack`).
-- A list of like objects (for example Development Connections) uses rows divided by rules (`.items > .item`), not nested cards.
-- Secondary regions are headed regions (`.region`, `.region-h`).
+| Primitive | Use |
+|---|---|
+| `.section` | A group on the canvas: a 1px `--line` rule, then its content. Every headed region (`.region.section`), Experiments run, Workbench question and first-run step is one. It has no fill, radius, shadow or state edge. |
+| `.spec` | Label/value facts in a column grid (`repeat(auto-fit, minmax(min(100%, var(--col-min)), 1fr))`), so a column never collapses below a readable width. Technical state on any workspace. |
+| `.id` | A machine identity (model, runtime, digest, endpoint): one monospace treatment, wrapped at the container edge, never given a width of its own. Prose and labels stay in the UI typeface. |
+| `.metrics` / `.metric` | Telemetry on one column grid so values align across rows. Numbers are tabular. |
+| `.items > .item` | A list of like objects: rows divided by rules. |
+| `.msg`, `.last`, `.attention` | State notices. They color their label, text and rule by state; they never fill the surface. |
+
+Forbidden: a card (rounded, filled or shadowed container) for information, a decorative edge accent on a container, glow, gradient, glass, or ornamental animation. Strong color is reserved for state and for the one primary action. The Runtime workspace is the reference composition (`TestRuntimeReferenceComposition`); Workbench, Experiments, Evidence, Settings and Diagnostics use the same primitives (`TestWorkspacesComposeWithoutCardChrome`). Any later workspace UI, such as resident selection, uses these primitives rather than a new container style.
+
+**Navigation.** The selected item is a 2px `--accent` rule (bottom edge in the narrow strip), full text color and heavier weight. It has no fill, radius or shadow. Hover shows `--raised`; keyboard focus shows the shared focus outline; `aria-current="page"` carries the state for assistive technology and contrast themes.
 
 **Progressive disclosure.** A workspace shows the operator's decision or action first: readiness, the result, failure counts, the run state. Evidence that explains it comes next. Raw diagnostics (provider info, stderr, argv, request JSON, evidence identity) sit in `details.disclosure`, one keyboard step away. They are never removed. Disclosures marked `data-keep` keep the operator's open/closed state across live refreshes.
 

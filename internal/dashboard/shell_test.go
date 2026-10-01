@@ -12,8 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/settings"
+	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -192,34 +194,35 @@ func TestRuntimeSummarySeparatesDiagnosticEvidence(t *testing.T) {
 }
 
 // The Runtime summary must not let a model id collapse into a column of single
-// characters (#119). The panel's blocks wrap onto their own rows rather than
-// share one grid row whose fr track can shrink to zero, the identity columns
-// have a real minimum width, and identity values wrap without
-// overflow-wrap:anywhere, which would drop their minimum content width to one
-// character.
+// characters (#119). Model and Next start values are machine identities inside
+// the summary's fact grid; that grid and the identity treatment wrap at the
+// container edge with overflow-wrap:break-word (which keeps the minimum content
+// width of a value at its longest word), never overflow-wrap:anywhere (which
+// drops it to one character).
 func TestRuntimeSummaryKeepsModelIdsReadable(t *testing.T) {
 	e := newEnv(t)
+	inv := modelsInventory()
+	inv.Active = &home.Active{Runtime: "cu128-aaaa", ModelID: "opendecider-nano", Device: "cuda"}
+	inv.Models = append(inv.Models, setup.ModelEntry{ID: "opendecider-nano", Provider: "opendecider", Materialized: true, Active: true})
+	withModels(e, &fakeModels{state: ModelsState{Inventory: inv}})
 	body := e.get(t, "/").Body.String()
-	for _, want := range []string{
-		`.readiness-panel { display: flex; flex-wrap: wrap;`,
-		`.identity { flex: 3 1 22rem; min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));`,
-		`.identity > div { min-width: 0; }`,
-		`.identity dd { margin: .1rem 0 0; font-weight: 580; overflow-wrap: break-word; }`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("runtime summary stylesheet lacks %q", want)
+
+	panel := body[strings.Index(body, `class="readiness-panel`):]
+	panel = panel[:strings.Index(panel, "</section>")]
+	for _, want := range []string{`class="spec"`, `<dt>Model</dt><dd class="id">laya-base`, `id="next-start"`, `<dd class="id">opendecider-nano · cuda`} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("runtime summary lacks %q", want)
 		}
 	}
-	for _, ln := range strings.Split(body, "\n") {
-		if strings.HasPrefix(ln, ".readiness-panel {") && strings.Contains(ln, "grid-template-columns") {
-			t.Errorf("runtime summary is a fixed-track grid again: %s", ln)
+	css := strings.Split(body, "</style>")[0]
+	for _, sel := range []string{".spec dd", ".id"} {
+		rule := cssRule(t, css, sel)
+		if !strings.Contains(rule, "overflow-wrap: break-word") || strings.Contains(rule, "overflow-wrap: anywhere") {
+			t.Errorf("%s can collapse to one character per line: %s", sel, rule)
 		}
-		if strings.HasPrefix(ln, ".identity dd {") && strings.Contains(ln, "overflow-wrap: anywhere") {
-			t.Errorf("identity values may collapse to one character per line: %s", ln)
-		}
-		if strings.Contains(ln, ".readiness-panel {") && strings.Contains(ln, "grid-template-columns") {
-			t.Errorf("a responsive rule re-imposes grid tracks on the runtime summary: %s", ln)
-		}
+	}
+	if rule := cssRule(t, css, ".spec > div"); !strings.Contains(rule, "min-width: 0") {
+		t.Errorf("fact cells cannot shrink with the grid: %s", rule)
 	}
 }
 
@@ -298,7 +301,7 @@ func TestExperimentRunHierarchyAndEvidenceHandoff(t *testing.T) {
 		t.Fatalf("experiment %+v", x)
 	}
 	body := e.get(t, "/experiments").Body.String()
-	order := []string{`class="run tone-ok"`, `<span class="dot"></span>succeeded</p>`, `class="bar progress" role="progressbar"`,
+	order := []string{`class="run section tone-ok"`, `<span class="dot"></span>succeeded</p>`, `class="bar progress" role="progressbar"`,
 		`<dt>Accuracy</dt>`, `<dt>ECE <small>15 bins</small></dt>`, `<dt>Request errors</dt>`, `<dt>Cases</dt>`,
 		`action="/errors/use-experiment"`, `action="/experiments/export"`, `aria-label="Per question"`,
 		`data-keep="evidence-identity"`, "hachidori replay -dataset", `id="setup-h"`}

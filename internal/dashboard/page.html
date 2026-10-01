@@ -26,9 +26,10 @@ html, body { height: 100%; }
 
 .sidenav { grid-area: nav; display: flex; flex-direction: column; gap: var(--sp-4); padding: var(--sp-4) .6rem; background: var(--chrome); border-right: 1px solid var(--line); overflow: auto; }
 .sidenav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-.sidenav a { display: flex; align-items: center; min-height: var(--ctl-h); padding: 0 var(--sp-3); border-radius: var(--r); color: var(--text-2); text-decoration: none; font-weight: 520; white-space: nowrap; }
+/* Selection is a 2px rule, text color and weight; there is no fill or pill. */
+.sidenav a { display: flex; align-items: center; min-height: var(--ctl-h); padding: 0 var(--sp-3); border-left: 2px solid transparent; color: var(--text-2); text-decoration: none; font-weight: 520; white-space: nowrap; }
 .sidenav a:hover { color: var(--text); background: var(--raised); }
-.sidenav a[aria-current="page"] { color: var(--text); background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }
+.sidenav a[aria-current="page"] { color: var(--text); border-left-color: var(--accent); font-weight: 650; }
 .nav-support { padding-top: var(--sp-4); border-top: 1px solid var(--line); }
 
 .workspace { grid-area: main; overflow: auto; padding: 0 var(--sp-6) 3rem; display: flex; flex-direction: column; gap: var(--sp-5); outline: none; }
@@ -40,15 +41,13 @@ html, body { height: 100%; }
 .statusbar .endpoint { margin-left: auto; }
 
 /* ---- workspace primitives --------------------------------------------- */
-.ws-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: .6rem var(--sp-5); padding: var(--sp-5) 0 var(--sp-4); border-bottom: 1px solid var(--line); }
+.ws-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: .6rem var(--sp-5); padding: var(--sp-5) 0 var(--sp-2); }
 .ws-head .lede { margin-top: var(--sp-1); }
 .ws-meta { font-size: var(--fs-small); color: var(--text-3); overflow-wrap: anywhere; }
 .region { display: grid; gap: var(--sp-3); min-width: 0; }
 .region-h { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--sp-1) var(--sp-4); }
-.surface { display: grid; gap: var(--sp-3); align-content: start; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--sp-4) var(--sp-5); min-width: 0; }
 #sync.tone-warn #sync-text { color: var(--warn); }
-.last { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem var(--sp-3); padding: var(--sp-2) var(--sp-3); border-radius: var(--r);
-  border: 1px solid color-mix(in srgb, var(--tone, var(--idle)) 45%, var(--line)); background: var(--tone-soft, var(--idle-soft)); }
+.last { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem var(--sp-3); padding: var(--sp-2) 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .last strong { color: var(--tone, var(--text)); font-size: var(--fs-label); letter-spacing: .06em; }
 .last .what { font-weight: 600; } .last .msg-text { overflow-wrap: anywhere; } .last time { margin-left: auto; color: var(--text-3); font-size: var(--fs-small); font-family: var(--mono); }
 
@@ -73,17 +72,16 @@ ol.stages li.skipped { text-decoration: line-through; }
 .failure pre, .op pre { margin: 0; max-height: 14rem; overflow: auto; }
 
 /* metrics: numbers first, labels quiet */
-.metrics { display: flex; flex-wrap: wrap; gap: var(--sp-4) var(--sp-7); margin: 0; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: var(--sp-4) var(--sp-5); margin: 0; }
 .metric { min-width: 0; }
-.metric dt, .identity dt, .pair dt, .choices .h { font-size: var(--fs-label); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+.metric dt, .pair dt, .choices .h { font-size: var(--fs-label); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
 .metric dd { margin: .1rem 0 0; font-size: var(--fs-value); font-weight: 600; font-variant-numeric: tabular-nums; }
 .metric dd small { font-size: var(--fs-small); font-weight: 400; color: var(--text-2); margin-left: .3rem; }
 .metric.primary dd { font-size: var(--fs-display); font-weight: 650; letter-spacing: -.01em; line-height: 1.15; }
 .metric .hint { display: block; font-size: var(--fs-small); color: var(--text-3); margin-top: .15rem; }
 .metric .hint a { font-weight: 550; }
-.metrics.secondary { gap: .6rem var(--sp-6); }
+.metrics.secondary { gap: .6rem var(--sp-5); }
 .metrics.secondary .metric dd { font-size: var(--fs-body); font-weight: 550; }
-.metric.meter { flex: 1 1 11rem; max-width: 18rem; }
 .metric.meter .bar { margin-top: .4rem; }
 
 /* bars */
@@ -151,27 +149,20 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 .items > .item { display: grid; gap: var(--sp-3); padding: var(--sp-4) 0; border-top: 1px solid var(--line); min-width: 0; }
 .items > .item:last-child { border-bottom: 1px solid var(--line); }
 
-/* ---- runtime ---------------------------------------------------------- */
-.readiness-panel { display: flex; flex-wrap: wrap; gap: var(--sp-5) var(--sp-7); align-items: center; padding: var(--sp-5);
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: inset 3px 0 0 var(--tone); }
-.state-sub { margin-top: .35rem; font-size: var(--fs-small); color: var(--text-2); }
-/* The panel's three blocks wrap onto their own rows instead of competing for
-   one grid row, and the identity columns have a real minimum, so a model id is
-   never squeezed to a column of single characters. */
-.readiness-panel > :first-child { flex: 1 1 13rem; min-width: 0; }
-.identity { flex: 3 1 22rem; min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: .7rem 1.75rem; margin: 0; }
-.identity > div { min-width: 0; }
-.identity dd { margin: .1rem 0 0; font-weight: 580; overflow-wrap: break-word; }
-.identity dd.model { font-family: var(--mono); font-size: var(--fs-heading); }
-.identity dd .sub { display: block; }
+/* ---- runtime: the reference composition ------------------------------------
+   Operational state and its actions on the first line, technical state under
+   one hairline, telemetry in the sections below. No box, no state edge. */
+.readiness-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-4) var(--sp-6); align-items: start; }
+.readiness-panel > .spec { grid-column: 1 / -1; padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+.state-sub { margin-top: var(--sp-1); font-size: var(--fs-small); color: var(--text-2); }
 .actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--sp-2); }
-.readiness-panel > .actions { flex: 0 1 auto; margin-left: auto; }
-.attention { display: grid; gap: .6rem; padding: var(--sp-3) var(--sp-4); border-radius: var(--r-lg); border: 1px solid color-mix(in srgb, var(--tone) 45%, var(--line)); background: var(--tone-soft); }
-.attention.tone-warn { background: transparent; }
+.attention { display: grid; gap: .6rem; padding-top: var(--sp-4); border-top: 1px solid var(--line); min-width: 0; }
+.attention h2 { color: var(--tone); }
 .attention ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .45rem; }
-.alert { display: grid; gap: .1rem; padding-left: var(--sp-3); border-left: 3px solid var(--warn); }
-.alert.bad { border-left-color: var(--bad); }
-.alert strong { font-weight: 600; } .alert span { color: var(--text-2); overflow-wrap: anywhere; }
+.alert { display: grid; grid-template-columns: .5rem minmax(0, 1fr); column-gap: var(--sp-2); align-items: baseline; }
+.alert::before { content: ""; grid-row: 1 / span 2; align-self: start; margin-top: .45em; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+.alert.bad::before { background: var(--bad); }
+.alert strong { font-weight: 600; grid-column: 2; } .alert span { color: var(--text-2); overflow-wrap: anywhere; grid-column: 2; }
 .count { display: inline-block; min-width: 1.3rem; padding: 0 .35rem; border-radius: var(--r-pill); text-align: center; font-size: var(--fs-label); background: var(--tone); color: var(--bg); }
 .all-clear { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); color: var(--text-2); }
 .all-clear::before { content: "✓"; color: var(--ok); font-weight: 700; }
@@ -185,7 +176,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(22rem, 30rem); gap: var(--sp-5) var(--sp-6); align-items: start; }
 .split.narrow-side { grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); }
 .pane { display: grid; gap: var(--sp-5); min-width: 0; }
-.pane-side { position: sticky; top: calc(var(--toolbar-h) + var(--sp-2)); max-height: calc(100vh - var(--bar-h) - var(--toolbar-h) - 3rem); overflow: auto; }
+.pane-side { position: sticky; top: calc(var(--toolbar-h) + var(--sp-2)); max-height: calc(100vh - var(--bar-h) - var(--toolbar-h) - 3rem); overflow: auto; padding-left: var(--sp-5); border-left: 1px solid var(--line); }
 .toolbar { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-height: var(--toolbar-h); padding: .6rem 0;
   background: var(--bg); border-bottom: 1px solid var(--line); }
 .toolbar .spacer { flex: 1; }
@@ -194,9 +185,9 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 /* workbench */
 .block { display: grid; gap: .6rem; }
 .block-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-1) var(--sp-3); }
-.question { display: grid; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.question { display: grid; gap: var(--sp-3); }
 .choices { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(0, 2fr); gap: .35rem .6rem; }
-.result-pane { display: grid; gap: var(--sp-4); padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.result-pane { display: grid; gap: var(--sp-4); }
 .result-pane[aria-busy="true"] { opacity: .6; transition: opacity var(--dur) var(--ease); }
 .result { display: grid; gap: var(--sp-2); padding-top: var(--sp-4); border-top: 1px solid var(--line); }
 .result:first-of-type { border-top: 0; padding-top: 0; }
@@ -206,7 +197,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 .result-choice .conf strong { color: var(--text); font-weight: 600; }
 
 /* experiments */
-.run { display: grid; gap: var(--sp-5); padding: var(--sp-5); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: inset 3px 0 0 var(--tone); }
+.run { display: grid; gap: var(--sp-5); min-width: 0; }
 .run-h { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--sp-2) var(--sp-5); }
 .progress-figures { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem var(--sp-4); margin-bottom: var(--sp-2); }
 .progress-figures .big { font-size: var(--fs-figure); font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -222,7 +213,9 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 /* ---- narrow windows ---------------------------------------------------- */
 @media (max-width: 1180px) {
   .split, .split.narrow-side { grid-template-columns: minmax(0, 1fr); }
-  .pane-side { position: static; max-height: none; overflow: visible; }
+  .pane-side { position: static; max-height: none; overflow: visible; padding: var(--sp-4) 0 0; border-left: 0; border-top: 1px solid var(--line); }
+  .readiness-panel { grid-template-columns: minmax(0, 1fr); }
+  .readiness-panel .actions { justify-content: flex-start; }
 }
 /* Below 820px the navigation becomes a horizontal strip under the title
    bar, so the workspace keeps the full window width. */
@@ -231,16 +224,15 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   .sidenav { flex-direction: row; align-items: center; gap: var(--sp-1); padding: .3rem var(--sp-2); border-right: 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
   .sidenav ul { display: flex; }
   .nav-support { margin-left: auto; padding: 0 0 0 var(--sp-2); border-top: 0; border-left: 1px solid var(--line); }
-  .sidenav a { padding: 0 .65rem; }
-  .sidenav a[aria-current="page"] { box-shadow: inset 0 -2px 0 var(--accent); }
+  .sidenav a { padding: 0 .65rem; border-left: 0; border-bottom: 2px solid transparent; }
+  .sidenav a[aria-current="page"] { border-bottom-color: var(--accent); }
   .workspace { padding: 0 var(--sp-4) var(--sp-6); gap: var(--sp-5); }
   .appbar-fact, .statusbar .opt { display: none; }
   .transport-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 520px) {
-  .state-word { font-size: var(--fs-figure); }
   .metric.primary dd { font-size: var(--fs-figure); }
-  .pair { grid-template-columns: minmax(0, 1fr); }
+  .identity, .pair { grid-template-columns: minmax(0, 1fr); }
   .kv { grid-template-columns: minmax(0, 1fr); gap: 0; } .kv dd { margin-bottom: .35rem; }
   .path-form { grid-template-columns: minmax(0, 1fr); }
   .choices { grid-template-columns: minmax(0, 1fr); }
@@ -415,29 +407,29 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     {{if and (not $w.Ready) (ne $w.State "failed")}}<div class="bar progress indeterminate" role="progressbar" aria-label="{{t (workerPhaseWord $w.Phase)}}"><span></span></div>{{end}}
     {{end}}
   </div>
-  <dl class="identity">
-    <div><dt>{{t "Model"}}</dt><dd class="model">{{.S.Runtime.ModelID}}<span class="sub">{{if $w.Ready}}{{t "serving now"}}{{else}}{{t "configured for this runtime, not serving"}}{{end}}</span></dd></div>
-    {{with .Next}}{{if .Model}}<div id="next-start"><dt>{{t "Next start"}}</dt><dd class="model">{{.Model}} · {{.Device}}<span class="sub">{{if .Problem}}<span class="bad-t">{{t "cannot start"}}</span>{{else if .Differs}}<span class="warn-t">{{t "differs from this runtime: choose Restart to apply it"}}</span>{{else}}{{t "the active model and device"}}{{end}}</span></dd></div>{{end}}{{end}}
-    <div><dt>{{t "Accelerator"}}</dt><dd>{{get $i "device_name"}}<span class="sub">{{with .Rt.Device}}{{.}} · {{end}}{{t "requested"}} {{.S.Runtime.Device}}</span></dd></div>
-    <div><dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd></div>
-    <div><dt>{{t "Runtime"}}</dt><dd>{{.S.Runtime.Runtime}}<span class="sub">{{t "supervision"}} {{if .Running}}{{t "running"}}{{else}}<span class="bad-t">{{t "not running"}}</span>{{end}} {{t "· API up"}} <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></span></dd></div>
-  </dl>
   <div class="actions">
     {{if $w.Ready}}<a class="btn primary" href="/workbench">{{t "Open Workbench"}}</a>{{end}}
     <form method="post" action="/runtime/start" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn{{if not .Running}} primary{{end}}">{{t "Start"}}</button></form>
     <form method="post" action="/runtime/restart" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn{{if and .Running (eq $w.State "failed")}} primary{{end}}">{{t "Restart"}}</button></form>
     <form method="post" action="/runtime/stop" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Stop"}}</button></form>
   </div>
+  <dl class="spec">
+    <div><dt>{{t "Model"}}</dt><dd class="id">{{.S.Runtime.ModelID}}<span class="sub">{{if $w.Ready}}{{t "serving now"}}{{else}}{{t "configured for this runtime, not serving"}}{{end}}</span></dd></div>
+    {{with .Next}}{{if .Model}}<div id="next-start"><dt>{{t "Next start"}}</dt><dd class="id">{{.Model}} · {{.Device}}<span class="sub">{{if .Problem}}<span class="bad-t">{{t "cannot start"}}</span>{{else if .Differs}}<span class="warn-t">{{t "differs from this runtime: choose Restart to apply it"}}</span>{{else}}{{t "the active model and device"}}{{end}}</span></dd></div>{{end}}{{end}}
+    <div><dt>{{t "Accelerator"}}</dt><dd>{{get $i "device_name"}}<span class="sub">{{with .Rt.Device}}{{.}} · {{end}}{{t "requested"}} {{.S.Runtime.Device}}</span></dd></div>
+    <div><dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd></div>
+    <div><dt>{{t "Runtime"}}</dt><dd class="id">{{.S.Runtime.Runtime}}<span class="sub">{{t "supervision"}} {{if .Running}}{{t "running"}}{{else}}<span class="bad-t">{{t "not running"}}</span>{{end}} {{t "· API up"}} <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></span></dd></div>
+  </dl>
 </section>
 
 {{with .S.Residents}}
-<section class="region" id="residents" aria-labelledby="res-h">
+<section class="region section" id="residents" aria-labelledby="res-h">
   <div class="region-h"><div><h2 id="res-h">{{t "Resident models"}}</h2><p class="sub">{{t "Each resident is its own worker process; its state is independent of the others."}}</p></div></div>
   <table class="data">
     <thead><tr><th scope="col">{{t "Model"}}</th><th scope="col">{{t "State"}}</th><th scope="col">PID</th><th scope="col">{{t "Device"}}</th><th scope="col">{{t "Load / warmup"}}</th><th scope="col">{{t "Requests"}}</th><th scope="col">{{t "Errors"}}</th><th scope="col">{{t "Queue"}}</th><th scope="col">{{t "Latency p50 / p95"}}</th><th scope="col">{{t "GPU memory"}}</th></tr></thead>
     <tbody>{{range .}}{{$rw := .Status.Worker}}{{$ri := $rw.Info}}
       <tr id="resident-{{.Model}}" data-model="{{.Model}}" data-state="{{if .Running}}{{$rw.State}}{{else}}stopped{{end}}">
-        <td class="model">{{.Model}}<span class="sub">{{.Provider}}{{if .Default}} · {{t "default route"}}{{end}}</span></td>
+        <td class="id">{{.Model}}<span class="sub">{{.Provider}}{{if .Default}} · {{t "default route"}}{{end}}</span></td>
         <td>{{if .Running}}<span class="badge tone-{{tone $rw}}">{{if $rw.Ready}}READY{{else}}{{$rw.State}}{{end}}</span><span class="sub">{{t "phase"}} {{$rw.Phase}}</span>{{else}}<span class="badge">{{t "stopped"}}</span>{{end}}{{if and .Running $rw.LastFailure (eq $rw.State "failed")}}<span class="sub bad-t mono">{{$rw.LastFailure.Class}}</span>{{end}}</td>
         <td class="num">{{if $rw.PID}}{{$rw.PID}}{{else}}-{{end}}</td>
         <td>{{get $ri "device"}} {{get $ri "dtype"}}<span class="sub">{{t "requested"}} {{.Status.Runtime.Device}}</span></td>
@@ -476,7 +468,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{end}}
 </div>
 
-<section class="region" aria-labelledby="load-h">
+<section class="region section" aria-labelledby="load-h">
   <div class="region-h"><h2 id="load-h">{{t "Load"}}</h2><span class="sub">{{t "worker since start"}}</span></div>
   {{$q := ratio $w.QueueDepth $w.QueueLimit}}{{$m := gpuMem $a}}
   <dl class="metrics">
@@ -493,7 +485,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </section>
 
 {{with .Tunnel}}
-<section class="region" aria-labelledby="ct-h">
+<section class="region section" aria-labelledby="ct-h">
   <div class="region-h"><h2 id="ct-h">{{t "Caller transport"}}</h2><a href="/diagnostics#transport">{{t "Tunnel settings"}}</a></div>
   <div class="transport-line">
     <span class="badge {{if eq .State "running"}}tone-ok{{else if eq .State "exited"}}tone-bad{{end}}">{{.State}}</span>
@@ -514,7 +506,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </header>
 {{template "last" .Last}}
 {{with .Desktop}}
-<section class="region" id="settings-desktop" aria-labelledby="sd-h">
+<section class="region section" id="settings-desktop" aria-labelledby="sd-h">
   <div class="region-h"><h2 id="sd-h">{{t "Desktop"}}</h2><span class="sub">{{t "tray and sign-in"}}</span></div>
   <form method="post" action="/desktop/prefs" class="region">
     <input type="hidden" name="token" value="{{$.Token}}">
@@ -528,7 +520,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </section>
 {{end}}
 {{with .Set}}
-<section class="region" id="settings-language" aria-labelledby="sl-h">
+<section class="region section" id="settings-language" aria-labelledby="sl-h">
   <div class="region-h"><h2 id="sl-h">{{t "Language"}}</h2><span class="sub">{{t "operator interface language"}}</span></div>
   <form method="post" action="/settings/locale" class="region">
     <input type="hidden" name="token" value="{{$.Token}}">
@@ -541,7 +533,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   </form>
   <p class="note">{{t "Only operator-facing text changes. API fields, evidence, identifiers, paths and model output are never translated."}}</p>
 </section>
-<section class="region" id="settings-defaults" aria-labelledby="sr-h">
+<section class="region section" id="settings-defaults" aria-labelledby="sr-h">
   <div class="region-h"><h2 id="sr-h">{{t "Runtime defaults"}}</h2><span class="sub">{{t "saved values, applied only by an explicit setup"}}</span></div>
   <form method="post" action="/settings/defaults" class="region">
     <input type="hidden" name="token" value="{{$.Token}}">
@@ -566,14 +558,14 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </section>
 {{end}}
 {{if .HasUpdates}}
-<section class="region" id="settings-updates" aria-labelledby="su-h">
+<section class="region section" id="settings-updates" aria-labelledby="su-h">
   <div class="region-h"><h2 id="su-h">{{t "Updates"}}</h2><span class="sub">{{t "manual, verified executable updates"}}</span></div>
   <p class="note">{{t "Hachidori never checks for updates by itself. Opening Updates contacts nothing; only Check for updates and Download use the network."}}</p>
   <div class="btn-row"><a class="btn" href="/settings/updates">{{t "Open Updates"}}</a></div>
 </section>
 {{end}}
 {{with .Models}}
-<section class="region" id="settings-models" aria-labelledby="sm-h">
+<section class="region section" id="settings-models" aria-labelledby="sm-h">
   <div class="region-h"><h2 id="sm-h">{{t "Models & runtimes"}}</h2><span class="sub">{{t "catalog-pinned identities under HACHIDORI_HOME"}}</span></div>
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   {{if .RestartRequired}}
@@ -667,7 +659,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </section>
 {{end}}
 {{with .Conns}}
-<section class="region" id="settings-connections" aria-labelledby="sc-h">
+<section class="region section" id="settings-connections" aria-labelledby="sc-h">
   <div class="region-h"><h2 id="sc-h">{{t "Development connections"}}</h2><span class="sub">{{t "named SSH reverse-tunnel profiles"}}</span></div>
   <p class="note">{{t "A development host only consumes"}} <code>HACHIDORI_ENDPOINT</code>{{t ". A profile is non-secret data: SSH keys, agent, known_hosts and ssh_config stay with the host's own"}} <code>ssh</code> {{t "client and are never read, stored or prompted for. One tunnel runs at a time; both ends are loopback-only."}}</p>
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
@@ -727,7 +719,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </header>
 <div class="slot" data-live="diagnostics">{{template "diagnostics-live" .}}</div>
 
-<section class="region" id="bundle" aria-labelledby="bundle-h">
+<section class="region section" id="bundle" aria-labelledby="bundle-h">
   <div class="region-h">
     <div><h2 id="bundle-h">{{t "Diagnostic bundle"}}</h2><p class="sub">{{t "One local file to attach to an Issue. Nothing is uploaded."}}</p></div>
     <form method="post" action="/diagnostics/export" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn">{{t "Export bundle"}}</button></form>
@@ -735,7 +727,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <p class="note">{{t "Contains version, runtime, model, WebView2, OS and recovery facts and a short tail of Hachidori worker log lines. It never contains request, state or question text, datasets, environment variables, SSH keys or known_hosts, or model files. It is saved under"}} <code>state/diagnostics</code> {{t "in the Hachidori home."}}</p>
 </section>
 
-<section class="region" id="transport" aria-labelledby="transport-h">
+<section class="region section" id="transport" aria-labelledby="transport-h">
   <div class="region-h"><h2 id="transport-h">{{t "Caller transport"}}</h2><span class="sub">{{t "SSH reverse tunnel"}}</span></div>
   <div class="transport-grid">
     <div class="slot" data-live="transport">{{template "transport" .}}</div>
@@ -760,7 +752,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </section>
 
 {{with .Desktop}}
-<section class="region" id="desktop" aria-labelledby="desktop-h">
+<section class="region section" id="desktop" aria-labelledby="desktop-h">
   <div class="region-h"><h2 id="desktop-h">{{t "Desktop"}}</h2><span class="sub">{{t "tray and sign-in"}}</span></div>
   <p class="muted">{{t "Closing this window hides Hachidori to the system tray and the inference runtime keeps running. Use the tray icon to open it again, or choose"}} <strong>{{t "Quit Hachidori"}}</strong> {{t "from the tray menu to stop the runtime and exit."}}</p>
   <form method="post" action="/desktop/prefs" class="region">
@@ -786,7 +778,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 <p class="all-clear">{{t "No operator attention required."}}</p>
 {{end}}
 
-<section class="region" aria-labelledby="doc-h">
+<section class="region section" aria-labelledby="doc-h">
   <div class="region-h">
     <div><h2 id="doc-h">{{t "Doctor"}}</h2><p class="sub">{{t "Full installation check, including a real smoke inference. Doctor runs its own temporary worker."}}</p></div>
     <form method="post" action="/doctor" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn"{{if .Doctor.Running}} disabled{{end}}>{{t "Run doctor"}}</button></form>
