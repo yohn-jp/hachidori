@@ -9,6 +9,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/update"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -113,6 +114,11 @@ func TestOperationMessagesAreCatalogued(t *testing.T) {
 		}
 	}
 	msgs = append(msgs, "Read the worker output below and in Diagnostics.")
+	for _, h := range update.Hints {
+		if h != "" {
+			msgs = append(msgs, h)
+		}
+	}
 	for _, m := range msgs {
 		if !i18n.Japanese.Has(m) {
 			t.Errorf("%q has no Japanese entry", m)

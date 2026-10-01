@@ -26,6 +26,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
+	"github.com/yohn-jp/hachidori/internal/update"
 )
 
 // Schema versions the settings record.
@@ -135,11 +136,14 @@ func (c Connection) Validate() error {
 // always produce the same bytes. Connections is additive: a file without it
 // (written before profiles existed) is the same schema with no profiles.
 // Locale is additive in the same way: absent means no explicit selection.
+// Updates is the update subsystem's channel, last explicit check and installed
+// identity (internal/update); absent means Stable and nothing remembered.
 type record struct {
-	Schema          string       `json:"schema"`
-	RuntimeDefaults Defaults     `json:"runtime_defaults"`
-	Connections     []Connection `json:"connections,omitempty"`
-	Locale          string       `json:"locale,omitempty"`
+	Schema          string           `json:"schema"`
+	RuntimeDefaults Defaults         `json:"runtime_defaults"`
+	Connections     []Connection     `json:"connections,omitempty"`
+	Locale          string           `json:"locale,omitempty"`
+	Updates         *update.Settings `json:"updates,omitempty"`
 }
 
 // Store is the settings authority. An empty Path keeps its values in memory.
@@ -175,6 +179,7 @@ func (s *Store) load() (record, error) {
 	if s.Path == "" {
 		r := s.mem
 		r.Connections = append([]Connection(nil), r.Connections...)
+		r.Updates = cloneUpdates(r.Updates)
 		return r, nil
 	}
 	var r record
@@ -192,6 +197,11 @@ func (s *Store) load() (record, error) {
 	}
 	if err := ValidateLocale(r.Locale); err != nil {
 		return record{}, fmt.Errorf("settings %s: %w", s.Path, err)
+	}
+	if r.Updates != nil {
+		if err := r.Updates.Validate(); err != nil {
+			return record{}, fmt.Errorf("settings %s: updates: %w", s.Path, err)
+		}
 	}
 	seen := map[string]bool{}
 	for _, c := range r.Connections {
@@ -263,6 +273,46 @@ func (s *Store) SetLocale(l string) error {
 func (s *Store) ResolvedLocale() i18n.Locale {
 	l, _ := s.Locale()
 	return i18n.Resolve(l, i18n.HostLocales()...)
+}
+
+func cloneUpdates(u *update.Settings) *update.Settings {
+	if u == nil {
+		return nil
+	}
+	c := u.Clone()
+	return &c
+}
+
+// UpdateSettings reads the update subsystem's saved channel, last explicit
+// check and installed identity. A missing file is not an error.
+func (s *Store) UpdateSettings() (update.Settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.load()
+	if r.Updates == nil {
+		return update.Settings{}, err
+	}
+	return r.Updates.Clone(), err
+}
+
+// ModifyUpdateSettings applies fn to the saved update settings and stores the
+// validated result; nothing is written when fn or validation fails. It only
+// stores: no update check, download or installation is started by it.
+func (s *Store) ModifyUpdateSettings(fn func(*update.Settings) error) error {
+	return s.update(func(r *record) error {
+		var u update.Settings
+		if r.Updates != nil {
+			u = r.Updates.Clone()
+		}
+		if err := fn(&u); err != nil {
+			return err
+		}
+		if err := u.Validate(); err != nil {
+			return err
+		}
+		r.Updates = &u
+		return nil
+	})
 }
 
 // SaveConnection validates and stores a profile, creating it or replacing the

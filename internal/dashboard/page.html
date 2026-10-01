@@ -386,7 +386,8 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <ol class="stages">{{range opStages .}}<li class="{{.Status}}">{{t .Label}}</li>{{end}}</ol>
   {{with .Failure}}
   <p class="op-line"><span class="bad-t">{{t "Failed in phase"}} {{with $.FailurePhase}}<strong>{{t (phaseLabel .)}}</strong>{{end}}{{with $.FailureStep}} · {{t (stepLabel .)}}{{end}}</span>: <span class="mono">{{.}}</span></p>
-  <p class="note">{{t "The active runtime and model were not changed."}} <a href="/diagnostics">{{t "Open Diagnostics"}}</a>{{with $.Log}} · {{t "action output:"}} <span class="mono">{{.}}</span>{{end}}</p>
+  {{if eq $.Kind "update"}}<p class="note">{{t "The installed executable was not changed."}}</p>
+  {{else}}<p class="note">{{t "The active runtime and model were not changed."}} <a href="/diagnostics">{{t "Open Diagnostics"}}</a>{{with $.Log}} · {{t "action output:"}} <span class="mono">{{.}}</span>{{end}}</p>{{end}}
   {{end}}
 </div>
 {{end}}
@@ -536,6 +537,13 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   </form>
   <p class="note">{{t "Running runtime:"}} <span class="mono">{{with $.Rt.Model}}{{.}}{{else}}-{{end}}</span>{{t ". Defaults do not change it. Explicit command-line flags and environment inputs always take precedence. No secrets are stored."}}</p>
+</section>
+{{end}}
+{{if .HasUpdates}}
+<section class="region" id="settings-updates" aria-labelledby="su-h">
+  <div class="region-h"><h2 id="su-h">{{t "Updates"}}</h2><span class="sub">{{t "manual, verified executable updates"}}</span></div>
+  <p class="note">{{t "Hachidori never checks for updates by itself. Opening Updates contacts nothing; only Check for updates and Download use the network."}}</p>
+  <div class="btn-row"><a class="btn" href="/settings/updates">{{t "Open Updates"}}</a></div>
 </section>
 {{end}}
 {{with .Models}}

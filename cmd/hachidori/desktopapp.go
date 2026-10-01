@@ -61,6 +61,13 @@ type desktopApp struct {
 	Background bool
 	// Epoch is the executable entry time; startup marks are measured from it.
 	Epoch desktop.Epoch
+	// Exe is the running executable, the destination of an update (empty:
+	// os.Executable). UpdateTransport carries the update subsystem's requests
+	// (nil: the default transport) and UpdateStart starts its replacement
+	// helper (nil: a detached process); tests substitute them.
+	Exe             string
+	UpdateTransport http.RoundTripper
+	UpdateStart     func(exe string, args []string) error
 }
 
 // newDesktopApp builds the production composition. homeFlag is an explicit
@@ -202,6 +209,21 @@ func (a *desktopApp) run() error {
 	var ctl *app.Controller
 	models := modelManager{ctl: func() *app.Controller { return ctl }}
 
+	// The update subsystem does nothing until the operator posts a Check,
+	// Download or Restart & update action on Settings > Updates: no timer, no
+	// startup check, no request while a page is rendered. quit ends the
+	// application for the replacement helper once the window exists.
+	var quitMu sync.Mutex
+	var quitFn func()
+	updates := a.newUpdateManager(prefs, func() *app.Controller { return ctl }, homeArg, func() {
+		quitMu.Lock()
+		f := quitFn
+		quitMu.Unlock()
+		if f != nil {
+			f()
+		}
+	})
+
 	open := func(root string) (app.Runtime, error) {
 		if a.Open != nil {
 			return a.Open(root)
@@ -231,6 +253,7 @@ func (a *desktopApp) run() error {
 				// settings authority; the live tunnel is the one tun
 				// manager, shared by every runtime's dashboard.
 				Connections: prefs,
+				Updates:     updates,
 				WebView2:    version,
 				PathPicker:  dashboardPathPicker(a.Picker),
 			})
@@ -301,6 +324,9 @@ func (a *desktopApp) run() error {
 			dataDir, cleanup := a.webviewDataDir(plan)
 			defer cleanup()
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			quitMu.Lock()
+			quitFn = stop
+			quitMu.Unlock()
 			go func() {
 				select {
 				case e := <-errc:

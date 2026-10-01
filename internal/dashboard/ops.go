@@ -37,6 +37,10 @@ var phaseLabels = map[string]string{
 	"model":      "Model",
 	"publish":    "Publishing",
 	"activation": "Activation",
+	// update download (internal/update)
+	"checksum": "Checksum file",
+	"download": "Download",
+	"verify":   "Verification",
 }
 
 var stepLabels = map[string]string{

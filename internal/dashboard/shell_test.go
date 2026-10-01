@@ -726,7 +726,7 @@ var catalogRefRe = regexp.MustCompile(`\{\{t "((?:[^"\\]|\\.)*)"`)
 // entry; English needs none because it is the message ID.
 func TestWorkstationTemplatesAreCatalogued(t *testing.T) {
 	n := 0
-	for _, f := range []string{"page.html", "workbench.html", "experiments.html", "errors.html"} {
+	for _, f := range []string{"page.html", "workbench.html", "experiments.html", "errors.html", "updates.html"} {
 		b, err := pageFS.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)

@@ -769,6 +769,92 @@ deletes directories. `serve` and the browser `dashboard` do not offer it, and
 - Serving performs no network resolution; only Materialize and Repair use the
   network.
 
+### Updates (Windows executable)
+
+Settings > Updates replaces `hachidori.exe` with a newer release of this
+repository. It is manual, verified and bounded (`internal/update`); `serve`,
+the browser `dashboard` and `hachidori setup` do not offer it.
+
+**Network boundary.** Hachidori never checks for updates by itself. Startup,
+opening Settings, opening Updates, rendering any page and changing the channel
+use no network and no timer exists. Exactly two operator actions use it:
+
+| action | requests |
+|---|---|
+| **Check for updates** | `GET https://api.github.com/repos/yohn-jp/hachidori/releases?per_page=100&page=N` (at most 5 pages), no redirects followed |
+| **Download** | `GET https://github.com/yohn-jp/hachidori/releases/download/<tag>/<asset>` for the release's checksum file and executable; redirects only to GitHub's release-asset hosts (`objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `github-releases.githubusercontent.com`) over https, at most 3, no credentials |
+
+**Release authority.** Fixed in code (`internal/update/release.go`): the official
+`yohn-jp/hachidori` GitHub Releases. No repository or URL is configurable, no
+request is built from release metadata (a download URL in metadata must equal
+the canonical one or the release is not installable) and no credential or
+telemetry is sent.
+
+**Release contract** (the shared Windows release workflow that
+`.github/workflows/release.yml` calls):
+
+- tags are SemVer without a `v` prefix: development `0.2.N-dev` (published by
+  the development line), stable `X.Y.Z`. Legacy tags such as `dev-24`, drafts
+  and other pre-release kinds are not offered.
+- a release carries exactly one `hachidori-windows-amd64.exe` and one
+  `hachidori-windows-amd64.exe.sha256` (`<sha256>  hachidori-windows-amd64.exe`).
+  Zero or several of either, an asset that is not fully uploaded or one that
+  lists an implausible size makes that release not downloadable.
+- ordering is SemVer precedence, never lexical (`0.2.10-dev` is newer than
+  `0.2.9-dev`; `0.2.5-dev` is older than `0.2.5`).
+
+**Channels.** *Stable* offers stable releases. *Development* offers `-dev`
+releases and stable releases. The channel is stored in `settings.json`
+(`updates.channel`) and only selects what an explicit check offers; changing it
+discards the displayed results and never downloads, installs or downgrades.
+Releases not newer than the installed one are listed but cannot be downloaded:
+an update never goes backwards, and Restart & update refuses a ready update that
+the selected channel no longer offers or that is not newer.
+
+**Installed version.** The executable carries no version string. It is known
+from the helper's result for exactly this executable's SHA-256, or from an
+explicit check that matched the executable's SHA-256 to the digest GitHub
+reports for a release asset (kept in `settings.json` `updates.installed`, bound
+to that digest). Otherwise it is unknown, and Updates says releases cannot be
+compared.
+
+**Download and verification.** Download fetches the checksum file first, then the
+executable into `state/updates/<tag>/hachidori-windows-amd64.exe.part`. The
+checksum file must hold exactly one line binding one SHA-256 to exactly that
+asset name; if GitHub also reports a digest for the executable it must agree.
+The size must equal the release metadata. The file becomes ready only after its
+SHA-256 equals the checksum and it is a Windows executable: then it is renamed
+into place and `state/updates/ready.json` is written last. Any failure removes
+the partial file and writes no ready record, and an earlier ready update is kept.
+Failures are classed (release metadata/network, malformed metadata, asset not
+found or ambiguous, download, verification artifact, checksum mismatch,
+replacement, restart) and shown with the next step. Authenticode is not part of
+the release pipeline; none is invented, and a signature check can be added
+beside the checksum later. Progress uses the long-running operation view
+(phases checksum, download, verify; a percentage for the byte-counted download).
+
+**Restart & update.** Nothing is overwritten in-process. The application
+re-verifies the staged file, copies its own executable to
+`state/updates/helper/` and starts that copy detached as
+`hachidori apply-update --home <home> --pid <pid> --target <exe> [--restart-home <home>]`,
+then closes. The helper (`update.Apply`) has no network code and no source or
+URL argument: its source is the staged file the ready record names, and its only
+destination is the executable the record was prepared for (a clean absolute
+`*.exe` path, outside `state/updates`, a regular Windows executable). After the
+application exited it re-verifies the staged file, copies it beside the
+destination (`<exe>.new`) and verifies the copy, renames the current executable
+to `<exe>.old`, and renames the copy into place; if the second rename fails the
+previous executable is restored. Then it restarts `<exe>` (the new one after a
+replacement, the previous one after a failure) and writes
+`state/updates/result.json`. `<exe>.old` stays as the recoverable previous
+executable. A helper that is refused or whose application does not exit changes
+nothing. Restart & update is refused while an application operation (setup,
+maintenance, start or stop) is in progress.
+
+`HACHIDORI_HOME` (models, runtimes, history, evidence, settings) is never
+replaced, recreated or deleted by an update; the new executable migrates through
+the existing authorities.
+
 ## HACHIDORI_HOME
 
 ```text
@@ -790,6 +876,8 @@ HACHIDORI_HOME/
   logs/worker.log, logs/doctor-worker.log
   state/active-runtime.json
   state/dashboard.json         last tunnel form values (non-secret), dashboard only
+  state/updates/               explicit update downloads only: <tag>/ staged executable, ready.json,
+                               result.json, helper/ (Windows desktop; see Updates)
   cache/webview2/              WebView2 browser profile of `hachidori desktop` (Windows only, disposable)
 ```
 
