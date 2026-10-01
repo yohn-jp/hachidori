@@ -86,7 +86,7 @@ func buildOpenAPI() obj {
 				"operationId": "decide",
 				"tags":        []string{"decide"},
 				"summary":     "Answer questions about one state.",
-				"description": "Asks every question against one state and returns one result per question, in request order. Without model, the default resident answers (unchanged). With model, exactly that resident answers and the response names it in served; a model that is not resident is a request_invalid error and a resident that is not ready is a not_ready error, never answered by another model. Unknown fields are rejected.",
+				"description": "Asks every question against one state and returns one result per question, in request order. Without model, the default resident answers (unchanged). With model, exactly that resident answers and the response names it in served; a model that is not resident is a request_invalid error and a resident that is not ready is a not_ready error, never answered by another model. With route \"auto\", the runtime's deterministic routing policy answers each question from its first-path resident and hands off only the questions the policy selects; the response names the resident that produced each final result and why in routing, and a routed request that its policy cannot answer is a routing_failed error, never a weaker result. route cannot be combined with model. Unknown fields are rejected.",
 				"requestBody": obj{"required": true, "content": jsonContent(ref("DecideRequest"))},
 				"responses":   postResponses(ref("DecideResponse"), "The question results."),
 			}},
@@ -94,7 +94,7 @@ func buildOpenAPI() obj {
 				"operationId": "decideBatch",
 				"tags":        []string{"decide"},
 				"summary":     "Answer questions about several states.",
-				"description": "Runs independent decide requests; responses are aligned with requests by index. Requests sharing a question set share forward passes. A batch is served by one resident: model on the batch (or the same model on its requests) targets it exactly as for /v1/decide. Unknown fields are rejected.",
+				"description": "Runs independent decide requests; responses are aligned with requests by index. Requests sharing a question set share forward passes. A batch is served by one resident: model on the batch (or the same model on its requests) targets it exactly as for /v1/decide, and route \"auto\" routes every request of the batch by policy as for /v1/decide. Unknown fields are rejected.",
 				"requestBody": obj{"required": true, "content": jsonContent(ref("BatchRequest"))},
 				"responses":   postResponses(ref("BatchResponse"), "One response per request, in request order."),
 			}},
@@ -113,7 +113,7 @@ func buildOpenAPI() obj {
 				"operationId": "status",
 				"tags":        []string{"runtime"},
 				"summary":     "Report runtime, worker and counter status.",
-				"description": "The runtime status document, including the active runtime, model and provider. For a multi-resident runtime residents lists every resident with its own state; runtime and worker stay the default resident's. It never waits for an inference.",
+				"description": "The runtime status document, including the active runtime, model and provider. For a multi-resident runtime residents lists every resident with its own state; runtime and worker stay the default resident's. When a routing policy is configured, routing reports it with its counters per reason code and per resident. It never waits for an inference.",
 				"responses": obj{
 					"200": obj{"description": "The status document.", "content": jsonContent(ref("Status"))},
 					"403": forbidden(),
@@ -166,6 +166,7 @@ var errorMeaning = map[string]string{
 	api.ErrCapacity:        "capacity: more requests are queued or in flight than the runtime accepts.",
 	api.ErrInferenceFailed: "inference_failed: the healthy worker failed this request.",
 	api.ErrWorkerFailure:   "worker_failure: the worker crashed, hung or violated its protocol.",
+	api.ErrRoutingFailed:   "routing_failed: a routed request (route \"auto\") that its policy could not answer: no routing policy is configured, the first-path resident was unavailable or failed, or a required handoff target was unavailable or failed. The message starts with a stable code (no_routing_policy, first_path_failed, required_handoff_failed). No result is returned and no other resident answers instead.",
 }
 
 func schemas() obj {
@@ -204,6 +205,7 @@ func schemas() obj {
 			"results": obj{"type": "array", "items": ref("Result"), "description": "Results in question order, ids preserved."},
 			"timing":  ref("Timing"),
 			"served":  ref("Served"),
+			"routing": ref("Routing"),
 		}, "schema", "results"),
 
 		"BatchRequest": object("Independent decide requests.", obj{
@@ -211,6 +213,7 @@ func schemas() obj {
 			"requests": obj{"type": "array", "minItems": 1, "maxItems": api.MaxBatchRequests, "items": ref("BatchItem"),
 				"description": "Decide requests; each entry is validated like a /v1/decide request."},
 			"model": modelRef(),
+			"route": routeRef(),
 		}, "schema", "requests"),
 
 		"BatchResponse": object("Responses aligned with the request entries by index.", obj{
@@ -218,7 +221,79 @@ func schemas() obj {
 			"responses": obj{"type": "array", "items": ref("DecideResponse"), "description": "One response per request entry, in request order."},
 			"timing":    ref("Timing"),
 			"served":    ref("Served"),
+			"routing":   ref("Routing"),
 		}, "schema", "responses", "timing"),
+
+		"Routing": object("Provenance of a routed request (route \"auto\"): the policy that decided, which resident produced each final result and why, the handoff count and each resident's latency contribution. providers is present on a /v1/decide response and on a batch response, not on the entries of a batch.", obj{
+			"mode":   obj{"type": "string", "const": api.RouteAuto, "description": "Routing mode; always \"" + api.RouteAuto + "\"."},
+			"policy": ref("PolicyRef"),
+			"results": obj{"type": "array", "items": ref("RoutedResult"),
+				"description": "One entry per question, in question order. Absent on a batch response, whose entries carry their own."},
+			"handoffs":  obj{"type": "integer", "minimum": 0, "description": "Results replaced by a handoff."},
+			"providers": obj{"type": "array", "items": ref("ProviderTiming"), "description": "Residents that served a worker call for this request, in policy order."},
+		}, "mode", "policy", "handoffs"),
+
+		"PolicyRef": object("A routing policy by id and canonical content digest.", obj{
+			"id":     str("Policy id."),
+			"sha256": str("\"sha256:\" + hex SHA-256 of the policy's canonical encoding."),
+		}, "id", "sha256"),
+
+		"RoutedResult": object("The routing provenance of one final result.", obj{
+			"id":         str("The question id."),
+			"served":     ref("Served"),
+			"reason":     obj{"type": "string", "enum": routeReasons(), "description": "Stable reason code: why this resident produced the final result."},
+			"profile":    str("The measurement family the policy routed the question by; absent for a question the policy routes by default."),
+			"first_path": ref("FirstPath"),
+		}, "id", "served", "reason"),
+
+		"FirstPath": object("The first-path observation a handoff replaced. Present only on a handed-off result.", obj{
+			"model":      str("Catalog model identity of the first-path resident."),
+			"provider":   str("Provider kind of the first-path resident."),
+			"choice":     str("The first-path choice."),
+			"confidence": obj{"type": "number", "minimum": 0, "maximum": 1, "description": "The first-path confidence."},
+		}, "model", "provider", "choice", "confidence"),
+
+		"ProviderTiming": object("One resident's contribution to a routed request.", obj{
+			"model":        str("Catalog model identity."),
+			"provider":     str("Provider kind."),
+			"calls":        obj{"type": "integer", "minimum": 0, "description": "Worker calls it served for this request."},
+			"questions":    obj{"type": "integer", "minimum": 0, "description": "Questions in those calls."},
+			"inference_ms": obj{"type": "number", "minimum": 0, "description": "Inference time of those calls in milliseconds."},
+		}, "model", "provider", "calls", "questions", "inference_ms"),
+
+		"RoutingStatus": object("The routing policy and its counters since the runtime began serving.", obj{
+			"policy":           ref("PolicyRef"),
+			"requests":         obj{"type": "integer", "description": "Routed requests answered."},
+			"failures":         obj{"type": "integer", "description": "Routed requests that failed with routing_failed."},
+			"questions":        obj{"type": "integer", "description": "Questions answered by routed requests."},
+			"handoffs":         obj{"type": "integer", "description": "Results replaced by a handoff."},
+			"handoff_failures": obj{"type": "integer", "description": "Questions whose optional handoff failed and kept the first-path result."},
+			"reasons":          obj{"type": "object", "additionalProperties": obj{"type": "integer"}, "description": "Final results by reason code."},
+			"providers":        obj{"type": "array", "items": ref("ProviderStatus"), "description": "Every resident the policy names, in policy order."},
+			"calibration":      ref("Calibration"),
+		}, "policy", "requests", "failures", "questions", "handoffs", "handoff_failures", "reasons", "providers"),
+
+		"ProviderStatus": object("One resident's contribution to routed requests.", obj{
+			"model":                str("Catalog model identity."),
+			"provider":             str("Provider kind."),
+			"first_path_questions": obj{"type": "integer", "description": "Questions it answered first."},
+			"handoff_questions":    obj{"type": "integer", "description": "Questions it received by handoff."},
+			"final_results":        obj{"type": "integer", "description": "Results it produced that were returned."},
+			"calls":                obj{"type": "integer", "description": "Worker calls it served for answered routed requests."},
+			"inference_ms_total":   num("Inference time of those calls in milliseconds."),
+		}, "model", "provider", "first_path_questions", "handoff_questions", "final_results", "calls", "inference_ms_total"),
+
+		"Calibration": object("The resident comparison evidence the policy's thresholds were verified against. Present only when the runtime was started with it.", obj{
+			"evidence_sha256": str("\"sha256:\" + hex SHA-256 of the comparison report."),
+			"dataset_sha256":  str("Digest of the dataset the evidence was measured on."),
+			"rules":           obj{"type": "array", "items": ref("CalibratedRule"), "description": "The evidence slice behind each rule that routes on confidence or margin."},
+		}, "evidence_sha256", "dataset_sha256", "rules"),
+
+		"CalibratedRule": object("The evidence behind one threshold rule.", obj{
+			"family":       str("The rule's measurement family; absent for the default rule."),
+			"model":        str("The rule's first-path model."),
+			"observations": obj{"type": "integer", "description": "Observations of that model in that family in the evidence."},
+		}, "model", "observations"),
 
 		"Served": object("The resident that answered a directly targeted request, by its stable Hachidori catalog identity. No provider prompt or tokenization detail is exposed.", obj{
 			"model":    str("Catalog model identity."),
@@ -247,6 +322,7 @@ func schemas() obj {
 			"worker":   ref("Worker"),
 			"residents": obj{"type": "array", "items": ref("ResidentStatus"),
 				"description": "Every resident of a multi-resident runtime, default first, each with its own independent state. Absent for a single worker."},
+			"routing": ref("RoutingStatus"),
 		}, "schema", "runtime", "uptime_s", "worker"),
 
 		"ResidentStatus": object("One resident: its stable catalog identity and the status of its own supervised worker. A failed or stopped resident does not change another's entry.", obj{
@@ -311,6 +387,7 @@ func decideRequest(schemaRequired bool) obj {
 			"description": "Questions to answer; ids must be unique within the request."},
 		"options": openObject("Reserved. Accepted and currently has no effect."),
 		"model":   modelRef(),
+		"route":   routeRef(),
 	}, req...)
 }
 
@@ -326,6 +403,20 @@ func errorClasses() []string {
 
 func workerStates() []string {
 	return []string{worker.StateStarting, worker.StateReady, worker.StateRestarting, worker.StateFailed, worker.StateStopped}
+}
+
+// routeRef is the optional routing selector of a decide request or batch.
+func routeRef() obj {
+	return obj{"type": "string", "const": api.RouteAuto,
+		"description": "Optional. \"" + api.RouteAuto + "\" routes the request by the runtime's deterministic routing policy: each question is answered by its first-path resident and handed off to the alternate resident only when the policy requires it. Omitted, the request takes the default route (or model). It cannot be combined with model. A runtime without a routing policy answers routing_failed."}
+}
+
+// routeReasons are the stable reason codes of a routed result.
+func routeReasons() []string {
+	r := []string{api.ReasonFirstPathOnly, api.ReasonFirstPathKept, api.ReasonHandoffAlways, api.ReasonHandoffChoice,
+		api.ReasonHandoffLowConf, api.ReasonHandoffLowMargin, api.ReasonHandoffFailed}
+	sort.Strings(r)
+	return r
 }
 
 // modelRef is the optional direct-selection property of a decide request.

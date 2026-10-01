@@ -11,6 +11,7 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/route"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/worker"
@@ -80,12 +81,19 @@ type ResidentSet struct {
 	order   []*Resident
 	byModel map[string]*Resident
 	started time.Time
+
+	mu     sync.RWMutex
+	router *route.Router
 }
 
 var (
 	_ ResidentRuntime = (*ResidentSet)(nil)
 	_ server.Decider  = (*ResidentSet)(nil)
 	_ server.Router   = (*ResidentSet)(nil)
+
+	_ server.AutoRouting     = (*ResidentSet)(nil)
+	_ server.RoutingReporter = (*ResidentSet)(nil)
+	_ route.Backend          = (*ResidentSet)(nil)
 )
 
 // NewResidentSet builds the set; every worker it starts ends when parent
@@ -169,6 +177,39 @@ func (s *ResidentSet) Identity(model string) (api.Served, bool) {
 	return api.Served{Model: r.Model, Provider: r.Provider}, true
 }
 
+// SetRouting binds a routing policy over the set's residents: requests that
+// ask for route "auto" are then routed by it. Every model the policy names
+// must be a member. The policy changes nothing about the members or the
+// direct and default routes, and a set without a policy refuses routed
+// requests. SetRouting replaces a previously bound policy.
+func (s *ResidentSet) SetRouting(p route.Policy) (*route.Router, error) {
+	r, err := route.New(p, s)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.router = r
+	s.mu.Unlock()
+	return r, nil
+}
+
+// AutoRouter is the bound router, nil when no policy is bound.
+func (s *ResidentSet) AutoRouter() *route.Router {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.router
+}
+
+// RoutingStatus is the counters of the bound policy, nil when none is bound.
+func (s *ResidentSet) RoutingStatus() *route.Status {
+	r := s.AutoRouter()
+	if r == nil {
+		return nil
+	}
+	st := r.Status()
+	return &st
+}
+
 // Decide, Ready, State and Snapshot are the default resident's: the existing
 // single-model callers (the HTTP API) keep working unchanged.
 func (s *ResidentSet) Decide(items []worker.Item) ([][]api.Result, float64, error) {
@@ -183,6 +224,7 @@ func (s *ResidentSet) Snapshot() worker.Snapshot { return s.def.Supervisor.Snaps
 func (s *ResidentSet) Status() server.Status {
 	st := server.StatusBody(s.def.Supervisor, s.def.Info, s.started)
 	st.Residents = s.ResidentStatuses()
+	st.Routing = s.RoutingStatus()
 	return st
 }
 

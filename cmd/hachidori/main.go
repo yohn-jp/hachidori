@@ -27,6 +27,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/question"
+	"github.com/yohn-jp/hachidori/internal/route"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
@@ -161,6 +162,8 @@ func runHost(name string, args []string) error {
 	listen := fs.String("listen", server.DefaultListen, "loopback address to bind")
 	var residents pathList
 	fs.Var(&residents, "resident", "catalog model ID kept resident beside the active model, each in its own worker process ("+strings.Join(modelIDs(), ", ")+"; repeatable). The active model stays the default route")
+	policyPath := fs.String("routing-policy", "", "routing policy file (hachidori.routing-policy.v1 JSON) enabling deterministic auto routing and selective handoff between residents for requests with route \"auto\"; requires --resident, and every model the policy names must be resident")
+	evidencePath := fs.String("routing-evidence", "", "resident comparison evidence (hachidori.resident-comparison.v1 JSON from `hachidori eval --models`) that must back every confidence/margin threshold of --routing-policy; its digest is recorded in status")
 	var dashAddr, sshExe *string
 	if name == "dashboard" {
 		dashAddr = fs.String("addr", dashboard.DefaultListen, "loopback address of the dashboard")
@@ -168,6 +171,16 @@ func runHost(name string, args []string) error {
 	}
 	fs.Parse(args)
 	if err := server.CheckLoopback(*listen); err != nil {
+		return err
+	}
+	if *policyPath != "" && len(residents) == 0 {
+		return errors.New("--routing-policy needs a resident set: name the alternate model with --resident")
+	}
+	if *evidencePath != "" && *policyPath == "" {
+		return errors.New("--routing-evidence verifies a policy: give --routing-policy too")
+	}
+	policy, calibration, err := loadRouting(*policyPath, *evidencePath)
+	if err != nil {
 		return err
 	}
 	if dashAddr != nil {
@@ -215,6 +228,15 @@ func runHost(name string, args []string) error {
 		if err != nil {
 			return err
 		}
+		if policy != nil {
+			rtr, err := set.SetRouting(*policy)
+			if err != nil {
+				return err
+			}
+			if calibration != nil {
+				rtr.SetCalibration(*calibration)
+			}
+		}
 		set.Start()
 		defer set.Stop()
 		dec, lc, rt, now, status = set, set, set.Runtime(), set.Started(), set.Status
@@ -231,6 +253,9 @@ func runHost(name string, args []string) error {
 		*listen, rt.Runtime, rt.ModelID, rt.Model, rt.Device, logf.Name())
 	if len(residents) > 0 {
 		fmt.Fprintf(os.Stderr, "hachidori: resident set: default %s, extra %s (one worker process each)\n", rt.ModelID, strings.Join(residents, ", "))
+	}
+	if policy != nil {
+		fmt.Fprintf(os.Stderr, "hachidori: routing policy %s (%s) for requests with route \"auto\"\n", policy.ID, policy.Digest())
 	}
 
 	var dash *http.Server
@@ -274,6 +299,35 @@ func runHost(name string, args []string) error {
 	}
 	_ = srv.Shutdown(shut)
 	return nil
+}
+
+// loadRouting reads the routing policy and, when given, the comparison
+// evidence its thresholds must be backed by. Both are read-only operator
+// inputs; nothing is written. No policy path is no routing.
+func loadRouting(policyPath, evidencePath string) (*route.Policy, *route.Calibration, error) {
+	if policyPath == "" {
+		return nil, nil, nil
+	}
+	data, err := os.ReadFile(policyPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	p, err := route.Parse(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", policyPath, err)
+	}
+	if evidencePath == "" {
+		return &p, nil, nil
+	}
+	ev, err := os.ReadFile(evidencePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	c, err := route.Verify(p, ev)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", evidencePath, err)
+	}
+	return &p, &c, nil
 }
 
 // logTransitions logs the supervisor's state changes; model names the
@@ -322,8 +376,9 @@ func cmdDecide(args []string) error {
 	fs := flag.NewFlagSet("decide", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "", "endpoint (default: $HACHIDORI_ENDPOINT or "+client.DefaultEndpoint+")")
 	model := fs.String("model", "", "catalog model ID of the resident that must answer ("+strings.Join(modelIDs(), ", ")+"); overrides the request's model. Without one the default resident answers. A model that is not resident or not ready fails; it is never answered by another")
+	routeMode := fs.String("route", "", "\"auto\" routes the request by the runtime's routing policy (hachidori serve --routing-policy); overrides the request's route and cannot be combined with -model")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: hachidori decide [-endpoint URL] [-model ID] <request.json|->")
+		fmt.Fprintln(fs.Output(), "usage: hachidori decide [-endpoint URL] [-model ID] [-route auto] <request.json|->")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -350,6 +405,9 @@ func cmdDecide(args []string) error {
 	}
 	if *model != "" {
 		req.Model = model
+	}
+	if *routeMode != "" {
+		req.Route = *routeMode
 	}
 	resp, err := client.New(*endpoint).Decide(req)
 	if err != nil {

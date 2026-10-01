@@ -42,8 +42,8 @@ defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
 |---|---|---|
 | `GET /health` | `200 {"ready":true,"state":"ready"}` | `503` with the same body while starting, restarting or failed |
 | `GET /v1/status` | `200` | runtime (model ID, device), provider (name, version, the loaded model's ID and revision, device, dtype, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, queue depth, inference p50/p95; with several residents, `residents` lists each one's own such document |
-| `POST /v1/decide` | `200` | one state, 1–32 `choice` questions; optional `model` targets one resident (below) |
-| `POST /v1/decide/batch` | `200` | 1–64 decide requests; requests sharing a question set share forward passes; optional `model` targets one resident (below) |
+| `POST /v1/decide` | `200` | one state, 1–32 `choice` questions; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
+| `POST /v1/decide/batch` | `200` | 1–64 decide requests; requests sharing a question set share forward passes; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
 | `GET /openapi.json` | `200` | the OpenAPI 3.1 description of this API (below) |
 
 The API is host-local like the dashboard: a request whose `Host` is not a
@@ -136,6 +136,139 @@ device, load/warmup, counters, queue, latency, GPU memory) and names a failed
 non-default resident in the attention list; it restates the status document and
 keeps no lifecycle state of its own.
 
+### Deterministic routing and selective handoff
+
+Direct selection (above) is strict and stays the way to evaluate one resident.
+`route: "auto"` is the third mode: the runtime's routing policy answers each
+question from its **first-path** resident and hands off only the questions the
+policy selects to the alternate resident. It is implemented by `internal/route`
+above the `ResidentSet`; it does not start, stop, restart, reload or evict any
+worker, and it never runs both residents for a question unless the policy hands
+that question off (auto is not "run both and choose afterwards").
+
+A request with neither `model` nor `route` keeps the default route exactly as
+before. `route` is `"auto"` or absent, and cannot be combined with `model`
+(`request_invalid`: a direct request is answered by that resident only). A batch
+takes `route` on the batch or the same value on its requests. A runtime with no
+policy (a single worker, a resident set started without `--routing-policy`, the
+Windows desktop) answers a routed request `routing_failed` with code
+`no_routing_policy`; it is never answered by the default resident.
+
+#### Policy
+
+`serve --resident ID --routing-policy policy.json` binds a policy (also
+`dashboard`). It is a read-only operator file of schema
+`hachidori.routing-policy.v1`, rejected on any unknown field, and is identified
+by `id` and the SHA-256 of its canonical encoding. It names resident models by
+catalog ID (never a repository or revision) and every model it names must be
+resident, or the start is refused. Nothing is written to `HACHIDORI_HOME`.
+
+```json
+{
+  "schema": "hachidori.routing-policy.v1",
+  "id": "example-1",
+  "families": {"question_id_a": "readiness", "question_id_b": "scope"},
+  "rules": [
+    {"family": "readiness", "first": "laya-base",
+     "handoff": {"to": "opendecider-nano",
+                 "when": {"confidence_below": 0.7, "choice_in": ["unknown"]}}},
+    {"family": "scope", "first": "opendecider-nano"}
+  ],
+  "default": {"first": "laya-base"}
+}
+```
+
+- `families` maps a question id to a measurement family name, the same
+  convention as `hachidori eval --family`. The runtime core knows no question
+  IDs: families and the models they use are policy data. A question whose family
+  has a rule follows it; every other question follows `default`.
+- A rule has `first` (the resident that answers first) and optionally one
+  `handoff {to, optional, when}`. A rule without handoff answers from `first`
+  only ("laya only", "always opendecider-nano").
+- `when` is a closed set of deterministic checks on the first-path result,
+  evaluated in this order, the first that holds being the reason: `always`,
+  `choice_in` (the first-path choice is one of the labels), `confidence_below`
+  (first-path confidence < t), `margin_below` (gap between the two most probable
+  choices < t; an undefined margin escalates). Thresholds are in (0, 1]. At least
+  one check is required. There is no universal threshold: each is the property of
+  one (family, first model) rule, and confidence is one dimension of four, so a
+  policy can route on identity (`first`, `always`), on the answer (`choice_in`),
+  or on calibrated confidence and margin.
+- A handoff is required unless `optional` is set.
+
+Evaluation is deterministic: the same questions, policy and resident answers
+give the same worker calls in the same order and the same results. Questions go
+to their first-path residents in one call per resident (policy order); the
+handoff condition is evaluated per result; the selected questions go to each
+target in one call; each handed-off result replaces exactly its first-path
+result, and every other result is returned exactly as its first-path resident
+produced it.
+
+#### Calibration evidence
+
+Thresholds are the operator's, derived from resident comparison evidence
+([certification.md](certification.md)): the per-family slices, the
+threshold x coverage x conditional accuracy table and the calibration measures
+of `hachidori benchmark --models`. `--routing-evidence comparison.json` makes
+that link checked: the policy start is refused unless the report is a valid,
+aligned `hachidori.resident-comparison.v1` that contains observations of every
+threshold rule's first-path model in its family (the whole run for the default
+rule). The report's SHA-256 and dataset digest are recorded in
+`routing.calibration` of the status document. Without it no calibration is
+claimed; Hachidori does not choose or adjust a threshold.
+
+#### Response, provenance and failures
+
+A routed response keeps `results` unchanged and adds `routing`:
+
+```json
+{
+  "schema": "hachidori.v1",
+  "results": [{"id": "question_id_a", "type": "choice", "choice": "no", "confidence": 0.83, "probabilities": {"yes": 0.17, "no": 0.83}}],
+  "timing": {"inference_ms": 41.2, "total_ms": 42.0},
+  "routing": {
+    "mode": "auto",
+    "policy": {"id": "example-1", "sha256": "sha256:…"},
+    "results": [{"id": "question_id_a", "reason": "handoff_low_confidence", "profile": "readiness",
+                 "served": {"model": "opendecider-nano", "provider": "opendecider"},
+                 "first_path": {"model": "laya-base", "provider": "laya", "choice": "yes", "confidence": 0.55}}],
+    "handoffs": 1,
+    "providers": [{"model": "laya-base", "provider": "laya", "calls": 1, "questions": 1, "inference_ms": 20.1},
+                  {"model": "opendecider-nano", "provider": "opendecider", "calls": 1, "questions": 1, "inference_ms": 21.1}]
+  }
+}
+```
+
+`served` of each entry is the resident that produced that final result; a
+handed-off entry also records the replaced first-path observation. `reason` is
+one of the stable codes `first_path_only` (no handoff defined),
+`first_path_kept` (condition not met), `handoff_always`, `handoff_choice`,
+`handoff_low_confidence`, `handoff_low_margin` and
+`handoff_failed_kept_first_path` (an `optional` handoff failed; the first-path
+result is kept and says so). `providers` is each resident's contribution to the
+request (`timing.inference_ms` is their sum). A batch response has `routing` with
+the aggregate `providers`, and each entry has its own `routing` without
+`providers`. The shape carries no provider prompt or tokenization detail.
+
+A first-path resident that is unavailable or fails, and a required handoff
+target that is unavailable or fails, are `routing_failed` (`424`) with no
+results: the message starts with the stable code `first_path_failed` or
+`required_handoff_failed`, then the model and the resident's own class and
+message. A reply that does not answer exactly the selected questions is the same
+failure (`malformed_resident_reply` in the message). The weaker result is never
+substituted, a failed resident never becomes another resident's answer, and a
+resident that is down does not change the other.
+
+`GET /v1/status` adds `routing` when a policy is bound: the policy `id` and
+digest, `requests`, `failures`, `questions`, `handoffs`, `handoff_failures`
+(optional handoffs that failed), `reasons` (final results per code) and
+`providers` (per resident: questions answered first, questions received by
+handoff, final results, worker calls, inference ms total), plus `calibration`
+when evidence was given. The dashboard's Runtime page restates it in a Resident
+routing section. `hachidori decide -route auto request.json` sends a routed
+request. Routing is configured with `serve`/`dashboard` flags only; persisting a
+policy in the desktop is not part of this contract.
+
 #### Desktop resident models
 
 The Windows desktop needs no `--resident` argument. Settings > Models &
@@ -175,6 +308,7 @@ Errors are structured and never look like a semantic answer:
 | `capacity` | 429 | more than 64 requests queued or in flight |
 | `inference_failed` | 500 | the healthy worker failed this request |
 | `worker_failure` | 502 | the worker crashed, hung, or violated the protocol |
+| `routing_failed` | 424 | a routed request (`route: "auto"`) its policy could not answer; message starts with a stable code (below) |
 
 The class is the stable part of an error. For `inference_failed` and
 `worker_failure` the message is the worker's own text, passed through the one

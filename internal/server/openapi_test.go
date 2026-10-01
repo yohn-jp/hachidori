@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/route"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -427,6 +428,15 @@ func TestOpenAPISchemasMatchGoTypes(t *testing.T) {
 		{"ResidentStatus", reflect.TypeFor[ResidentStatus](), nil},
 		{"Worker", reflect.TypeFor[worker.Snapshot](), nil},
 		{"Failure", reflect.TypeFor[worker.FailureView](), nil},
+		{"Routing", reflect.TypeFor[api.Routing](), nil},
+		{"PolicyRef", reflect.TypeFor[api.PolicyRef](), nil},
+		{"RoutedResult", reflect.TypeFor[api.RoutedResult](), nil},
+		{"FirstPath", reflect.TypeFor[api.FirstPath](), nil},
+		{"ProviderTiming", reflect.TypeFor[api.ProviderTiming](), nil},
+		{"RoutingStatus", reflect.TypeFor[route.Status](), nil},
+		{"ProviderStatus", reflect.TypeFor[route.ProviderStatus](), nil},
+		{"Calibration", reflect.TypeFor[route.Calibration](), nil},
+		{"CalibratedRule", reflect.TypeFor[route.CalibratedRule](), nil},
 	}
 	covered := map[string]bool{}
 	for _, tc := range cases {
@@ -747,6 +757,7 @@ func TestOpenAPIResponsesMatchHandlers(t *testing.T) {
 		api.ErrCapacity:        &worker.RequestError{Class: api.ErrCapacity, Message: "m"},
 		api.ErrInferenceFailed: &worker.RequestError{Class: api.ErrInferenceFailed, Message: "m"},
 		api.ErrWorkerFailure:   &worker.Failure{Class: worker.ClassCrash, Message: "m"},
+		api.ErrRoutingFailed:   &worker.RequestError{Class: api.ErrRoutingFailed, Message: "m"},
 	}
 	for class, status := range statusFor {
 		for _, path := range []string{"/v1/decide", "/v1/decide/batch"} {
