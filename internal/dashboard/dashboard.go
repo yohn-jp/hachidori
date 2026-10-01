@@ -391,7 +391,7 @@ func (d *Dashboard) Close() {
 // same-origin and carry the per-process form token (defeats cross-site
 // requests from other pages open in the operator's browser).
 func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !loopbackHost(r.Host) {
+	if !server.LoopbackHost(r.Host) {
 		http.Error(w, "dashboard is host-local: Host must be a loopback address", http.StatusForbidden)
 		return
 	}
@@ -425,19 +425,6 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d.mux.ServeHTTP(w, r)
-}
-
-func loopbackHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 type view struct {

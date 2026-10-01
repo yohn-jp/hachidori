@@ -276,6 +276,24 @@ func TestExportWritesOneLocalFileUnderTheGivenDirectory(t *testing.T) {
 	}
 }
 
+// A Windows worker failure names the home the way Python quotes an OSError
+// filename (doubled backslashes). The exported facts must carry neither the
+// user name nor the home path.
+func TestWorkerFailureMessageDoesNotCarryTheWindowsHome(t *testing.T) {
+	const homeDir, profile = `C:\Users\alice\Hachidori`, `C:\Users\alice`
+	t.Setenv("HOME", profile) // os.UserHomeDir on every platform under test
+	t.Setenv("USERPROFILE", profile)
+	f, _ := Collect(Source{Home: homeDir, Status: server.Status{Worker: worker.Snapshot{
+		State: worker.StateFailed,
+		LastFailure: &worker.FailureView{Class: worker.ClassModelLoad,
+			Message: `FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\alice\\Hachidori\\models\\m.safetensors'`},
+	}}})
+	msg := f.Worker.LastFailure.Message
+	if strings.Contains(msg, "alice") || !strings.Contains(msg, "<HACHIDORI_HOME>") {
+		t.Fatalf("failure message keeps the user name or loses the placeholder: %q", msg)
+	}
+}
+
 func TestMissingLogAndHomeStillExport(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Write(&buf, Source{}); err != nil {

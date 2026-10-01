@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +41,13 @@ func TestHelperWorker(t *testing.T) {
 		time.Sleep(time.Minute)
 	case "hang_start":
 		time.Sleep(time.Minute)
+	case "huge_stderr":
+		// One line the scanner accepts but the tail must bound, then one
+		// beyond the scanner limit. A worker whose stderr is no longer read
+		// blocks in these writes and never reaches ready.
+		fmt.Fprintln(os.Stderr, strings.Repeat("a", 100<<10))
+		fmt.Fprintln(os.Stderr, strings.Repeat("b", 2<<20))
+		fmt.Fprintln(os.Stderr, "after the long line")
 	}
 	for _, ph := range []string{"importing", "loading", "warming"} {
 		emit(map[string]any{"event": "phase", "phase": ph})
@@ -52,7 +62,23 @@ func TestHelperWorker(t *testing.T) {
 			Items []Item `json:"items"`
 		}
 		_ = json.Unmarshal(sc.Bytes(), &req)
+		if mode == "hold_decide" && req.Op == "decide" {
+			// Stay inside the inference until the test releases it, so a
+			// test can observe the worker while a request is in flight.
+			dir := os.Getenv("HACHIDORI_FAKE_HOLD")
+			_ = os.WriteFile(filepath.Join(dir, "started"), nil, 0o644)
+			for {
+				if _, err := os.Stat(filepath.Join(dir, "release")); err == nil {
+					break
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+		}
 		switch {
+		case mode == "oversized_line" && req.Op == "decide":
+			// One protocol line beyond the Go side's limit, then nothing.
+			_, _ = os.Stdout.WriteString(strings.Repeat("x", 17<<20) + "\n")
+			time.Sleep(time.Minute)
 		case req.Op == "shutdown":
 			emit(map[string]any{"id": req.ID, "ok": true})
 			os.Exit(0)
@@ -61,7 +87,7 @@ func TestHelperWorker(t *testing.T) {
 		case mode == "hang_on_decide" && req.Op == "decide":
 			time.Sleep(time.Minute)
 		case req.Op == "stats":
-			emit(map[string]any{"id": req.ID, "ok": true, "stats": map[string]any{}})
+			emit(map[string]any{"id": req.ID, "ok": true, "stats": map[string]any{"memory_total": 100}})
 		case req.Op == "decide" && req.Items[0].State == "invalid":
 			emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "bad"}})
 		case req.Op == "decide":
@@ -152,6 +178,122 @@ func TestDieCapturesStderr(t *testing.T) {
 	var f *Failure
 	if !errors.As(err, &f) || len(f.Stderr) == 0 || f.Stderr[0] != "Traceback: boom" {
 		t.Fatalf("err = %#v", err)
+	}
+}
+
+func TestStderrLongLineKeepsWorkerDrainedAndTailBounded(t *testing.T) {
+	var log strings.Builder
+	cfg := fakeConfig(t, "huge_stderr")
+	cfg.StartTimeout = 3 * time.Second
+	cfg.Log = &lockedWriter{w: &log}
+	p, err := Start(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatalf("a long stderr line stalled the worker: %v", err)
+	}
+	defer p.Close()
+	if _, _, err := p.Decide([]Item{item}); err != nil {
+		t.Fatal(err)
+	}
+	var sawNotice bool
+	for _, l := range p.tail.lines() {
+		if len(l) > maxTailLine+len("...") {
+			t.Fatalf("tail keeps a %d byte line", len(l))
+		}
+		sawNotice = sawNotice || strings.Contains(l, "exceeded the capture limit")
+	}
+	if !sawNotice {
+		t.Errorf("tail does not say a line was dropped: %q", p.tail.lines())
+	}
+	if !strings.Contains(log.String(), strings.Repeat("a", 100<<10)) {
+		t.Error("the worker log lost the line the tail truncated")
+	}
+}
+
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(b)
+}
+
+func TestOversizedProtocolLineIsAProtocolFailure(t *testing.T) {
+	cfg := fakeConfig(t, "oversized_line")
+	// Long enough that falling back to the request timeout would be visible
+	// as the wrong failure class.
+	cfg.RequestTimeout = 20 * time.Second
+	p, err := Start(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = p.Decide([]Item{item})
+	var f *Failure
+	if !errors.As(err, &f) || f.Class != ClassProtocolError || !strings.Contains(f.Message, "unreadable") {
+		t.Fatalf("err = %v, want a protocol failure naming the unreadable output", err)
+	}
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker not reaped after the protocol failure")
+	}
+}
+
+func TestSnapshotDoesNotWaitBehindAnInference(t *testing.T) {
+	dir := t.TempDir()
+	cfg := fakeConfig(t, "hold_decide")
+	cfg.Env = append(cfg.Env, "HACHIDORI_FAKE_HOLD="+dir)
+	s := NewSupervisor(cfg, Policy{QueueDepth: 2})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	release := func() { _ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o644) }
+	t.Cleanup(func() { release(); cancel(); <-done })
+	waitState(t, s, StateReady)
+
+	idle := s.Snapshot()
+	if idle.AcceleratorStale || idle.Accelerator["memory_total"] != float64(100) {
+		t.Fatalf("idle snapshot: stale=%v accelerator=%v", idle.AcceleratorStale, idle.Accelerator)
+	}
+
+	decided := make(chan error, 1)
+	go func() { _, _, err := s.Decide([]Item{item}); decided <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "started")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the worker never received the request")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// The inference is held until release(). A snapshot taken now must come
+	// back by itself, current except for the stale accelerator numbers.
+	snapped := make(chan Snapshot, 1)
+	go func() { snapped <- s.Snapshot() }()
+	var busy Snapshot
+	select {
+	case busy = <-snapped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Snapshot waited for the in-flight inference")
+	}
+	if busy.State != StateReady || !busy.Ready || busy.QueueDepth != 1 {
+		t.Fatalf("runtime state is not current: %+v", busy)
+	}
+	if !busy.AcceleratorStale || busy.Accelerator["memory_total"] != float64(100) {
+		t.Fatalf("busy snapshot: stale=%v accelerator=%v, want the last known numbers marked stale", busy.AcceleratorStale, busy.Accelerator)
+	}
+
+	release()
+	if err := <-decided; err != nil {
+		t.Fatal(err)
+	}
+	if fresh := s.Snapshot(); fresh.AcceleratorStale || fresh.QueueDepth != 0 {
+		t.Fatalf("after the inference: stale=%v depth=%d", fresh.AcceleratorStale, fresh.QueueDepth)
 	}
 }
 
@@ -255,6 +397,54 @@ func TestSupervisorRestartsWithinBudget(t *testing.T) {
 	<-done // budget exhausted: supervisor gives up
 	if s.State() != StateFailed || s.LastFailure().Class != ClassCrash {
 		t.Fatalf("state %s failure %+v", s.State(), s.LastFailure())
+	}
+}
+
+func TestSupervisorRunAfterGivingUpHasAFreshRestartBudget(t *testing.T) {
+	s := NewSupervisor(fakeConfig(t, "crash_on_decide"), Policy{MaxRestarts: 1, Window: time.Hour, Backoff: 10 * time.Millisecond, QueueDepth: 2})
+	crash := func(ctx context.Context) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() { s.Run(ctx); close(done) }()
+		waitState(t, s, StateReady)
+		_, _, _ = s.Decide([]Item{item})
+		// The first exit is retried within the budget; the exit after that
+		// exhausts it.
+		deadline := time.Now().Add(5 * time.Second)
+		for !(s.Ready() && s.Snapshot().Restarts == 1) {
+			if time.Now().After(deadline) {
+				t.Fatalf("no restart: state %s", s.State())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		_, _, _ = s.Decide([]Item{item})
+		<-done
+		if s.State() != StateFailed {
+			t.Fatalf("state %s, want failed (budget exhausted)", s.State())
+		}
+	}
+	crash(context.Background())
+	// The operator's Restart runs the supervisor again. Its budget is fresh,
+	// so the first exit is retried again instead of ending in failed at once.
+	crash(context.Background())
+	if got := s.Snapshot().Starts; got != 4 {
+		t.Fatalf("starts = %d, want 4 (two per run)", got)
+	}
+}
+
+func TestSupervisorStopDuringStartupIsNotAFailure(t *testing.T) {
+	s := NewSupervisor(fakeConfig(t, "hang_start"), Policy{QueueDepth: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.Run(ctx)
+	if s.State() != StateStopped {
+		t.Fatalf("state %s, want stopped", s.State())
+	}
+	if f := s.LastFailure(); f != nil {
+		t.Fatalf("a stop requested during startup was recorded as a failure: %+v", f)
+	}
+	if s.Snapshot().LastFailure != nil {
+		t.Fatal("the status document reports the stop as a failure")
 	}
 }
 

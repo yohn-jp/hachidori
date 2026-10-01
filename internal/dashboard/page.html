@@ -388,7 +388,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <div class="metric"><dt>{{t "Errors"}}</dt><dd class="{{if errTotal $w.Errors}}warn-t{{end}}">{{errTotal $w.Errors}}</dd></div>
     <div class="metric meter"><dt>{{t "Queue"}}</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
       <div class="bar" role="img" aria-label="{{t "Queue"}} {{$w.QueueDepth}} / {{$w.QueueLimit}}"><span class="{{if ge $q 100.0}}bad{{else if ge $q 75.0}}warn{{end}}" style="width:{{printf "%.1f" $q}}%"></span></div></div>
-    <div class="metric meter"><dt>{{t "GPU memory"}}</dt><dd>{{with $m}}{{printf "%.0f" .Used}}%<small>{{t "of"}} {{mib $a "memory_total"}}</small>{{else}}-<small>{{t "no device stats"}}</small>{{end}}</dd>
+    <div class="metric meter"><dt>{{t "GPU memory"}}</dt><dd>{{with $m}}{{printf "%.0f" .Used}}%<small>{{t "of"}} {{mib $a "memory_total"}}</small>{{else}}-<small>{{t "no device stats"}}</small>{{end}}{{if and $m $w.AcceleratorStale}}<small>{{t "last known"}}</small>{{end}}</dd>
       {{with $m}}<div class="bar" role="img" aria-label="{{t "GPU memory"}} {{printf "%.1f" .Used}}%"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>{{end}}</div>
   </dl>
   {{with $w.Errors}}<p class="note">{{t "errors by class:"}} {{range $k, $v := .}}<span class="mono">{{$k}} {{$v}}</span> {{end}}</p>{{end}}
@@ -712,7 +712,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <summary>{{t "Runtime evidence"}}<span class="sub mono">{{get $i "provider"}} {{get $i "laya_version"}} · Python {{get $i "python_version"}} · torch {{get $i "torch_version"}}</span></summary>
   <div class="body">
     {{with gpuMem $a}}<div>
-      <h3>{{t "GPU memory"}}</h3>
+      <h3>{{t "GPU memory"}}{{if $w.AcceleratorStale}} <small>({{t "last known"}})</small>{{end}}</h3>
       <div class="bar"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>
       <ul class="legend">
         <li><span class="sw alloc"></span>{{t "allocated"}}<strong>{{mib $a "memory_allocated"}}</strong></li>

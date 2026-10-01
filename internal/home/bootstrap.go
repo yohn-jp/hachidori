@@ -185,7 +185,7 @@ func (l Locator) Save(root string) (Home, error) {
 	if err := os.MkdirAll(filepath.Dir(l.Path), 0o755); err != nil {
 		return Home{}, &BootstrapError{Path: l.Path, Cause: err}
 	}
-	if err := writeFileAtomic(l.Path, append(data, '\n')); err != nil {
+	if err := WriteFileAtomic(l.Path, append(data, '\n'), 0o600); err != nil {
 		return Home{}, &BootstrapError{Path: l.Path, Cause: err}
 	}
 	return h, nil
@@ -214,10 +214,11 @@ func normalizeHome(root string) (Home, error) {
 	return Home{Root: filepath.Clean(abs)}, nil
 }
 
-// writeFileAtomic writes data to a temporary file in path's directory, syncs
+// WriteFileAtomic writes data to a temporary file in path's directory, syncs
 // it and renames it over path, so readers see either the old or the new
-// record, never a partial one.
-func writeFileAtomic(path string, data []byte) (err error) {
+// content, never a partial one, and a failed write leaves neither a damaged
+// path nor a stray temporary file. perm is the mode of the result.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
@@ -237,6 +238,9 @@ func writeFileAtomic(path string, data []byte) (err error) {
 		return err
 	}
 	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Chmod(tmp, perm); err != nil {
 		return err
 	}
 	const attempts = 10

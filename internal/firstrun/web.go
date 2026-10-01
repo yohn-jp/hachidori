@@ -10,12 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
-	"net"
 	"net/http"
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/i18n"
+	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/ui"
 )
 
@@ -69,7 +69,7 @@ func NewHandler(f *Flow, home func() http.Handler) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !loopbackHost(r.Host) {
+	if !server.LoopbackHost(r.Host) {
 		http.Error(w, "host-local: Host must be a loopback address", http.StatusForbidden)
 		return
 	}
@@ -159,17 +159,4 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func loopbackHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }

@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/redact"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -48,7 +50,12 @@ func Handler(d Decider, rt Runtime) http.Handler { return HandlerSince(d, rt, ti
 // HandlerSince is Handler with an explicit serving start time, so that other
 // host surfaces can report the same uptime via StatusBody.
 func HandlerSince(d Decider, rt Runtime, started time.Time) http.Handler {
+	return hostLocal(routes(d, rt, started))
+}
+
+func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 	mux := http.NewServeMux()
+	sc := redact.New(rt.Home)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		h := api.Health{Ready: d.Ready(), State: d.State()}
 		code := http.StatusOK
@@ -72,7 +79,7 @@ func HandlerSince(d Decider, rt Runtime, started time.Time) http.Handler {
 		}
 		res, ms, err := d.Decide([]worker.Item{{State: req.State, Questions: req.Questions}})
 		if err != nil {
-			writeWorkerErr(w, err)
+			writeWorkerErr(w, sc, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, api.DecideResponse{Schema: api.SchemaV1, Results: res[0],
@@ -94,7 +101,7 @@ func HandlerSince(d Decider, rt Runtime, started time.Time) http.Handler {
 		}
 		res, ms, err := d.Decide(items)
 		if err != nil {
-			writeWorkerErr(w, err)
+			writeWorkerErr(w, sc, err)
 			return
 		}
 		out := api.BatchResponse{Schema: api.SchemaV1, Timing: api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}}
@@ -104,6 +111,50 @@ func HandlerSince(d Decider, rt Runtime, started time.Time) http.Handler {
 		writeJSON(w, http.StatusOK, out)
 	})
 	return mux
+}
+
+// hostLocal enforces the same host-local boundary as the dashboard on the
+// public API: the Host header must name a loopback address (a DNS-rebinding
+// page resolves its own name to 127.0.0.1 and would otherwise read
+// /v1/status, which carries the HACHIDORI_HOME path), and a state-changing
+// request must not come from another web origin (a page in the operator's
+// browser can send a no-preflight POST to /v1/decide). Callers of this API
+// are not browsers, and the API sends no CORS headers, so nothing legitimate
+// is refused.
+func hostLocal(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !LoopbackHost(r.Host) {
+			http.Error(w, "host-local: Host must be a loopback address", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
+				http.Error(w, "cross-origin request refused", http.StatusForbidden)
+				return
+			}
+			if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" && s != "none" {
+				http.Error(w, "cross-site request refused", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// LoopbackHost reports whether a Host header value (host or host:port) names
+// a loopback address. It is the one host-local policy shared by the API, the
+// dashboard and the first-run screen.
+func LoopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Status is the GET /v1/status document. The host dashboard renders this
@@ -187,18 +238,27 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-func writeWorkerErr(w http.ResponseWriter, err error) {
+// maxErrorDetail bounds the worker-supplied detail of an error response.
+const maxErrorDetail = 1024
+
+// writeWorkerErr answers a failed request. The error class is the stable,
+// public part; the detail is the worker's own text (Python exception text
+// for an inference failure) passed through the shared redaction policy and
+// bounded, because the caller may be a remote host behind the reverse tunnel
+// and the text can carry local paths or credential-bearing URLs. The operator
+// sees the unredacted text in the worker log and the dashboard.
+func writeWorkerErr(w http.ResponseWriter, sc redact.Scrubber, err error) {
 	var re *worker.RequestError
 	if errors.As(err, &re) {
-		writeErr(w, re.Class, re.Message)
+		writeErr(w, re.Class, sc.Line(re.Message, maxErrorDetail))
 		return
 	}
 	var f *worker.Failure
 	if errors.As(err, &f) {
-		writeErr(w, api.ErrWorkerFailure, f.Class+": "+f.Message)
+		writeErr(w, api.ErrWorkerFailure, sc.Line(f.Class+": "+f.Message, maxErrorDetail))
 		return
 	}
-	writeErr(w, api.ErrWorkerFailure, err.Error())
+	writeErr(w, api.ErrWorkerFailure, sc.Line(err.Error(), maxErrorDetail))
 }
 
 var statusFor = map[string]int{

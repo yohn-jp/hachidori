@@ -64,6 +64,12 @@ func (s *Supervisor) Run(ctx context.Context) {
 	if s.state == StateStopped || s.state == StateFailed {
 		s.state = StateStarting
 	}
+	// Every Run is an operator action (Lifecycle.Start or Restart, or the
+	// first start): the bounded restart budget begins afresh, as it does
+	// when the desktop binds a new supervisor after the operator's Restart.
+	// Without this, a Restart after the supervisor gave up leaves the old
+	// window full and the next exit is not retried at all.
+	s.restarts = nil
 	s.mu.Unlock()
 	for {
 		s.mu.Lock()
@@ -73,10 +79,14 @@ func (s *Supervisor) Run(ctx context.Context) {
 		p, err := Start(ctx, s.cfg, func(ph string) { s.mu.Lock(); s.phase = ph; s.mu.Unlock() })
 		if err != nil {
 			s.mu.Lock()
-			s.lastFail = asFailure(err)
-			s.state = StateFailed
 			if ctx.Err() != nil {
+				// A stop requested during startup is the operator's
+				// decision, not a worker failure: it must not appear as the
+				// last failure or raise a failure alert.
 				s.state = StateStopped
+			} else {
+				s.lastFail = asFailure(err)
+				s.state = StateFailed
 			}
 			s.mu.Unlock()
 			return
@@ -192,22 +202,26 @@ func (s *Supervisor) count(class string) {
 
 // Snapshot is the supervisor's contribution to /v1/status.
 type Snapshot struct {
-	State        string           `json:"state"`
-	Phase        string           `json:"phase"`
-	Ready        bool             `json:"ready"`
-	PID          int              `json:"pid,omitempty"`
-	Starts       int              `json:"starts"`
-	Restarts     int              `json:"restarts_in_window"`
-	ReadySince   string           `json:"ready_since,omitempty"`
-	Info         Info             `json:"provider,omitempty"`
-	Accelerator  map[string]any   `json:"accelerator,omitempty"`
-	LastFailure  *FailureView     `json:"last_failure,omitempty"`
-	Requests     int64            `json:"requests"`
-	Errors       map[string]int64 `json:"errors"`
-	QueueDepth   int              `json:"queue_depth"`
-	QueueLimit   int              `json:"queue_limit"`
-	LatencyP50MS float64          `json:"inference_p50_ms"`
-	LatencyP95MS float64          `json:"inference_p95_ms"`
+	State       string         `json:"state"`
+	Phase       string         `json:"phase"`
+	Ready       bool           `json:"ready"`
+	PID         int            `json:"pid,omitempty"`
+	Starts      int            `json:"starts"`
+	Restarts    int            `json:"restarts_in_window"`
+	ReadySince  string         `json:"ready_since,omitempty"`
+	Info        Info           `json:"provider,omitempty"`
+	Accelerator map[string]any `json:"accelerator,omitempty"`
+	// AcceleratorStale is set when Accelerator was taken before the request
+	// now in flight (it is never fetched behind a running inference); every
+	// other field of the snapshot is current.
+	AcceleratorStale bool             `json:"accelerator_stale,omitempty"`
+	LastFailure      *FailureView     `json:"last_failure,omitempty"`
+	Requests         int64            `json:"requests"`
+	Errors           map[string]int64 `json:"errors"`
+	QueueDepth       int              `json:"queue_depth"`
+	QueueLimit       int              `json:"queue_limit"`
+	LatencyP50MS     float64          `json:"inference_p50_ms"`
+	LatencyP95MS     float64          `json:"inference_p95_ms"`
 }
 
 // FailureView is the JSON form of a Failure.
@@ -218,7 +232,8 @@ type FailureView struct {
 }
 
 // Snapshot reports current supervisor state; accelerator stats are queried
-// from the worker when it is idle-ready.
+// from the worker when it is idle and are the last known ones (marked stale)
+// while an inference is in flight, so a snapshot never waits for it.
 func (s *Supervisor) Snapshot() Snapshot {
 	s.mu.Lock()
 	snap := Snapshot{State: s.state, Phase: s.phase, Ready: s.state == StateReady, Starts: s.starts,
@@ -238,8 +253,8 @@ func (s *Supervisor) Snapshot() Snapshot {
 	s.mu.Unlock()
 	if p != nil {
 		snap.PID = p.PID
-		if st, err := p.Stats(); err == nil && len(st) > 0 {
-			snap.Accelerator = st
+		if st, stale, err := p.TryStats(); err == nil && len(st) > 0 {
+			snap.Accelerator, snap.AcceleratorStale = st, stale
 		}
 	}
 	return snap

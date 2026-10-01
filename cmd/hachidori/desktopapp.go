@@ -255,6 +255,19 @@ func (a *desktopApp) run() error {
 		return rt, nil
 	}
 
+	// Bind both loopback addresses before anything can start a worker: a
+	// port that is already taken must fail here, not after the runtime was
+	// started and with nothing left to stop it.
+	apiLn, err := net.Listen("tcp", a.APIAddr)
+	if err != nil {
+		return err
+	}
+	dashLn, err := net.Listen("tcp", a.DashAddr)
+	if err != nil {
+		apiLn.Close()
+		return err
+	}
+
 	selected := ""
 	if plan.Mode == firstrun.ModeLaunch || plan.Mode == firstrun.ModeResume {
 		selected = plan.Home
@@ -271,15 +284,6 @@ func (a *desktopApp) run() error {
 		}
 	}
 
-	apiLn, err := net.Listen("tcp", a.APIAddr)
-	if err != nil {
-		return err
-	}
-	dashLn, err := net.Listen("tcp", a.DashAddr)
-	if err != nil {
-		apiLn.Close()
-		return err
-	}
 	apiSrv := &http.Server{Handler: sw, ReadHeaderTimeout: 10 * time.Second}
 	// First run uses the same settings authority for its locale: it lives
 	// beside desktop.json, so it exists before any home is selected.

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,7 +46,9 @@ const body = `{"schema":"hachidori.v1","state":"s","questions":[{"id":"q","type"
 
 func do(h http.Handler, method, path, b string) (*httptest.ResponseRecorder, map[string]any) {
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(b)))
+	req := httptest.NewRequest(method, path, strings.NewReader(b))
+	req.Host = DefaultListen
+	h.ServeHTTP(rec, req)
 	var m map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &m)
 	return rec, m
@@ -125,5 +128,112 @@ func TestCheckLoopback(t *testing.T) {
 		if CheckLoopback(a) == nil {
 			t.Errorf("%s accepted", a)
 		}
+	}
+}
+
+func TestAPIIsHostLocal(t *testing.T) {
+	f := &fake{ready: true}
+	h := Handler(f, Runtime{Home: "/srv/hachidori"})
+	cases := []struct {
+		name    string
+		method  string
+		path    string
+		host    string
+		headers map[string]string
+		code    int
+	}{
+		{"loopback ip", "GET", "/v1/status", "127.0.0.1:7843", nil, 200},
+		{"localhost", "GET", "/v1/status", "localhost:7843", nil, 200},
+		{"ipv6 loopback", "GET", "/health", "[::1]:7843", nil, 200},
+		{"no origin header (non-browser caller)", "POST", "/v1/decide", "127.0.0.1:7843", nil, 200},
+		{"same origin", "POST", "/v1/decide", "127.0.0.1:7843", map[string]string{"Origin": "http://127.0.0.1:7843"}, 200},
+		// DNS rebinding: the page's own name resolves to 127.0.0.1.
+		{"rebound status", "GET", "/v1/status", "attacker.example:7843", nil, 403},
+		{"rebound health", "GET", "/health", "attacker.example", nil, 403},
+		{"rebound decide", "POST", "/v1/decide", "attacker.example:7843", nil, 403},
+		// A no-preflight cross-site POST from a page in the operator's browser.
+		{"cross-origin post", "POST", "/v1/decide", "127.0.0.1:7843", map[string]string{"Origin": "https://attacker.example"}, 403},
+		{"opaque origin post", "POST", "/v1/decide/batch", "127.0.0.1:7843", map[string]string{"Origin": "null"}, 403},
+		{"cross-site fetch metadata", "POST", "/v1/decide", "127.0.0.1:7843", map[string]string{"Sec-Fetch-Site": "cross-site"}, 403},
+	}
+	for _, c := range cases {
+		b := ""
+		if c.method == "POST" {
+			b = body
+			if strings.HasSuffix(c.path, "/batch") {
+				b = `{"schema":"hachidori.v1","requests":[` + body + `]}`
+			}
+		}
+		req := httptest.NewRequest(c.method, c.path, strings.NewReader(b))
+		req.Host = c.host
+		for k, v := range c.headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		before := f.calls
+		h.ServeHTTP(rec, req)
+		if rec.Code != c.code {
+			t.Errorf("%s: status %d, want %d (%s)", c.name, rec.Code, c.code, rec.Body)
+		}
+		if c.code == 403 {
+			if f.calls != before {
+				t.Errorf("%s: a refused request reached the worker", c.name)
+			}
+			if strings.Contains(rec.Body.String(), "/srv/hachidori") {
+				t.Errorf("%s: refusal leaks the home path: %s", c.name, rec.Body)
+			}
+		}
+	}
+}
+
+// Worker text reaches API callers (possibly remote, behind the reverse
+// tunnel) only through the shared redaction policy: the class and the useful
+// part of the detail survive; local paths and credentials do not.
+func TestWorkerErrorDetailIsRedactedAndBounded(t *testing.T) {
+	const homeDir, profile = `C:\Users\alice\Hachidori`, `C:\Users\alice`
+	t.Setenv("HOME", profile)
+	t.Setenv("USERPROFILE", profile)
+	repr := `OSError: [Errno 2] No such file or directory: 'C:\\Users\\alice\\Hachidori\\cache\\x'`
+	cases := []struct {
+		name  string
+		err   error
+		code  int
+		class string
+		keep  string
+	}{
+		{"request error with doubled backslashes", &worker.RequestError{Class: api.ErrInferenceFailed, Message: repr}, 500, api.ErrInferenceFailed, "<HACHIDORI_HOME>"},
+		{"request error with a credential url", &worker.RequestError{Class: api.ErrInferenceFailed,
+			Message: "HTTPError: https://user:pw-example@hub.example.invalid/m?token=not-a-real-token"}, 500, api.ErrInferenceFailed, "hub.example.invalid"},
+		{"worker failure", &worker.Failure{Class: worker.ClassModelLoad, Message: repr}, 502, api.ErrWorkerFailure, "model_load"},
+		{"plain error", errors.New("cache C:/Users/alice/x unreadable"), 502, api.ErrWorkerFailure, "<USERPROFILE>"},
+		{"useful detail is kept", &worker.RequestError{Class: api.ErrInferenceFailed, Message: "OutOfMemoryError: CUDA out of memory"}, 500, api.ErrInferenceFailed, "CUDA out of memory"},
+	}
+	for _, c := range cases {
+		h := Handler(&fake{ready: true, err: c.err}, Runtime{Home: homeDir})
+		for _, path := range []string{"/v1/decide", "/v1/decide/batch"} {
+			b := body
+			if strings.HasSuffix(path, "/batch") {
+				b = `{"schema":"hachidori.v1","requests":[` + body + `]}`
+			}
+			rec, m := do(h, "POST", path, b)
+			got := rec.Body.String()
+			if rec.Code != c.code || errClass(m) != c.class {
+				t.Errorf("%s %s: %d %s", c.name, path, rec.Code, got)
+			}
+			for _, leak := range []string{"alice", "pw-example", "not-a-real-token"} {
+				if strings.Contains(got, leak) {
+					t.Errorf("%s %s: response carries %q: %s", c.name, path, leak, got)
+				}
+			}
+			if msg, _ := m["error"].(map[string]any)["message"].(string); !strings.Contains(msg, c.keep) {
+				t.Errorf("%s %s: message lost %q: %q", c.name, path, c.keep, msg)
+			}
+		}
+	}
+
+	long := &worker.RequestError{Class: api.ErrInferenceFailed, Message: strings.Repeat("x", 1<<20)}
+	rec, m := do(Handler(&fake{ready: true, err: long}, Runtime{}), "POST", "/v1/decide", body)
+	if msg := m["error"].(map[string]any)["message"].(string); rec.Code != 500 || len(msg) > maxErrorDetail+len("...[truncated]") {
+		t.Fatalf("detail not bounded: %d bytes, status %d", len(msg), rec.Code)
 	}
 }
