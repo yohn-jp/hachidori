@@ -133,12 +133,12 @@ func Run(homeFlag string, out io.Writer) bool {
 	}
 	report(Check{Name: "isolation", Status: "pass", Owner: "hachidori", Detail: "no user site, sys.path and caches under HACHIDORI_HOME"})
 
-	prov, err := probe(python, env, providerProbe)
+	prov, err := probe(python, env, providerProbe(model.Provider))
 	if err != nil {
 		report(Check{Name: "provider", Status: "fail", Owner: "hachidori", Class: ProviderImport, Detail: err.Error()})
 		return skipRest(later[4:]...)
 	}
-	detail := fmt.Sprintf("laya %v, torch %v (cuda %v)", prov["laya"], prov["torch"], prov["torch_cuda"])
+	detail := fmt.Sprintf("%s %v, torch %v (cuda %v)", model.Provider, prov["provider_version"], prov["torch"], prov["torch_cuda"])
 	if a.Device == "cuda" {
 		if prov["cuda_available"] != true {
 			report(Check{Name: "provider", Status: "fail", Owner: "host", Class: CUDAUnavailable,
@@ -232,12 +232,16 @@ print(json.dumps({"prefix": sys.prefix, "executable": sys.executable, "no_user_s
  "hf_home": os.environ.get("HF_HOME", ""), "torch_home": os.environ.get("TORCH_HOME", ""),
  "home": os.path.expanduser("~"), "tmp": __import__("tempfile").gettempdir()}))`
 
-const providerProbe = `import json, torch, laya
-d = {"torch": torch.__version__, "torch_cuda": torch.version.cuda, "laya": laya.__version__,
+// providerProbe imports the model provider the active model needs. The name is
+// a catalog provider kind, never operator input.
+func providerProbe(provider string) string {
+	return `import json, torch, ` + provider + `
+d = {"torch": torch.__version__, "torch_cuda": torch.version.cuda, "provider_version": ` + provider + `.__version__,
  "cuda_available": torch.cuda.is_available()}
 if d["cuda_available"]:
     d["device_name"] = torch.cuda.get_device_name(0)
 print(json.dumps(d))`
+}
 
 func probe(python string, env []string, code string) (map[string]any, error) {
 	cmd := exec.Command(python, "-I", "-c", code)

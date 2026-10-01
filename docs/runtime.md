@@ -8,7 +8,9 @@ client CLI / any HTTP caller
     -> HTTP (127.0.0.1:7843, schema hachidori.v1)
     -> Go runtime (hachidori serve: HTTP + supervisor)
     -> private Python worker (stdin/stdout NDJSON, no network listener)
-    -> Laya 0.3.21 (laya.load / Agent.predict_batch)
+    -> the active model's provider adapter, one at a time:
+         Laya 0.3.21 (laya.load / Agent.predict_batch) or
+         OpenDecider 0.3.0 (opendecider.load / system_one_batch)
     -> PyTorch 2.11.0 (+cu128 or +cpu)
     -> GPU / CPU
 ```
@@ -38,7 +40,7 @@ defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
 | endpoint | success | notes |
 |---|---|---|
 | `GET /health` | `200 {"ready":true,"state":"ready"}` | `503` with the same body while starting, restarting or failed |
-| `GET /v1/status` | `200` | runtime, provider (versions, device, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, queue depth, inference p50/p95 |
+| `GET /v1/status` | `200` | runtime (model ID, device), provider (name, version, the loaded model's ID and revision, device, dtype, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, queue depth, inference p50/p95 |
 | `POST /v1/decide` | `200` | one state, 1–32 `choice` questions |
 | `POST /v1/decide/batch` | `200` | 1–64 decide requests; requests sharing a question set share forward passes |
 
@@ -77,8 +79,11 @@ Response (results in question order, question ids preserved):
 }
 ```
 
-`confidence` is Laya's `answer_confidence` (max p, the temperature-calibrated
-quantity ECE measures), not its entropy-based `confidence`.
+`confidence` is the probability mass on the reported choice (max p). For Laya it
+is `answer_confidence` (the temperature-calibrated quantity ECE measures), not
+its entropy-based `confidence`; for OpenDecider-nano it is the softmax
+probability of the reported option. The request and result shapes are the same
+for every model; which model answered is reported by `/v1/status`.
 
 Errors are structured and never look like a semantic answer:
 
@@ -107,10 +112,15 @@ Only `choice` questions exist in v1. Limits: state 64 KiB, 32 questions,
 hachidori serve
   -> resolve state/active-runtime.json, verify worker digest
   -> spawn <home>/runtime/<ver>/python/... -I -X utf8 worker.py (explicit env)
-  -> hello -> importing (torch, laya)
+  -> hello -> importing (torch, the provider of the active model: laya | opendecider)
   -> device check (cuda requested and unavailable => device_unavailable)
-  -> loading: laya.load(<model dir>, device, expected_sha256=<pinned digests>)
-     (laya silently falls back to CPU; the worker treats that as device_unavailable)
+  -> loading, per provider:
+       laya:        laya.load(<model dir>, device, expected_sha256=<pinned digests>)
+       opendecider: verify every pinned file digest, then opendecider.load(<model dir>, device, dtype=float32)
+                    (a local directory; nothing is resolved from the Hub)
+  -> the worker checks where the model actually is: anything but the requested
+     device is device_unavailable (Laya silently falls back to CPU; there is no
+     CUDA -> CPU fallback for any provider)
   -> warming: 3 real predictions (+ cuda synchronize)
   -> ready  => /health 200
   -> serve requests on the same process and model until shutdown
@@ -130,6 +140,34 @@ Newline-delimited JSON. Go owns all stdio streams:
 
 - stdin: requests `{"id":N,"op":"decide","items":[{"state":…,"questions":[…]}]}`, `{"id":N,"op":"stats"}`, `{"op":"shutdown"}`.
 - stdout: protocol only. The worker duplicates fd 1 for the protocol and points fd 1 / `sys.stdout` at stderr, because Laya prints warnings to stdout. Any non-JSON line is a protocol violation.
+- The worker is started with `--provider <laya|opendecider>`, taken from the active catalog model (never from operator input). The protocol above it is identical for both providers; tokenization, the OpenDecider `[MASK]` option markers and result translation stay inside the worker's provider adapters.
+
+### Decision models
+
+Both supported models answer the same typed `choice` contract by closed-option
+scoring: each question's choices are scored together and a probability
+distribution over exactly those choices comes back. Nothing is generated,
+parsed or retried.
+
+- **Laya** (`laya-base`, the default): ModernBERT-large, scored by `laya`.
+- **OpenDecider-nano** (`opendecider-nano`, a candidate): an Ettin-encoder-400m
+  backbone with an MLP decision head. The `opendecider` package places one
+  `[MASK]` marker before each option in a single sequence (`question`, options,
+  `input: <state>`), reads the encoder state at each marker through the head to
+  one logit per option and softmaxes over the question's options: all options of
+  a question cost one encoder pass. The adapter maps Hachidori's choice question
+  (instructions, choices, optional descriptions) onto that input and the
+  probabilities back onto the v1 result. It runs in `float32` (what upstream
+  evaluated) and scores at most 16 sequences (states × questions) per padded
+  batch.
+  Upstream facts that apply to the candidate and are not Hachidori certification
+  evidence: a 2,048-token context shared by question, options and state (the
+  state is truncated first so every option survives; Hachidori logs each
+  truncation in the worker log and does not change the result shape), English
+  evaluation only, roughly 2 GiB of runtime memory.
+
+Which model is the default is decided by recorded evidence, not by size or
+upstream claims; see "Decision-model comparison" in `certification.md`.
 - stderr: logs, appended to `<home>/logs/worker.log`; the last 64 lines are attached to failures.
 
 ## Host dashboard
@@ -497,10 +535,15 @@ model selection as the CLI. Home discovery remains outside the controller.
 Go data in `internal/setup/spec.go` plus the uv project embedded from
 `internal/setup/runtimespec/` (`pyproject.toml` and the locked `uv.lock`,
 with one uv extra per PyTorch flavor: `cpu`, `cu128`). The spec records the
-schema, platform, CPython version, provider (`laya==0.3.21`), exact torch build,
-flavor, pinned uv version and executable digest, the SHA-256 of both uv project
-files and of the worker script. The model is not part of it: selecting a
-different compatible checkpoint reuses the same runtime.
+schema, platform, CPython version, the model providers (`laya==0.3.21` and
+`opendecider==0.3.0`, one runtime carries both), exact torch build, flavor,
+pinned uv version and executable digest, the SHA-256 of both uv project files
+and of the worker script. The model is not part of it: selecting any catalog
+checkpoint reuses the same runtime. A runtime materialized before OpenDecider
+was carried has a different identity; it keeps serving the Laya model it was
+activated with, and activating any model after an upgrade needs the current
+runtime to be materialized first (`hachidori setup`, or Materialize in the
+manager), which reuses already verified models.
 
 The runtime identity is `<flavor>-<first 16 hex of sha256(canonical spec JSON)>`,
 for example `cu128-…` / `cpu-…`. Any semantic change (lock, versions, worker,
@@ -535,8 +578,8 @@ uv/pip configuration, indexes and interpreters are ignored. A uv from `PATH`,
 system Python or system pip is never used; a failed uv bootstrap fails setup.
 
 Verification is Hachidori's: the private interpreter (`-I`, offline, constructed
-env) must report exactly the spec's Python version, `laya==0.3.21` and
-`torch==2.11.0+<flavor>`, its prefix must be the runtime's `env/` and its base
+env) must report exactly the spec's Python version, `laya==0.3.21`,
+`opendecider==0.3.0` and `torch==2.11.0+<flavor>`, its prefix must be the runtime's `env/` and its base
 interpreter the uv-managed CPython under `tools/`. Failure or interruption at any
 step leaves `state/active-runtime.json` unchanged; staging is never treated as a
 runtime and is recreated on the next run. There is no retry loop beyond uv's
@@ -555,29 +598,34 @@ only after both verified, for the requested device.
 ### Model catalog
 
 Models are immutable catalog identities declared in `internal/setup/spec.go`
-(`setup.Models`): a stable Hachidori model ID, provider kind (`laya`), upstream
-repository, immutable commit revision and every required file with its SHA-256.
+(`setup.Models`): a stable Hachidori model ID, provider kind (`laya` or
+`opendecider`), upstream repository, immutable commit revision and every
+required file with its SHA-256.
 
-| ID | checkpoint |
-|---|---|
-| `laya-base` (default) | `convaiinnovations/laya@55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`, the upstream English ModernBERT-large checkpoint |
+| ID | provider | checkpoint |
+|---|---|---|
+| `laya-base` (default) | `laya` | `convaiinnovations/laya@55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`, the upstream English ModernBERT-large checkpoint |
+| `opendecider-nano` (candidate) | `opendecider` | `manjunathshiva/opendecider-nano@7e42a1508d2beef44717d044831e87f2fc4db9f2`, Apache-2.0, Ettin-encoder-400m + MLP head (7 files, about 0.8 GB) |
 
 `hachidori setup --model <id>` selects one; omitting `--model` selects
 `laya-base`. Only catalog IDs are accepted (an unknown ID fails before anything
 is changed); there is no repository or revision input. Adding a checkpoint
-(for example a fine-tuned Laya) means declaring another entry, not changing the
-worker or provider. The model directory `models/<owner>--<repo>/<revision>/` and
+for an existing provider means declaring another entry, not changing the worker. The model directory `models/<owner>--<repo>/<revision>/` and
 its `hachidori-model.json` are derived from the entry. `state/active-runtime.json`
 records the runtime identity, the model ID (`model_id`), the model directory and
 the device. A failed materialization of a newly selected model leaves the active
 runtime and model unchanged. Changing the active model takes effect when the
-host is restarted; a READY worker never switches models.
+host is restarted; a READY worker never switches models. Exactly one model is
+resident: there is no routing, handoff or second resident worker (that belongs
+to the multi-provider runtime, not to model selection).
 
 `serve` resolves only the activated model: the activation's model ID must be a
-catalog entry, the directory must be the one derived from it and the
-materialized manifest must equal the entry; the worker then verifies every file
-digest while loading. Nothing is downloaded. `/v1/status` (and the dashboard)
-report `runtime.model_id` and `runtime.model`; `doctor` verifies the selected
+catalog entry, the directory must be the one derived from it, the materialized
+manifest must equal the entry and the runtime must carry the entry's provider;
+the worker then verifies every file digest before loading. Nothing is
+downloaded. `/v1/status` (and the dashboard) report `runtime.model_id` and
+`runtime.model`, and, from the worker itself, the provider, its version, the
+loaded model's ID and revision, and the device and dtype it is actually on; `doctor` verifies the selected
 entry's files and prints its ID, repository and revision. Activation records
 from before model selection (no `model_id`) are resolved by their directory.
 
@@ -592,7 +640,8 @@ commit both files. Setup runs `uv sync --locked`, which refuses a stale lock.
 ### Models and runtimes manager
 
 The Windows desktop's Settings workspace has a Models & runtimes section over
-the current single-provider catalog (Laya). It is a view over typed operations
+the model catalog (Laya and OpenDecider-nano). It is the one place a model is
+chosen, materialized and activated, and a view over typed operations
 of `internal/setup` (`Inspect`, `Materialize`, `Verify`, `Repair`, `Activate`,
 `Remove`), reached through `app.Controller`; the dashboard never inspects or
 deletes directories. `serve` and the browser `dashboard` do not offer it, and
@@ -604,6 +653,13 @@ deletes directories. `serve` and the browser `dashboard` do not offer it, and
   revision, pinned file count) and whether it is supported, materialized,
   verified and active. Listing is read-only and offline; full verification
   (interpreter probe, file digests) runs only on an explicit Verify.
+- Three facts are shown separately and never conflated: the model chosen in the
+  form (choosing changes nothing: no download, activation or restart), the
+  **active** model (the activation record, what the next start serves) and the
+  model **running** now (what the resident worker was started with, from the
+  status authority). After an activation under a running worker the active model
+  reads "applies on restart" and the restart-required banner offers the explicit
+  Restart.
 - Materialize and Repair use the same staged, verified path as setup and never
   write `state/active-runtime.json`; a failure leaves the active state as it
   was. Materialize may run beside a running worker; Repair is refused while
@@ -659,8 +715,8 @@ on Linux (host GPU driver location, e.g. NixOS `/run/opengl-driver/lib`).
 
 Pins: uv 0.12.19 (linux-amd64, windows-amd64; `internal/setup/spec.go`),
 CPython 3.12.11, `torch==2.11.0+cu128` (NVIDIA driver ≥ 570, RTX 20xx–50xx) or
-`torch==2.11.0+cpu`, `laya==0.3.21`, `transformers==5.17.0` and the full locked
-package set (`internal/setup/runtimespec/uv.lock`), default model `laya-base` =
+`torch==2.11.0+cpu`, `laya==0.3.21`, `opendecider==0.3.0`, `transformers==5.17.0`
+and the full locked package set (`internal/setup/runtimespec/uv.lock`), default model `laya-base` =
 `convaiinnovations/laya@55cf4c4e…` (Laya's own reviewed revision).
 
 ### Windows bootstrap locator

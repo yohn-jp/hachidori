@@ -235,6 +235,7 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "laya" },
     { name = "numpy" },
+    { name = "opendecider" },
     { name = "safetensors" },
     { name = "tokenizers" },
     { name = "transformers" },
@@ -254,6 +255,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = "==1.33.0" },
     { name = "laya", specifier = "==0.3.21" },
     { name = "numpy", specifier = "==2.5.3" },
+    { name = "opendecider", specifier = "==0.3.0" },
     { name = "safetensors", specifier = "==0.8.0" },
     { name = "tokenizers", specifier = "==0.23.2" },
     { name = "torch", marker = "extra == 'cpu'", specifier = "==2.11.0+cpu", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "hachidori-runtime", extra = "cpu" } },
@@ -714,6 +716,23 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/eb/86626c1bbc2edb86323022371c39aa48df6fd8b0a1647bc274577f72e90b/nvidia_nvtx_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:5b17e2001cc0d751a5bc2c6ec6d26ad95913324a4adb86788c944f8ce9ba441f", size = 89954, upload-time = "2025-03-07T01:42:44.131Z" },
     { url = "https://files.pythonhosted.org/packages/9f/99/4c9c0c329bf9fc125008c3b54c7c94c0023518d06fc025ae36431375e1fe/nvidia_nvtx_cu12-12.8.90-py3-none-win_amd64.whl", hash = "sha256:619c8304aedc69f02ea82dd244541a83c3d9d40993381b3b590f1adaed3db41e", size = 56492, upload-time = "2025-03-07T01:52:24.69Z" },
+]
+
+[[package]]
+name = "opendecider"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "safetensors" },
+    { name = "torch", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "extra == 'extra-17-hachidori-runtime-cpu'" },
+    { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "extra == 'extra-17-hachidori-runtime-cu128'" },
+    { name = "torch", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-17-hachidori-runtime-cpu' and extra == 'extra-17-hachidori-runtime-cu128') or (extra != 'extra-17-hachidori-runtime-cpu' and extra != 'extra-17-hachidori-runtime-cu128')" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/b9/5fbe7c0cc72488de386ec0b54f412f14d03eb79bb646f2c086c848b55449/opendecider-0.3.0.tar.gz", hash = "sha256:67c8b3e76891f4bc36ec4e38fa8aa1b2527d277526ac43eb07e4555e21ae1299", size = 80167, upload-time = "2026-10-01T05:11:05.121Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/cb/7a4ce7861920311e7177a882856e953703bbbbc5bf5f997a0f1648d87555/opendecider-0.3.0-py3-none-any.whl", hash = "sha256:71bd727b59514e77f87d21aff01c0a18d37ba455d9b8a47a9ecdfe430f2a06b9", size = 48962, upload-time = "2026-10-01T05:11:03.7Z" },
 ]
 
 [[package]]

@@ -1,8 +1,13 @@
-"""Hachidori private inference worker (Laya provider).
+"""Hachidori private inference worker.
 
 Internal implementation detail of the Hachidori runtime. It is started by the Go
 supervisor with an explicitly constructed environment and speaks newline-delimited
 JSON over stdin/stdout. It never opens a network listener.
+
+One provider adapter serves the single active model: Laya or OpenDecider-nano.
+Both score the request's closed choices and return a probability distribution;
+nothing generates free-form text. Provider-specific input construction and result
+shapes stay inside the adapters; the protocol below them is the same.
 
 Lifecycle: import provider -> load pinned model -> move to device -> warm up -> ready,
 then serve requests until stdin closes or a shutdown request arrives.
@@ -11,6 +16,7 @@ Library output written to stdout (Laya prints warnings there) is redirected to s
 so the protocol channel carries protocol messages only.
 """
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -43,7 +49,8 @@ def fatal(cls, message):
     sys.exit(3)
 
 
-def to_laya(questions):
+def to_typed(questions):
+    # Laya and OpenDecider share this typed-question shape.
     out = {}
     for q in questions:
         desc = q.get("descriptions") or {}
@@ -55,7 +62,7 @@ def to_laya(questions):
     return out
 
 
-def from_laya(questions, answers):
+def from_typed(questions, answers):
     results = []
     for q in questions:
         a = answers[q["id"]]
@@ -78,23 +85,61 @@ WARMUP_QUESTIONS = [{
 }]
 
 
-class LayaProvider:
-    def __init__(self, model_dir, device, digests):
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+class Provider:
+    """The provider-neutral part of the resident model: device policy, lifecycle
+    phases, warmup, grouping of requests and status. Adapters supply import, load,
+    prediction and the facts they actually observed about the loaded model."""
+
+    name = ""
+
+    def __init__(self, model_dir, device, manifest):
         self.model_dir = model_dir
         self.requested = device
-        self.digests = digests
-        self.agent = None
+        self.manifest = manifest
+        self.digests = manifest["files"]
         self.torch = None
 
+    # -- adapter hooks -------------------------------------------------------
+    def import_provider(self):
+        raise NotImplementedError
+
+    def load(self):
+        raise NotImplementedError
+
+    def placed_device(self):
+        """The torch device the loaded model is actually on."""
+        raise NotImplementedError
+
+    def placed_dtype(self):
+        raise NotImplementedError
+
+    def predict(self, states, questions):
+        """states, typed questions -> one {"answers": {id: {choice, answer_confidence, probabilities}}} per state."""
+        raise NotImplementedError
+
+    def version(self):
+        raise NotImplementedError
+
+    def extra_info(self):
+        return {}
+
+    # -- lifecycle -----------------------------------------------------------
     def initialize(self):
         emit({"event": "phase", "phase": "importing"})
         try:
             import torch
-            import laya
+            self.import_provider()
         except Exception as e:  # noqa: BLE001 - any import failure is a provider failure
             fatal("provider_import", "%s: %s" % (type(e).__name__, e))
         self.torch = torch
-        self.laya = laya
         if self.requested == "cuda":
             if not torch.cuda.is_available():
                 fatal("device_unavailable",
@@ -107,15 +152,15 @@ class LayaProvider:
         emit({"event": "phase", "phase": "loading"})
         t0 = time.perf_counter()
         try:
-            self.agent = laya.load(self.model_dir, device=self.requested,
-                                   expected_sha256=self.digests)
+            self.load()
         except Exception as e:  # noqa: BLE001
             fatal("model_load", "%s: %s" % (type(e).__name__, e))
-        # Laya silently falls back to CPU when a device placement fails; that is a
-        # device failure for Hachidori, not a degraded success.
-        if self.agent.device.type != self.requested:
+        # A requested device is never substituted: a model that did not land on it
+        # is a device failure for Hachidori, not a degraded success.
+        placed = self.placed_device()
+        if placed.type != self.requested:
             fatal("device_unavailable", "model placed on %s instead of requested %s"
-                  % (self.agent.device, self.requested))
+                  % (placed, self.requested))
         self.load_ms = (time.perf_counter() - t0) * 1000.0
 
     def warmup(self):
@@ -146,31 +191,35 @@ class LayaProvider:
         results = [None] * len(items)
         for idxs in groups.values():
             questions = items[idxs[0]]["questions"]
-            outs = self.agent.predict_batch([items[i]["state"] for i in idxs], to_laya(questions))
+            outs = self.predict([items[i]["state"] for i in idxs], to_typed(questions))
             for i, out in zip(idxs, outs):
-                results[i] = from_laya(questions, out["answers"])
+                results[i] = from_typed(questions, out["answers"])
         self.sync()
         return results
 
     def info(self):
         torch = self.torch
+        device = self.placed_device()
         info = {
-            "provider": "laya",
-            "laya_version": self.laya.__version__,
+            "provider": self.name,
+            "provider_version": self.version(),
             "torch_version": torch.__version__,
             "torch_cuda": torch.version.cuda,
             "python_version": sys.version.split()[0],
             "python_executable": sys.executable,
-            "device": str(self.agent.device),
-            "dtype": str(self.agent.dtype),
+            "model_id": self.manifest.get("id", ""),
+            "model_revision": self.manifest.get("revision", ""),
+            "device": str(device),
+            "dtype": str(self.placed_dtype()),
             "model_dir": self.model_dir,
             "load_ms": round(self.load_ms, 1),
             "warmup_ms": round(self.warmup_ms, 1),
             "no_user_site": bool(sys.flags.no_user_site),
             "hf_home": os.environ.get("HF_HOME", ""),
         }
+        info.update(self.extra_info())
         if self.requested == "cuda":
-            idx = self.agent.device.index or 0
+            idx = device.index or 0
             info["device_name"] = torch.cuda.get_device_name(idx)
             info["device_capability"] = list(torch.cuda.get_device_capability(idx))
         return info
@@ -186,6 +235,100 @@ class LayaProvider:
             "memory_free": free,
             "memory_total": total,
         }
+
+
+class LayaProvider(Provider):
+    name = "laya"
+
+    def import_provider(self):
+        import laya
+        self.laya = laya
+
+    def load(self):
+        self.agent = self.laya.load(self.model_dir, device=self.requested,
+                                    expected_sha256=self.digests)
+
+    # Laya silently falls back to CPU when a device placement fails; the base
+    # class turns that into a device failure.
+    def placed_device(self):
+        return self.agent.device
+
+    def placed_dtype(self):
+        return self.agent.dtype
+
+    def predict(self, states, questions):
+        return self.agent.predict_batch(states, questions)
+
+    def version(self):
+        return self.laya.__version__
+
+    def extra_info(self):
+        return {"laya_version": self.laya.__version__}
+
+
+# Upper bound on sequences (states x questions) scored in one padded batch, so a
+# large request cannot exhaust memory in a single forward pass.
+OPENDECIDER_MAX_SEQUENCES = 16
+
+
+class OpenDeciderProvider(Provider):
+    """OpenDecider-nano: an Ettin encoder with one [MASK] marker per option and a
+    small head. The opendecider package builds the marked input and reads one logit
+    per option; all options of a question are scored in a single encoder pass and
+    softmaxed. This adapter only maps Hachidori's typed choice questions onto it and
+    its probabilities back; nothing is generated, parsed or retried."""
+
+    name = "opendecider"
+
+    def import_provider(self):
+        import opendecider
+        self.opendecider = opendecider
+
+    def verify_files(self):
+        # The same integrity guarantee Laya gets from expected_sha256: every pinned
+        # file is checked against its digest before any of it is loaded.
+        for rel, want in sorted(self.digests.items()):
+            got = file_sha256(os.path.join(self.model_dir, *rel.split("/")))
+            if got != want:
+                raise RuntimeError("%s: sha256 %s, want %s" % (rel, got, want))
+
+    def load(self):
+        self.verify_files()
+        # A local directory with opendecider.json is loaded as is; nothing is
+        # resolved from the Hub. float32 is the dtype upstream evaluated.
+        self.model = self.opendecider.load(self.model_dir, device=self.requested, dtype="float32")
+
+    def parameter(self):
+        return next(self.model.impl.enc.parameters())
+
+    def placed_device(self):
+        return self.parameter().device
+
+    def placed_dtype(self):
+        return self.parameter().dtype
+
+    def predict(self, states, questions):
+        per_state = max(1, OPENDECIDER_MAX_SEQUENCES // max(1, len(questions)))
+        out = []
+        for i in range(0, len(states), per_state):
+            for result in self.model.system_one_batch(states[i:i + per_state], questions):
+                answers = {}
+                for qid, a in result["answers"].items():
+                    if a.get("truncated"):
+                        log("question %r: state truncated to the model's 2048-token context" % (qid,))
+                    answers[qid] = {"choice": a["choice"], "answer_confidence": a["confidence"],
+                                    "probabilities": a["probabilities"]}
+                out.append({"answers": answers})
+        return out
+
+    def version(self):
+        return self.opendecider.__version__
+
+    def extra_info(self):
+        return {"opendecider_version": self.opendecider.__version__}
+
+
+PROVIDERS = {"laya": LayaProvider, "opendecider": OpenDeciderProvider}
 
 
 def serve(provider):
@@ -230,11 +373,12 @@ def main():
     ap.add_argument("--model-dir", required=True)
     ap.add_argument("--device", required=True, choices=["cuda", "cpu"])
     ap.add_argument("--manifest", required=True, help="model manifest with pinned file digests")
+    ap.add_argument("--provider", required=True, choices=sorted(PROVIDERS), help="provider that loads the model")
     args = ap.parse_args()
     emit({"event": "hello", "protocol": PROTOCOL, "pid": os.getpid()})
     with open(args.manifest, encoding="utf-8") as f:
-        digests = json.load(f)["files"]
-    provider = LayaProvider(args.model_dir, args.device, digests)
+        manifest = json.load(f)
+    provider = PROVIDERS[args.provider](args.model_dir, args.device, manifest)
     provider.initialize()
     provider.warmup()
     emit({"event": "ready", "info": provider.info()})

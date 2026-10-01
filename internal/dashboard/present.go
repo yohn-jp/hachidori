@@ -80,7 +80,7 @@ type shellStatus struct {
 func shellOf(v view) shellStatus {
 	w := v.S.Worker
 	s := shellStatus{Word: w.State, Tone: stateTone(w), Model: v.S.Runtime.ModelID, Attention: len(alerts(v)),
-		Provider: join(opt(w.Info, "provider"), opt(w.Info, "laya_version")),
+		Provider: join(opt(w.Info, "provider"), opt(w.Info, "provider_version")),
 		Device:   join(opt(w.Info, "device"), opt(w.Info, "dtype")), GPU: opt(w.Info, "device_name")}
 	if w.Ready {
 		s.Word = "READY"

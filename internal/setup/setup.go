@@ -134,7 +134,7 @@ func choose(device, modelID string) (home.RuntimeSpec, home.ModelManifest, error
 	if err != nil {
 		return spec, model, err
 	}
-	if model.Provider != providerName {
+	if !spec.Provides(model.Provider) {
 		return spec, model, fmt.Errorf("model %s: provider %q is not supported by runtime provider %s", model.ID, model.Provider, spec.Provider)
 	}
 	return spec, model, nil
@@ -277,7 +277,7 @@ func verifyRuntime(h home.Home, dir string, spec home.RuntimeSpec) (runtimeProbe
 	for _, d := range p.Installed {
 		have[normalizeDist(d)] = true
 	}
-	for _, want := range []string{spec.Provider, "torch==" + spec.Torch} {
+	for _, want := range append(spec.ProviderPins(), "torch=="+spec.Torch) {
 		if !have[normalizeDist(want)] {
 			return p, fmt.Errorf("%s not installed", want)
 		}

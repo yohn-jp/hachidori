@@ -103,7 +103,7 @@ func fakeUV(args []string) int {
 		if ctl.Torch != "" {
 			torch = ctl.Torch
 		}
-		b, _ := json.Marshal([]string{"laya==0.3.21", "numpy==2.5.3", "torch==" + torch})
+		b, _ := json.Marshal([]string{"laya==0.3.21", "opendecider==0.3.0", "numpy==2.5.3", "torch==" + torch})
 		return writeOr1(filepath.Join(os.Getenv("UV_PROJECT_ENVIRONMENT"), "installed.json"), b)
 	}
 	return 2
@@ -242,12 +242,12 @@ func newFixture(t *testing.T) *fixture {
 	uvArtifacts = map[string]uvArtifact{platform(): {
 		URL: srv.URL + "/uv/uv-fake.tar.gz", SHA256: digest(archive), Member: fakeUVMember, BinarySHA256: digest(bin),
 	}}
-	// A two-entry catalog: the default identity and a second (for example
-	// fine-tuned) checkpoint declared the same way.
+	// A two-entry catalog: the default identity and a second checkpoint loaded
+	// by the other provider, declared the same way.
 	Models = []home.ModelManifest{
 		{ID: DefaultModel, Provider: "laya", Repo: "test/model", Revision: strings.Repeat("ab", 20),
 			Files: map[string]string{"config.json": digest(modelFile)}},
-		{ID: tunedModel, Provider: "laya", Repo: "test/tuned", Revision: strings.Repeat("cd", 20),
+		{ID: tunedModel, Provider: providerOpenDecider, Repo: "test/tuned", Revision: strings.Repeat("cd", 20),
 			Files: map[string]string{"config.json": digest(tunedFile)}},
 	}
 	modelBaseURL = srv.URL + "/"
@@ -295,8 +295,9 @@ func (f *fixture) calls() []uvCall {
 	return out
 }
 
-// tunedModel is the second catalog entry of the fixture.
-const tunedModel = "laya-test-tuned"
+// tunedModel is the second catalog entry of the fixture: a model of the other
+// provider, so every selection test crosses the provider boundary.
+const tunedModel = "opendecider-test"
 
 func (f *fixture) run(device string) (string, error) { return f.runModel(device, "") }
 

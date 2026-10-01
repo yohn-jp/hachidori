@@ -132,6 +132,13 @@ type ModelsView struct {
 	ModelIDs []string
 	Runtimes []RuntimeRow
 	Models   []ModelRow
+	// ActiveModel and ActiveDevice are the activation record: what the next
+	// start or restart serves. RunningModel and RunningDevice are what the
+	// resident worker was actually started with (from the status authority);
+	// they are empty while no worker runs. The two differ exactly while a
+	// restart is required.
+	ActiveModel, ActiveDevice   string
+	RunningModel, RunningDevice string
 }
 
 // RuntimeRow and ModelRow add the last explicit verification to an entry.
@@ -142,7 +149,8 @@ type RuntimeRow struct {
 
 type ModelRow struct {
 	setup.ModelEntry
-	Check string
+	Check   string
+	Running bool // the resident worker is serving this model now
 }
 
 type checkResult struct {
@@ -618,7 +626,7 @@ func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
 		v.Set = sv
 	}
 	if d.cfg.Models != nil {
-		v.Models = d.modelsView()
+		v.Models = d.modelsView(v)
 	}
 	if d.cfg.Connections != nil {
 		v.Conns = d.connectionsView(v.Tunnel)
@@ -626,9 +634,15 @@ func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
 	d.renderView(w, "settings", v)
 }
 
-func (d *Dashboard) modelsView() *ModelsView {
+func (d *Dashboard) modelsView(v view) *ModelsView {
 	st := d.cfg.Models.State()
 	mv := &ModelsView{ModelsState: st, Devices: setup.Devices}
+	if a := st.Inventory.Active; a != nil {
+		mv.ActiveDevice = a.Device
+	}
+	if v.Running {
+		mv.RunningModel, mv.RunningDevice = v.S.Runtime.ModelID, v.S.Runtime.Device
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	check := func(kind, id string) string {
@@ -646,7 +660,10 @@ func (d *Dashboard) modelsView() *ModelsView {
 	}
 	for _, m := range st.Inventory.Models {
 		mv.ModelIDs = append(mv.ModelIDs, m.ID)
-		mv.Models = append(mv.Models, ModelRow{m, check(setup.KindModel, m.ID)})
+		if m.Active {
+			mv.ActiveModel = m.ID
+		}
+		mv.Models = append(mv.Models, ModelRow{m, check(setup.KindModel, m.ID), m.ID == mv.RunningModel})
 	}
 	return mv
 }

@@ -298,7 +298,7 @@ func TestRuntimeSpecIdentity(t *testing.T) {
 		"schema":   func(s *home.RuntimeSpec) { s.Schema = "hachidori.runtime-spec/2" },
 		"platform": func(s *home.RuntimeSpec) { s.Platform = "linux/amd64" },
 		"python":   func(s *home.RuntimeSpec) { s.Python = "3.12.12" },
-		"provider": func(s *home.RuntimeSpec) { s.Provider = "laya==0.3.22" },
+		"provider": func(s *home.RuntimeSpec) { s.Provider = "laya==0.3.22,opendecider==0.3.0" },
 		"torch":    func(s *home.RuntimeSpec) { s.Torch = "2.11.1+cu128" },
 		"flavor":   func(s *home.RuntimeSpec) { s.Flavor = "cu129" },
 		"uv":       func(s *home.RuntimeSpec) { s.UV = "0.12.20" },
@@ -335,7 +335,8 @@ func TestSpecMatchesProject(t *testing.T) {
 	proj, lock := string(specFile("pyproject.toml")), string(specFile("uv.lock"))
 	for _, s := range []string{
 		`requires-python = "==` + pythonVersion + `"`,
-		`"` + providerName + "==" + providerVersion + `"`,
+		`"` + providerLaya + "==" + layaVersion + `"`,
+		`"` + providerOpenDecider + "==" + openDeciderVersion + `"`,
 		`cpu = ["torch==` + torchVersion + `+cpu"]`,
 		`cu128 = ["torch==` + torchVersion + `+cu128"]`,
 		`https://download.pytorch.org/whl/cu128`,
@@ -346,7 +347,8 @@ func TestSpecMatchesProject(t *testing.T) {
 	}
 	for _, s := range []string{
 		`requires-python = "==` + pythonVersion + `"`,
-		"name = \"laya\"\nversion = \"" + providerVersion + "\"",
+		"name = \"laya\"\nversion = \"" + layaVersion + "\"",
+		"name = \"opendecider\"\nversion = \"" + openDeciderVersion + "\"",
 		"name = \"torch\"\nversion = \"" + torchVersion + "+cpu\"",
 		"name = \"torch\"\nversion = \"" + torchVersion + "+cu128\"",
 		`{ package = "hachidori-runtime", extra = "cpu" }`,

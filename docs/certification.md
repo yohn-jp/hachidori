@@ -5,7 +5,7 @@ level reports it as **blocked / not checked**, never as passed.
 
 | level | command | needs |
 |---|---|---|
-| unit / focused | `go vet ./... && go test -race ./...` | Go toolchain (the Python protocol test also uses a host `python3` when present, with stub `torch`/`laya`) |
+| unit / focused | `go vet ./... && go test -race ./...` | Go toolchain (the Python protocol test also uses a host `python3` when present, with stub `torch`/`laya`/`opendecider`) |
 | integration (real worker, real Laya) | `HACHIDORI_CERT_HOME=<home> go test ./internal/doctor -run TestCertifyRealProvider -v` | materialized home |
 | real Laya provider | `hachidori doctor --home <home>` | materialized home |
 | CUDA | same two commands with a home set up by `--device cuda` | NVIDIA GPU + driver ≥ 570 |
@@ -71,6 +71,58 @@ Note: the §12 baseline was measured outside Hachidori; its checkpoint and
 question wording are not recorded in this repository. If the benchmark uses a
 different checkpoint than the pinned `convaiinnovations/laya` revision, the
 accuracy comparison is not like-for-like.
+
+## Decision-model comparison (#113)
+
+`laya-base` is the default model. `opendecider-nano` is a candidate that is
+selectable and certifiable, and becomes the default only if the evidence below
+supports it for Hachidori's own workload. Model size, upstream benchmark numbers
+and upstream latency claims are not evidence here; neither are portable tests,
+which use stubs and never download the real model.
+
+Run the **same** fixed corpus and Question Definitions against each model on the
+same host, with the same device and the same `hachidori.exe`, one model active at
+a time (activate, **Restart runtime**, confirm `runtime.model_id` and
+`provider.provider`/`provider.dtype`/`provider.device` in `hachidori status`):
+
+```powershell
+.\hachidori.exe setup --device cuda --model laya-base          # or Materialize + Activate in Settings
+.\hachidori.exe serve                                          # another shell:
+hachidori status                                               # model_id, provider, device, dtype, load_ms, warmup_ms
+hachidori benchmark --questions <defs> --warmup 5 --passes 5 --out laya-base.json <corpus.jsonl>
+# stop serve, then the same with: setup --device cuda --model opendecider-nano
+hachidori benchmark --questions <defs> --warmup 5 --passes 5 --out opendecider-nano.json <corpus.jsonl>
+```
+
+The corpus and definitions must be identical (same dataset SHA-256 and question
+identities in both reports; `internal/eval` compares only like with like and
+refuses a mismatch). Record, per model:
+
+| measure | where it comes from |
+|---|---|
+| accuracy, mean confidence, ECE (15 bins) | the benchmark report |
+| calibration beyond ECE (Brier) | not produced by the benchmark report; compute it from the report's per-observation probabilities and expected labels, or record "not available" |
+| high-confidence errors | the Errors workspace over the report (outcome `high_confidence_wrong` at a stated confidence threshold) |
+| p50 / p95 latency | the benchmark report (server inference and client round trip) |
+| cold load and warmup time | `hachidori status`, `provider.load_ms` and `provider.warmup_ms` of a freshly started worker |
+| resident and peak VRAM | `hachidori status` accelerator `memory_allocated`/`memory_reserved` after warmup (resident) and after the benchmark (peak is the highest value seen; note the sampling) |
+| state truncation | for OpenDecider-nano, the number of `state truncated` lines in `logs/worker.log` for the corpus (its context is 2,048 tokens; Laya's differs) |
+
+Rules for a default change: it needs a recorded comparison on the target
+accelerator (the RTX 3060 for the Windows host) in which the candidate is at
+least as accurate and as well calibrated with no more high-confidence errors on
+the fixed corpus, with latency, load/warmup and VRAM reported alongside. Without
+that record the default stays `laya-base`. A failure of the candidate to load,
+warm up or stay on the requested CUDA device is a `FAIL`, never a fallback to CPU.
+
+### Recorded state for the change that introduced OpenDecider-nano
+
+| item | outcome | note |
+|---|---|---|
+| portable tests, race, vet, Windows amd64 build/vet | see the pull request | stubs and fixtures only; no real model download in CI |
+| real OpenDecider-nano on CPU, Linux (setup, doctor, serve, status, decide, switch to and from Laya) | run by the author in a scratch home on one Linux CPU host | functional evidence only; not a comparison and not a performance claim |
+| comparative run, Laya vs OpenDecider-nano, fixed Hachidori corpus | NOT_CHECKED | the external corpus is not in this repository; no comparative evidence exists, so the default is unchanged |
+| physical Windows, RTX 3060, OpenDecider-nano (materialize, activate, restart, CUDA load/warmup, latency, VRAM) | NOT_CHECKED | user-side; never inferred from CI or the Linux run |
 
 ## Linux GPU host
 

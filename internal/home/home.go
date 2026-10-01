@@ -79,7 +79,7 @@ type RuntimeSpec struct {
 	Schema   string `json:"schema"`
 	Platform string `json:"platform"`       // GOOS/GOARCH
 	Python   string `json:"python"`         // exact CPython version
-	Provider string `json:"provider"`       // name==version
+	Provider string `json:"provider"`       // name==version of every model provider, comma separated
 	Torch    string `json:"torch"`          // exact torch version including local flavor
 	Flavor   string `json:"flavor"`         // uv extra selecting the torch build: cu128 | cpu
 	UV       string `json:"uv"`             // pinned private uv version
@@ -87,6 +87,20 @@ type RuntimeSpec struct {
 	Project  string `json:"project_sha256"` // runtimespec/pyproject.toml
 	Lock     string `json:"lock_sha256"`    // runtimespec/uv.lock
 	Worker   string `json:"worker_sha256"`  // worker/hachidori_worker.py
+}
+
+// ProviderPins lists the pinned model providers (name==version) the runtime
+// carries.
+func (s RuntimeSpec) ProviderPins() []string { return strings.Split(s.Provider, ",") }
+
+// Provides reports whether the runtime carries the named model provider.
+func (s RuntimeSpec) Provides(name string) bool {
+	for _, p := range s.ProviderPins() {
+		if n, _, _ := strings.Cut(p, "=="); n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ID is the runtime identity: the flavor plus a digest of the canonical
@@ -141,7 +155,7 @@ func (m RuntimeManifest) CheckIdentity(runtime string) error {
 // Manifests written before the catalog existed carry no ID or provider.
 type ModelManifest struct {
 	ID          string            `json:"id,omitempty"`          // stable Hachidori model ID
-	Provider    string            `json:"provider,omitempty"`    // provider kind that loads it (laya)
+	Provider    string            `json:"provider,omitempty"`    // provider kind that loads it (laya | opendecider)
 	Repo        string            `json:"repo"`                  // upstream repository
 	Revision    string            `json:"revision"`              // immutable upstream revision
 	Description string            `json:"description,omitempty"` // descriptive only

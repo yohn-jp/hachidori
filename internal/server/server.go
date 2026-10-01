@@ -205,6 +205,9 @@ func WorkerConfig(h home.Home, log io.Writer) (worker.Config, Runtime, error) {
 	if mm.Repo != model.Repo || mm.Revision != model.Revision || (mm.ID != "" && mm.ID != model.ID) || !maps.Equal(mm.Files, model.Files) {
 		return worker.Config{}, Runtime{}, fmt.Errorf("model %s: materialized manifest does not match its catalog entry (run `hachidori setup`)", model.ID)
 	}
+	if !rm.Spec.Provides(model.Provider) {
+		return worker.Config{}, Runtime{}, fmt.Errorf("runtime %s does not carry provider %s needed by model %s (run `hachidori setup`)", a.Runtime, model.Provider, model.ID)
+	}
 	python := h.PythonExe(a, rm)
 	if _, err := os.Stat(python); err != nil {
 		return worker.Config{}, Runtime{}, fmt.Errorf("private python missing: %w", err)
@@ -218,7 +221,7 @@ func WorkerConfig(h home.Home, log io.Writer) (worker.Config, Runtime, error) {
 	cfg := worker.Config{
 		Python: python,
 		Args: []string{"-I", "-X", "utf8", script, "--model-dir", modelDir, "--device", a.Device,
-			"--manifest", filepath.Join(modelDir, "hachidori-model.json")},
+			"--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", model.Provider},
 		Env:            h.Env(filepath.Dir(python), true),
 		Dir:            h.Path("state"),
 		Log:            log,

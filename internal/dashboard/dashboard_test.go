@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
@@ -102,7 +103,7 @@ func newEnv(t testing.TB) *env {
 	rt := &fakeRuntime{run: true, snap: worker.Snapshot{
 		State: worker.StateReady, Phase: "ready", Ready: true, PID: 4242, Starts: 2, Restarts: 1, Requests: 17,
 		Errors: map[string]int64{"not_ready": 1}, QueueDepth: 0, QueueLimit: 64, LatencyP50MS: 25.3, LatencyP95MS: 30.5,
-		Info: worker.Info{"provider": "laya", "laya_version": "0.3.21", "torch_version": "2.11.0+cu128", "torch_cuda": "12.8",
+		Info: worker.Info{"provider": "laya", "laya_version": "0.3.21", "provider_version": "0.3.21", "torch_version": "2.11.0+cu128", "torch_cuda": "12.8",
 			"python_version": "3.12.11", "device": "cuda:0", "device_name": "NVIDIA GeForce RTX 3060", "load_ms": 812.5, "warmup_ms": 90.1,
 			"python_executable": filepath.Join(home, "runtime", "python.exe"), "hf_home": filepath.Join(home, "cache", "hf"),
 			"model_dir": filepath.Join(home, "models", "laya")},
@@ -961,5 +962,58 @@ func TestErrorsPickFillsPathsWithoutOpeningOrWriting(t *testing.T) {
 	}
 	if _, err := os.Stat("/reports/chosen.json"); err == nil {
 		t.Fatal("unexpected file")
+	}
+}
+
+// Selection, activation and the running worker are three different facts. A
+// model chosen in the form changes nothing by itself; once OpenDecider-nano is
+// activated under a running Laya worker, the manager shows Laya as serving now,
+// OpenDecider-nano as active but applying only on restart, and offers the
+// restart explicitly. Nothing is downloaded, activated or restarted by viewing
+// or by choosing.
+func TestModelsManagerSeparatesSelectionActivationAndRunning(t *testing.T) {
+	e := newEnv(t) // the running worker serves laya-base on cuda
+	inv := modelsInventory()
+	inv.Active = &home.Active{Runtime: "cu128-aaaa", ModelID: "opendecider-nano", Model: "manjunathshiva--opendecider-nano/7e42a1508d2beef44717d044831e87f2fc4db9f2", Device: "cuda"}
+	inv.Models[0].Active = false
+	inv.Models = append(inv.Models, setup.ModelEntry{ID: "opendecider-nano", Provider: "opendecider", Repo: "manjunathshiva/opendecider-nano",
+		Revision: "7e42a1508d2beef44717d044831e87f2fc4db9f2", Files: 7, Materialized: true, Active: true})
+	fm := &fakeModels{state: ModelsState{Inventory: inv, RestartRequired: true}}
+	withModels(e, fm)
+
+	body := e.get(t, "/settings?model=opendecider-nano").Body.String()
+	for _, want := range []string{
+		`id="models-serving"`, `<dt>Serving now</dt><dd class="mono">laya-base · cuda</dd>`,
+		`<dt>Active (next start)</dt><dd class="mono">opendecider-nano · cuda</dd>`,
+		`<span class="badge tone-ok">running</span>`, `<span class="badge tone-ok">active · applies on restart</span>`,
+		`<option value="opendecider-nano" selected>`, `<option value="cuda" selected>`,
+		`id="restart-required"`, "changes nothing by itself", "opendecider · manjunathshiva/opendecider-nano@7e42a1508d2beef44717d044831e87f2fc4db9f2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("manager lacks %q", want)
+		}
+	}
+	if strings.Count(body, `<option value="laya-base" selected>`) != 0 {
+		t.Error("the form pre-selects a model that is not the active one")
+	}
+	e.rt.mu.Lock()
+	lc := append([]string(nil), e.rt.calls...)
+	e.rt.mu.Unlock()
+	if len(fm.calls) != 0 || len(lc) != 0 {
+		t.Fatalf("viewing/choosing acted: maintenance=%v lifecycle=%v", fm.calls, lc)
+	}
+
+	// After the restart the worker serves what is active and nothing is pending.
+	fm.state.RestartRequired = false
+	cfg, status := e.d.cfg, e.d.cfg.Status
+	cfg.Status = func() server.Status {
+		st := status()
+		st.Runtime.ModelID = "opendecider-nano"
+		return st
+	}
+	e.d = New(cfg)
+	body = e.get(t, "/settings").Body.String()
+	if !strings.Contains(body, `<dt>Serving now</dt><dd class="mono">opendecider-nano · cuda</dd>`) || strings.Contains(body, "applies on restart") || strings.Contains(body, `id="restart-required"`) {
+		t.Error("after restart the manager still reports a pending change")
 	}
 }
