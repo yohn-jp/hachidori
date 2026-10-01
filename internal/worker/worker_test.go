@@ -3,6 +3,8 @@ package worker
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -511,29 +513,51 @@ func TestPercentile(t *testing.T) {
 	}
 }
 
-// TestPythonWorkerProtocol runs the real worker script against stub torch/laya
-// modules, checking stdout ownership, request grouping and error mapping
-// without loading a model. Skipped when no host python3 is available.
-func TestPythonWorkerProtocol(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 not available")
-	}
-	dir := t.TempDir()
-	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("torch.py", `__version__ = "stub"
+// stubTorch is the part of torch the worker's device policy touches.
+const stubTorch = `__version__ = "stub"
 class version: cuda = None
 class cuda:
     @staticmethod
     def is_available(): return False
     @staticmethod
     def device_count(): return 0
-`)
-	write("laya.py", `__version__ = "stub"
+`
+
+// pythonWorker returns the launch configuration of the real worker script for
+// provider, run with dir first on sys.path so that its stub torch and provider
+// modules are imported instead of the real ones.
+func pythonWorker(t *testing.T, dir, provider, device string) Config {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	script, _ := filepath.Abs("py/hachidori_worker.py")
+	return Config{
+		Python: python,
+		Args: []string{"-S", "-c", "import sys; sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[2:]; exec(open(sys.argv[0]).read())",
+			dir, script, "--model-dir", dir, "--device", device, "--manifest", filepath.Join(dir, "manifest.json"), "--provider", provider},
+		Env:            []string{"PYTHONNOUSERSITE=1"},
+		StartTimeout:   20 * time.Second,
+		RequestTimeout: 10 * time.Second,
+	}
+}
+
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestPythonWorkerProtocol runs the real worker script against stub torch/laya
+// modules, checking stdout ownership, request grouping and error mapping
+// without loading a model. Skipped when no host python3 is available.
+func TestPythonWorkerProtocol(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"torch.py": stubTorch, "laya.py": `__version__ = "stub"
 class _Dev:
     type = "cpu"
     index = None
@@ -559,22 +583,15 @@ class Agent:
 def load(path, device=None, expected_sha256=None):
     assert expected_sha256 == {"model.safetensors": "abc"}
     return Agent()
-`)
-	write("manifest.json", `{"files": {"model.safetensors": "abc"}}`)
-	script, _ := filepath.Abs("py/hachidori_worker.py")
-	cfg := Config{
-		Python:         python,
-		Args:           []string{"-S", "-c", "import sys; sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[2:]; exec(open(sys.argv[0]).read())", dir, script, "--model-dir", dir, "--device", "cpu", "--manifest", filepath.Join(dir, "manifest.json")},
-		Env:            []string{"PYTHONNOUSERSITE=1"},
-		StartTimeout:   20 * time.Second,
-		RequestTimeout: 10 * time.Second,
-	}
+`, "manifest.json": `{"id": "laya-base", "revision": "r1", "files": {"model.safetensors": "abc"}}`})
+	cfg := pythonWorker(t, dir, "laya", "cpu")
 	p, err := Start(context.Background(), cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	if p.Info["provider"] != "laya" {
+	if p.Info["provider"] != "laya" || p.Info["provider_version"] != "stub" || p.Info["laya_version"] != "stub" ||
+		p.Info["model_id"] != "laya-base" || p.Info["model_revision"] != "r1" || p.Info["device"] != "cpu" || p.Info["dtype"] != "float32" {
 		t.Fatalf("info = %v", p.Info)
 	}
 	q2 := []api.Question{{ID: "other", Type: "choice", Instructions: "x", Choices: []string{"a", "b", "c"}}}
@@ -599,10 +616,139 @@ def load(path, device=None, expected_sha256=None):
 	}
 
 	// CUDA requested on a host without CUDA is a device failure, never a CPU fallback.
-	cfg.Args[len(cfg.Args)-3] = "cuda"
-	_, err = Start(context.Background(), cfg, nil)
+	_, err = Start(context.Background(), pythonWorker(t, dir, "laya", "cuda"), nil)
 	var f *Failure
 	if !errors.As(err, &f) || f.Class != ClassDevice {
 		t.Fatalf("cuda: err = %v", err)
+	}
+}
+
+// openDeciderStub imitates the opendecider package surface the worker adapter
+// uses: load() of a local directory, system_one_batch(), and the encoder's
+// parameters (for the device and dtype the model actually has). The stub scores
+// each option from the position of its name so that results are deterministic.
+const openDeciderStub = `__version__ = "stub"
+class _Dev:
+    type = "cpu"
+    index = None
+    def __str__(self): return "cpu"
+class _Param:
+    device = _Dev()
+    dtype = "torch.float32"
+class _Enc:
+    def parameters(self): return iter([_Param()])
+class _Impl:
+    enc = _Enc()
+class Model:
+    impl = _Impl()
+    calls = []
+    def system_one_batch(self, states, questions):
+        Model.calls.append((len(states), len(questions)))
+        out = []
+        for s in states:
+            if s == "boom":
+                raise RuntimeError("kaboom")
+            if s == "invalid":
+                raise ValueError("question 'x': choice question needs 'criteria' with at least 2 options")
+            answers = {}
+            for qid, q in questions.items():
+                opts = list(q["criteria"])
+                top = opts[-1] if s == "last" else opts[0]
+                probs = {o: (0.6 if o == top else 0.4 / (len(opts) - 1)) for o in opts}
+                a = {"type": "choice", "choice": top, "probabilities": probs, "confidence": probs[top]}
+                if s == "long":
+                    a["truncated"] = True
+                answers[qid] = a
+            out.append({"model": "stub", "answers": answers})
+        return out
+def load(path, device=None, revision=None, dtype=None, base_url=None):
+    assert dtype == "float32" and device == "cpu", (device, dtype)
+    import os
+    assert os.path.exists(os.path.join(path, "opendecider.json"))
+    return Model()
+`
+
+func openDeciderDir(t *testing.T) string {
+	dir := t.TempDir()
+	files := map[string]string{"opendecider.json": `{"kind":"nano"}`, "model.safetensors": "weights", "head.safetensors": "head"}
+	manifest := map[string]any{"id": "opendecider-nano", "revision": "r2", "files": map[string]string{}}
+	for name, body := range files {
+		sum := sha256.Sum256([]byte(body))
+		manifest["files"].(map[string]string)[name] = hex.EncodeToString(sum[:])
+	}
+	mb, _ := json.Marshal(manifest)
+	writeFiles(t, dir, files)
+	writeFiles(t, dir, map[string]string{"torch.py": stubTorch, "opendecider.py": openDeciderStub, "manifest.json": string(mb)})
+	return dir
+}
+
+// TestPythonWorkerOpenDecider runs the real worker script with the opendecider
+// adapter against a stub package: the typed-choice contract is the same as for
+// Laya, the model's pinned files are verified before it loads, the status
+// reports the provider, model, device and dtype that were actually loaded, and
+// a requested device is never replaced.
+func TestPythonWorkerOpenDecider(t *testing.T) {
+	dir := openDeciderDir(t)
+	p, err := Start(context.Background(), pythonWorker(t, dir, "opendecider", "cpu"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if p.Info["provider"] != "opendecider" || p.Info["provider_version"] != "stub" || p.Info["opendecider_version"] != "stub" ||
+		p.Info["model_id"] != "opendecider-nano" || p.Info["model_revision"] != "r2" ||
+		p.Info["device"] != "cpu" || p.Info["dtype"] != "torch.float32" {
+		t.Fatalf("info = %v", p.Info)
+	}
+	if _, ok := p.Info["laya_version"]; ok {
+		t.Fatalf("laya_version reported by another provider: %v", p.Info)
+	}
+	q2 := []api.Question{{ID: "other", Type: "choice", Instructions: "x", Choices: []string{"a", "b", "c"}, Descriptions: map[string]string{"a": "first"}}}
+	res, _, err := p.Decide([]Item{item, {State: "last", Questions: q2}, item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 3 || res[0][0].ID != "q" || res[0][0].Choice != "yes" || res[0][0].Type != "choice" ||
+		res[1][0].ID != "other" || res[1][0].Choice != "c" || res[1][0].Confidence != 0.6 {
+		t.Fatalf("results = %+v", res)
+	}
+	var sum float64
+	for _, pr := range res[1][0].Probabilities {
+		sum += pr
+	}
+	if len(res[1][0].Probabilities) != 3 || sum < 0.999 || sum > 1.001 {
+		t.Fatalf("probabilities = %v", res[1][0].Probabilities)
+	}
+	// Overlong state is scored (upstream truncates the state, never an option).
+	if _, _, err := p.Decide([]Item{{State: "long", Questions: item.Questions}}); err != nil {
+		t.Fatal(err)
+	}
+	var re *RequestError
+	if _, _, err := p.Decide([]Item{{State: "invalid", Questions: item.Questions}}); !errors.As(err, &re) || re.Class != api.ErrRequestInvalid {
+		t.Fatalf("invalid: err = %v", err)
+	}
+	if _, _, err := p.Decide([]Item{{State: "boom", Questions: item.Questions}}); !errors.As(err, &re) || re.Class != api.ErrInferenceFailed {
+		t.Fatalf("boom: err = %v", err)
+	}
+
+	// CUDA requested on a host without CUDA is a device failure, never a CPU fallback.
+	var f *Failure
+	if _, err := Start(context.Background(), pythonWorker(t, dir, "opendecider", "cuda"), nil); !errors.As(err, &f) || f.Class != ClassDevice {
+		t.Fatalf("cuda: err = %v", err)
+	}
+
+	// A pinned file that does not match its digest is a model-load failure before
+	// anything is loaded.
+	writeFiles(t, dir, map[string]string{"model.safetensors": "tampered"})
+	if _, err := Start(context.Background(), pythonWorker(t, dir, "opendecider", "cpu"), nil); !errors.As(err, &f) || f.Class != ClassModelLoad ||
+		!strings.Contains(f.Message, "model.safetensors") {
+		t.Fatalf("tampered: err = %v", err)
+	}
+}
+
+// A provider the worker does not know is refused before the model is touched.
+func TestPythonWorkerRejectsUnknownProvider(t *testing.T) {
+	dir := openDeciderDir(t)
+	if _, err := Start(context.Background(), pythonWorker(t, dir, "openjev", "cpu"), nil); err == nil {
+		t.Fatal("unknown provider accepted")
 	}
 }

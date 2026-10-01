@@ -116,11 +116,13 @@ type Runtime struct {
 
 type Provider struct {
 	Provider      string  `json:"provider,omitempty"`
+	Version       string  `json:"provider_version,omitempty"`
 	LayaVersion   string  `json:"laya_version,omitempty"`
 	TorchVersion  string  `json:"torch_version,omitempty"`
 	TorchCUDA     string  `json:"torch_cuda,omitempty"`
 	PythonVersion string  `json:"python_version,omitempty"`
 	Device        string  `json:"device,omitempty"`
+	DType         string  `json:"dtype,omitempty"`
 	DeviceName    string  `json:"device_name,omitempty"`
 	LoadMS        float64 `json:"load_ms,omitempty"`
 	WarmupMS      float64 `json:"warmup_ms,omitempty"`
@@ -187,9 +189,9 @@ func Collect(src Source) (Facts, []string) {
 	info := st.Worker.Info
 	str := func(k string) string { v, _ := info[k].(string); return s.Line(v, maxMessageBytes) }
 	num := func(k string) float64 { v, _ := info[k].(float64); return v }
-	f.Provider = Provider{Provider: str("provider"), LayaVersion: str("laya_version"), TorchVersion: str("torch_version"),
+	f.Provider = Provider{Provider: str("provider"), Version: str("provider_version"), LayaVersion: str("laya_version"), TorchVersion: str("torch_version"),
 		TorchCUDA: str("torch_cuda"), PythonVersion: str("python_version"), Device: str("device"),
-		DeviceName: str("device_name"), LoadMS: num("load_ms"), WarmupMS: num("warmup_ms")}
+		DType: str("dtype"), DeviceName: str("device_name"), LoadMS: num("load_ms"), WarmupMS: num("warmup_ms")}
 
 	w := st.Worker
 	f.Worker = Worker{State: w.State, Phase: w.Phase, Ready: w.Ready, Starts: w.Starts, RestartsInWindow: w.Restarts,

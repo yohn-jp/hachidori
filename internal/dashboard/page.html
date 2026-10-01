@@ -356,7 +356,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <dl class="identity">
     <div><dt>{{t "Model"}}</dt><dd class="model">{{.S.Runtime.ModelID}}</dd></div>
     <div><dt>{{t "Accelerator"}}</dt><dd>{{get $i "device_name"}}<span class="sub">{{with .Rt.Device}}{{.}} · {{end}}{{t "requested"}} {{.S.Runtime.Device}}</span></dd></div>
-    <div><dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd></div>
+    <div><dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd></div>
     <div><dt>{{t "Runtime"}}</dt><dd>{{.S.Runtime.Runtime}}<span class="sub">{{t "supervision"}} {{if .Running}}{{t "running"}}{{else}}<span class="bad-t">{{t "not running"}}</span>{{end}} {{t "· API up"}} <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></span></dd></div>
   </dl>
   <div class="actions">
@@ -520,6 +520,11 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     </tbody>
   </table></div>
 
+  <dl class="kv" id="models-serving">
+    <dt>{{t "Serving now"}}</dt><dd class="mono">{{with .RunningModel}}{{.}} · {{$.Models.RunningDevice}}{{else}}{{t "no worker running"}}{{end}}</dd>
+    <dt>{{t "Active (next start)"}}</dt><dd class="mono">{{with .ActiveModel}}{{.}} · {{$.Models.ActiveDevice}}{{else}}-{{end}}</dd>
+  </dl>
+
   <h3>{{t "Models"}}</h3>
   <div class="table-wrap"><table class="data" id="model-inventory">
     <thead><tr><th>{{t "Model"}}</th><th>{{t "Immutable facts"}}</th><th>{{t "Status"}}</th><th>{{t "Actions"}}</th></tr></thead>
@@ -527,7 +532,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
       <tr{{if .Active}} aria-current="true"{{end}}>
         <td class="strong">{{.ID}}{{with .Description}}<div class="muted">{{.}}</div>{{end}}</td>
         <td class="mono">{{.Provider}} · {{.Repo}}@{{.Revision}} · {{.Files}} {{t "pinned file(s)"}}</td>
-        <td>{{if .Active}}<span class="badge tone-ok">{{t "active"}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
+        <td>{{if .Running}}<span class="badge tone-ok">{{t "running"}}</span>{{end}}{{if .Active}}<span class="badge tone-ok">{{if and $.Models.RestartRequired (not .Running)}}{{t "active · applies on restart"}}{{else}}{{t "active"}}{{end}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
           {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
           {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
           {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
@@ -544,9 +549,9 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <input type="hidden" name="return" value="settings">
     <div class="fields">
       <label class="field">{{t "Device"}}
-        <select name="device">{{range .Devices}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+        <select name="device">{{$ad := .ActiveDevice}}{{range .Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label>
       <label class="field">{{t "Model"}}
-        <select name="model">{{range .ModelIDs}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+        <select name="model">{{$am := .ActiveModel}}{{range .ModelIDs}}<option value="{{.}}"{{if eq . $am}} selected{{end}}>{{.}}</option>{{end}}</select></label>
     </div>
     <div class="btn-row">
       <button type="submit" class="btn" formaction="/settings/models/materialize">{{t "Materialize"}}</button>
@@ -554,7 +559,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
       <button type="submit" class="btn primary" formaction="/settings/models/activate">{{t "Activate"}}</button>
     </div>
   </form>
-  <p class="note">{{t "Only the catalog's pinned runtime and model identities are listed. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker. A requested device is never replaced by another. The active runtime and model cannot be removed."}}</p>
+  <p class="note">{{t "Only the catalog's pinned runtime and model identities are listed. Choosing a model in the form changes nothing by itself. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker, so a running worker keeps serving its model until you restart it. A requested device is never replaced by another. The active runtime and model cannot be removed."}}</p>
 </section>
 {{end}}
 {{with .Conns}}
@@ -709,7 +714,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 {{$i := $w.Info}}{{$a := $w.Accelerator}}
 <details class="disclosure" data-keep="runtime-evidence" id="runtime-evidence">
-  <summary>{{t "Runtime evidence"}}<span class="sub mono">{{get $i "provider"}} {{get $i "laya_version"}} · Python {{get $i "python_version"}} · torch {{get $i "torch_version"}}</span></summary>
+  <summary>{{t "Runtime evidence"}}<span class="sub mono">{{get $i "provider"}} {{get $i "provider_version"}} · Python {{get $i "python_version"}} · torch {{get $i "torch_version"}}</span></summary>
   <div class="body">
     {{with gpuMem $a}}<div>
       <h3>{{t "GPU memory"}}{{if $w.AcceleratorStale}} <small>({{t "last known"}})</small>{{end}}</h3>
@@ -745,7 +750,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
           <dt>{{t "model"}}</dt><dd>{{.S.Runtime.ModelID}}</dd>
           <dt>{{t "model artifact"}}</dt><dd>{{.S.Runtime.Model}}</dd>
           <dt>{{t "requested device"}}</dt><dd>{{.S.Runtime.Device}}</dd>
-          <dt>{{t "provider"}}</dt><dd>{{get $i "provider"}} {{get $i "laya_version"}}</dd>
+          <dt>{{t "provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd>
           <dt>Python</dt><dd>{{get $i "python_version"}}</dd>
           <dt>PyTorch / CUDA</dt><dd>{{get $i "torch_version"}} / {{get $i "torch_cuda"}}</dd>
           <dt>{{t "device / dtype"}}</dt><dd>{{get $i "device"}} {{get $i "dtype"}}</dd>

@@ -89,7 +89,7 @@ func TestServeResolvesActivatedModel(t *testing.T) {
 	if rt.ModelID != setup.TunedModel || rt.Model != setup.ModelDirName(model) || a.ModelID != setup.TunedModel {
 		t.Fatalf("runtime %+v, active %+v", rt, a)
 	}
-	if !slices.Equal(cfg.Args[4:], []string{"--model-dir", modelDir, "--device", "cpu", "--manifest", filepath.Join(modelDir, "hachidori-model.json")}) {
+	if !slices.Equal(cfg.Args[4:], []string{"--model-dir", modelDir, "--device", "cpu", "--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", "opendecider"}) {
 		t.Fatalf("worker args %v", cfg.Args)
 	}
 	b, _ := json.Marshal(server.StatusBody(idle{}, rt, time.Now()))
@@ -271,3 +271,38 @@ func (idle) Decide([]worker.Item) ([][]api.Result, float64, error) { return nil,
 func (idle) Ready() bool                                           { return false }
 func (idle) State() string                                         { return worker.StateStarting }
 func (idle) Snapshot() worker.Snapshot                             { return worker.Snapshot{} }
+
+// A model is served only by a runtime that carries its provider: an
+// activation pairing a model with a runtime built without that provider is
+// refused before any worker starts, with the action that fixes it.
+func TestServeRefusesRuntimeWithoutModelProvider(t *testing.T) {
+	h := setup.MaterializeFakeModel(t, "cpu", setup.TunedModel)
+	var a home.Active
+	if err := home.ReadJSON(h.Path("state", "active-runtime.json"), &a); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := server.WorkerConfig(h, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	var rm home.RuntimeManifest
+	if err := home.ReadJSON(h.Path("runtime", a.Runtime, "manifest.json"), &rm); err != nil {
+		t.Fatal(err)
+	}
+	rm.Spec.Provider = "laya==0.3.21" // a runtime from before OpenDecider was carried
+	rm.Identity = rm.Spec.ID()
+	if err := os.Rename(h.Path("runtime", a.Runtime), h.Path("runtime", rm.Identity)); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.WriteJSON(h.Path("runtime", rm.Identity, "manifest.json"), rm); err != nil {
+		t.Fatal(err)
+	}
+	a.Runtime = rm.Identity
+	if err := home.WriteJSON(h.Path("state", "active-runtime.json"), a); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := server.WorkerConfig(h, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "does not carry provider opendecider") || !strings.Contains(err.Error(), "hachidori setup") {
+		t.Fatalf("err = %v", err)
+	}
+}

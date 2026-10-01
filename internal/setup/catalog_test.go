@@ -44,6 +44,52 @@ func TestCatalogDefaultIsUpstreamLaya(t *testing.T) {
 	}
 }
 
+// OpenDecider-nano is a supported catalog identity pinned to an immutable
+// upstream revision with an integrity digest for every file, loaded by the
+// OpenDecider provider the runtime carries. It is a candidate: the default
+// stays Laya until comparative evidence (docs/certification.md) says
+// otherwise.
+func TestCatalogOpenDeciderNano(t *testing.T) {
+	m, err := LookupModel(OpenDeciderNano)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ID != "opendecider-nano" || m.Provider != "opendecider" || m.Repo != "manjunathshiva/opendecider-nano" ||
+		m.Revision != "7e42a1508d2beef44717d044831e87f2fc4db9f2" {
+		t.Fatalf("identity %+v", m)
+	}
+	want := map[string]string{
+		"LICENSE":               "30f149868450e5288b6ed3b6fc0257a9597b5ffcdd961fdf3863a14a40b63b8d",
+		"config.json":           "5dc491f5dafeb79b653c76cb3e5699a7958306ca8d85304f91ca16928c67dbaf",
+		"head.safetensors":      "b57ad139c1ca8984a5205dc57aebeb921c9c59eaa536880d6b5e81d7734eee56",
+		"model.safetensors":     "da243ae586e17ee87b5aa68e1bd06112c1c4cf756ea651d335ae7a2d6097cb38",
+		"opendecider.json":      "ec0f4e9caa4cd95e2f30ab0e849cf62ce197ce0dcd3bf5fb1eb3eb12f7b480ba",
+		"tokenizer.json":        "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+		"tokenizer_config.json": "5926e6ec4294f80294bd98d9176defa9fbae7f140525d06a1da987488e74a973",
+	}
+	if !reflect.DeepEqual(m.Files, want) {
+		t.Fatalf("files %v", m.Files)
+	}
+	if ModelDirName(m) != "manjunathshiva--opendecider-nano/7e42a1508d2beef44717d044831e87f2fc4db9f2" {
+		t.Fatalf("dir %s", ModelDirName(m))
+	}
+	if DefaultModel == OpenDeciderNano {
+		t.Fatal("OpenDecider-nano must not be the default without comparative evidence")
+	}
+	// Both catalog providers are in every runtime, so either model activates on any materialized runtime.
+	for _, device := range Devices {
+		spec, err := Desired(device)
+		if err != nil || !spec.Provides("laya") || !spec.Provides("opendecider") || spec.Provides("openjev") {
+			t.Fatalf("%s: %+v %v", device, spec.ProviderPins(), err)
+		}
+	}
+	for _, id := range []string{"opendecider-small", "manjunathshiva/opendecider-nano", "opendecider-nano@7e42a1508d2beef44717d044831e87f2fc4db9f2"} {
+		if _, err := LookupModel(id); err == nil {
+			t.Errorf("%q resolved", id)
+		}
+	}
+}
+
 // Every catalog entry is an immutable, uniquely addressed identity loadable
 // by the runtime's provider.
 func TestCatalogEntriesAreImmutableIdentities(t *testing.T) {
@@ -55,8 +101,8 @@ func TestCatalogEntriesAreImmutableIdentities(t *testing.T) {
 			t.Errorf("model ID %q invalid or duplicated", m.ID)
 		}
 		ids[m.ID] = true
-		if m.Provider != providerName {
-			t.Errorf("%s: provider %q is not the runtime provider %s", m.ID, m.Provider, providerName)
+		if spec, _ := Desired("cpu"); !spec.Provides(m.Provider) {
+			t.Errorf("%s: provider %q is not carried by the runtime (%s)", m.ID, m.Provider, spec.Provider)
 		}
 		if !commit.MatchString(m.Revision) {
 			t.Errorf("%s: revision %q is not an immutable commit", m.ID, m.Revision)
