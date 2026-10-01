@@ -639,7 +639,7 @@ func TestStalledOrSlowChecksAreBoundedByContext(t *testing.T) {
 	if err := e.svc.Check(ctx); err == nil {
 		t.Fatal("check did not fail on a stalled authority")
 	}
-	if st := e.svc.Status(); st.Checking || st.Check != nil {
+	if st := e.svc.Status(); st.Busy != nil || st.Check != nil {
 		t.Fatalf("%+v", st)
 	}
 }

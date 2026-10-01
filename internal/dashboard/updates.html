@@ -6,6 +6,7 @@
 {{template "last" .Last}}
 {{with .Upd}}
 <div id="updates-region">
+{{if .Op}}<p class="note busy-note" id="updates-busy-note" role="status">{{t "An update action is in progress. Check, Download, Save channel and Restart & update are unavailable until it finishes; the progress is shown under Download and verification."}} <a href="#updates-op">{{t "Show progress"}}</a></p>{{end}}
 <section class="region section" id="updates-installed" aria-labelledby="ui-h">
   <div class="region-h"><h2 id="ui-h">{{t "Installed"}}</h2><a href="/settings">{{t "Settings"}}</a></div>
   <dl class="kv">
@@ -19,16 +20,16 @@
       <label class="field">{{t "Update channel"}}
         <select name="channel">{{$c := .Channel}}{{range .Channels}}<option value="{{.}}"{{if eq . $c}} selected{{end}}>{{if eq (print .) "stable"}}{{t "Stable"}}{{else}}{{t "Development"}}{{end}}</option>{{end}}</select></label>
     </div>
-    <div class="btn-row"><button type="submit" class="btn">{{t "Save channel"}}</button></div>
+    <div class="btn-row"><button type="submit" class="btn"{{if .Op}} disabled{{end}}>{{t "Save channel"}}</button></div>
   </form>
   <p class="note">{{t "Stable offers stable releases (X.Y.Z). Development offers development releases (X.Y.Z-dev) and stable releases. The channel only selects which releases an explicit check offers: it never downloads, installs or downgrades anything."}}</p>
 </section>
 
 <section class="region section" id="updates-check" aria-labelledby="uc-h">
   <div class="region-h"><h2 id="uc-h">{{t "Releases"}}</h2><span class="sub">{{t "yohn-jp/hachidori GitHub Releases"}}</span></div>
-  <form method="post" action="/settings/updates/check" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><button type="submit" class="btn primary"{{if or .Busy .Checking}} disabled{{end}}>{{t "Check for updates"}}</button></form>
+  <form method="post" action="/settings/updates/check" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><button type="submit" class="btn primary" data-pending="{{t "Checking…"}}"{{if .Op}} disabled{{end}}>{{t "Check for updates"}}</button></form>
   <p class="note">{{t "Retrieves the release list from GitHub, only now. Results below stay until you check again, change the channel or restart Hachidori."}}</p>
-  {{if and .LastCheck (not .LastCheck.OK)}}<div class="last tone-bad failure" role="alert" id="updates-check-failure"><strong>{{t "FAILED"}}</strong><span class="msg-text">{{.LastCheck.Message}}</span>{{with .CheckHint}}<p class="note">{{t .}}</p>{{end}}</div>{{end}}
+  {{if and .LastCheck (not .LastCheck.OK)}}<div class="last tone-bad failure" role="alert" id="updates-check-failure"><strong>{{t "FAILED"}}</strong><span class="msg-text">{{.LastCheck.Message}}</span>{{with .CheckHint}}<p class="note">{{t .}}</p>{{end}}<p class="note">{{t "Nothing was downloaded and the installed executable was not changed."}}</p></div>{{end}}
   {{with .Check}}
   {{if .Releases}}
   <p class="note" id="updates-results-note">{{t "Checked"}} {{when .Time}} · {{t "channel"}} {{.Channel}}</p>
@@ -42,7 +43,7 @@
           {{if eq .Relation "older"}}<div class="muted">{{t "Not offered: an update never goes backwards."}}</div>{{end}}</td>
         <td>{{when .Published}}</td>
         <td class="nowrap">{{if .Downloadable}}
-          <form method="post" action="/settings/updates/download" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="tag" value="{{.Tag}}"><button type="submit" class="btn"{{if or $.Upd.Busy $.Upd.Checking}} disabled{{end}}>{{t "Download"}}</button></form>
+          <form method="post" action="/settings/updates/download" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="tag" value="{{.Tag}}"><button type="submit" class="btn" data-pending="{{t "Starting download…"}}"{{if $.Upd.Op}} disabled{{end}}>{{t "Download"}}</button></form>
         {{end}}</td>
       </tr>{{end}}
     </tbody>
@@ -74,7 +75,7 @@
     }, 1500);
   })();
   </script>
-  {{else}}{{with .LastOp}}{{template "op-last" .}}{{with $.Upd.OpHint}}{{if $.Upd.LastOp.Failure}}<p class="note" id="updates-op-hint">{{t .}}</p>{{end}}{{end}}{{else}}<p class="note">{{t "No download in progress."}}</p>{{end}}{{end}}
+  {{else}}{{with .LastOp}}{{template "op-last" .}}{{if $.Upd.LastOp.Failure}}{{with $.Upd.OpOutcome}}<p class="note" id="updates-op-outcome">{{range .}}{{t .}} {{end}}</p>{{end}}{{with $.Upd.OpHint}}<p class="note" id="updates-op-hint">{{t .}}</p>{{end}}{{else if and $.Upd.Ready (not $.Upd.ReadyProblem)}}<p class="note" id="updates-op-next">{{t "The update was downloaded and verified. Next: Restart & update, under Ready to install."}} <a href="#updates-ready">{{t "Go to Ready to install"}}</a></p>{{end}}{{else}}<p class="note">{{t "No download in progress."}}</p>{{end}}{{end}}
 </section>
 
 <section class="region section" id="updates-ready" aria-labelledby="ur-h">
@@ -89,7 +90,7 @@
   {{if $.Upd.ReadyProblem}}<p class="msg bad" role="alert" id="updates-ready-problem">{{$.Upd.ReadyProblem}}</p>
   {{else if not $.Upd.Supported}}<p class="note">{{t "Restart & update is available only in the Windows desktop application."}}</p>
   {{else}}
-  <form method="post" action="/settings/updates/install" class="inline" id="updates-install" data-confirm="{{t "Close Hachidori, replace the executable and reopen it? The runtime stops and starts again; HACHIDORI_HOME, models, settings, history and evidence are kept."}}"><input type="hidden" name="token" value="{{$.Token}}"><button type="submit" class="btn primary"{{if or $.Upd.Busy $.Upd.Checking}} disabled{{end}}>{{t "Restart & update"}}</button></form>
+  <form method="post" action="/settings/updates/install" class="inline" id="updates-install" data-confirm="{{t "Close Hachidori, replace the executable and reopen it? The runtime stops and starts again; HACHIDORI_HOME, models, settings, history and evidence are kept."}}"><input type="hidden" name="token" value="{{$.Token}}"><button type="submit" class="btn primary" data-pending="{{t "Restarting…"}}"{{if $.Upd.Op}} disabled{{end}}>{{t "Restart & update"}}</button></form>
   {{end}}
   <p class="note">{{t "The executable is replaced by a separate helper after Hachidori exits. If replacement fails, the previous executable is kept and reopened."}}</p>
   {{else}}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -63,7 +62,7 @@ const quitDelay = 750 * time.Millisecond
 
 func (m updateManager) Status() update.Status             { return m.svc.Status() }
 func (m updateManager) SetChannel(c update.Channel) error { return m.svc.SetChannel(c) }
-func (m updateManager) Check(ctx context.Context) error   { return m.svc.Check(ctx) }
+func (m updateManager) Check() error                      { return m.svc.StartCheck() }
 func (m updateManager) Download(tag string) error         { return m.svc.StartDownload(tag) }
 
 func (m updateManager) Install() error {

@@ -1,7 +1,6 @@
 package dashboard
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +44,7 @@ func (f *fakeUpdates) SetChannel(c update.Channel) error {
 	return f.err
 }
 
-func (f *fakeUpdates) Check(context.Context) error {
+func (f *fakeUpdates) Check() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checks++
@@ -317,4 +316,194 @@ func httpPost(e *env, path, body string) *httptest.ResponseRecorder {
 	req.Header.Set("Origin", "http://127.0.0.1:7844")
 	e.d.ServeHTTP(rec, req)
 	return rec
+}
+
+// buttonOf returns the opening tag of the first button labelled label.
+func buttonOf(t *testing.T, body, label string) string {
+	t.Helper()
+	i := strings.Index(body, ">"+label+"</button>")
+	if i < 0 {
+		t.Fatalf("no %q button", label)
+	}
+	return body[strings.LastIndex(body[:i], "<button"):i]
+}
+
+// While a check or download is active every conflicting action is disabled
+// and the page says why; the operation is shown from Status alone, so a
+// reload or poll shows the same thing.
+func TestUpdatesActiveOperationDisablesEveryConflictingAction(t *testing.T) {
+	ready := &update.Ready{Tag: "0.2.6-dev", SHA256: strings.Repeat("b", 64), Target: `C:\app\hachidori.exe`, Created: time.Now()}
+	releases := []update.Candidate{rel("0.2.6-dev", update.RelNewer, "")}
+	for _, op := range []*update.Operation{
+		{Kind: update.KindCheck, Plan: []string{update.PhaseReleases}, Started: time.Now()},
+		{Kind: update.KindCheck, Plan: []string{update.PhaseReleases}, Phases: []string{update.PhaseReleases}, Phase: update.PhaseReleases,
+			Step: update.StepFetching, Detail: "release list, page 1", Started: time.Now()},
+		{Kind: update.KindDownload, Tag: "0.2.6-dev", Plan: []string{"checksum", "download", "verify"}, Phases: []string{"checksum", "download"},
+			Phase: "download", Step: update.StepDownloading, Detail: update.ExeAsset, Done: 4 << 20, Total: 16 << 20, Started: time.Now()},
+	} {
+		e := newEnv(t)
+		f := &fakeUpdates{st: baseStatus()}
+		f.st.Check = &update.CheckResult{Time: time.Now(), Channel: update.Stable, Releases: releases}
+		f.st.Ready = ready
+		withUpdates(e, f)
+
+		idle := e.get(t, "/settings/updates").Body.String()
+		for _, l := range []string{"Check for updates", "Download", "Save channel", "Restart &amp; update"} {
+			if strings.Contains(buttonOf(t, idle, l), "disabled") {
+				t.Errorf("idle: %q is disabled", l)
+			}
+		}
+		if strings.Contains(idle, `id="updates-busy-note"`) || strings.Contains(idle, `id="models-busy"`) {
+			t.Error("idle page shows an operation")
+		}
+
+		f.st.Busy = op
+		for range 2 { // a reload or poll projects the same authoritative state
+			body := e.get(t, "/settings/updates").Body.String()
+			for _, l := range []string{"Check for updates", "Download", "Save channel", "Restart &amp; update"} {
+				if !strings.Contains(buttonOf(t, body, l), "disabled") {
+					t.Errorf("%s: %q is not disabled while work is active", op.Kind, l)
+				}
+			}
+			for _, want := range []string{`id="updates-busy-note"`, "An update action is in progress", `id="models-busy"`, "RUNNING", `role="progressbar"`} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s: missing %q", op.Kind, want)
+				}
+			}
+			if !strings.Contains(body, "fetch(location.pathname") {
+				t.Errorf("%s: an active operation is not refreshed", op.Kind)
+			}
+		}
+		if f.actions() != 0 {
+			t.Fatal("rendering performed an action")
+		}
+	}
+}
+
+func TestUpdatesAcceptedActionShowsStartingBeforeAnyPhase(t *testing.T) {
+	e := newEnv(t)
+	f := &fakeUpdates{st: baseStatus()}
+	withUpdates(e, f)
+	f.st.Busy = &update.Operation{Kind: update.KindDownload, Tag: "0.2.6-dev", Plan: []string{"checksum", "download", "verify"}, Started: time.Now()}
+	body := e.get(t, "/settings/updates").Body.String()
+	if !strings.Contains(body, `aria-label="Starting"`) || !strings.Contains(body, `class="bar progress indeterminate"`) || strings.Contains(body, "aria-valuenow") {
+		t.Errorf("an accepted action with no phase yet must be visibly active and indeterminate:\n%s", body[strings.Index(body, `id="updates-op"`):])
+	}
+}
+
+// Check is accepted by the dashboard and runs in the background: the POST
+// answers with a redirect to the page that shows it, whatever the network does.
+func TestUpdatesCheckPostIsAcknowledgedImmediately(t *testing.T) {
+	e := newEnv(t)
+	f := &fakeUpdates{st: baseStatus()}
+	withUpdates(e, f)
+	rec := e.post(t, "/settings/updates/check", nil)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings/updates" {
+		t.Fatalf("%d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if a := e.lastAction(t); !a.OK || !strings.Contains(a.Message, "check started") {
+		t.Errorf("%+v", a)
+	}
+	// A refused repeat is shown as already in progress, not as a new start.
+	f.err = &update.Error{Class: update.ClassRefused, Msg: "another update action is in progress"}
+	e.post(t, "/settings/updates/check", nil)
+	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "in progress") {
+		t.Errorf("%+v", a)
+	}
+}
+
+// Slow actions say so on the button itself, and the page's submit handling
+// refuses a second submit of a form that is already pending.
+func TestUpdatesActionButtonsAcknowledgeAndGuardRepeatedSubmit(t *testing.T) {
+	e := newEnv(t)
+	f := &fakeUpdates{st: baseStatus()}
+	f.st.Check = &update.CheckResult{Time: time.Now(), Channel: update.Stable, Releases: []update.Candidate{rel("0.2.6-dev", update.RelNewer, "")}}
+	f.st.Ready = &update.Ready{Tag: "0.2.6-dev", SHA256: strings.Repeat("b", 64), Target: `C:\app\hachidori.exe`, Created: time.Now()}
+	withUpdates(e, f)
+	body := e.get(t, "/settings/updates").Body.String()
+	for label, pending := range map[string]string{"Check for updates": "Checking…", "Download": "Starting download…", "Restart &amp; update": "Restarting…"} {
+		if tag := buttonOf(t, body, label); !strings.Contains(tag, `data-pending="`+pending+`"`) {
+			t.Errorf("%q has no pending label: %s", label, tag)
+		}
+	}
+	if !strings.Contains(body, `f.getAttribute("aria-busy") === "true"`) || !strings.Contains(body, "b.dataset.pending") {
+		t.Error("the page does not guard a repeated submit or show the pending label")
+	}
+}
+
+func TestUpdatesFailureStatesWhatIsLeftBehind(t *testing.T) {
+	ready := &update.Ready{Tag: "0.2.5-dev", SHA256: strings.Repeat("b", 64), Target: `C:\app\hachidori.exe`, Created: time.Now()}
+	for _, tc := range []struct {
+		name       string
+		fail       update.Failure
+		ready      *update.Ready
+		want, deny []string
+	}{
+		{"checksum", update.Failure{Class: update.ClassVerification, Phase: "checksum", Step: "downloading", Message: "the checksum file could not be retrieved"}, nil,
+			[]string{"Nothing was downloaded.", "No update is ready to install."}, []string{"partial download", "previously verified"}},
+		{"download", update.Failure{Class: update.ClassDownload, Phase: "download", Step: "downloading", Message: "the download stalled"}, nil,
+			[]string{"The partial download was discarded.", "No update is ready to install."}, []string{"Nothing was downloaded."}},
+		{"verify", update.Failure{Class: update.ClassChecksumMismatch, Phase: "verify", Step: "verifying", Message: "SHA-256 mismatch"}, nil,
+			[]string{"failed verification and was discarded.", "No update is ready to install."}, nil},
+		{"earlier ready", update.Failure{Class: update.ClassDownload, Phase: "download", Step: "downloading", Message: "boom"}, ready,
+			[]string{"The partial download was discarded.", "A previously verified update is still ready to install."}, []string{"No update is ready to install."}},
+	} {
+		e := newEnv(t)
+		f := &fakeUpdates{st: baseStatus()}
+		withUpdates(e, f)
+		fail := tc.fail
+		f.st.Ready = tc.ready
+		f.st.Last = &update.Operation{Kind: update.KindDownload, Tag: "0.2.6-dev", Plan: []string{"checksum", "download", "verify"}, Phases: []string{"checksum", "download"},
+			Phase: fail.Phase, Started: time.Now().Add(-time.Second), Finished: time.Now(), Failure: &fail}
+		body := e.get(t, "/settings/updates").Body.String()
+		out := body[strings.Index(body, `id="updates-op"`):]
+		for _, w := range tc.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: missing %q", tc.name, w)
+			}
+		}
+		for _, w := range tc.deny {
+			if strings.Contains(out, w) {
+				t.Errorf("%s: wrongly says %q", tc.name, w)
+			}
+		}
+		for _, w := range []string{"FAILED", fail.Message, `id="updates-op-outcome"`, `id="updates-op-hint"`} {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: missing %q", tc.name, w)
+			}
+		}
+	}
+}
+
+func TestUpdatesCompletionPointsToTheNextAction(t *testing.T) {
+	e := newEnv(t)
+	f := &fakeUpdates{st: baseStatus()}
+	withUpdates(e, f)
+	f.st.Last = &update.Operation{Kind: update.KindDownload, Tag: "0.2.6-dev", Plan: []string{"checksum", "download", "verify"}, Phases: []string{"checksum", "download", "verify"},
+		Phase: "verify", Started: time.Now().Add(-5 * time.Second), Finished: time.Now()}
+	f.st.Ready = &update.Ready{Tag: "0.2.6-dev", SHA256: strings.Repeat("b", 64), Target: `C:\app\hachidori.exe`, Created: time.Now()}
+	body := e.get(t, "/settings/updates").Body.String()
+	for _, want := range []string{"DONE", `id="updates-op-next"`, `href="#updates-ready"`, `id="updates-install"`, "Next: Restart &amp; update"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(buttonOf(t, body, "Restart &amp; update"), "disabled") {
+		t.Error("Restart & update is unavailable after a completed download")
+	}
+	f.st.Ready, f.st.ReadyProblem = nil, ""
+	if strings.Contains(e.get(t, "/settings/updates").Body.String(), `id="updates-op-next"`) {
+		t.Error("the next-step note is shown with nothing ready")
+	}
+}
+
+func TestUpdatesFailedCheckStatesNothingWasDownloaded(t *testing.T) {
+	e := newEnv(t)
+	f := &fakeUpdates{st: baseStatus()}
+	withUpdates(e, f)
+	f.st.LastCheck = &update.LastCheck{Time: time.Now(), Channel: update.Stable, Class: update.ClassNetwork, Message: "GitHub answered 403 Forbidden"}
+	body := e.get(t, "/settings/updates").Body.String()
+	if !strings.Contains(body, "Nothing was downloaded and the installed executable was not changed.") {
+		t.Error("a failed check does not say what was left")
+	}
 }

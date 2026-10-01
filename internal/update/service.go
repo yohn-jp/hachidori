@@ -22,17 +22,23 @@ import (
 // Phases and steps of a download, in the vocabulary of the long-running
 // operation presentation (internal/dashboard/ops.go).
 const (
+	PhaseReleases = "releases"
 	PhaseChecksum = "checksum"
 	PhaseDownload = "download"
 	PhaseVerify   = "verify"
 
+	StepFetching    = "fetching"
 	StepDownloading = "downloading"
 	StepVerifying   = "verifying"
 
+	KindCheck    = "check"
 	KindDownload = "update"
 )
 
-var downloadPlan = []string{PhaseChecksum, PhaseDownload, PhaseVerify}
+var (
+	checkPlan    = []string{PhaseReleases}
+	downloadPlan = []string{PhaseChecksum, PhaseDownload, PhaseVerify}
+)
 
 // Time bounds. The download bound is on progress, never on total time.
 const (
@@ -50,9 +56,11 @@ type Failure struct {
 	Message string
 }
 
-// Operation is the download in flight or the last one finished. It carries
-// the same fields as app.Operation's phases and progress, and the dashboard
-// presents it with the same long-running operation view.
+// Operation is the check or download in flight, or the last download
+// finished. It carries the same fields as app.Operation's phases and
+// progress, and the dashboard presents it with the same long-running operation
+// view. At most one exists at a time: it is the single authority for whether
+// an update action is already in progress.
 type Operation struct {
 	Kind              string
 	Tag               string
@@ -103,10 +111,12 @@ type Status struct {
 	LastCheck *LastCheck
 	// Check is the result of the last explicit check in this process; nil until
 	// one was made, and cleared by a channel change or a failed check.
-	Check    *CheckResult
-	Checking bool
-	Busy     *Operation
-	Last     *Operation
+	Check *CheckResult
+	// Busy is the check or download in flight (nil when idle); every other
+	// update action is refused while it is set. Last is the last download
+	// finished.
+	Busy *Operation
+	Last *Operation
 	// Ready is a downloaded, verified executable; ReadyProblem is why it cannot
 	// be installed right now ("" when it can).
 	Ready        *Ready
@@ -141,7 +151,6 @@ type Service struct {
 
 	mu       sync.Mutex
 	check    *CheckResult
-	checking bool
 	op, last *Operation
 	exeSum   string
 	exeRead  bool
@@ -208,12 +217,17 @@ func (s *Service) SetChannel(c Channel) error {
 	if s.Settings == nil {
 		return errors.New("update settings are not available")
 	}
+	// The channel selects what a check offers and what may be installed, so it
+	// does not change under a check or download that is running.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.op != nil {
+		return errInProgress()
+	}
 	if err := s.Settings.ModifyUpdateSettings(func(st *Settings) error { st.Channel = c; return nil }); err != nil {
 		return err
 	}
-	s.mu.Lock()
 	s.check = nil
-	s.mu.Unlock()
 	return nil
 }
 
@@ -274,7 +288,7 @@ func (s *Service) Status() Status {
 		c.Releases = slices.Clone(s.check.Releases)
 		st.Check = &c
 	}
-	st.Checking, st.Busy, st.Last, st.Err = s.checking, s.op.clone(), s.last.clone(), s.persist
+	st.Busy, st.Last, st.Err = s.op.clone(), s.last.clone(), s.persist
 	s.mu.Unlock()
 	if serr != nil {
 		st.Err = serr.Error()
@@ -388,23 +402,63 @@ func readAll(r io.Reader, max int64) ([]byte, error) {
 
 // ---- Check -----------------------------------------------------------------
 
-// Check retrieves the repository's release list from the fixed authority and
-// presents the releases the selected channel offers. It is the only action
-// that retrieves release metadata, and it runs only when called.
-func (s *Service) Check(ctx context.Context) error {
+// errInProgress is the refusal of every action while a check or download runs.
+func errInProgress() error {
+	return &Error{Class: ClassRefused, Msg: "another update action is in progress"}
+}
+
+// beginCheck accepts a check: it becomes the operation in flight, visible in
+// Status from this moment, and discards the results of the previous check. It
+// refuses while a check or download is running.
+func (s *Service) beginCheck() (*Operation, error) {
 	s.mu.Lock()
-	if s.checking || s.op != nil {
-		s.mu.Unlock()
-		return &Error{Class: ClassRefused, Msg: "another update action is in progress"}
+	defer s.mu.Unlock()
+	if s.op != nil {
+		return nil, errInProgress()
 	}
-	s.checking, s.check = true, nil
-	s.mu.Unlock()
-	defer func() { s.mu.Lock(); s.checking = false; s.mu.Unlock() }()
+	op := &Operation{Kind: KindCheck, Plan: slices.Clone(checkPlan), Started: s.now()}
+	s.op, s.check = op, nil
+	return op, nil
+}
+
+// StartCheck accepts a check and returns at once; the check runs in the
+// background and its progress and outcome are read from Status. It is how the
+// desktop starts one, so the operator sees the action accepted before the
+// network answers.
+func (s *Service) StartCheck() error {
+	op, err := s.beginCheck()
+	if err != nil {
+		return err
+	}
+	go func() { _ = s.runCheck(context.Background(), op) }()
+	return nil
+}
+
+// Check retrieves the repository's release list from the fixed authority and
+// presents the releases the selected channel offers, and returns when it has
+// finished. It is the only action that retrieves release metadata, and it runs
+// only when called.
+func (s *Service) Check(ctx context.Context) error {
+	op, err := s.beginCheck()
+	if err != nil {
+		return err
+	}
+	return s.runCheck(ctx, op)
+}
+
+func (s *Service) runCheck(ctx context.Context, op *Operation) error {
+	defer func() {
+		s.mu.Lock()
+		op.Finished, s.op = s.now(), nil
+		s.mu.Unlock()
+	}()
+	s.phase(op, PhaseReleases)
+	s.progress(op, StepFetching, "release list", 0, 0)
 
 	ch, _ := s.channel()
 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
-	rels, err := s.fetchReleases(ctx)
+	rels, err := s.fetchReleases(ctx, op)
 	if err != nil {
 		lc := LastCheck{Time: s.now(), Channel: ch, Class: ClassNetwork, Message: err.Error()}
 		var e *Error
@@ -454,10 +508,11 @@ func (s *Service) record(lc LastCheck) {
 
 // fetchReleases reads the release list page by page. Every request is built
 // from constants; a response can never name another URL.
-func (s *Service) fetchReleases(ctx context.Context) ([]Release, error) {
+func (s *Service) fetchReleases(ctx context.Context, op *Operation) ([]Release, error) {
 	var all []Release
 	seen := map[string]bool{}
 	for page := 1; page <= maxPages; page++ {
+		s.progress(op, StepFetching, fmt.Sprintf("release list, page %d", page), 0, 0)
 		resp, err := s.get(ctx, releasesURL(page), "application/vnd.github+json", false)
 		if err != nil {
 			return nil, fail(ClassNetwork, err, "release metadata could not be retrieved")
@@ -504,9 +559,9 @@ func (s *Service) StartDownload(tag string) error {
 		return &Error{Class: ClassRefused, Msg: "no Hachidori home is selected"}
 	}
 	s.mu.Lock()
-	if s.checking || s.op != nil {
+	if s.op != nil {
 		s.mu.Unlock()
-		return &Error{Class: ClassRefused, Msg: "another update action is in progress"}
+		return errInProgress()
 	}
 	var cand *Candidate
 	if s.check != nil {
@@ -754,10 +809,10 @@ func (s *Service) Install() error {
 		return &Error{Class: ClassRefused, Msg: "no Hachidori home or executable is known"}
 	}
 	s.mu.Lock()
-	busy := s.checking || s.op != nil
+	busy := s.op != nil
 	s.mu.Unlock()
 	if busy {
-		return &Error{Class: ClassRefused, Msg: "another update action is in progress"}
+		return errInProgress()
 	}
 	ch, _ := s.channel()
 	ready, ver, err := s.installable(root, ch)

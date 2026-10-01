@@ -269,8 +269,10 @@ func TestUpdatesFlowThroughTheDesktopComposition(t *testing.T) {
 		t.Fatalf("%d requests before any explicit action: %v", n, r.auth.reqs)
 	}
 
-	// Check reads release metadata only.
-	body = r.post("/settings/updates/check")
+	// Check reads release metadata only. It is accepted at once and runs in the
+	// background; the page shows its results when it has finished.
+	r.post("/settings/updates/check")
+	body = r.waitDownload()
 	for _, q := range r.auth.reqs {
 		if !strings.HasPrefix(q, "api.github.com/repos/yohn-jp/hachidori/releases") {
 			t.Errorf("Check requested %s", q)

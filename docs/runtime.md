@@ -918,6 +918,19 @@ the release pipeline; none is invented, and a signature check can be added
 beside the checksum later. Progress uses the long-running operation view
 (phases checksum, download, verify; a percentage for the byte-counted download).
 
+**One action at a time, visibly.** The update service owns one operation at a
+time: a check (phase release list, indeterminate) or a download (phases
+checksum, download, verify). **Check for updates** and **Download** are accepted
+and return at once; the operation exists in `Status().Busy` from that moment
+(shown as "Starting" until its first phase), and the page, a reload and its
+local poll all project that same state, never a frontend copy. While it runs,
+Check, Download, Save channel and Restart & update are disabled and the service
+refuses them as "another update action is in progress", so a repeated click
+starts no second request. Bytes are shown only for the download phase, from the
+size the release states. A failed download shows its phase, cause and what was
+left (nothing downloaded, a partial file discarded, or an earlier verified update
+still ready); a completed one points to **Restart & update**.
+
 **Restart & update.** Nothing is overwritten in-process. The application
 re-verifies the staged file, copies its own executable to
 `state/updates/helper/` and starts that copy detached as
