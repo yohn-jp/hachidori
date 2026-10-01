@@ -100,9 +100,10 @@ class Provider:
 
     name = ""
 
-    def __init__(self, model_dir, device, manifest):
+    def __init__(self, model_dir, device, manifest, dtype=None):
         self.model_dir = model_dir
         self.requested = device
+        self.dtype = dtype
         self.manifest = manifest
         self.digests = manifest["files"]
         self.torch = None
@@ -271,6 +272,11 @@ class LayaProvider(Provider):
 OPENDECIDER_MAX_SEQUENCES = 16
 
 
+# The precisions the OpenDecider adapter can be asked for. float32 is what upstream
+# evaluated and stays the default; bfloat16 is an explicit, opt-in choice (#136).
+OPENDECIDER_DTYPES = ("float32", "bfloat16")
+
+
 class OpenDeciderProvider(Provider):
     """OpenDecider-nano: an Ettin encoder with one [MASK] marker per option and a
     small head. The opendecider package builds the marked input and reads one logit
@@ -295,8 +301,15 @@ class OpenDeciderProvider(Provider):
     def load(self):
         self.verify_files()
         # A local directory with opendecider.json is loaded as is; nothing is
-        # resolved from the Hub. float32 is the dtype upstream evaluated.
-        self.model = self.opendecider.load(self.model_dir, device=self.requested, dtype="float32")
+        # resolved from the Hub. float32 is the dtype upstream evaluated; another
+        # dtype is only ever the one that was explicitly requested.
+        want = self.dtype or "float32"
+        self.model = self.opendecider.load(self.model_dir, device=self.requested, dtype=want)
+        # A requested dtype is never substituted either: the encoder must hold
+        # exactly the dtype that was asked for, or the load is a failure.
+        got = str(self.placed_dtype())
+        if got != "torch." + want:
+            raise RuntimeError("model placed as %s instead of requested %s" % (got, want))
 
     def parameter(self):
         return next(self.model.impl.enc.parameters())
@@ -374,11 +387,14 @@ def main():
     ap.add_argument("--device", required=True, choices=["cuda", "cpu"])
     ap.add_argument("--manifest", required=True, help="model manifest with pinned file digests")
     ap.add_argument("--provider", required=True, choices=sorted(PROVIDERS), help="provider that loads the model")
+    ap.add_argument("--dtype", choices=OPENDECIDER_DTYPES, help="opendecider only: inference dtype (default float32)")
     args = ap.parse_args()
+    if args.dtype and args.provider != "opendecider":
+        ap.error("--dtype is only supported by the opendecider provider")
     emit({"event": "hello", "protocol": PROTOCOL, "pid": os.getpid()})
     with open(args.manifest, encoding="utf-8") as f:
         manifest = json.load(f)
-    provider = PROVIDERS[args.provider](args.model_dir, args.device, manifest)
+    provider = PROVIDERS[args.provider](args.model_dir, args.device, manifest, args.dtype)
     provider.initialize()
     provider.warmup()
     emit({"event": "ready", "info": provider.info()})

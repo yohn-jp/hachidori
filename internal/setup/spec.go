@@ -182,6 +182,9 @@ func RuntimeName(device string) (string, error) {
 // (docs/certification.md), never because it is newer or smaller.
 const DefaultModel = "laya-base"
 
+// ProviderOpenDecider is the provider kind of OpenDecider catalog models.
+const ProviderOpenDecider = providerOpenDecider
+
 // OpenDeciderNano is the catalog ID of the OpenDecider-nano candidate model.
 const OpenDeciderNano = "opendecider-nano"
 

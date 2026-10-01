@@ -30,6 +30,7 @@ client CLI / any HTTP caller
 | `hachidori benchmark [--endpoint URL] [--questions PATH]... [--warmup N] [--passes N] [--out report.json] <dataset.jsonl>` | client | eval plus warmup and repeated passes for latency |
 | `hachidori question <definition.json\|dir>...` | client | validate Question Definitions locally; print id, version, digest and the compiled v1 question (no endpoint) |
 | `hachidori replay [--questions PATH]... [--dataset D] [--case ID]... [--question ID]... [--print] [--out replay.json] <report.json>` | client | reconstruct and optionally re-send decisions recorded by eval/benchmark |
+| `hachidori precision [-model ID] [-out report.json] <baseline-comparison.json> <candidate-comparison.json>` | files only | pair one model's runs at two dtypes from two saved resident comparisons: choice flips, probability and confidence deltas, quality, latency, memory (certification.md) |
 
 `--home` defaults to `HACHIDORI_HOME`; the CLI has no implicit home (the Windows
 desktop bootstrap locator below is never consulted by CLI commands). `--endpoint`
@@ -211,8 +212,9 @@ hachidori serve
   -> device check (cuda requested and unavailable => device_unavailable)
   -> loading, per provider:
        laya:        laya.load(<model dir>, device, expected_sha256=<pinned digests>)
-       opendecider: verify every pinned file digest, then opendecider.load(<model dir>, device, dtype=float32)
-                    (a local directory; nothing is resolved from the Hub)
+       opendecider: verify every pinned file digest, then opendecider.load(<model dir>, device, dtype=float32|bfloat16)
+                    (a local directory; nothing is resolved from the Hub); the encoder must then
+                    be in exactly the requested dtype, else `model_load`
   -> the worker checks where the model actually is: anything but the requested
      device is device_unavailable (Laya silently falls back to CPU; there is no
      CUDA -> CPU fallback for any provider)
@@ -253,7 +255,10 @@ parsed or retried.
   a question cost one encoder pass. The adapter maps Hachidori's choice question
   (instructions, choices, optional descriptions) onto that input and the
   probabilities back onto the v1 result. It runs in `float32` (what upstream
-  evaluated) and scores at most 16 sequences (states × questions) per padded
+  evaluated) unless `HACHIDORI_OPENDECIDER_DTYPE=bfloat16` is set for the launch
+  (an evaluation control, see certification.md; the dtype actually in use is
+  `provider.dtype` in `/v1/status`, and a dtype the package did not honour fails
+  the load instead of falling back) and scores at most 16 sequences (states × questions) per padded
   batch.
   Upstream facts that apply to the candidate and are not Hachidori certification
   evidence: a 2,048-token context shared by question, options and state (the

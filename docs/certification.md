@@ -166,6 +166,69 @@ remain provider-internal and are still read from `logs/worker.log`.
 The comparison states measurements only. It produces no winner, ranking, pass or
 fail, and a default-model change still needs the recorded decision above.
 
+### OpenDecider-nano FP32 vs BF16 (#136)
+
+OpenDecider-nano runs in `float32` (what upstream evaluated). `bfloat16` is an
+explicit, opt-in evaluation control; `float32` stays the default until the record
+below supports changing it. Nothing else changes: the same pinned checkpoint,
+typed closed-choice scoring, explicit CUDA placement, no generation, parsing or
+retry. A resident whose encoder is not in the dtype that was asked for fails to
+load (`model_load`); there is no silent dtype fallback, and no CPU fallback.
+
+Select the dtype for one runtime launch with `HACHIDORI_OPENDECIDER_DTYPE`
+(`float32` or `bfloat16`; anything else refuses the launch; it applies only to an
+OpenDecider resident and is never persisted). `hachidori status` reports the
+dtype the resident is actually on (`provider.dtype`: `torch.float32` or
+`torch.bfloat16`) and the resident comparison records it in each run's identity.
+
+```powershell
+# 1. baseline: FP32 (variable unset), both models resident, fixed corpus and questions
+hachidori benchmark --questions <defs> --models laya-base,opendecider-nano --warmup 5 --passes 5 --out fp32.json <corpus.jsonl>
+# 2. stop serve; set the variable; start serve again (cold load and warmup are measured on a fresh worker)
+$env:HACHIDORI_OPENDECIDER_DTYPE = "bfloat16"
+hachidori status                                    # provider.dtype = torch.bfloat16 for opendecider-nano, device cuda:0
+hachidori benchmark --questions <defs> --models laya-base,opendecider-nano --warmup 5 --passes 5 --out bf16.json <corpus.jsonl>
+# 3. pair the two runs of OpenDecider-nano (reads files only)
+hachidori precision -model opendecider-nano -out fp32-vs-bf16.json fp32.json bf16.json
+```
+
+`precision` refuses (listing every reason) unless both runs are the same model,
+revision, provider, runtime, device and torch build, differ only in dtype, and
+received the same dataset, question identities and normalized requests with the
+same declared controls. It never writes a verdict. It reports:
+
+| measure | field |
+|---|---|
+| choice flips, each one with expected label, both choices and confidences, and whether it `fixed`, `broke` or left both wrong | `choice_flips`, `flip_rate`, `flips[]` |
+| probability deltas (per observation, the largest absolute change over its options: mean, p50, p95, max) | `probability_abs_delta` |
+| confidence deltas (signed mean and absolute spread) | `confidence_delta` |
+| accuracy, macro-F1, ECE, Brier, NLL, high-confidence errors (candidate minus baseline; both runs' own values under `baseline.quality` and `candidate.quality`) | `quality_delta` |
+| p50 / p95 request and inference latency as candidate/baseline ratios, overall and per input-length bucket | `request_latency`, `inference_latency`, `length_buckets[]` |
+| resident and peak accelerator memory ratios | `memory` |
+| cold load and warmup ratios | `load_ms`, `warmup_ms` |
+| requests, errors by class, resident stability | `baseline`/`candidate`: `requests`, `error_count`, `errors_by_class`, `resident_stable` |
+
+Input-length scaling is the per-bucket table (a corpus with short and long
+states). Question-count scaling is a series: repeat steps 1-3 on corpora whose
+Question Definition sets have 1, 2, 4 and more questions per case and tabulate
+each report's `question_count` against the ratios.
+
+Rules for changing the default dtype to `bfloat16` (all of them, on the target
+accelerator, here the RTX 3060): zero `broken` flips or a flip rate and
+accuracy/ECE/Brier/high-confidence-error change the owner accepts and records,
+a meaningful latency or memory ratio, no more request errors, residents stable,
+and the report archived with the pull request that changes the default. Without
+that record the default stays `float32`.
+
+#### Recorded state (#136)
+
+| item | outcome | note |
+|---|---|---|
+| portable tests: dtype launch control, worker dtype verification and no-fallback, paired comparison | see the pull request | stubs and fixtures only; no real model is loaded |
+| real OpenDecider-nano FP32 vs BF16 on CUDA, fixed corpus (flips, probability/confidence deltas, accuracy, ECE, Brier, latency, scaling, memory, load/warmup, errors) | NOT_CHECKED | no GPU, torch or corpus in the authoring environment; nothing is inferred from CPU, upstream claims or other models |
+| physical Windows, RTX 3060, `bfloat16` OpenDecider-nano | NOT_CHECKED | user-side; never inferred from CI |
+| default dtype | unchanged: `float32` | no recorded evidence supports a change |
+
 ### Recorded state for the change that introduced OpenDecider-nano
 
 | item | outcome | note |
