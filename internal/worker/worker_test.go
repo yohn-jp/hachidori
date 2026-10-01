@@ -582,7 +582,7 @@ class cuda:
 // pythonWorker returns the launch configuration of the real worker script for
 // provider, run with dir first on sys.path so that its stub torch and provider
 // modules are imported instead of the real ones.
-func pythonWorker(t *testing.T, dir, provider, device string) Config {
+func pythonWorker(t *testing.T, dir, provider, device string, extra ...string) Config {
 	t.Helper()
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -591,8 +591,8 @@ func pythonWorker(t *testing.T, dir, provider, device string) Config {
 	script, _ := filepath.Abs("py/hachidori_worker.py")
 	return Config{
 		Python: python,
-		Args: []string{"-S", "-c", "import sys; sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[2:]; exec(open(sys.argv[0]).read())",
-			dir, script, "--model-dir", dir, "--device", device, "--manifest", filepath.Join(dir, "manifest.json"), "--provider", provider},
+		Args: append([]string{"-S", "-c", "import sys; sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[2:]; exec(open(sys.argv[0]).read())",
+			dir, script, "--model-dir", dir, "--device", device, "--manifest", filepath.Join(dir, "manifest.json"), "--provider", provider}, extra...),
 		Env:            []string{"PYTHONNOUSERSITE=1"},
 		StartTimeout:   20 * time.Second,
 		RequestTimeout: 10 * time.Second,
@@ -688,16 +688,18 @@ class _Dev:
     type = "cpu"
     index = None
     def __str__(self): return "cpu"
+import os
 class _Param:
     device = _Dev()
-    dtype = "torch.float32"
+    def __init__(self, dtype): self.dtype = dtype
 class _Enc:
-    def parameters(self): return iter([_Param()])
+    def __init__(self, dtype): self.dtype = dtype
+    def parameters(self): return iter([_Param(self.dtype)])
 class _Impl:
-    enc = _Enc()
+    def __init__(self, dtype): self.enc = _Enc(dtype)
 class Model:
-    impl = _Impl()
     calls = []
+    def __init__(self, dtype): self.impl = _Impl(dtype)
     def system_one_batch(self, states, questions):
         Model.calls.append((len(states), len(questions)))
         out = []
@@ -718,10 +720,10 @@ class Model:
             out.append({"model": "stub", "answers": answers})
         return out
 def load(path, device=None, revision=None, dtype=None, base_url=None):
-    assert dtype == "float32" and device == "cpu", (device, dtype)
-    import os
+    assert dtype in ("float32", "bfloat16") and device == "cpu", (device, dtype)
     assert os.path.exists(os.path.join(path, "opendecider.json"))
-    return Model()
+    # STUB_IGNORE_DTYPE imitates a package that silently keeps float32.
+    return Model("torch.float32" if os.environ.get("STUB_IGNORE_DTYPE") else "torch." + dtype)
 `
 
 func openDeciderDir(t *testing.T) string {
@@ -806,5 +808,46 @@ func TestPythonWorkerRejectsUnknownProvider(t *testing.T) {
 	dir := openDeciderDir(t)
 	if _, err := Start(context.Background(), pythonWorker(t, dir, "openjev", "cpu"), nil); err == nil {
 		t.Fatal("unknown provider accepted")
+	}
+}
+
+// Issue #136: OpenDecider runs in float32 unless bfloat16 is explicitly
+// requested; status reports the dtype the encoder is actually in; a package
+// that does not honour the requested dtype is a model-load failure, never a
+// silent float32 (or CPU) run; only OpenDecider accepts --dtype.
+func TestPythonWorkerOpenDeciderDType(t *testing.T) {
+	dir := openDeciderDir(t)
+	for dtype, want := range map[string]string{"": "torch.float32", "float32": "torch.float32", "bfloat16": "torch.bfloat16"} {
+		var extra []string
+		if dtype != "" {
+			extra = []string{"--dtype", dtype}
+		}
+		p, err := Start(context.Background(), pythonWorker(t, dir, "opendecider", "cpu", extra...), nil)
+		if err != nil {
+			t.Fatalf("dtype %q: %v", dtype, err)
+		}
+		if p.Info["dtype"] != want || p.Info["device"] != "cpu" {
+			t.Fatalf("dtype %q: info = %v", dtype, p.Info)
+		}
+		// The typed closed-choice contract is unchanged by the dtype.
+		res, _, err := p.Decide([]Item{item})
+		if err != nil || len(res) != 1 || res[0][0].Type != "choice" || res[0][0].Choice != "yes" {
+			t.Fatalf("dtype %q: %+v %v", dtype, res, err)
+		}
+		p.Close()
+	}
+
+	var f *Failure
+	cfg := pythonWorker(t, dir, "opendecider", "cpu", "--dtype", "bfloat16")
+	cfg.Env = append(cfg.Env, "STUB_IGNORE_DTYPE=1")
+	if _, err := Start(context.Background(), cfg, nil); !errors.As(err, &f) || f.Class != ClassModelLoad ||
+		!strings.Contains(f.Message, "torch.float32 instead of requested bfloat16") {
+		t.Fatalf("ignored dtype: err = %v", err)
+	}
+	if _, err := Start(context.Background(), pythonWorker(t, dir, "opendecider", "cpu", "--dtype", "float16"), nil); err == nil {
+		t.Fatal("unsupported dtype accepted")
+	}
+	if _, err := Start(context.Background(), pythonWorker(t, dir, "laya", "cpu", "--dtype", "bfloat16"), nil); err == nil {
+		t.Fatal("laya accepted --dtype")
 	}
 }

@@ -308,6 +308,26 @@ func ResidentConfig(h home.Home, modelID string, log io.Writer) (worker.Config, 
 	return workerConfig(h, ra, rm, rmm, log)
 }
 
+// EnvOpenDeciderDType is the explicit evaluation control for the dtype of an
+// OpenDecider resident (#136). Unset or empty keeps the provider default
+// (float32); the only other accepted value is bfloat16. It is read at launch,
+// never persisted, and applies to no other provider. The dtype a resident is
+// actually on is always reported by /v1/status (worker.provider.dtype).
+const EnvOpenDeciderDType = "HACHIDORI_OPENDECIDER_DTYPE"
+
+// openDeciderDType resolves EnvOpenDeciderDType for model. An unsupported value
+// is a launch error, never silently replaced by another dtype.
+func openDeciderDType(model home.ModelManifest) (string, error) {
+	v := os.Getenv(EnvOpenDeciderDType)
+	if v == "" || model.Provider != setup.ProviderOpenDecider {
+		return "", nil
+	}
+	if v != "float32" && v != "bfloat16" {
+		return "", fmt.Errorf("%s=%q: want float32 or bfloat16", EnvOpenDeciderDType, v)
+	}
+	return v, nil
+}
+
 // workerConfig is the launch configuration of the model an activation-shaped
 // record names, on the runtime rm.
 func workerConfig(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.ModelManifest, log io.Writer) (worker.Config, Runtime, error) {
@@ -331,10 +351,18 @@ func workerConfig(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.M
 		return worker.Config{}, Runtime{}, fmt.Errorf("worker script %s does not match runtime manifest", script)
 	}
 	modelDir := h.ModelDir(a)
+	args := []string{"-I", "-X", "utf8", script, "--model-dir", modelDir, "--device", a.Device,
+		"--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", model.Provider}
+	dtype, err := openDeciderDType(model)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	if dtype != "" {
+		args = append(args, "--dtype", dtype)
+	}
 	cfg := worker.Config{
-		Python: python,
-		Args: []string{"-I", "-X", "utf8", script, "--model-dir", modelDir, "--device", a.Device,
-			"--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", model.Provider},
+		Python:         python,
+		Args:           args,
 		Env:            h.Env(filepath.Dir(python), true),
 		Dir:            h.Path("state"),
 		Log:            log,

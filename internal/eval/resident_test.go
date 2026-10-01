@@ -25,6 +25,7 @@ type fakeResident struct {
 	loadMS       float64
 	warmupMS     float64
 	alloc, rsrv  int64
+	dtype        string
 	noAccel      bool
 	decides      int
 	// answer maps a state to (choice, confidence); the default answers the
@@ -102,11 +103,15 @@ func (r *fakeResident) status() map[string]any {
 		accel = map[string]any{"memory_allocated": float64(r.alloc), "memory_reserved": float64(r.rsrv),
 			"memory_free": float64(6 << 30), "memory_total": float64(12 << 30)}
 	}
+	prov := map[string]any{"provider": r.provider, "model_revision": "rev1", "load_ms": r.loadMS, "warmup_ms": r.warmupMS, "device": "cuda"}
+	if r.dtype != "" {
+		prov["dtype"] = r.dtype
+	}
 	return map[string]any{
 		"schema":    api.SchemaV1,
 		"runtime":   map[string]any{"model_id": r.id, "model": "org/" + r.id + "/rev1", "device": "cuda", "runtime": "rt1", "home": "h"},
 		"uptime_s":  r.uptime,
-		"worker":    map[string]any{"ready": r.running, "pid": r.pid, "starts": r.starts, "provider": map[string]any{"provider": r.provider, "model_revision": "rev1", "load_ms": r.loadMS, "warmup_ms": r.warmupMS, "device": "cuda"}, "accelerator": accel},
+		"worker":    map[string]any{"ready": r.running, "pid": r.pid, "starts": r.starts, "provider": prov, "accelerator": accel},
 		"residents": nil,
 	}
 }

@@ -61,6 +61,9 @@ client (caller side, uses HACHIDORI_ENDPOINT):
   question   validate local Question Definitions and print their identity
              and compiled v1 question (no endpoint)
   replay     reconstruct and re-send decisions from a Decision Evidence report
+  precision  compare one model at two dtypes from two saved resident
+             comparisons (choice flips, probability and confidence deltas,
+             quality, latency, memory); reads files only, no endpoint
 
 Run 'hachidori <command> -h' for flags.
 `
@@ -75,6 +78,7 @@ func commands() map[string]func([]string) error {
 		"benchmark": func(a []string) error { return cmdEval("benchmark", a) },
 		"question":  cmdQuestion,
 		"replay":    cmdReplay,
+		"precision": cmdPrecision,
 		// The update replacement helper: started by the desktop, never typed.
 		"apply-update": cmdApplyUpdate,
 	}
@@ -523,6 +527,45 @@ func runResidentEval(c *client.Client, cases []eval.Case, sum, dataset string, o
 	}
 	if !rep.ResidentsStable {
 		return errors.New("a resident changed identity during the comparison; evidence is marked resident_stable=false")
+	}
+	return nil
+}
+
+// cmdPrecision pairs one model's runs at two dtypes from two saved resident
+// comparisons (#136). It reads files only: nothing is sent to an endpoint and
+// no runtime is started or changed.
+func cmdPrecision(args []string) error {
+	fs := flag.NewFlagSet("precision", flag.ExitOnError)
+	model := fs.String("model", setup.OpenDeciderNano, "catalog model ID present in both comparisons")
+	out := fs.String("out", "", "write the full JSON report (with every choice flip) to this local file")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: hachidori precision [flags] <baseline-comparison.json> <candidate-comparison.json>")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() != 2 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	base, err := eval.LoadComparison(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	cand, err := eval.LoadComparison(fs.Arg(1))
+	if err != nil {
+		return err
+	}
+	r, err := eval.ComparePrecision(base, cand, *model)
+	if err != nil {
+		return err
+	}
+	eval.PrecisionSummary(os.Stdout, r)
+	if *out != "" {
+		b, _ := json.MarshalIndent(r, "", "  ")
+		if err := os.WriteFile(*out, append(b, '\n'), 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("precision comparison written to %s\n", *out)
 	}
 	return nil
 }

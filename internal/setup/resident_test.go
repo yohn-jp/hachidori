@@ -70,6 +70,40 @@ func TestResidentConfigLaunchesEachModelFromTheActiveRuntime(t *testing.T) {
 	}
 }
 
+// Issue #136: the OpenDecider dtype is an explicit launch control. Unset keeps
+// the provider default (no --dtype), bfloat16 is passed to OpenDecider only,
+// Laya never receives it, and any other value refuses the launch.
+func TestOpenDeciderDTypeIsAnExplicitLaunchControl(t *testing.T) {
+	h, def, other := setup.MaterializeFakeResidents(t, "cuda")
+	dtypeOf := func(id string) (string, bool, error) {
+		cfg, _, err := server.ResidentConfig(h, id, io.Discard)
+		return argValue(cfg.Args, "--dtype"), slices.Contains(cfg.Args, "--dtype"), err
+	}
+	for _, id := range []string{def, other} {
+		if v, has, err := dtypeOf(id); err != nil || has {
+			t.Fatalf("%s default: dtype %q %v", id, v, err)
+		}
+	}
+	t.Setenv(server.EnvOpenDeciderDType, "bfloat16")
+	if v, _, err := dtypeOf(other); err != nil || v != "bfloat16" {
+		t.Fatalf("opendecider bfloat16: %q %v", v, err)
+	}
+	if _, has, err := dtypeOf(def); err != nil || has {
+		t.Fatalf("laya must never receive --dtype: %v %v", has, err)
+	}
+	t.Setenv(server.EnvOpenDeciderDType, "float32")
+	if v, _, err := dtypeOf(other); err != nil || v != "float32" {
+		t.Fatalf("opendecider float32: %q %v", v, err)
+	}
+	t.Setenv(server.EnvOpenDeciderDType, "float16")
+	if _, _, err := dtypeOf(other); err == nil || !strings.Contains(err.Error(), server.EnvOpenDeciderDType) {
+		t.Fatalf("unsupported dtype launched: %v", err)
+	}
+	if _, _, err := server.WorkerConfig(h, io.Discard); err != nil {
+		t.Fatalf("laya default resident must ignore the OpenDecider control: %v", err)
+	}
+}
+
 // Only catalog identities can be residents, and only when already
 // materialized: nothing is downloaded and no repository can be named.
 func TestResidentConfigRefusesUncatalogedAndUnmaterializedModels(t *testing.T) {
