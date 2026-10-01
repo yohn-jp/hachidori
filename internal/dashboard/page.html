@@ -188,6 +188,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 .question { display: grid; gap: var(--sp-3); }
 .choices { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(0, 2fr); gap: .35rem .6rem; }
 .result-pane { display: grid; gap: var(--sp-4); }
+.btn[aria-busy="true"] { cursor: progress; opacity: .75; }
 .result-pane[aria-busy="true"] { opacity: .6; transition: opacity var(--dur) var(--ease); }
 .result { display: grid; gap: var(--sp-2); padding-top: var(--sp-4); border-top: 1px solid var(--line); }
 .result:first-of-type { border-top: 0; padding-top: 0; }
@@ -314,13 +315,21 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     var ask = (b && b.dataset.confirm) || f.dataset.confirm;
     if (f.getAttribute("aria-busy") === "true" || (ask && !confirm(ask))) { e.preventDefault(); return; }
     f.setAttribute("aria-busy", "true");
-    if (b) b.setAttribute("aria-busy", "true");
+    if (b) {
+      b.setAttribute("aria-busy", "true");
+      // An action that starts slow work says so on the button itself, before
+      // the response arrives.
+      if (b.dataset.pending) { b.dataset.label = b.textContent; b.textContent = b.dataset.pending; }
+    }
     var target = f.dataset.busy && document.getElementById(f.dataset.busy);
     if (target) target.setAttribute("aria-busy", "true");
   });
   // A page restored from the back/forward cache is not pending any more.
   window.addEventListener("pageshow", function () {
-    document.querySelectorAll('[aria-busy="true"]').forEach(function (n) { n.removeAttribute("aria-busy"); });
+    document.querySelectorAll('[aria-busy="true"]').forEach(function (n) {
+      n.removeAttribute("aria-busy");
+      if (n.dataset.label) { n.textContent = n.dataset.label; delete n.dataset.label; }
+    });
   });
   setInterval(refresh, 3000);
 })();
@@ -369,8 +378,8 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   {{if .Determinate}}<div class="bar progress" role="progressbar" aria-label="{{t (stepLabel .Step)}}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{printf "%.0f" .Percent}}"><span style="width:{{printf "%.1f" .Percent}}%"></span></div>
   {{else}}<div class="bar progress indeterminate" role="progressbar" aria-label="{{t (stepLabel .Step)}}"><span></span></div>{{end}}
   {{else}}
-  <p class="op-line">{{with phasePosition .}}{{t "phase"}} {{.}} · {{end}}{{t "Working"}}</p>
-  <div class="bar progress indeterminate" role="progressbar" aria-label="{{t "Working"}}"><span></span></div>
+  <p class="op-line">{{with phasePosition .}}{{t "phase"}} {{.}} · {{end}}{{if .Phase}}{{t "Working"}}{{else}}{{t "Starting"}}{{end}}</p>
+  <div class="bar progress indeterminate" role="progressbar" aria-label="{{if .Phase}}{{t "Working"}}{{else}}{{t "Starting"}}{{end}}"><span></span></div>
   {{end}}
 </div>
 {{end}}

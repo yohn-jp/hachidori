@@ -7,7 +7,6 @@ package dashboard
 // actions do, and only inside the update subsystem.
 
 import (
-	"context"
 	"net/http"
 	"strings"
 
@@ -15,16 +14,19 @@ import (
 )
 
 // Updates is the update subsystem as the dashboard uses it (update.Service,
-// adapted by the desktop composition for the application-level rules).
+// adapted by the desktop composition for the application-level rules). Check
+// and Download return once the action is accepted (or refused because another
+// one is in progress); the work itself, its phases and byte progress are read
+// from Status.
 type Updates interface {
 	// Status is local: it reads no network.
 	Status() update.Status
 	// SetChannel saves the channel; it contacts, downloads and installs nothing.
 	SetChannel(update.Channel) error
 	// Check retrieves release metadata. Only this action does.
-	Check(ctx context.Context) error
+	Check() error
 	// Download begins retrieving one release's executable and checksum. Only
-	// this action does. It returns once accepted; progress is in Status.
+	// this action does.
 	Download(tag string) error
 	// Install hands the verified update to the replacement helper and ends the
 	// application so it can run.
@@ -40,7 +42,38 @@ type UpdatesView struct {
 	Op, LastOp *ModelOp
 	// Hints are the operator's next step for a failure (update.Hints).
 	OpHint, CheckHint, ResultHint string
+	// OpOutcome states what a failed download left behind (nothing, a
+	// discarded partial file, a previously verified update still ready).
+	// Each is a catalog message ID.
+	OpOutcome []string
 }
+
+// downloadOutcome says, for a failed download, what is and is not on disk: it
+// restates what the download phases do (a partial or unverified file is always
+// removed) together with the ready update Status reports.
+func downloadOutcome(f *update.Failure, st update.Status) []string {
+	var what string
+	switch {
+	case f.Phase == update.PhaseChecksum:
+		what = "Nothing was downloaded."
+	case f.Phase == update.PhaseDownload:
+		what = "The partial download was discarded."
+	case f.Class == update.ClassChecksumMismatch || f.Class == update.ClassAsset:
+		what = "The downloaded file failed verification and was discarded."
+	default:
+		what = "The downloaded file was not put in place."
+	}
+	if st.Ready != nil && st.ReadyProblem == "" {
+		return []string{what, readyKept}
+	}
+	return []string{what, noneReady}
+}
+
+// The outcome's second sentence.
+const (
+	readyKept = "A previously verified update is still ready to install."
+	noneReady = "No update is ready to install."
+)
 
 // updateOp restates the update subsystem's operation as the shared
 // long-running operation view.
@@ -61,6 +94,7 @@ func (d *Dashboard) updatesView() *UpdatesView {
 	uv := &UpdatesView{Status: st, Channels: update.Channels, Op: updateOp(st.Busy), LastOp: updateOp(st.Last)}
 	if f := st.Last; f != nil && f.Failure != nil {
 		uv.OpHint = update.Hints[f.Failure.Class]
+		uv.OpOutcome = downloadOutcome(f.Failure, st)
 	}
 	if lc := st.LastCheck; lc != nil && !lc.OK {
 		uv.CheckHint = update.Hints[lc.Class]
@@ -96,7 +130,7 @@ func (d *Dashboard) updatesChannel(w http.ResponseWriter, r *http.Request) {
 
 // updatesCheck is the explicit Check for updates action.
 func (d *Dashboard) updatesCheck(w http.ResponseWriter, r *http.Request) {
-	d.done(w, r, "check for updates", d.cfg.Updates.Check(r.Context()), "check finished; the releases are listed below")
+	d.done(w, r, "check for updates", d.cfg.Updates.Check(), "check started; the releases are listed below once it finishes")
 }
 
 // updatesDownload is the explicit Download action for one release.
