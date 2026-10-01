@@ -201,6 +201,13 @@ type Snapshot struct {
 	// confused.
 	Recovery        *Recovery `json:"recovery,omitempty"`
 	OperatorStopped bool      `json:"operator_stopped,omitempty"`
+	// Residents is the status of every member of a bound resident set,
+	// default first (nil for a single worker). State, Failure and Recovery
+	// are projected over all of them: the application is Ready only when
+	// every resident that is meant to be up is READY, and a resident's
+	// failure names its model and provider. Status stays the default
+	// resident's document.
+	Residents []ResidentStatus `json:"residents,omitempty"`
 }
 
 // Controller orchestrates the application actions over the existing
@@ -289,14 +296,27 @@ func (c *Controller) Snapshot() Snapshot {
 
 	s := Snapshot{Home: root, Operation: op, Last: last, Maintenance: maint, Checks: checks}
 	running := false
+	proj := s.Status
+	var culprit *ResidentStatus
 	if rt != nil {
 		running = rt.Running()
 		st := rt.Status()
-		s.Status = &st
+		s.Status, proj = &st, &st
+		if rr, ok := rt.(ResidentRuntime); ok {
+			s.Residents = rr.ResidentStatuses()
+			agg, c := aggregateResidents(st, s.Residents)
+			proj, culprit = &agg, c
+		}
 	}
 	kind := ""
 	if op != nil {
 		kind = op.Kind
+	}
+	// An action on one resident is not an action on the application: the
+	// other residents keep serving, so their state is not masked by it.
+	projKind := kind
+	if op != nil && op.Model != "" && s.Residents != nil {
+		projKind = ""
 	}
 	var lastFail *Failure
 	if last != nil {
@@ -306,11 +326,19 @@ func (c *Controller) Snapshot() Snapshot {
 	if root != "" && kind != OpSetup && !running {
 		installed = c.cfg.Installed(root)
 	}
-	s.State, s.Failure = project(root, kind, running, s.Status, lastFail, installed)
+	s.State, s.Failure = project(root, projKind, running, proj, lastFail, installed)
 	s.RestartRequired = pending && running
 	s.OperatorStopped = stopped && !running && kind == ""
 	if !s.OperatorStopped {
-		s.Recovery = recoveryOf(kind, running, s.Status)
+		s.Recovery = recoveryOf(projKind, running, proj)
+	}
+	if culprit != nil {
+		if s.Failure != nil && s.Failure.Source == SourceWorker {
+			s.Failure.Model, s.Failure.Provider = culprit.Model, culprit.Provider
+		}
+		if s.Recovery != nil && s.Recovery.Cause != nil {
+			s.Recovery.Cause.Model, s.Recovery.Cause.Provider = culprit.Model, culprit.Provider
+		}
 	}
 	return s
 }
@@ -807,6 +835,70 @@ func (c *Controller) Stop() error {
 	c.finish(op, nil)
 	c.mu.Unlock()
 	return nil
+}
+
+// StartResident starts one resident of the bound resident set; the others are
+// untouched. It is a no-op (nil) when that resident is already running.
+func (c *Controller) StartResident(model string) error { return c.residentAction(OpStart, model) }
+
+// StopResident stops one resident and waits for it. The others keep serving;
+// nothing restarts the stopped one until StartResident or Restart.
+func (c *Controller) StopResident(model string) error { return c.residentAction(OpStop, model) }
+
+// RestartResident restarts one resident (a resident the supervisor gave up on
+// begins with a fresh restart budget). The others are untouched.
+func (c *Controller) RestartResident(model string) error { return c.residentAction(OpRestart, model) }
+
+// residentAction is the one path of the per-resident actions. It is admitted
+// like Start/Stop/Restart (one action in flight, ErrBusy otherwise) but acts
+// on the bound set only: it never binds a runtime, never rebinds after an
+// Activate (ErrRestartRequired: restart the whole runtime), and never changes
+// another resident.
+func (c *Controller) residentAction(kind, model string) error {
+	c.mu.Lock()
+	if err := c.admit(); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	rr, ok := c.rt.(ResidentRuntime)
+	if !ok {
+		c.mu.Unlock()
+		return ErrNoResidents
+	}
+	if c.pending {
+		c.mu.Unlock()
+		return ErrRestartRequired
+	}
+	known := false
+	for _, r := range rr.ResidentStatuses() {
+		known = known || r.Model == model
+	}
+	if !known {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: %q", ErrUnknownResident, model)
+	}
+	op := c.begin(kind, "", model)
+	c.mu.Unlock()
+
+	var err error
+	switch kind {
+	case OpStart:
+		_, err = rr.StartResident(model)
+	case OpStop:
+		err = rr.StopResident(model)
+	case OpRestart:
+		err = rr.RestartResident(model)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case kind != OpStop:
+		c.stopped = false
+	case !rr.Running():
+		c.stopped = true // the last resident went down by the operator's hand
+	}
+	c.finish(op, nil)
+	return err
 }
 
 // Close stops accepting actions, waits for the in-flight action (setup is

@@ -199,6 +199,44 @@ func WorkerConfig(h home.Home, log io.Writer) (worker.Config, Runtime, error) {
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
 	}
+	return workerConfig(h, a, rm, mm, log)
+}
+
+// ResidentConfig is WorkerConfig for one resident of a multi-resident set:
+// the catalog model modelID served by the active runtime on the active
+// device. The empty ID and the active model's own ID are the default
+// resident, identical to WorkerConfig. Any other ID must be a catalog model
+// that is already materialized in the home; the activation record is only
+// read, never changed, and nothing is downloaded. The requested device is the
+// activation record's for every resident: there is no per-resident device and
+// no fallback to another one.
+func ResidentConfig(h home.Home, modelID string, log io.Writer) (worker.Config, Runtime, error) {
+	a, rm, mm, err := h.LoadActive()
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	active, err := setup.ActiveModel(a)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	if modelID == "" || modelID == active.ID {
+		return workerConfig(h, a, rm, mm, log)
+	}
+	model, err := setup.LookupModel(modelID)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	ra := home.Active{Runtime: a.Runtime, ModelID: model.ID, Model: setup.ModelDirName(model), Device: a.Device}
+	var rmm home.ModelManifest
+	if err := home.ReadJSON(filepath.Join(h.ModelDir(ra), "hachidori-model.json"), &rmm); err != nil {
+		return worker.Config{}, Runtime{}, fmt.Errorf("model %s is not materialized in this home (materialize it first): %w", model.ID, err)
+	}
+	return workerConfig(h, ra, rm, rmm, log)
+}
+
+// workerConfig is the launch configuration of the model an activation-shaped
+// record names, on the runtime rm.
+func workerConfig(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.ModelManifest, log io.Writer) (worker.Config, Runtime, error) {
 	model, err := setup.ActiveModel(a)
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
