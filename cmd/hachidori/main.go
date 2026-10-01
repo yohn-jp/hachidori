@@ -72,7 +72,14 @@ func commands() map[string]func([]string) error {
 	}
 }
 
-func main() { os.Exit(run(os.Args[1:], noArgLaunch)) }
+// entry is the startup measurement epoch: taken first thing in main, it is
+// the one origin every desktop startup mark is measured from.
+var entry desktop.Epoch
+
+func main() {
+	entry = desktop.Epoch(time.Now())
+	os.Exit(run(os.Args[1:], noArgLaunch))
+}
 
 // run dispatches the command line. noArg, when non-nil, is the no-argument
 // Windows desktop entry point. Explicit CLI commands remain unchanged.

@@ -644,4 +644,18 @@ var ja = map[string]string{
 	"· served":                        "· 提供",
 	"· server total":                  "· サーバー合計",
 	"· showing the first":             "· 先頭",
+	// Desktop visual/interaction system (#105): accessible names, status
+	// transitions and irreversible-action confirmations.
+	"Workspaces":                                 "ワークスペース",
+	"Runtime identity":                           "ランタイムの識別情報",
+	"Status is live again.":                      "ステータスは再び最新です。",
+	"Status is stale: refresh failed.":           "ステータスが古くなっています: 更新に失敗しました。",
+	"Remove this saved connection?":              "この保存済み接続を削除しますか？",
+	"Workbench actions":                          "ワークベンチの操作",
+	"Exported definition":                        "エクスポートした定義",
+	"Delete this saved experiment from history?": "この保存済み実験を履歴から削除しますか？",
+	"Newer":            "新しい履歴",
+	"Older":            "古い履歴",
+	"aggregate deltas": "全体の差分",
+	"per-question deltas (identity-aligned questions only)": "質問ごとの差分（同一定義の質問のみ）",
 }

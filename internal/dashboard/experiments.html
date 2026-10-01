@@ -11,7 +11,7 @@
 
 <section class="region" aria-labelledby="setup-h">
   <div class="region-h"><h2 id="setup-h">{{if .Exp}}{{t "New experiment"}}{{else}}{{t "Set up an experiment"}}{{end}}</h2><span class="sub">{{t "one experiment at a time · nothing is stored except the reports you export or save to history"}}</span></div>
-  <form method="post" action="/experiments/run" class="surface" id="exp-form">
+  <form method="post" action="/experiments/run" class="stack" id="exp-form">
     <input type="hidden" name="token" value="{{.Token}}">
     <div class="path-form"><label class="field">{{t "Dataset (JSONL, absolute path)"}}<input name="dataset" value="{{.Form.Dataset}}" spellcheck="false" autocomplete="off" placeholder="/path/to/dataset.jsonl" required></label>{{if .PathPicker}}<button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="dataset" formnovalidate>{{t "Choose file"}}</button>{{end}}</div>
     <div class="field"><span>{{t "Question Definition files or directories (optional, absolute paths, one per line)"}}</span><textarea name="definitions" rows="2" spellcheck="false">{{.Form.Definitions}}</textarea>{{if .PathPicker}}<div class="btn-row"><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-file" formnovalidate>{{t "Choose file"}}</button><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-folder" formnovalidate>{{t "Choose folder"}}</button></div>{{end}}</div>
@@ -26,7 +26,7 @@
     <p class="note">{{t "The dataset and definitions are read on this machine from the paths you enter. Only each case's state and compiled questions are sent to"}} <code>POST /v1/decide</code>.</p>
   </form>
   {{with .Pre}}
-  <dl class="kv" aria-label="preflight">
+  <dl class="kv" aria-label="{{t "Preflight only"}}">
     <dt>{{t "dataset"}}</dt><dd>{{.Input.Dataset}}</dd>
     <dt>{{t "dataset sha256"}}</dt><dd>{{.DatasetSHA256}}</dd>
     <dt>{{t "cases"}}</dt><dd>{{.Cases}}</dd>
@@ -42,8 +42,13 @@
   <div class="region-h"><h2 id="hist-h">{{t "History"}}</h2><span class="sub mono">{{.HistoryRoot}} {{t "· saved only when you choose to"}}</span></div>
   {{with .HistoryErr}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   {{if .History}}
-  <div class="table-wrap"><table class="data" aria-label="saved experiments"><thead><tr><th>{{t "saved"}}</th><th>{{t "label"}}</th><th>{{t "dataset"}}</th><th>{{t "served model"}}</th><th class="num">{{t "accuracy"}}</th><th class="num">ECE</th><th class="num">p50 / p95</th><th class="num">{{t "errors"}}</th><th></th></tr></thead><tbody>
-  {{range .History}}<tr>
+  {{if or (ge .HistoryPrev 0) (ge .HistoryNext 0)}}<nav class="btn-row" aria-label="{{t "History"}}">
+    <span class="note num">{{add .HistoryFrom 1}}–{{add .HistoryFrom (len .HistoryRows)}} / {{len .History}}</span>
+    {{if ge .HistoryPrev 0}}<a class="btn quiet" href="/experiments?history={{.HistoryPrev}}#hist-h">{{t "Newer"}}</a>{{end}}
+    {{if ge .HistoryNext 0}}<a class="btn quiet" href="/experiments?history={{.HistoryNext}}#hist-h">{{t "Older"}}</a>{{end}}
+  </nav>{{end}}
+  <div class="table-wrap"><table class="data" aria-label="{{t "History"}}"><thead><tr><th>{{t "saved"}}</th><th>{{t "label"}}</th><th>{{t "dataset"}}</th><th>{{t "served model"}}</th><th class="num">{{t "accuracy"}}</th><th class="num">ECE</th><th class="num">p50 / p95</th><th class="num">{{t "errors"}}</th><th><span class="vh">{{t "Actions"}}</span></th></tr></thead><tbody>
+  {{range .HistoryRows}}<tr>
     <td>{{.SavedAt}}</td><td>{{.Label}}{{with .Note}}<br><span class="note">{{.}}</span>{{end}}</td>
     <td class="mono">{{.Dataset}}<br><span class="faint">sha256 {{short .DatasetSHA256}}</span></td>
     <td class="mono">{{.ServedModel}}{{with .ServedIdentity}}<br><span class="faint">{{short .}}</span>{{end}}{{if not .ServedConsistent}}<br><span class="bad-t">{{t "inconsistent"}}</span>{{end}}</td>
@@ -51,12 +56,12 @@
     <td class="num{{if .RequestErrors}} bad-t{{end}}">{{.RequestErrors}}</td>
     <td>
       <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Open in Evidence"}}</button></form>
-      <form method="post" action="/history/delete" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Delete"}}</button></form>
+      <form method="post" action="/history/delete" class="inline" data-confirm="{{t "Delete this saved experiment from history?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Delete"}}</button></form>
     </td>
   </tr>{{end}}
   </tbody></table></div>
   {{if gt (len .History) 1}}
-  <form method="post" action="/history/compare" class="surface" aria-label="compare saved experiments">
+  <form method="post" action="/history/compare" class="stack" aria-label="{{t "Compare stored evidence"}}">
     <input type="hidden" name="token" value="{{$.Token}}">
     <div class="fields">
       <label class="field">{{t "Entry A"}}<select name="a" required>{{range .History}}<option value="{{.ID}}"{{if eq .ID $.CompareA}} selected{{end}}>{{.SavedAt}} · {{.Label}} · {{short .EvidenceSHA256}}</option>{{end}}</select></label>
@@ -69,20 +74,21 @@
   {{with .Compare}}{{template "compare" .}}{{end}}
   {{else}}<p class="note">{{t "No experiment has been saved yet."}}</p>{{end}}
   {{range .HistoryProblems}}<div class="msg bad" role="alert">{{t "history entry"}} {{.ID}} {{t "cannot be read:"}} {{.Reason}}
-    <form method="post" action="/history/delete" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Delete"}}</button></form></div>{{end}}
+    <form method="post" action="/history/delete" class="inline" data-confirm="{{t "Delete this saved experiment from history?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Delete"}}</button></form></div>{{end}}
 </section>
 {{end}}
 <script>
-// While an experiment runs, refresh only its slot.
+// While an experiment runs, refresh only its slot, only when it changed and
+// only while the window is shown.
 (function () {
   function running() { return !!document.querySelector("[data-running]"); }
   function tick() {
-    if (!running()) return;
+    if (!running() || document.hidden) return;
     fetch("/experiments/live", {cache: "no-store"}).then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
       .then(function (t) {
         var src = new DOMParser().parseFromString(t, "text/html").querySelector('[data-live="experiment"]');
         var dst = document.querySelector('[data-live="experiment"]');
-        if (src && dst) dst.innerHTML = src.innerHTML;
+        if (src && dst && src.innerHTML !== dst.innerHTML) dst.innerHTML = src.innerHTML;
         if (!running()) {
           var b = document.querySelector("#exp-form button[data-run]");
           if (b) { b.disabled = false; b.classList.remove("primary"); }
@@ -104,20 +110,20 @@
   </div>
   <div>
     <div class="progress-figures"><span class="big">{{.Done}} / {{.Pre.Requests}}</span><span class="muted">{{t "requests"}}</span><span class="faint num">{{printf "%.0f" .Percent}}%</span></div>
-    <div class="bar progress" role="progressbar" aria-label="requests completed" aria-valuemin="0" aria-valuemax="{{.Pre.Requests}}" aria-valuenow="{{.Done}}"><span style="width:{{printf "%.1f" .Percent}}%"></span></div>
+    <div class="bar progress" role="progressbar" aria-label="{{t "requests"}}" aria-valuemin="0" aria-valuemax="{{.Pre.Requests}}" aria-valuenow="{{.Done}}"><span style="width:{{printf "%.1f" .Percent}}%"></span></div>
     <p class="note">{{t "started"}} {{when .Started}}{{if not .Finished.IsZero}} {{t "· finished"}} {{when .Finished}}{{end}}</p>
   </div>
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
 
   {{with .Report}}
-  <dl class="metrics" aria-label="quality">
+  <dl class="metrics">
     <div class="metric primary"><dt>{{t "Accuracy"}}</dt><dd>{{f4 .ChoiceAccuracy}}</dd></div>
     <div class="metric primary"><dt>ECE <small>{{t "15 bins"}}</small></dt><dd>{{f4 .ECE}}</dd></div>
     <div class="metric"><dt>{{t "Request p50 / p95"}}</dt><dd>{{ms .RequestLatency.P50}}<small>/ {{ms .RequestLatency.P95}} · n={{.RequestLatency.N}}</small></dd></div>
     <div class="metric"><dt>{{t "Inference p50 / p95"}}</dt><dd>{{ms .ServerInference.P50}}<small>/ {{ms .ServerInference.P95}} · n={{.ServerInference.N}}</small></dd></div>
     <div class="metric"><dt>{{t "Request errors"}}</dt><dd class="{{if .Errors}}bad-t{{end}}">{{len .Errors}}</dd></div>
   </dl>
-  <dl class="metrics secondary" aria-label="summary">
+  <dl class="metrics secondary">
     <div class="metric"><dt>{{t "Cases"}}</dt><dd>{{.Cases}}</dd></div>
     <div class="metric"><dt>{{t "Observations"}}</dt><dd>{{.Observations}}</dd></div>
     <div class="metric"><dt>{{t "Mean confidence"}}</dt><dd>{{f4 .MeanConfidence}}</dd></div>
@@ -152,14 +158,14 @@
   {{with .Report}}
   <div class="region">
     <h2>{{t "Per question"}}</h2>
-    <div class="table-wrap"><table class="data" aria-label="per-question statistics"><thead><tr><th>{{t "question"}}</th><th class="num">n</th><th class="num">{{t "accuracy"}}</th><th class="num">{{t "mean confidence"}}</th><th class="num">ECE</th></tr></thead><tbody>
+    <div class="table-wrap"><table class="data" aria-label="{{t "Per question"}}"><thead><tr><th>{{t "question"}}</th><th class="num">n</th><th class="num">{{t "accuracy"}}</th><th class="num">{{t "mean confidence"}}</th><th class="num">ECE</th></tr></thead><tbody>
     {{range perQ .PerQuestion}}<tr><td class="mono">{{.ID}}</td><td class="num">{{.N}}</td><td class="num strong">{{f4 .Accuracy}}</td><td class="num">{{f4 .MeanConfidence}}</td><td class="num">{{f4 .ECE}}</td></tr>{{end}}
     </tbody></table></div>
   </div>
 
   {{with .Errors}}
   <details class="disclosure" open><summary>{{t "Request errors"}}<span class="sub bad-t">{{len .}}</span></summary>
-  <div class="body table-wrap"><table class="data" aria-label="request errors"><thead><tr><th>{{t "phase"}}</th><th>{{t "pass"}}</th><th>{{t "case"}}</th><th>{{t "question"}}</th><th>{{t "class"}}</th><th>{{t "message"}}</th></tr></thead><tbody>
+  <div class="body table-wrap"><table class="data" aria-label="{{t "Request errors"}}"><thead><tr><th>{{t "phase"}}</th><th>{{t "pass"}}</th><th>{{t "case"}}</th><th>{{t "question"}}</th><th>{{t "class"}}</th><th>{{t "message"}}</th></tr></thead><tbody>
   {{range .}}<tr><td>{{.Phase}}</td><td>{{if .Pass}}{{.Pass}}{{end}}</td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td class="mono">{{.Class}}</td><td>{{.Message}}</td></tr>{{end}}
   </tbody></table></div></details>
   {{end}}
@@ -199,7 +205,7 @@
 {{define "compare"}}
 <section class="region" aria-labelledby="cmp-h" data-compare="{{.Status}}">
   <div class="region-h"><h2 id="cmp-h">{{t "Comparison"}}</h2><span class="sub">{{t "status:"}} {{.Status}} {{t "· deltas are B minus A"}}</span></div>
-  <dl class="kv" aria-label="compared entries">
+  <dl class="kv">
     <dt>A</dt><dd class="mono">{{.EntryA.ID}}{{with .EntryA.Label}} · {{.}}{{end}} {{t "· evidence sha256"}} {{.EntryA.EvidenceSHA256}}</dd>
     <dt>B</dt><dd class="mono">{{.EntryB.ID}}{{with .EntryB.Label}} · {{.}}{{end}} {{t "· evidence sha256"}} {{.EntryB.EvidenceSHA256}}</dd>
     <dt>{{t "dataset sha256 A"}}</dt><dd class="mono">{{.DatasetA}}</dd>
@@ -211,7 +217,7 @@
   </div>
   {{range .Incompatibility}}<p class="msg bad" role="alert">{{if or (eq .Code "dataset_mismatch") (eq .Code "schema_mismatch")}}{{t "comparison refused"}}{{else}}{{t "partial comparison"}}{{end}}: {{.Code}}{{with .Question}} {{t "· question"}} {{.}}{{end}} · {{.Detail}}</p>{{end}}
   {{with .Aggregate}}
-  <div class="table-wrap"><table class="data" aria-label="aggregate deltas"><thead><tr><th>{{t "metric"}}</th><th class="num">A</th><th class="num">B</th><th class="num">B - A</th></tr></thead><tbody>
+  <div class="table-wrap"><table class="data" aria-label="{{t "aggregate deltas"}}"><thead><tr><th>{{t "metric"}}</th><th class="num">A</th><th class="num">B</th><th class="num">B - A</th></tr></thead><tbody>
     <tr><td>{{t "Accuracy"}}</td><td class="num">{{f4 .Accuracy.A}}</td><td class="num">{{f4 .Accuracy.B}}</td><td class="num">{{sd .Accuracy.Diff}}</td></tr>
     <tr><td>{{t "ECE (15 bins)"}}</td><td class="num">{{f4 .ECE.A}}</td><td class="num">{{f4 .ECE.B}}</td><td class="num">{{sd .ECE.Diff}}</td></tr>
     <tr><td>{{t "Mean confidence"}}</td><td class="num">{{f4 .MeanConfidence.A}}</td><td class="num">{{f4 .MeanConfidence.B}}</td><td class="num">{{sd .MeanConfidence.Diff}}</td></tr>
@@ -229,7 +235,7 @@
   </tbody></table></div>
   {{end}}
   {{if .Questions}}
-  <div class="table-wrap"><table class="data" aria-label="per-question deltas (identity-aligned questions only)"><thead><tr><th>{{t "question"}}</th><th class="num">{{t "n A / B"}}</th><th class="num">{{t "accuracy A / B"}}</th><th class="num">{{t "accuracy B - A"}}</th><th class="num">ECE A / B</th><th class="num">ECE B - A</th></tr></thead><tbody>
+  <div class="table-wrap"><table class="data" aria-label="{{t "per-question deltas (identity-aligned questions only)"}}"><thead><tr><th>{{t "question"}}</th><th class="num">{{t "n A / B"}}</th><th class="num">{{t "accuracy A / B"}}</th><th class="num">{{t "accuracy B - A"}}</th><th class="num">ECE A / B</th><th class="num">ECE B - A</th></tr></thead><tbody>
   {{range .Questions}}<tr><td class="mono">{{.ID}}</td><td class="num">{{.N.A}} / {{.N.B}}</td><td class="num">{{f4 .Accuracy.A}} / {{f4 .Accuracy.B}}</td><td class="num">{{sd .Accuracy.Diff}}</td><td class="num">{{f4 .ECE.A}} / {{f4 .ECE.B}}</td><td class="num">{{sd .ECE.Diff}}</td></tr>{{end}}
   </tbody></table></div>
   {{end}}

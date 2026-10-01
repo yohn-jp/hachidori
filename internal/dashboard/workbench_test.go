@@ -116,7 +116,7 @@ func echo(req api.DecideRequest) api.DecideResponse {
 
 // newWorkbenchEnv is newEnv with the dashboard's inference API address
 // pointing at a fake API server.
-func newWorkbenchEnv(t *testing.T) (*env, *fakeAPI) {
+func newWorkbenchEnv(t testing.TB) (*env, *fakeAPI) {
 	t.Helper()
 	e := newEnv(t)
 	f := &fakeAPI{}
@@ -156,7 +156,7 @@ func with(v url.Values, kv ...string) url.Values {
 	return v
 }
 
-var wireRe = regexp.MustCompile(`(?s)<textarea readonly rows="8" aria-label="exact request JSON" spellcheck="false">(.*?)</textarea>`)
+var wireRe = regexp.MustCompile(`(?s)<textarea readonly rows="8" aria-label="Exact request JSON" spellcheck="false">(.*?)</textarea>`)
 
 func TestWorkbenchRunSendsOneExistingDecideRequest(t *testing.T) {
 	e, f := newWorkbenchEnv(t)
@@ -195,7 +195,7 @@ func TestWorkbenchRunSendsOneExistingDecideRequest(t *testing.T) {
 	if m == nil || html.UnescapeString(m[1]) != string(bodies[0]) {
 		t.Fatalf("page does not show the exact request JSON that was sent:\n%v\nsent %s", m, bodies[0])
 	}
-	for _, s := range []string{"2 results", "inference 12.5 ms", "0.8000", "0.1000", "0.2000", `aria-label="result for question 0"`, `aria-label="result for question 1"`} {
+	for _, s := range []string{"2 results", "inference 12.5 ms", "0.8000", "0.1000", "0.2000", `aria-label="Result · Question 0"`, `aria-label="Result · Question 1"`} {
 		if !strings.Contains(body, s) {
 			t.Errorf("page lacks %q", s)
 		}
@@ -264,7 +264,7 @@ func TestWorkbenchShowsEndpointErrors(t *testing.T) {
 	}
 }
 
-func writeDef(t *testing.T, dir, name, content string) string {
+func writeDef(t testing.TB, dir, name, content string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {

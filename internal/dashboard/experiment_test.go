@@ -26,7 +26,7 @@ const datasetJSONL = `{"id":"c1","state":"a","questions":[{"id":"x","type":"choi
 `
 
 // expFiles writes the dataset and a definitions directory.
-func expFiles(t *testing.T) (dataset, defs string) {
+func expFiles(t testing.TB) (dataset, defs string) {
 	t.Helper()
 	dir := t.TempDir()
 	defs = filepath.Join(dir, "defs")
@@ -40,7 +40,7 @@ func runForm(dataset, defs string) url.Values {
 	return url.Values{"dataset": {dataset}, "definitions": {defs}, "warmup": {"1"}, "passes": {"2"}}
 }
 
-func waitExp(t *testing.T, e *env) *Experiment {
+func waitExp(t testing.TB, e *env) *Experiment {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
