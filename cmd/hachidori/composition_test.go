@@ -166,7 +166,7 @@ func TestDefinitionEvalEvidenceReplay(t *testing.T) {
 func TestCommandDispatchAndHelpCoexist(t *testing.T) {
 	cmds := commands()
 	documented := map[string]bool{}
-	for _, m := range regexp.MustCompile(`(?m)^  ([a-z]+)  `).FindAllStringSubmatch(usage, -1) {
+	for _, m := range regexp.MustCompile(`(?m)^  ([a-z-]+)  `).FindAllStringSubmatch(usage, -1) {
 		documented[m[1]] = true
 	}
 	for _, name := range []string{"setup", "serve", "dashboard", "desktop", "doctor", "status", "decide", "eval", "benchmark", "question", "replay"} {

@@ -88,6 +88,8 @@ This contract adds one behavior: the shell sets WebView2 `IsVisible=false` when 
 
 The WebView2 profile lives under `HACHIDORI_HOME/cache/webview2`. During first run, before a home exists, it lives in a throwaway temporary folder. It is reused across launches.
 
+Settings > Updates is a view over `internal/update` ([runtime.md](runtime.md#updates-windows-executable)): it renders local state and forwards four explicit actions (save channel, Check for updates, Download, Restart & update). Opening it, opening Settings and changing the channel use no network; its progress panel is the shared long-running operation view. Restart & update hands replacement to a separate helper process after the window closes; the window owns no replacement logic.
+
 WSL is not a UI or runtime target.
 
 ## 5. Performance budgets and measurements

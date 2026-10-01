@@ -1,0 +1,113 @@
+{{/* Settings > Updates. Everything below renders from local state; the only network actions are the Check and Download forms. */}}
+{{define "updates"}}{{template "open" .Chrome}}
+<header class="ws-head">
+  <div><h1>{{t "Updates"}}</h1><p class="lede">{{t "Manual, verified updates of the Hachidori executable. Opening this page and changing the channel contact nothing; only Check for updates and Download use the network."}}</p></div>
+</header>
+{{template "last" .Last}}
+{{with .Upd}}
+<div id="updates-region">
+<section class="region" id="updates-installed" aria-labelledby="ui-h">
+  <div class="region-h"><h2 id="ui-h">{{t "Installed"}}</h2><a href="/settings">{{t "Settings"}}</a></div>
+  <dl class="kv">
+    <dt>{{t "Installed version"}}</dt><dd class="mono" id="updates-installed-version">{{if .Installed.Known}}{{.Installed.Version}}{{else}}{{t "unknown (identified by an explicit check)"}}{{end}}</dd>
+    {{with .Installed.SHA256}}<dt>{{t "Executable SHA-256"}}</dt><dd class="mono">{{.}}</dd>{{end}}
+    <dt>{{t "Last check"}}</dt><dd id="updates-last-check">{{with .LastCheck}}{{when .Time}} · {{.Channel}} · {{if .OK}}{{if .Message}}{{.Message}}{{else}}{{t "latest"}} <span class="mono">{{.Latest}}</span>{{end}}{{else}}<span class="bad-t">{{t "failed"}}: {{.Message}}</span>{{end}}{{else}}{{t "never"}}{{end}}</dd>
+  </dl>
+  <form method="post" action="/settings/updates/channel" class="region" id="updates-channel">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <div class="fields">
+      <label class="field">{{t "Update channel"}}
+        <select name="channel">{{$c := .Channel}}{{range .Channels}}<option value="{{.}}"{{if eq . $c}} selected{{end}}>{{if eq (print .) "stable"}}{{t "Stable"}}{{else}}{{t "Development"}}{{end}}</option>{{end}}</select></label>
+    </div>
+    <div class="btn-row"><button type="submit" class="btn">{{t "Save channel"}}</button></div>
+  </form>
+  <p class="note">{{t "Stable offers stable releases (X.Y.Z). Development offers development releases (X.Y.Z-dev) and stable releases. The channel only selects which releases an explicit check offers: it never downloads, installs or downgrades anything."}}</p>
+</section>
+
+<section class="region" id="updates-check" aria-labelledby="uc-h">
+  <div class="region-h"><h2 id="uc-h">{{t "Releases"}}</h2><span class="sub">{{t "yohn-jp/hachidori GitHub Releases"}}</span></div>
+  <form method="post" action="/settings/updates/check" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><button type="submit" class="btn primary"{{if or .Busy .Checking}} disabled{{end}}>{{t "Check for updates"}}</button></form>
+  <p class="note">{{t "Retrieves the release list from GitHub, only now. Results below stay until you check again, change the channel or restart Hachidori."}}</p>
+  {{if and .LastCheck (not .LastCheck.OK)}}<div class="last tone-bad failure" role="alert" id="updates-check-failure"><strong>{{t "FAILED"}}</strong><span class="msg-text">{{.LastCheck.Message}}</span>{{with .CheckHint}}<p class="note">{{t .}}</p>{{end}}</div>{{end}}
+  {{with .Check}}
+  {{if .Releases}}
+  <p class="note" id="updates-results-note">{{t "Checked"}} {{when .Time}} · {{t "channel"}} {{.Channel}}</p>
+  <div class="table-wrap"><table class="data" id="updates-releases">
+    <thead><tr><th>{{t "Release"}}</th><th>{{t "Status"}}</th><th>{{t "Published"}}</th><th>{{t "Actions"}}</th></tr></thead>
+    <tbody>{{range .Releases}}
+      <tr>
+        <td class="strong mono">{{.Tag}}</td>
+        <td>{{if eq .Relation "newer"}}<span class="badge tone-active">{{t "newer"}}</span>{{else if eq .Relation "current"}}<span class="badge tone-ok">{{t "installed"}}</span>{{else if eq .Relation "older"}}<span class="badge">{{t "older"}}</span>{{else}}<span class="badge tone-warn">{{t "not comparable"}}</span>{{end}}
+          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
+          {{if eq .Relation "older"}}<div class="muted">{{t "Not offered: an update never goes backwards."}}</div>{{end}}</td>
+        <td>{{when .Published}}</td>
+        <td class="nowrap">{{if .Downloadable}}
+          <form method="post" action="/settings/updates/download" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="tag" value="{{.Tag}}"><button type="submit" class="btn"{{if or $.Upd.Busy $.Upd.Checking}} disabled{{end}}>{{t "Download"}}</button></form>
+        {{end}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table></div>
+  {{if not $.Upd.Installed.Known}}<p class="note">{{t "The installed version is not known, so releases cannot be compared with it. Download only a release you intend to install."}}</p>{{end}}
+  {{else}}
+  <p class="note" id="updates-none">{{t "Checked"}} {{when .Time}} · {{t "No eligible releases on this channel."}}</p>
+  {{end}}
+  {{end}}
+</section>
+
+<section class="region" id="updates-op" aria-labelledby="uo-h">
+  <div class="region-h"><h2 id="uo-h">{{t "Download and verification"}}</h2></div>
+  {{with .Op}}{{template "op-busy" .}}
+  <script>
+  // While a download runs, refresh only this region from local state (no
+  // network is involved in reading it), so focus and the page stay put.
+  (function () {
+    var t = setInterval(function () {
+      if (document.hidden) return;
+      fetch(location.pathname, {cache: "no-store"}).then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); }).then(function (h) {
+        var doc = new DOMParser().parseFromString(h, "text/html");
+        var src = doc.getElementById("updates-region"), dst = document.getElementById("updates-region");
+        if (!src || !dst) { clearInterval(t); return; }
+        if (!src.querySelector("#models-busy")) { clearInterval(t); location.reload(); return; }
+        var a = src.querySelector("#updates-op"), b = dst.querySelector("#updates-op");
+        if (a && b && a.innerHTML !== b.innerHTML) b.innerHTML = a.innerHTML;
+      }).catch(function () {});
+    }, 1500);
+  })();
+  </script>
+  {{else}}{{with .LastOp}}{{template "op-last" .}}{{with $.Upd.OpHint}}{{if $.Upd.LastOp.Failure}}<p class="note" id="updates-op-hint">{{t .}}</p>{{end}}{{end}}{{else}}<p class="note">{{t "No download in progress."}}</p>{{end}}{{end}}
+</section>
+
+<section class="region" id="updates-ready" aria-labelledby="ur-h">
+  <div class="region-h"><h2 id="ur-h">{{t "Ready to install"}}</h2></div>
+  {{with .Ready}}
+  <dl class="kv">
+    <dt>{{t "Release"}}</dt><dd class="mono">{{.Tag}}</dd>
+    <dt>SHA-256</dt><dd class="mono">{{.SHA256}}</dd>
+    <dt>{{t "Verified"}}</dt><dd>{{t "matches the release checksum"}} · {{when .Created}}</dd>
+    <dt>{{t "Replaces"}}</dt><dd class="mono">{{.Target}}</dd>
+  </dl>
+  {{if $.Upd.ReadyProblem}}<p class="msg bad" role="alert" id="updates-ready-problem">{{$.Upd.ReadyProblem}}</p>
+  {{else if not $.Upd.Supported}}<p class="note">{{t "Restart & update is available only in the Windows desktop application."}}</p>
+  {{else}}
+  <form method="post" action="/settings/updates/install" class="inline" id="updates-install" data-confirm="{{t "Close Hachidori, replace the executable and reopen it? The runtime stops and starts again; HACHIDORI_HOME, models, settings, history and evidence are kept."}}"><input type="hidden" name="token" value="{{$.Token}}"><button type="submit" class="btn primary"{{if or $.Upd.Busy $.Upd.Checking}} disabled{{end}}>{{t "Restart & update"}}</button></form>
+  {{end}}
+  <p class="note">{{t "The executable is replaced by a separate helper after Hachidori exits. If replacement fails, the previous executable is kept and reopened."}}</p>
+  {{else}}
+  <p class="note" id="updates-not-ready">{{t "Nothing downloaded and verified yet."}}</p>
+  {{end}}
+</section>
+
+{{with .Result}}
+<section class="region" id="updates-result" aria-labelledby="urs-h">
+  <div class="region-h"><h2 id="urs-h">{{t "Last update attempt"}}</h2></div>
+  <div class="last {{if eq .Outcome "applied"}}tone-ok{{else}}tone-bad failure{{end}}" role="status">
+    <strong>{{if eq .Outcome "applied"}}{{t "UPDATED"}}{{else if eq .Outcome "restart_failed"}}{{t "RESTART FAILED"}}{{else}}{{t "NOT UPDATED"}}{{end}}</strong>
+    <span class="msg-text"><span class="mono">{{.Tag}}</span> · {{when .Time}} · {{.Message}}</span>
+  </div>
+  {{with $.Upd.ResultHint}}<p class="note">{{t .}}</p>{{end}}
+</section>
+{{end}}
+{{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+</div>
+{{end}}
+{{template "close" .Chrome}}{{end}}

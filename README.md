@@ -39,6 +39,10 @@ if ($actual -ne $expected) { throw "Hachidori SHA-256 mismatch" }
 
 Then double-click `hachidori-windows-amd64.exe` (or run it with no arguments).
 
+Later releases are installed from Settings > Updates: **Check for updates**,
+**Download** (verified against the release's `.sha256` file) and **Restart &
+update**. Hachidori never checks for updates by itself.
+
 On first launch Hachidori:
 
 1. opens the Windows desktop UI;

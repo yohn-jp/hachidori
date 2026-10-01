@@ -91,6 +91,11 @@ type Config struct {
 	// through the same profiles. Profiles are persisted by the settings
 	// authority; the live tunnel stays exclusively in Tunnel.
 	Connections Connections
+	// Updates, when set, adds the Settings > Updates surface: the manual,
+	// verified executable update (internal/update). Nothing in the dashboard
+	// calls it except an explicit operator action; rendering any page,
+	// opening Updates and changing the channel use no network.
+	Updates Updates
 	// WebView2 is the installed WebView2 Runtime version when the desktop
 	// shell hosts the dashboard; it is only a fact for the diagnostic bundle.
 	WebView2 string
@@ -283,7 +288,7 @@ type Prefs struct {
 	Tunnel tunnel.Spec `json:"tunnel"`
 }
 
-//go:embed page.html workbench.html experiments.html errors.html
+//go:embed page.html workbench.html experiments.html errors.html updates.html
 var pageFS embed.FS
 
 // pageBase parses the workstation templates once; "t" is the catalog lookup,
@@ -322,7 +327,7 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"since":           since,
 	"took":            took,
 	"failureOf":       failureOf,
-}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html"))
+}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html", "updates.html"))
 
 // pages are the workstation templates for each supported locale. Rendering
 // goes through the catalog, never through rewriting rendered HTML.
@@ -348,7 +353,7 @@ type Chrome struct {
 }
 
 func (c Config) hasSettings() bool {
-	return c.Settings != nil || c.Desktop != nil || c.Connections != nil || c.Models != nil
+	return c.Settings != nil || c.Desktop != nil || c.Connections != nil || c.Models != nil || c.Updates != nil
 }
 
 // ErrPickCancelled is a PathPicker's answer when the operator dismisses the
@@ -404,6 +409,13 @@ func New(cfg Config) *Dashboard {
 	}
 	if cfg.Models != nil {
 		d.mux.HandleFunc("POST /settings/models/{op}", d.modelsOp)
+	}
+	if cfg.Updates != nil {
+		d.mux.HandleFunc("GET /settings/updates", d.updatesPage)
+		d.mux.HandleFunc("POST /settings/updates/channel", d.updatesChannel)
+		d.mux.HandleFunc("POST /settings/updates/check", d.updatesCheck)
+		d.mux.HandleFunc("POST /settings/updates/download", d.updatesDownload)
+		d.mux.HandleFunc("POST /settings/updates/install", d.updatesInstall)
 	}
 	if cfg.Connections != nil {
 		d.mux.HandleFunc("POST /settings/connections/save", d.connectionSave)
@@ -486,6 +498,9 @@ type view struct {
 	Models  *ModelsView      // nil unless the model/runtime manager is configured
 	Next    *nextStart       // nil unless the model/runtime manager is configured
 	Conns   *ConnectionsView // nil unless Development Connections are configured
+	Upd     *UpdatesView     // nil unless the update subsystem is configured
+	// HasUpdates: the Settings workspace links to Updates.
+	HasUpdates bool
 	// FormName is the profile the Diagnostics tunnel form saves to; empty
 	// when profiles are not configured.
 	FormName string
@@ -612,6 +627,9 @@ func returnTo(path string) string {
 	if strings.HasPrefix(path, "/runtime/") {
 		return "/"
 	}
+	if strings.HasPrefix(path, "/settings/updates/") {
+		return "/settings/updates"
+	}
 	if strings.HasPrefix(path, "/settings/") {
 		return "/settings"
 	}
@@ -665,6 +683,7 @@ func (d *Dashboard) desktopPrefs(w http.ResponseWriter, r *http.Request) {
 func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
 	v := d.view("Settings", "settings")
 	v.Live = false
+	v.HasUpdates = d.cfg.Updates != nil
 	if d.cfg.Settings != nil {
 		sv := &SettingsView{Models: settings.Models(), Locales: i18n.Supported}
 		def, err := d.cfg.Settings.Defaults()

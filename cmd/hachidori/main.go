@@ -48,6 +48,9 @@ runtime (inference host):
   (no command) on Windows, hachidori.exe with no arguments is the same desktop
              application
   doctor     verify the installation, including a real smoke inference
+  apply-update  (internal) the replacement helper the desktop starts after
+             Settings > Updates > Restart & update; it replaces only the
+             executable a verified update was prepared for. Not run by hand.
 
 client (caller side, uses HACHIDORI_ENDPOINT):
   status     print /v1/status
@@ -72,6 +75,8 @@ func commands() map[string]func([]string) error {
 		"benchmark": func(a []string) error { return cmdEval("benchmark", a) },
 		"question":  cmdQuestion,
 		"replay":    cmdReplay,
+		// The update replacement helper: started by the desktop, never typed.
+		"apply-update": cmdApplyUpdate,
 	}
 }
 
