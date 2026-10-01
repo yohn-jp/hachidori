@@ -240,9 +240,34 @@ func RunEvidence(d Endpoint, cases []Case, opt Options) (Report, error) {
 }
 
 func run(d Decider, cases []Case, opt Options) Report {
+	r, _ := runDetailed(d, cases, opt, nil)
+	return r
+}
+
+// sample is one successful scored-pass request. It is kept beside the report
+// so latency can be sliced by input without changing the v1 evidence.
+type sample struct {
+	caseIdx     int
+	requestMS   float64
+	inferenceMS *float64
+}
+
+// runDetail is what a run observed beyond the v1 report: the served identity
+// the endpoint attached to each answered request, parallel to Report.Results.
+type runDetail struct {
+	samples []sample
+	served  []*api.Served
+	caseIdx []int
+}
+
+// runDetailed is run plus the detail above. hook, when not nil, is called
+// after the warmup requests ("after_warmup") and after every pass
+// ("after_pass_N"); it never influences the run.
+func runDetailed(d Decider, cases []Case, opt Options, hook func(phase string)) (Report, runDetail) {
 	r := Report{Schema: EvidenceSchema, Cases: len(cases), StartedAt: time.Now().UTC().Format(time.RFC3339),
 		PerQuestion: map[string]QuestionStats{}, WarmupRequests: opt.Warmup, Passes: max(opt.Passes, 1),
 		Errors: []RequestError{}, Results: []Observation{}, Definitions: definitions(cases)}
+	var det runDetail
 	for i := 0; i < opt.Warmup; i++ {
 		c := cases[i%len(cases)]
 		if _, err := d.Decide(c.Request()); err != nil {
@@ -250,9 +275,12 @@ func run(d Decider, cases []Case, opt Options) Report {
 			r.Errors = append(r.Errors, RequestError{Phase: "warmup", CaseID: c.ID, Class: cls, Message: msg})
 		}
 	}
+	if hook != nil {
+		hook("after_warmup")
+	}
 	var lat, inf []float64
 	for pass := 0; pass < r.Passes; pass++ {
-		for _, c := range cases {
+		for ci, c := range cases {
 			t0 := time.Now()
 			resp, err := d.Decide(c.Request())
 			ms := float64(time.Since(t0).Microseconds()) / 1000
@@ -268,6 +296,7 @@ func run(d Decider, cases []Case, opt Options) Report {
 				v := resp.Timing.InferenceMS
 				infMS = &v
 			}
+			det.samples = append(det.samples, sample{caseIdx: ci, requestMS: ms, inferenceMS: infMS})
 			if pass > 0 {
 				continue
 			}
@@ -293,7 +322,12 @@ func run(d Decider, cases []Case, opt Options) Report {
 					Probabilities: res.Probabilities, Correct: res.Choice == c.Expected[q.ID],
 					RequestMS: ms, InferenceMS: infMS,
 				})
+				det.served = append(det.served, resp.Served)
+				det.caseIdx = append(det.caseIdx, ci)
 			}
+		}
+		if hook != nil {
+			hook(fmt.Sprintf("after_pass_%d", pass+1))
 		}
 	}
 	r.Observations = len(r.Results)
@@ -307,7 +341,7 @@ func run(d Decider, cases []Case, opt Options) Report {
 		r.PerQuestion[id] = QuestionStats{N: len(g), Accuracy: acc, MeanConfidence: conf, ECE: ece}
 	}
 	r.RequestLatency, r.ServerInference = summarize(lat), summarize(inf)
-	return r
+	return r, det
 }
 
 // definitions lists the distinct resolved definitions used by cases, sorted

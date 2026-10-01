@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -51,7 +52,8 @@ runtime (inference host):
 client (caller side, uses HACHIDORI_ENDPOINT):
   status     print /v1/status
   decide     send a v1 decide request (JSON file or - for stdin)
-  eval       evaluate a local JSONL dataset through the endpoint
+  eval       evaluate a local JSONL dataset through the endpoint; with
+             -models a,b compare already-resident models on the same dataset
   benchmark  eval with warmup and repeated passes for latency
   question   validate local Question Definitions and print their identity
              and compiled v1 question (no endpoint)
@@ -358,6 +360,8 @@ func cmdEval(name string, args []string) error {
 		fs.IntVar(&opt.Warmup, "warmup", 5, "warmup requests excluded from latency")
 		fs.IntVar(&opt.Passes, "passes", 3, "passes over the dataset for latency (accuracy uses pass 1)")
 	}
+	rf := residentFlags{}
+	rf.register(fs)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "usage: hachidori %s [flags] <dataset.jsonl>\n", name)
 		fs.PrintDefaults()
@@ -379,6 +383,9 @@ func cmdEval(name string, args []string) error {
 		return err
 	}
 	c := client.New(*endpoint)
+	if rf.models != "" {
+		return runResidentEval(c, cases, sum, fs.Arg(0), opt, rf, *out)
+	}
 	if h, err := c.Health(); err != nil || !h.Ready {
 		return fmt.Errorf("endpoint %s not ready (state %q): %v", c.Endpoint, h.State, err)
 	}
@@ -400,6 +407,117 @@ func cmdEval(name string, args []string) error {
 	}
 	if !r.ServedConsistent {
 		return errors.New("served runtime identity changed during the run; evidence is marked served_consistent=false")
+	}
+	return nil
+}
+
+// residentFlags are the flags that turn eval/benchmark into a resident
+// cross-model comparison. Without -models they are unused and eval/benchmark
+// behave exactly as before.
+type residentFlags struct {
+	models, thresholds, edges string
+	highConfidence            float64
+	families                  pathList
+}
+
+func (f *residentFlags) register(fs *flag.FlagSet) {
+	fs.StringVar(&f.models, "models", "", "comma-separated catalog model IDs of already-resident models to compare on the same dataset "+
+		"(e.g. laya-base,opendecider-nano); each is targeted directly and none is started, restarted or reloaded")
+	fs.Float64Var(&f.highConfidence, "high-confidence", eval.DefaultHighConfidence, "with -models: confidence threshold for high-confidence errors")
+	fs.StringVar(&f.thresholds, "thresholds", "", "with -models: comma-separated confidence thresholds of the coverage table (default "+joinFloats(eval.DefaultThresholds)+")")
+	fs.StringVar(&f.edges, "length-edges", "", "with -models: comma-separated exclusive upper edges, in state characters, of the input-length buckets (default "+joinInts(eval.DefaultLengthEdges)+")")
+	fs.Var(&f.families, "family", "with -models: question_id=family measurement-family slice (repeatable)")
+}
+
+func joinFloats(xs []float64) string {
+	s := make([]string, len(xs))
+	for i, x := range xs {
+		s[i] = strconv.FormatFloat(x, 'f', -1, 64)
+	}
+	return strings.Join(s, ",")
+}
+
+func joinInts(xs []int) string {
+	s := make([]string, len(xs))
+	for i, x := range xs {
+		s[i] = strconv.Itoa(x)
+	}
+	return strings.Join(s, ",")
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (f residentFlags) options(opt eval.Options) (eval.ResidentOptions, error) {
+	ro := eval.ResidentOptions{Options: opt, Models: splitList(f.models), HighConfidence: f.highConfidence}
+	for _, p := range splitList(f.thresholds) {
+		v, err := strconv.ParseFloat(p, 64)
+		if err != nil {
+			return ro, fmt.Errorf("-thresholds: %w", err)
+		}
+		ro.Thresholds = append(ro.Thresholds, v)
+	}
+	for _, p := range splitList(f.edges) {
+		v, err := strconv.Atoi(p)
+		if err != nil {
+			return ro, fmt.Errorf("-length-edges: %w", err)
+		}
+		ro.LengthEdges = append(ro.LengthEdges, v)
+	}
+	for _, fam := range f.families {
+		id, name, ok := strings.Cut(fam, "=")
+		if !ok || id == "" || name == "" {
+			return ro, fmt.Errorf("-family %q: want question_id=family", fam)
+		}
+		if ro.Families == nil {
+			ro.Families = map[string]string{}
+		}
+		if _, dup := ro.Families[id]; dup {
+			return ro, fmt.Errorf("-family: question %q declared twice", id)
+		}
+		ro.Families[id] = name
+	}
+	return ro, nil
+}
+
+// runResidentEval compares simultaneously resident models on the one dataset
+// through direct resident targeting. It sends decide requests naming a model
+// and reads status; it never starts, stops, activates or reloads anything.
+func runResidentEval(c *client.Client, cases []eval.Case, sum, dataset string, opt eval.Options, rf residentFlags, out string) error {
+	ro, err := rf.options(opt)
+	if err != nil {
+		return err
+	}
+	rep, err := eval.RunResidents(c, cases, sum, ro)
+	if rep.Schema == "" {
+		return err
+	}
+	rep.Endpoint, rep.Dataset = c.Endpoint, dataset
+	eval.ResidentSummary(os.Stdout, rep)
+	if out != "" {
+		b, _ := json.MarshalIndent(rep, "", "  ")
+		if werr := os.WriteFile(out, append(b, '\n'), 0o644); werr != nil {
+			return werr
+		}
+		fmt.Printf("comparison written to %s\n", out)
+	}
+	if err != nil {
+		return err
+	}
+	for _, r := range rep.Runs {
+		if r.ErrorCount > 0 {
+			return fmt.Errorf("%s: %d request errors", r.Model, r.ErrorCount)
+		}
+	}
+	if !rep.ResidentsStable {
+		return errors.New("a resident changed identity during the comparison; evidence is marked resident_stable=false")
 	}
 	return nil
 }
