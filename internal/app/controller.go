@@ -59,6 +59,12 @@ type Config struct {
 	// runtime maintenance actions. Its defaults are the internal/setup
 	// operations on home.Home{Root: root}; tests substitute fakes.
 	Maintenance Maintenance
+	// Residents reports the desired additional resident catalog models
+	// (the settings authority's selection); nil means none are ever
+	// requested. The controller never stores it: it only compares it with
+	// the members of the bound runtime, so a change applies on the next
+	// explicit Start/Restart and never mutates running workers.
+	Residents func() []string
 }
 
 // Maintenance are the explicit model/runtime operations of the setup/home
@@ -193,8 +199,13 @@ type Snapshot struct {
 	// RestartRequired is set while the running worker was started from a
 	// runtime/model that is no longer the active one: an explicit Activate
 	// changed the activation record and nothing has restarted the worker.
-	RestartRequired bool           `json:"restart_required,omitempty"`
-	Status          *server.Status `json:"status,omitempty"` // the /v1/status document, when a runtime is bound
+	// It is also set while the desired additional residents differ from the
+	// members of the running set (ResidencyChanged); Restart applies both.
+	RestartRequired bool `json:"restart_required,omitempty"`
+	// ResidencyChanged is set while the desired resident selection differs
+	// from the residents the running runtime was started with.
+	ResidencyChanged bool           `json:"residency_changed,omitempty"`
+	Status           *server.Status `json:"status,omitempty"` // the /v1/status document, when a runtime is bound
 	// Recovery is set while an unexpected worker exit is being recovered or
 	// recovery gave up. OperatorStopped is set while the worker is down
 	// because the operator chose Stop (or Quit), so the two are never
@@ -298,10 +309,12 @@ func (c *Controller) Snapshot() Snapshot {
 	running := false
 	proj := s.Status
 	var culprit *ResidentStatus
+	drift := false
 	if rt != nil {
 		running = rt.Running()
 		st := rt.Status()
 		s.Status, proj = &st, &st
+		drift = c.residencyDrift(st.Runtime.ModelID, rt)
 		if rr, ok := rt.(ResidentRuntime); ok {
 			// The status document already carries the residents of this
 			// same read; asking the set again would be a second view.
@@ -331,7 +344,8 @@ func (c *Controller) Snapshot() Snapshot {
 		installed = c.cfg.Installed(root)
 	}
 	s.State, s.Failure = project(root, projKind, running, proj, lastFail, installed)
-	s.RestartRequired = pending && running
+	s.RestartRequired = (pending || drift) && running
+	s.ResidencyChanged = drift && running
 	s.OperatorStopped = stopped && !running && kind == ""
 	if !s.OperatorStopped {
 		s.Recovery = recoveryOf(projKind, running, proj)
@@ -760,10 +774,11 @@ func (c *Controller) run(kind string) error {
 		return nil
 	}
 	var stale Runtime
-	if c.pending && rt != nil {
-		// An explicit Activate changed the activation under this binding:
+	if rt != nil && (c.pending || c.residencyDrift(rt.Status().Runtime.ModelID, rt)) {
+		// An explicit Activate changed the activation under this binding,
+		// or the desired resident selection no longer matches its members:
 		// the operator's Restart (or a Start after the worker went down)
-		// stops the old binding and binds the new activation.
+		// stops the old binding and binds the new activation and residents.
 		stale, rt = rt, nil
 	} else if rt != nil && !rt.Running() && rt.Status().Worker.State == worker.StateFailed {
 		// The supervisor gave up (its restart budget is spent or a start

@@ -575,7 +575,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   {{if .RestartRequired}}
   <div class="last tone-bad" role="status" id="restart-required">
-    <strong>{{t "RESTART REQUIRED"}}</strong><span class="msg-text">{{t "The active runtime/model changed. The running worker still serves what it started with; nothing restarts automatically."}}</span>
+    <strong>{{t "RESTART REQUIRED"}}</strong><span class="msg-text">{{if .ResidencyChanged}}{{t "The resident selection changed (the active runtime/model may have changed too). The running workers still serve what they started with; nothing restarts automatically."}}{{else}}{{t "The active runtime/model changed. The running worker still serves what it started with; nothing restarts automatically."}}{{end}}</span>
     <form method="post" action="/settings/models/restart" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><button type="submit" class="btn primary">{{t "Restart runtime"}}</button></form>
   </div>
   {{end}}
@@ -645,6 +645,31 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     </tbody>
   </table></div>
 
+  {{with .Residency}}
+  <h3 id="resident-selection-h">{{t "Resident models"}}</h3>
+  {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+  <form method="post" action="/settings/residents" id="resident-selection">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <input type="hidden" name="return" value="settings">
+    <div class="table-wrap"><table class="data" aria-labelledby="resident-selection-h">
+      <thead><tr><th scope="col">{{t "Resident"}}</th><th scope="col">{{t "Model"}}</th><th scope="col">{{t "Status"}}</th></tr></thead>
+      <tbody>{{range .Rows}}
+        <tr data-model="{{.ID}}">
+          <td><input type="checkbox" name="resident" value="{{.ID}}" aria-label="{{.ID}}"{{if or .Default .Selected}} checked{{end}}{{if or .Default (and (not .Selected) (not .Materialized))}} disabled{{end}}></td>
+          <td class="strong">{{.ID}}</td>
+          <td>{{if .Default}}<span class="badge tone-ok">{{t "default resident"}}</span>{{if not .Bound}}<span class="sub">{{t "starts with the runtime"}}</span>{{end}}
+            {{else if and .Selected .Bound}}<span class="badge tone-ok">{{t "resident"}}</span>
+            {{else if .Selected}}<span class="badge">{{t "selected · applies on next start"}}</span>
+            {{else if .Bound}}<span class="badge">{{t "resident · removed on restart"}}</span>
+            {{else if not .Materialized}}<span class="sub">{{t "not materialized"}}</span>{{end}}
+            {{if and .Selected (not .Materialized)}}<div class="bad-t">{{t "Not materialized: this resident will fail to start and is never replaced by another model. Materialize it first."}}</div>{{end}}</td>
+        </tr>{{end}}
+      </tbody>
+    </table></div>
+    <div class="btn-row"><button type="submit" class="btn primary">{{t "Save resident models"}}</button></div>
+  </form>
+  <p class="note">{{t "The active model is always the default resident. A selection is stored for the next start only: saving it downloads, activates, starts, stops and restarts nothing, and the running workers keep what they started with until you restart the runtime. Each resident is its own worker process, and a failed one never stops the others."}}</p>
+  {{end}}
   <form method="post" class="region" id="models-choice">
     <input type="hidden" name="token" value="{{$.Token}}">
     <input type="hidden" name="return" value="settings">

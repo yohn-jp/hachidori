@@ -130,6 +130,36 @@ device, load/warmup, counters, queue, latency, GPU memory) and names a failed
 non-default resident in the attention list; it restates the status document and
 keeps no lifecycle state of its own.
 
+#### Desktop resident models
+
+The Windows desktop needs no `--resident` argument. Settings > Models &
+runtimes lists the catalog models with a resident selection: the active model is
+always the default resident (not selectable off), and any other materialized
+catalog model can be selected as an additional resident (only stable catalog
+IDs; no repository or revision input). The selection is stored in
+`settings.json` (`resident_models`, additive to schema `hachidori.settings/1`)
+and is next-start intent only: saving it downloads, materializes, activates,
+starts, stops and restarts nothing, and never changes which model is active.
+A normal no-argument launch opens the active model plus the saved selection
+through the same `ResidentSet`; with no additional resident the desktop binds the
+one worker exactly as before. `serve --resident` and `dashboard --resident` are
+unchanged.
+
+A selection that differs from the running residents sets `restart_required`
+(and `residency_changed`) in the application snapshot, the Models & runtimes
+page shows the restart-required banner and each model's row reads "selected ·
+applies on next start" or "resident · removed on restart", and nothing running
+is mutated. An explicit Restart (Settings, Runtime or the tray) stops the old
+binding and opens the saved set; a Start of a stopped runtime does the same.
+The selection is read at every open, and an unreadable `settings.json` fails the
+open with its cause instead of starting fewer residents. A selected model that is
+not materialized comes up as a failed resident naming its model and provider
+(preflight), never READY and never replaced by another model; the other
+residents keep serving. Runtime and status then project every resident, with its
+own PID and readiness, from the `ResidentSet` status authority; the desktop keeps
+no second resident-state model. Physical Windows dual-residency is certified
+separately.
+
 Errors are structured and never look like a semantic answer:
 
 | class | HTTP | meaning |

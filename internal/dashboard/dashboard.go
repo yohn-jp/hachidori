@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,6 +87,10 @@ type Config struct {
 	// (app.Controller over internal/setup); the dashboard never inspects or
 	// deletes directories itself. It is nil for serve/dashboard.
 	Models Models
+	// Residency, when set (with Models), adds the resident-model selection
+	// to Models & Runtimes. It is the settings authority's desired
+	// additional-resident set; saving it only stores it.
+	Residency Residency
 	// Connections, when set, adds the Development Connections profiles to
 	// the Settings workspace and makes the Diagnostics tunnel form save
 	// through the same profiles. Profiles are persisted by the settings
@@ -131,7 +136,35 @@ type ModelsState struct {
 	Busy            *ModelOp              // an action in flight
 	Last            *ModelOp              // the most recently finished action
 	Checks          map[string]ModelCheck // last explicit verification per "<kind> <id>"
-	RestartRequired bool                  // the running worker predates the current activation
+	RestartRequired bool                  // the running worker predates the current activation or resident selection
+	// ResidencyChanged: the desired resident selection differs from the
+	// residents the running runtime was started with.
+	ResidencyChanged bool
+}
+
+// Residency reads and stores the desired additional resident models (catalog
+// IDs; the active model is always the default resident and is not part of
+// it). It is next-start intent only: neither method touches a worker.
+type Residency interface {
+	Residents() ([]string, error)
+	SetResidents([]string) error
+}
+
+// ResidentRow is one catalog model in the resident selection.
+type ResidentRow struct {
+	ID           string
+	Default      bool // the active model: always resident, the default route
+	Selected     bool // desired as an additional resident at next start
+	Bound        bool // a member of the running resident set now
+	Materialized bool
+}
+
+// ResidencyView is the resident-selection view model. Rows restate the
+// desired selection, the inventory and the running set; nothing is decided
+// here.
+type ResidencyView struct {
+	Rows []ResidentRow
+	Err  string
 }
 
 // ModelCheck is the outcome of the last explicit verification of one artifact.
@@ -177,6 +210,7 @@ type ModelsView struct {
 	// restart is required.
 	ActiveModel, ActiveDevice   string
 	RunningModel, RunningDevice string
+	Residency                   *ResidencyView // nil unless the resident selection is configured
 }
 
 // RuntimeRow and ModelRow add the last explicit verification to an entry.
@@ -409,6 +443,9 @@ func New(cfg Config) *Dashboard {
 	}
 	if cfg.Models != nil {
 		d.mux.HandleFunc("POST /settings/models/{op}", d.modelsOp)
+	}
+	if cfg.Models != nil && cfg.Residency != nil {
+		d.mux.HandleFunc("POST /settings/residents", d.settingsResidents)
 	}
 	if cfg.Updates != nil {
 		d.mux.HandleFunc("GET /settings/updates", d.updatesPage)
@@ -732,7 +769,47 @@ func (d *Dashboard) modelsView(v view) *ModelsView {
 		}
 		mv.Models = append(mv.Models, ModelRow{m, check(setup.KindModel, m.ID), m.ID == mv.RunningModel})
 	}
+	if d.cfg.Residency != nil {
+		mv.Residency = d.residencyView(v, mv)
+	}
 	return mv
+}
+
+// residencyView restates the desired selection beside the inventory and the
+// running set (the status document's residents, or the one running model).
+func (d *Dashboard) residencyView(v view, mv *ModelsView) *ResidencyView {
+	rv := &ResidencyView{}
+	want, err := d.cfg.Residency.Residents()
+	if err != nil {
+		rv.Err = err.Error()
+	}
+	bound := map[string]bool{}
+	for _, r := range v.S.Residents {
+		bound[r.Model] = true
+	}
+	if len(bound) == 0 && mv.RunningModel != "" {
+		bound[mv.RunningModel] = true
+	}
+	for _, m := range mv.Models {
+		rv.Rows = append(rv.Rows, ResidentRow{ID: m.ID, Default: m.Active, Selected: !m.Active && slices.Contains(want, m.ID),
+			Bound: bound[m.ID], Materialized: m.Materialized})
+	}
+	return rv
+}
+
+// settingsResidents stores the desired resident selection. It only stores:
+// nothing is materialized, activated, started, stopped or restarted; the
+// selection applies at the next start of the runtime.
+func (d *Dashboard) settingsResidents(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		d.done(w, r, "resident models", err, "")
+		return
+	}
+	var ids []string
+	for _, id := range r.PostForm["resident"] {
+		ids = append(ids, strings.TrimSpace(id))
+	}
+	d.done(w, r, "resident models", d.cfg.Residency.SetResidents(ids), "saved; applies on the next start. Running workers are unchanged until you restart the runtime")
 }
 
 // modelsOp forwards one explicit Models & Runtimes action to the maintenance

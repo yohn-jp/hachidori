@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"time"
 
@@ -338,6 +339,81 @@ func ResidentWorkerRuntime(parent context.Context, log io.Writer, policy worker.
 			onOpen(s)
 		}
 		return s, nil
+	}
+}
+
+// additionalResidents is the extra residents a start would add beside the
+// default model def: the requested catalog IDs without blanks, duplicates and
+// def itself, in request order. Empty means a single resident.
+func additionalResidents(def string, requested []string) []string {
+	var out []string
+	for _, id := range requested {
+		if id == "" || id == def || slices.Contains(out, id) {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// boundExtras are the non-default members of a bound resident set; a single
+// worker has none.
+func boundExtras(rt Runtime) []string {
+	if m, ok := rt.(interface{ Models() []string }); ok {
+		if ms := m.Models(); len(ms) > 1 {
+			return ms[1:]
+		}
+	}
+	return nil
+}
+
+// residencyDrift reports whether the desired additional residents differ
+// from the members rt was opened with, given its default model def. It reads
+// the one desired selection (Config.Residents) and the one bound set; there
+// is no copy of either in the controller.
+func (c *Controller) residencyDrift(def string, rt Runtime) bool {
+	if c.cfg.Residents == nil || rt == nil {
+		return false
+	}
+	want, have := additionalResidents(def, c.cfg.Residents()), boundExtras(rt)
+	if len(want) != len(have) {
+		return true
+	}
+	for _, id := range want {
+		if !slices.Contains(have, id) {
+			return true
+		}
+	}
+	return false
+}
+
+// ConfiguredRuntime is the OpenFunc of the desktop composition. When the
+// requested selection adds no resident beside the active model it is exactly
+// WorkerRuntime (one worker, onWorker); otherwise it is ResidentWorkerRuntime
+// for the active model plus the selection (onSet). The selection is read at
+// every open, so a restart that rebinds picks up the current one; an
+// unreadable selection fails the open with the cause instead of silently
+// starting fewer residents.
+func ConfiguredRuntime(parent context.Context, log io.Writer, policy worker.Policy, requested func() ([]string, error),
+	onWorker func(*WorkerBinding), onSet func(*ResidentSet)) OpenFunc {
+	single := WorkerRuntime(parent, log, policy, onWorker)
+	return func(root string) (Runtime, error) {
+		want, err := requested()
+		if err != nil {
+			return nil, fmt.Errorf("resident models: %w", err)
+		}
+		if len(want) == 0 {
+			return single(root)
+		}
+		_, info, err := server.ResidentConfig(home.Home{Root: root}, "", nil)
+		if err != nil {
+			return nil, err
+		}
+		extra := additionalResidents(info.ModelID, want)
+		if len(extra) == 0 {
+			return single(root)
+		}
+		return ResidentWorkerRuntime(parent, log, policy, extra, onSet)(root)
 	}
 }
 
