@@ -33,6 +33,13 @@ func alerts(v view) []alert {
 	case w.State == worker.StateFailed:
 		bad = append(bad, alert{"bad", t("Worker failed"), t("Phase %s.", w.Phase)})
 	}
+	// Another resident that failed is named; the default resident's own
+	// failure is already the alert above, and healthy residents add nothing.
+	for _, r := range v.S.Residents {
+		if !r.Default && r.Running && r.Status.Worker.State == worker.StateFailed {
+			bad = append(bad, alert{"bad", t("Resident %s failed", r.Model), t("Phase %s.", r.Status.Worker.Phase)})
+		}
+	}
 	if f := w.LastFailure; f != nil {
 		a := alert{"bad", t("Last worker failure: %s", f.Class), f.Message}
 		if w.Ready {

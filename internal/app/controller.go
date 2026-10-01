@@ -303,7 +303,11 @@ func (c *Controller) Snapshot() Snapshot {
 		st := rt.Status()
 		s.Status, proj = &st, &st
 		if rr, ok := rt.(ResidentRuntime); ok {
-			s.Residents = rr.ResidentStatuses()
+			// The status document already carries the residents of this
+			// same read; asking the set again would be a second view.
+			if s.Residents = st.Residents; s.Residents == nil {
+				s.Residents = rr.ResidentStatuses()
+			}
 			agg, c := aggregateResidents(st, s.Residents)
 			proj, culprit = &agg, c
 		}

@@ -426,6 +426,29 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   </div>
 </section>
 
+{{with .S.Residents}}
+<section class="region" id="residents" aria-labelledby="res-h">
+  <div class="region-h"><div><h2 id="res-h">{{t "Resident models"}}</h2><p class="sub">{{t "Each resident is its own worker process; its state is independent of the others."}}</p></div></div>
+  <table class="data">
+    <thead><tr><th scope="col">{{t "Model"}}</th><th scope="col">{{t "State"}}</th><th scope="col">PID</th><th scope="col">{{t "Device"}}</th><th scope="col">{{t "Load / warmup"}}</th><th scope="col">{{t "Requests"}}</th><th scope="col">{{t "Errors"}}</th><th scope="col">{{t "Queue"}}</th><th scope="col">{{t "Latency p50 / p95"}}</th><th scope="col">{{t "GPU memory"}}</th></tr></thead>
+    <tbody>{{range .}}{{$rw := .Status.Worker}}{{$ri := $rw.Info}}
+      <tr id="resident-{{.Model}}" data-model="{{.Model}}" data-state="{{if .Running}}{{$rw.State}}{{else}}stopped{{end}}">
+        <td class="model">{{.Model}}<span class="sub">{{.Provider}}{{if .Default}} · {{t "default route"}}{{end}}</span></td>
+        <td>{{if .Running}}<span class="badge tone-{{tone $rw}}">{{if $rw.Ready}}READY{{else}}{{$rw.State}}{{end}}</span><span class="sub">{{t "phase"}} {{$rw.Phase}}</span>{{else}}<span class="badge">{{t "stopped"}}</span>{{end}}{{if and .Running $rw.LastFailure (eq $rw.State "failed")}}<span class="sub bad-t mono">{{$rw.LastFailure.Class}}</span>{{end}}</td>
+        <td class="num">{{if $rw.PID}}{{$rw.PID}}{{else}}-{{end}}</td>
+        <td>{{get $ri "device"}} {{get $ri "dtype"}}<span class="sub">{{t "requested"}} {{.Status.Runtime.Device}}</span></td>
+        <td class="num">{{get $ri "load_ms"}} / {{get $ri "warmup_ms"}} ms</td>
+        <td class="num">{{$rw.Requests}}</td>
+        <td class="num">{{errTotal $rw.Errors}}</td>
+        <td class="num">{{$rw.QueueDepth}} / {{$rw.QueueLimit}}</td>
+        <td class="num">{{ms $rw.LatencyP50MS}} / {{ms $rw.LatencyP95MS}}</td>
+        <td class="num">{{with gpuMem $rw.Accelerator}}{{printf "%.0f" .Used}}%{{else}}-{{end}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+
 {{with failureOf $w}}
 <section class="attention tone-bad failure" id="worker-failure" aria-labelledby="wf-h">
   <h2 id="wf-h">{{t "Worker failed while:"}} {{t .PhaseWord}}</h2>

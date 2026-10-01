@@ -50,15 +50,9 @@ type ResidentMember struct {
 	Config   worker.Config
 }
 
-// ResidentStatus is the per-resident view in Snapshot.Residents: the
-// /v1/status document of that resident's own supervisor.
-type ResidentStatus struct {
-	Model    string        `json:"model"`
-	Provider string        `json:"provider"`
-	Default  bool          `json:"default,omitempty"`
-	Running  bool          `json:"running"`
-	Status   server.Status `json:"status"`
-}
+// ResidentStatus is the per-resident view in Snapshot.Residents and in the
+// /v1/status document: the status of that resident's own supervisor.
+type ResidentStatus = server.ResidentStatus
 
 // ResidentRuntime is a Runtime made of independently supervised residents.
 // Start, Stop and Restart act on the whole set; the per-resident methods act
@@ -90,6 +84,7 @@ type ResidentSet struct {
 var (
 	_ ResidentRuntime = (*ResidentSet)(nil)
 	_ server.Decider  = (*ResidentSet)(nil)
+	_ server.Router   = (*ResidentSet)(nil)
 )
 
 // NewResidentSet builds the set; every worker it starts ends when parent
@@ -143,18 +138,34 @@ func (s *ResidentSet) Runtime() server.Runtime { return s.def.Info }
 // Started is when the set was built.
 func (s *ResidentSet) Started() time.Time { return s.started }
 
-// DecideOn runs items on the named resident ("" is the default). It is a
-// direct internal call: it never starts, restarts or reloads any worker, and
-// a resident that is not READY answers not_ready for itself only.
+// DecideOn runs items on exactly the named resident ("" is the default). It
+// is a direct call: it never starts, restarts or reloads any worker, never
+// answers from another resident, and a resident that is not READY answers
+// not_ready for itself only (naming the model). A model that is not a member
+// is a request_invalid error.
 func (s *ResidentSet) DecideOn(model string, items []worker.Item) ([][]api.Result, float64, error) {
-	r := s.def
-	if model != "" {
-		var ok bool
-		if r, ok = s.byModel[model]; !ok {
-			return nil, 0, &worker.RequestError{Class: api.ErrRequestInvalid, Message: "model " + model + " is not resident"}
-		}
+	if model == "" {
+		return s.def.Decide(items)
 	}
-	return r.Decide(items)
+	r, ok := s.byModel[model]
+	if !ok {
+		return nil, 0, &worker.RequestError{Class: api.ErrRequestInvalid, Message: "model " + model + " is not resident"}
+	}
+	res, ms, err := r.Decide(items)
+	var re *worker.RequestError
+	if errors.As(err, &re) && re.Class == api.ErrNotReady {
+		return nil, 0, &worker.RequestError{Class: api.ErrNotReady, Message: "model " + model + ": " + re.Message}
+	}
+	return res, ms, err
+}
+
+// Identity is the catalog identity of a member, for response provenance.
+func (s *ResidentSet) Identity(model string) (api.Served, bool) {
+	r, ok := s.byModel[model]
+	if !ok {
+		return api.Served{}, false
+	}
+	return api.Served{Model: r.Model, Provider: r.Provider}, true
 }
 
 // Decide, Ready, State and Snapshot are the default resident's: the existing
@@ -166,10 +177,12 @@ func (s *ResidentSet) Ready() bool               { return s.def.Supervisor.Ready
 func (s *ResidentSet) State() string             { return s.def.Supervisor.State() }
 func (s *ResidentSet) Snapshot() worker.Snapshot { return s.def.Supervisor.Snapshot() }
 
-// Status is the default resident's /v1/status document. The other residents
-// are in ResidentStatuses.
+// Status is the /v1/status document: the default resident's own fields plus
+// every resident in Residents.
 func (s *ResidentSet) Status() server.Status {
-	return server.StatusBody(s.def.Supervisor, s.def.Info, s.started)
+	st := server.StatusBody(s.def.Supervisor, s.def.Info, s.started)
+	st.Residents = s.ResidentStatuses()
+	return st
 }
 
 // ResidentStatuses is the status of every member, default first.

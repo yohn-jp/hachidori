@@ -20,11 +20,11 @@ client CLI / any HTTP caller
 | command | plane | purpose |
 |---|---|---|
 | `hachidori setup [--home H] [--device cuda\|cpu] [--model ID]` | host | reconcile `HACHIDORI_HOME` with the Runtime Spec: private uv materializes the locked Python environment, the selected catalog model (default `laya-base`) is materialized separately, then activate |
-| `hachidori serve [--home H] [--listen 127.0.0.1:7843]` | host | run HTTP + one resident worker; non-loopback binds are refused |
-| `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh]` | host | `serve` plus the host-local dashboard (see below) |
+| `hachidori serve [--home H] [--listen 127.0.0.1:7843] [--resident ID]…` | host | run HTTP + one resident worker (plus one more worker process per `--resident` catalog model ID; see Multi-resident serving); non-loopback binds are refused |
+| `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh] [--resident ID]…` | host | `serve` plus the host-local dashboard (see below) |
 | `hachidori desktop [--home H] [--listen …] [--addr …] [--ssh ssh] [--background]` | host (Windows) | the same desktop composition as a no-argument `hachidori.exe`: first run/recovery or normal start in a resident WebView2 window with a tray icon (see below); fails with a clear error on other systems |
 | `hachidori doctor [--home H]` | host | verify the installation including a real HTTP→worker→model smoke inference |
-| `hachidori status [--endpoint URL]` | client | print `/v1/status` |
+| `hachidori status [--endpoint URL]` | client | print `/v1/status` (every resident under `residents`) |
 | `hachidori decide [--endpoint URL] <request.json\|->` | client | send one v1 decide request |
 | `hachidori eval [--endpoint URL] [--questions PATH]... [--out report.json] <dataset.jsonl>` | client | caller-side evaluation |
 | `hachidori benchmark [--endpoint URL] [--questions PATH]... [--warmup N] [--passes N] [--out report.json] <dataset.jsonl>` | client | eval plus warmup and repeated passes for latency |
@@ -40,9 +40,9 @@ defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
 | endpoint | success | notes |
 |---|---|---|
 | `GET /health` | `200 {"ready":true,"state":"ready"}` | `503` with the same body while starting, restarting or failed |
-| `GET /v1/status` | `200` | runtime (model ID, device), provider (name, version, the loaded model's ID and revision, device, dtype, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, queue depth, inference p50/p95 |
-| `POST /v1/decide` | `200` | one state, 1–32 `choice` questions |
-| `POST /v1/decide/batch` | `200` | 1–64 decide requests; requests sharing a question set share forward passes |
+| `GET /v1/status` | `200` | runtime (model ID, device), provider (name, version, the loaded model's ID and revision, device, dtype, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, queue depth, inference p50/p95; with several residents, `residents` lists each one's own such document |
+| `POST /v1/decide` | `200` | one state, 1–32 `choice` questions; optional `model` targets one resident (below) |
+| `POST /v1/decide/batch` | `200` | 1–64 decide requests; requests sharing a question set share forward passes; optional `model` targets one resident (below) |
 | `GET /openapi.json` | `200` | the OpenAPI 3.1 description of this API (below) |
 
 The API is host-local like the dashboard: a request whose `Host` is not a
@@ -84,7 +84,51 @@ Response (results in question order, question ids preserved):
 is `answer_confidence` (the temperature-calibrated quantity ECE measures), not
 its entropy-based `confidence`; for OpenDecider-nano it is the softmax
 probability of the reported option. The request and result shapes are the same
-for every model; which model answered is reported by `/v1/status`.
+for every model; which model answered is reported by `/v1/status` (and, for a
+directly targeted request, by `served` in the response, below).
+
+### Multi-resident serving and direct selection
+
+`serve --resident ID` (repeatable; also `dashboard`) keeps further catalog
+models resident beside the active one, each as its own supervised worker
+process with its own PID, lifecycle, failure boundary, counters and
+accelerator state (`ResidentSet`; the lifecycle authority). The active model
+is the default resident. Every resident uses the active runtime and the
+active device: there is no per-resident device and no CUDA to CPU fallback.
+A non-default model that is not materialized comes up `failed` with its
+cause, without affecting the others.
+
+Routing is explicit and additive. A request with no `model` is answered by the
+default resident exactly as before, and its response is unchanged. A request
+with `model` (a stable Hachidori catalog model ID, for example `laya-base` or
+`opendecider-nano`; never a repository or revision, and any other shape is
+`request_invalid`) is answered by that resident only:
+
+- the response carries `served: {"model", "provider"}`, the catalog identity of
+  the resident that answered (no provider prompt or tokenization detail);
+- a model that is not resident is `request_invalid` (`400`);
+- a resident that is stopped, starting, restarting or failed is `not_ready`
+  (`503`, the message names the model) and counts only against that resident;
+- a request is never redirected to another resident, and selecting a target
+  never starts, restarts or reloads a worker: alternating between residents
+  leaves each one's PID, `starts` and loaded model unchanged;
+- a batch is served by one resident: `model` on the batch, or the same `model`
+  on its requests; different models in one batch are `request_invalid`;
+- a single-worker `serve` accepts `model` only for the model it runs.
+
+`GET /v1/status` keeps `runtime` and `worker` as the default resident's and adds
+`residents`, default first: for each resident its `model`, `provider`,
+`default`, `running` (false after an operator stop) and its own `status`
+(runtime identity with requested device, worker state, phase, PID, restarts,
+provider details with device, dtype and load/warmup ms, accelerator memory,
+last failure, request/error counters, queue depth and limit, p50/p95). It is
+the same projection the controller and the dashboard consume
+(`ResidentSet.Status`); a failed resident does not change another's entry.
+`hachidori decide -model ID request.json` sets the target from the command line.
+The dashboard's Runtime page lists every resident in its own row (state, PID,
+device, load/warmup, counters, queue, latency, GPU memory) and names a failed
+non-default resident in the attention list; it restates the status document and
+keeps no lifecycle state of its own.
 
 Errors are structured and never look like a semantic answer:
 
@@ -693,9 +737,10 @@ its `hachidori-model.json` are derived from the entry. `state/active-runtime.jso
 records the runtime identity, the model ID (`model_id`), the model directory and
 the device. A failed materialization of a newly selected model leaves the active
 runtime and model unchanged. Changing the active model takes effect when the
-host is restarted; a READY worker never switches models. Exactly one model is
-resident: there is no routing, handoff or second resident worker (that belongs
-to the multi-provider runtime, not to model selection).
+host is restarted; a READY worker never switches models. By default exactly
+one model is resident; `--resident` keeps further catalog models resident, each
+in its own worker, and a request may target one of them directly (see
+Multi-resident serving). There is no automatic routing or handoff.
 
 `serve` resolves only the activated model: the activation's model ID must be a
 catalog entry, the directory must be the one derived from it, the materialized
