@@ -9,7 +9,7 @@
 
 
 {{if not .Src}}
-<section class="surface" aria-labelledby="open-h">
+<section class="section" aria-labelledby="open-h">
   <h2 id="open-h">{{t "Open evidence"}}</h2>
   {{template "evidence-open" .}}
   <p class="empty">{{t "No report open. Open a hachidori.evidence.v1 file or use the current experiment's report."}}</p>
@@ -17,7 +17,7 @@
 {{end}}
 
 {{with .A}}{{$a := .}}
-<section class="region" aria-labelledby="cnt-h">
+<section class="region section" aria-labelledby="cnt-h">
   <div class="region-h"><h2 id="cnt-h">{{t "Failures"}}</h2><span class="sub">{{t "whole report · high confidence = confidence ≥"}} {{$.C.Threshold}} {{t "(analysis control, not a policy)"}}</span></div>
   <dl class="metrics">
     <div class="metric primary"><dt>{{t "Wrong"}}</dt><dd>{{.Wrong}}</dd>{{if .Wrong}}<span class="hint"><a href="/errors?outcome=wrong&amp;th={{$.C.Threshold}}#obs">{{t "Show wrong"}}</a></span>{{end}}</div>
@@ -28,7 +28,7 @@
   {{with .ErrorClasses}}<p class="note">{{t "request errors by class:"}} {{range .}}<span class="mono">{{.Class}} {{.N}}</span> {{end}}</p>{{end}}
 </section>
 
-<section class="region" aria-labelledby="pq-h">
+<section class="region section" aria-labelledby="pq-h">
   <div class="region-h"><h2 id="pq-h">{{t "Concentration by question"}}</h2><span class="sub">{{t "select a question to see its wrong observations"}}</span></div>
   <div class="table-wrap"><table class="data" aria-label="{{t "Concentration by question"}}"><thead><tr><th>{{t "question"}}</th><th class="num strong">{{t "wrong"}}</th><th class="num strong">{{t "high-conf wrong"}}</th><th class="num">n</th><th class="num">{{t "correct"}}</th><th class="num">{{t "missing results"}}</th><th class="num">{{t "accuracy"}}</th><th class="num">{{t "mean conf"}}</th><th class="num">ECE</th></tr></thead><tbody>
   {{range .PerQuestion}}{{$share := ratio .Wrong .Stats.N}}<tr><td class="mono"><a href="/errors?q={{.ID}}&amp;outcome=wrong&amp;th={{$.C.Threshold}}#obs">{{.ID}}</a></td><td class="num strong nowrap">{{.Wrong}}<span class="bar" role="img" aria-label="{{printf "%.0f" $share}}% {{t "wrong"}}"><span class="bad" style="width:{{printf "%.1f" $share}}%"></span></span></td><td class="num strong{{if .HighConfWrong}} bad-t{{end}}">{{.HighConfWrong}}</td><td class="num">{{.Stats.N}}</td><td class="num">{{.Correct}}</td><td class="num">{{.MissingResults}}</td><td class="num">{{f4 .Stats.Accuracy}}</td><td class="num">{{f4 .Stats.MeanConfidence}}</td><td class="num">{{f4 .Stats.ECE}}</td></tr>{{end}}

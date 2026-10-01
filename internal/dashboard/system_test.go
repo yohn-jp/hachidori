@@ -35,6 +35,88 @@ func TestWorkspacesUseTheOneVisualSystem(t *testing.T) {
 	}
 }
 
+func cssRule(t *testing.T, body, selector string) string {
+	t.Helper()
+	m := regexp.MustCompile(regexp.QuoteMeta(selector) + ` \{([^}]*)\}`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no CSS rule for %s", selector)
+	}
+	return m[1]
+}
+
+// The workstation composes on the page canvas (docs/desktop.md): no card
+// chrome, no decorative state edge, no elevation for ordinary content, and a
+// navigation selection that is a rule and weight rather than a pill.
+func TestWorkspacesComposeWithoutCardChrome(t *testing.T) {
+	e := newEnv(t)
+	withSettings(e, &fakeSettings{}, nil)
+	for _, p := range []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings"} {
+		body := e.get(t, p).Body.String()
+		for _, banned := range []string{"box-shadow: inset", "inset 3px", "border-left: 3px", "word-break: break-all", "var(--r-lg)"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s uses %q", p, banned)
+			}
+		}
+		// a container is not a rounded, filled box
+		if regexp.MustCompile(`\{[^}]*border-radius: var\(--r-lg\)[^}]*\}|\{[^}]*background: var\(--surface\)[^}]*border:[^}]*\}`).MatchString(body) {
+			t.Errorf("%s defines a card container", p)
+		}
+		// every top-level headed region is a section on the canvas
+		for _, m := range regexp.MustCompile(`<section class="region[^"]*"`).FindAllString(body, -1) {
+			if !strings.Contains(m, "region section") {
+				t.Errorf("%s has a region that is not a section: %s", p, m)
+			}
+		}
+		sel := cssRule(t, body, `.sidenav a[aria-current="page"]`)
+		if strings.Contains(sel, "background") || strings.Contains(sel, "shadow") || strings.Contains(sel, "radius") {
+			t.Errorf("%s: selected navigation is a filled pill: %s", p, sel)
+		}
+		if !strings.Contains(sel, "border-left-color: var(--accent)") || !strings.Contains(sel, "font-weight") {
+			t.Errorf("%s: selected navigation lacks its rule and weight: %s", p, sel)
+		}
+		if r := cssRule(t, body, ".sidenav a"); strings.Contains(r, "border-radius") {
+			t.Errorf("%s: navigation items are rounded", p)
+		}
+	}
+}
+
+// Runtime is the reference composition: operational state with its actions,
+// then technical state as one fact grid under a rule, then telemetry. Machine
+// identities use the one bounded identity treatment, and the fact grid cannot
+// shrink a column below the readable minimum.
+func TestRuntimeReferenceComposition(t *testing.T) {
+	e := newEnv(t)
+	body := e.get(t, "/").Body.String()
+	panel := body[strings.Index(body, `<section class="readiness-panel`):]
+	panel = panel[:strings.Index(panel, "</section>")]
+	order := []string{`class="state-word"`, `class="actions"`, `class="spec"`, `<dt>Model</dt><dd class="id">`, `<dt>Runtime</dt><dd class="id">`}
+	at := 0
+	for _, s := range order {
+		i := strings.Index(panel[at:], s)
+		if i < 0 {
+			t.Fatalf("runtime composition lacks %q after position %d", s, at)
+		}
+		at += i
+	}
+	if strings.Contains(body, `class="identity"`) || strings.Contains(body, `class="model"`) {
+		t.Error("runtime still uses a page-local identity treatment")
+	}
+	spec := cssRule(t, strings.Split(body, "</style>")[0], ".spec")
+	if !strings.Contains(spec, "minmax(min(100%, var(--col-min)), 1fr)") {
+		t.Errorf("fact grid can shrink columns below the readable minimum: %s", spec)
+	}
+	panelCSS := cssRule(t, body, ".readiness-panel")
+	for _, banned := range []string{"background", "border:", "border-radius", "box-shadow"} {
+		if strings.Contains(panelCSS, banned) {
+			t.Errorf("readiness composition carries %s", banned)
+		}
+	}
+	// the state stays the primary action's neighbor, and Stop stays visible and destructive
+	if !strings.Contains(panel, `<button type="submit" class="btn danger">Stop</button>`) {
+		t.Error("Stop is hidden or not destructive")
+	}
+}
+
 // Irreversible deletions ask first and read as destructive; the confirmation
 // goes through the shell's one submit handler, not per-form script.
 func TestIrreversibleActionsConfirm(t *testing.T) {

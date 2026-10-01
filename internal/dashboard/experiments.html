@@ -9,7 +9,7 @@
 
 <div class="slot" data-live="experiment">{{template "experiment" .}}</div>
 
-<section class="region" aria-labelledby="setup-h">
+<section class="region section" aria-labelledby="setup-h">
   <div class="region-h"><h2 id="setup-h">{{if .Exp}}{{t "New experiment"}}{{else}}{{t "Set up an experiment"}}{{end}}</h2><span class="sub">{{t "one experiment at a time · nothing is stored except the reports you export or save to history"}}</span></div>
   <form method="post" action="/experiments/run" class="stack" id="exp-form">
     <input type="hidden" name="token" value="{{.Token}}">
@@ -38,7 +38,7 @@
 </section>
 
 {{if .HistoryOn}}
-<section class="region" aria-labelledby="hist-h">
+<section class="region section" aria-labelledby="hist-h">
   <div class="region-h"><h2 id="hist-h">{{t "History"}}</h2><span class="sub mono">{{.HistoryRoot}} {{t "· saved only when you choose to"}}</span></div>
   {{with .HistoryErr}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   {{if .History}}
@@ -103,7 +103,7 @@
 {{define "experiment-live"}}<div data-live="experiment">{{template "experiment" .}}</div>{{end}}
 
 {{define "experiment"}}{{with .Exp}}
-<section class="run {{if eq .State "succeeded"}}tone-ok{{else if eq .State "running"}}tone-active{{else}}tone-bad{{end}}" aria-labelledby="run-h"{{if eq .State "running"}} data-running="1"{{end}}>
+<section class="run section {{if eq .State "succeeded"}}tone-ok{{else if eq .State "running"}}tone-active{{else}}tone-bad{{end}}" aria-labelledby="run-h"{{if eq .State "running"}} data-running="1"{{end}}>
   <div class="run-h">
     <div><h2 id="run-h">{{t "Experiment #"}}{{.Seq}}</h2><p class="sub mono">{{.Pre.Input.Dataset}}</p></div>
     <p class="state-word compact"><span class="dot"></span>{{.State}}</p>
@@ -203,7 +203,7 @@
 {{end}}{{end}}
 
 {{define "compare"}}
-<section class="region" aria-labelledby="cmp-h" data-compare="{{.Status}}">
+<section class="region section" aria-labelledby="cmp-h" data-compare="{{.Status}}">
   <div class="region-h"><h2 id="cmp-h">{{t "Comparison"}}</h2><span class="sub">{{t "status:"}} {{.Status}} {{t "· deltas are B minus A"}}</span></div>
   <dl class="kv">
     <dt>A</dt><dd class="mono">{{.EntryA.ID}}{{with .EntryA.Label}} · {{.}}{{end}} {{t "· evidence sha256"}} {{.EntryA.EvidenceSHA256}}</dd>

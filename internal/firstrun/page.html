@@ -9,7 +9,7 @@
 /* first run: one task, one column, the same roles as the workstation */
 main { max-width: 44rem; margin: 0 auto; padding: 8vh var(--sp-5) var(--sp-6); display: grid; gap: var(--sp-5); }
 .intro { display: grid; gap: var(--sp-1); }
-.step { display: grid; gap: var(--sp-3); padding: var(--sp-5); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.step { gap: var(--sp-3); }
 .step h2:focus { outline: none; }
 .path { flex: 1 1 20rem; font-family: var(--mono); font-size: var(--fs-code); overflow-wrap: anywhere; padding: var(--sp-2) var(--sp-3); background: var(--inset); border: 1px solid var(--line); border-radius: var(--r); min-height: var(--ctl-h); }
 fieldset .btn-row { margin-top: var(--sp-1); }
@@ -35,7 +35,7 @@ pre { max-height: 12rem; }
 
   <div id="notice" class="msg bad" role="alert" hidden></div>
 
-  <section id="select" class="step" aria-labelledby="select-h" hidden>
+  <section id="select" class="step section" aria-labelledby="select-h" hidden>
     <h2 id="select-h" tabindex="-1">{{t "Where should Hachidori keep its models and runtime?"}}</h2>
     <p class="muted">{{t "Hachidori stores the model and its runtime locally, in one folder you choose. It manages everything inside that folder; you only pick the folder. Choose a drive with plenty of free space."}}</p>
     <div class="btn-row">
@@ -58,7 +58,7 @@ pre { max-height: 12rem; }
     </div>
   </section>
 
-  <section id="progress" class="step tone-active" aria-labelledby="ptitle" hidden>
+  <section id="progress" class="step section tone-active" aria-labelledby="ptitle" hidden>
     <h2 id="ptitle" tabindex="-1"></h2>
     <ol class="phases" id="phases"></ol>
     <p id="step"></p>
@@ -67,13 +67,13 @@ pre { max-height: 12rem; }
     <p class="vh" id="plive" role="status"></p>
   </section>
 
-  <section id="ready" class="step tone-ok" aria-labelledby="ready-h" hidden>
+  <section id="ready" class="step section tone-ok" aria-labelledby="ready-h" hidden>
     <h2 id="ready-h" class="state-word" tabindex="-1"><span class="dot"></span>READY</h2>
     <p id="identity" class="muted"></p>
     <div class="btn-row"><button id="open" class="btn primary" type="button">{{t "Open Hachidori"}}</button></div>
   </section>
 
-  <section id="failed" class="step" aria-labelledby="failed-h" hidden>
+  <section id="failed" class="step section" aria-labelledby="failed-h" hidden>
     <h2 id="failed-h" class="bad-t" tabindex="-1">{{t "Needs attention"}}</h2>
     <p id="fmsg" class="msg bad" role="alert"></p>
     <pre id="fdetail"></pre>

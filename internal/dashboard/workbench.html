@@ -26,7 +26,7 @@
       </section>
 
       {{range $i, $q := .W.Questions}}{{$qv := $.Question $i}}
-      <section class="question" aria-label="{{t "Question"}} {{$i}}">
+      <section class="question section" aria-label="{{t "Question"}} {{$i}}">
         <div class="block-h">
           <h2>{{t "Question"}} {{$i}}{{with $q.ID}} <span class="sub mono">{{.}}</span>{{end}}</h2>
           <div class="btn-row">
