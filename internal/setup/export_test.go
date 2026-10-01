@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"io"
 	"testing"
 
 	"github.com/yohn-jp/hachidori/internal/home"
@@ -56,4 +57,17 @@ func MaterializeFakeOlderWorker(t *testing.T, device string) (home.Home, string)
 	f.mustRun(device)
 	name := f.olderWorker(device)
 	return f.H, name
+}
+
+// MaterializeFakeResidents materializes and activates the default catalog
+// model for device and, without activating it, the fake catalog's second
+// model: a home from which both models can be launched as residents. It
+// returns the home and the two catalog IDs (default first).
+func MaterializeFakeResidents(t *testing.T, device string) (h home.Home, def, other string) {
+	f := newFixture(t)
+	f.mustRun(device)
+	if err := Materialize(f.H, device, tunedModel, io.Discard, nil); err != nil {
+		t.Fatal(err)
+	}
+	return f.H, DefaultModel, tunedModel
 }

@@ -91,16 +91,21 @@ const PhasePreflight = "preflight"
 // for a worker, PhasePreflight for a runtime that was never started. Step is
 // the setup step that was running when a setup or maintenance action failed.
 type Failure struct {
-	Source  string   `json:"source"`
-	Class   string   `json:"class,omitempty"`
-	Phase   string   `json:"phase,omitempty"`
-	Step    string   `json:"step,omitempty"`
-	Message string   `json:"message"`
-	Stderr  []string `json:"stderr_tail,omitempty"`
+	Source   string   `json:"source"`
+	Model    string   `json:"model,omitempty"`    // resident model that failed, for a resident set
+	Provider string   `json:"provider,omitempty"` // its provider
+	Class    string   `json:"class,omitempty"`
+	Phase    string   `json:"phase,omitempty"`
+	Step     string   `json:"step,omitempty"`
+	Message  string   `json:"message"`
+	Stderr   []string `json:"stderr_tail,omitempty"`
 }
 
 func (f *Failure) Error() string {
 	where := f.Source
+	if f.Model != "" {
+		where += " " + f.Model
+	}
 	if f.Phase != "" {
 		where += " (" + f.Phase + ")"
 	}

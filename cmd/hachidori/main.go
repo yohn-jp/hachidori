@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/app"
 	"github.com/yohn-jp/hachidori/internal/client"
 	"github.com/yohn-jp/hachidori/internal/dashboard"
 	"github.com/yohn-jp/hachidori/internal/desktop"
@@ -147,6 +148,8 @@ func runHost(name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	homeFlag := fs.String("home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
 	listen := fs.String("listen", server.DefaultListen, "loopback address to bind")
+	var residents pathList
+	fs.Var(&residents, "resident", "catalog model ID kept resident beside the active model, each in its own worker process ("+strings.Join(modelIDs(), ", ")+"; repeatable). The active model stays the default route")
 	var dashAddr, sshExe *string
 	if name == "dashboard" {
 		dashAddr = fs.String("addr", dashboard.DefaultListen, "loopback address of the dashboard")
@@ -181,24 +184,49 @@ func runHost(name string, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	sup := worker.NewSupervisor(cfg, worker.DefaultPolicy)
-	lc := worker.NewLifecycle(ctx, sup)
-	lc.Start()
-	defer lc.Stop()
-	rt, started := info, time.Now()
+	var (
+		dec    server.Decider
+		lc     dashboard.Lifecycle
+		status func() server.Status
+		rt     = info
+		now    = time.Now()
+	)
+	if len(residents) == 0 {
+		sup := worker.NewSupervisor(cfg, worker.DefaultPolicy)
+		wl := worker.NewLifecycle(ctx, sup)
+		wl.Start()
+		defer wl.Stop()
+		dec, lc = sup, wl
+		status = func() server.Status { return server.StatusBody(sup, rt, now) }
+		go logTransitions(ctx, "", sup)
+	} else {
+		set, err := app.OpenResidents(ctx, h, logf, worker.DefaultPolicy, residents)
+		if err != nil {
+			return err
+		}
+		set.Start()
+		defer set.Stop()
+		dec, lc, rt, now, status = set, set, set.Runtime(), set.Started(), set.Status
+		for _, st := range set.ResidentStatuses() {
+			r, _ := set.Resident(st.Model)
+			go logTransitions(ctx, st.Model, r.Supervisor)
+		}
+	}
 
-	srv := &http.Server{Addr: *listen, Handler: server.HandlerSince(sup, rt, started), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: *listen, Handler: server.HandlerSince(dec, rt, now), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
 	fmt.Fprintf(os.Stderr, "hachidori: serving %s (runtime %s, model %s (%s), device %s); worker log %s\n",
 		*listen, rt.Runtime, rt.ModelID, rt.Model, rt.Device, logf.Name())
-	go logTransitions(ctx, sup)
+	if len(residents) > 0 {
+		fmt.Fprintf(os.Stderr, "hachidori: resident set: default %s, extra %s (one worker process each)\n", rt.ModelID, strings.Join(residents, ", "))
+	}
 
 	var dash *http.Server
 	if dashAddr != nil {
 		d := dashboard.New(dashboard.Config{
 			APIAddr:   *listen,
-			Status:    func() server.Status { return server.StatusBody(sup, rt, started) },
+			Status:    status,
 			Lifecycle: lc,
 			Doctor:    func(out io.Writer) bool { return doctor.Run(h.Root, out) },
 			Tunnel:    tunnel.NewManager(*sshExe),
@@ -237,12 +265,18 @@ func runHost(name string, args []string) error {
 	return nil
 }
 
-func logTransitions(ctx context.Context, sup *worker.Supervisor) {
+// logTransitions logs the supervisor's state changes; model names the
+// resident for a resident set ("" for the single worker).
+func logTransitions(ctx context.Context, model string, sup *worker.Supervisor) {
+	who := "worker"
+	if model != "" {
+		who += " " + model
+	}
 	last := ""
 	for ctx.Err() == nil {
 		if s := sup.State(); s != last {
 			last = s
-			msg := "worker " + s
+			msg := who + " " + s
 			if f := sup.LastFailure(); f != nil && s != worker.StateReady {
 				msg += fmt.Sprintf(" (%s: %s)", f.Class, f.Message)
 			}

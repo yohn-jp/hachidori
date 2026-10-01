@@ -649,6 +649,10 @@ func TestMain(m *testing.M) {
 		fakeWorker(mode)
 		os.Exit(0)
 	}
+	if spec := os.Getenv(fakeResidentEnv); spec != "" {
+		fakeResidentWorker(spec)
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
 }
 
