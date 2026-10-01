@@ -71,6 +71,7 @@ first-run wizard", "Windows recovery boundaries").
 | W11 | Diagnostic bundle export | Diagnostics > Export bundle writes one `.zip` under `state\diagnostics`; it contains only `manifest.json`, `facts.json` and `worker-log-tail.txt`, and the facts show the WebView2 version, the executable SHA-256 matching the identity block, and the recovery state seen in W09 | NOT_CHECKED | |
 | W12 | CPU runtime | Windows RTX host steps 2-3 with `--device cpu`: `setup`, `doctor` all checks pass, real smoke inference | NOT_CHECKED | |
 | W13 | CUDA runtime (hardware required) | Same with `--device cuda` on an NVIDIA GPU with driver 570 or newer; with an unusable GPU the failure is reported and Hachidori never switches to CPU. `NOT_CHECKED` when no such hardware exists | NOT_CHECKED | |
+| W14 | Executable icon | In Explorer, the taskbar, the window title bar, Alt+Tab and the tray, `hachidori.exe` shows the current Hachidori icon (`assets/icons`). The embedded resource itself is verified deterministically by `go test ./internal/winres`. Explorer caches icons per path, so judge a stale-looking icon only after copying the executable to a new path or clearing the icon cache | NOT_CHECKED | |
 
 ## Recorded state for the change that introduced this checklist
 

@@ -5,6 +5,8 @@ import (
 	"debug/pe"
 	"encoding/binary"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +38,65 @@ func TestCommittedSysoMatchesIcon(t *testing.T) {
 	if !bytes.Equal(readFile(t, sysoPath), want) {
 		t.Fatalf("%s is stale; run go generate ./cmd/hachidori", sysoPath)
 	}
+}
+
+// TestIconMatchesBrandPNGs keeps the .ico the executable embeds pixel-identical
+// to the brand PNGs in assets/icons, and requires the multi-size set Explorer,
+// the taskbar and window title bars pick from (no single scaled bitmap).
+func TestIconMatchesBrandPNGs(t *testing.T) {
+	imgs, err := ParseICO(readFile(t, icoPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[int]bool{}
+	for _, im := range imgs {
+		w, h := int(im.Width), int(im.Height)
+		if w == 0 {
+			w = 256 // an ico directory stores 256 as 0
+		}
+		if h == 0 {
+			h = 256
+		}
+		if w != h {
+			t.Errorf("ico image %dx%d is not square", w, h)
+		}
+		have[w] = true
+		got, err := png.Decode(bytes.NewReader(im.Data))
+		if err != nil {
+			t.Errorf("ico image %d: %v", w, err)
+			continue
+		}
+		wantPNG := readFile(t, filepath.Join("..", "..", "assets", "icons", fmt.Sprintf("hachidori-%d.png", w)))
+		want, err := png.Decode(bytes.NewReader(wantPNG))
+		if err != nil {
+			t.Errorf("hachidori-%d.png: %v", w, err)
+			continue
+		}
+		if !samePixels(got, want) {
+			t.Errorf("ico image %d differs from assets/icons/hachidori-%d.png; regenerate the .ico and run go generate ./cmd/hachidori", w, w)
+		}
+	}
+	for _, w := range []int{16, 24, 32, 48, 256} {
+		if !have[w] {
+			t.Errorf("ico has no %dx%d image", w, w)
+		}
+	}
+}
+
+func samePixels(a, b image.Image) bool {
+	if a.Bounds() != b.Bounds() {
+		return false
+	}
+	for y := a.Bounds().Min.Y; y < a.Bounds().Max.Y; y++ {
+		for x := a.Bounds().Min.X; x < a.Bounds().Max.X; x++ {
+			ar, ag, ab, aa := a.At(x, y).RGBA()
+			br, bg, bb, ba := b.At(x, y).RGBA()
+			if ar != br || ag != bg || ab != bb || aa != ba {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func TestParseICORejectsMalformed(t *testing.T) {
