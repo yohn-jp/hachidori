@@ -41,6 +41,7 @@ defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
 | `GET /v1/status` | `200` | runtime, provider (versions, device, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, queue depth, inference p50/p95 |
 | `POST /v1/decide` | `200` | one state, 1–32 `choice` questions |
 | `POST /v1/decide/batch` | `200` | 1–64 decide requests; requests sharing a question set share forward passes |
+| `GET /openapi.json` | `200` | the OpenAPI 3.1 description of this API (below) |
 
 The API is host-local like the dashboard: a request whose `Host` is not a
 loopback address is refused with `403` (DNS rebinding), and so is a `POST` that
@@ -100,6 +101,24 @@ operator reads the full text in the worker log and the dashboard.
 
 Only `choice` questions exist in v1. Limits: state 64 KiB, 32 questions,
 64 choices, 64 batch entries.
+
+### OpenAPI description
+
+`GET /openapi.json` serves the machine-readable contract of the endpoints above
+as OpenAPI 3.1, from the binary and without network access. It is the one
+public description of the API (there is no separate Hachidori schema endpoint).
+`info.version` is the contract identifier `hachidori.v1`. The document covers
+request and response bodies, the `choice` question rules, limits, structured
+errors and their statuses, health and status. It is independent of the active
+model and provider: those are reported by `GET /v1/status`. It is built in
+`internal/server/openapi.go` from the limits in `internal/api` and the error
+status map the handlers use, and `internal/server/openapi_test.go` checks it
+against the Go types and the handlers, so a change to either that is not
+reflected in the document fails the tests. Some rules cannot be expressed in the
+schema and are stated in its descriptions only: byte (not character) limits on
+`state` and `instructions`, blank-text rejection, unique question ids, and
+`descriptions` keys naming existing choices. Like the rest of the API it is
+subject to the host-local checks above.
 
 ## Worker lifecycle
 
