@@ -101,14 +101,14 @@ func TestActivateExplicitAndOffline(t *testing.T) {
 	f.mustRun("cpu")
 	f.mustRunModel("cpu", tunedModel) // activates tuned; make default the active again below
 	var log strings.Builder
-	if changed, err := Activate(f.H, "cpu", "", &log); err != nil || !changed {
+	if changed, err := Activate(f.H, "cpu", "", &log, nil); err != nil || !changed {
 		t.Fatalf("activate default: %v %v", changed, err)
 	}
-	if changed, err := Activate(f.H, "cpu", "", &log); err != nil || changed {
+	if changed, err := Activate(f.H, "cpu", "", &log, nil); err != nil || changed {
 		t.Fatalf("repeat activate changed=%v err=%v", changed, err)
 	}
 	f.srvDown()
-	if changed, err := Activate(f.H, "cpu", tunedModel, io.Discard); err != nil || !changed {
+	if changed, err := Activate(f.H, "cpu", tunedModel, io.Discard, nil); err != nil || !changed {
 		t.Fatalf("activate tuned offline: %v %v", changed, err)
 	}
 	var a home.Active
@@ -126,16 +126,16 @@ func TestActivateFailurePreservesActive(t *testing.T) {
 	prev := f.active()
 	old, base := uvArtifacts[platform()], modelBaseURL
 	f.srvDown()
-	if _, err := Activate(f.H, "cuda", "", io.Discard); err == nil || !strings.Contains(err.Error(), "not materialized") {
+	if _, err := Activate(f.H, "cuda", "", io.Discard, nil); err == nil || !strings.Contains(err.Error(), "not materialized") {
 		t.Fatalf("cuda activation without a cuda runtime: %v", err)
 	}
-	if _, err := Activate(f.H, "gpu", "", io.Discard); err == nil {
+	if _, err := Activate(f.H, "gpu", "", io.Discard, nil); err == nil {
 		t.Fatal("unknown device accepted")
 	}
-	if _, err := Activate(f.H, "cpu", "not-in-catalog", io.Discard); err == nil {
+	if _, err := Activate(f.H, "cpu", "not-in-catalog", io.Discard, nil); err == nil {
 		t.Fatal("non-catalog model accepted")
 	}
-	if _, err := Activate(f.H, "cpu", tunedModel, io.Discard); err == nil || !strings.Contains(err.Error(), "not materialized") {
+	if _, err := Activate(f.H, "cpu", tunedModel, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "not materialized") {
 		t.Fatalf("unmaterialized model: %v", err)
 	}
 	// A corrupted target model is refused; nothing is activated.
@@ -146,7 +146,7 @@ func TestActivateFailurePreservesActive(t *testing.T) {
 	prev = f.active()
 	tdir := f.H.Path("models", filepath.FromSlash(ModelDirName(f.model(tunedModel))))
 	os.WriteFile(filepath.Join(tdir, "config.json"), []byte("bad"), 0o644)
-	if _, err := Activate(f.H, "cpu", tunedModel, io.Discard); err == nil || !strings.Contains(err.Error(), "failed verification") {
+	if _, err := Activate(f.H, "cpu", tunedModel, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "failed verification") {
 		t.Fatalf("corrupt model activated: %v", err)
 	}
 	if !bytes.Equal(f.active(), prev) {
@@ -159,7 +159,7 @@ func TestMaterializeDoesNotActivate(t *testing.T) {
 	f.mustRun("cpu")
 	prev := f.active()
 	var phases []Phase
-	if err := Materialize(f.H, "cuda", tunedModel, io.Discard, func(p Phase) { phases = append(phases, p) }); err != nil {
+	if err := Materialize(f.H, "cuda", tunedModel, io.Discard, &Observer{OnPhase: func(p Phase) { phases = append(phases, p) }}); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(f.active(), prev) {
@@ -194,22 +194,22 @@ func TestVerifyArtifacts(t *testing.T) {
 	f := newFixture(t)
 	f.mustRun("cpu")
 	spec, _ := Desired("cpu")
-	if err := Verify(f.H, KindRuntime, spec.ID()); err != nil {
+	if err := Verify(f.H, KindRuntime, spec.ID(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := Verify(f.H, KindModel, DefaultModel); err != nil {
+	if err := Verify(f.H, KindModel, DefaultModel, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range [][2]string{{KindRuntime, "cpu-deadbeef"}, {KindRuntime, ""}, {KindModel, ""}, {KindModel, "x/y"}, {"other", "a"}} {
-		if err := Verify(f.H, c[0], c[1]); err == nil {
+		if err := Verify(f.H, c[0], c[1], nil); err == nil {
 			t.Fatalf("Verify(%q,%q) accepted", c[0], c[1])
 		}
 	}
-	if err := Verify(f.H, KindModel, tunedModel); err == nil {
+	if err := Verify(f.H, KindModel, tunedModel, nil); err == nil {
 		t.Fatal("unmaterialized model verified")
 	}
 	os.WriteFile(filepath.Join(f.H.Path("models", filepath.FromSlash(ModelDirName(f.model("")))), "config.json"), []byte("bad"), 0o644)
-	if err := Verify(f.H, KindModel, DefaultModel); err == nil {
+	if err := Verify(f.H, KindModel, DefaultModel, nil); err == nil {
 		t.Fatal("corrupt model verified")
 	}
 }
@@ -241,7 +241,7 @@ func TestRepairRebuildsAndRollsBack(t *testing.T) {
 	if err := Repair(f.H, "cpu", "", io.Discard, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := Verify(f.H, KindModel, DefaultModel); err != nil {
+	if err := Verify(f.H, KindModel, DefaultModel, nil); err != nil {
 		t.Fatalf("still broken after repair: %v", err)
 	}
 	if !bytes.Equal(f.active(), prev) {
@@ -267,23 +267,23 @@ func TestRemoveUnusedAndRefuseActive(t *testing.T) {
 	prev := f.active()
 
 	for _, c := range [][2]string{{KindRuntime, cuda.ID()}, {KindModel, tunedModel}} {
-		if err := Remove(f.H, c[0], c[1]); !errors.Is(err, ErrActive) {
+		if err := Remove(f.H, c[0], c[1], nil); !errors.Is(err, ErrActive) {
 			t.Fatalf("Remove(%v) = %v, want ErrActive", c, err)
 		}
 	}
-	if err := Remove(f.H, KindRuntime, cpu.ID()); err != nil {
+	if err := Remove(f.H, KindRuntime, cpu.ID(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(f.H.Path("runtime", cpu.ID())); !os.IsNotExist(err) {
 		t.Fatal("unused runtime not removed")
 	}
-	if err := Remove(f.H, KindModel, DefaultModel); err != nil {
+	if err := Remove(f.H, KindModel, DefaultModel, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(f.H.Path("models", "test--model")); !os.IsNotExist(err) {
 		t.Fatal("empty repository directory left behind")
 	}
-	if err := Remove(f.H, KindModel, DefaultModel); err == nil {
+	if err := Remove(f.H, KindModel, DefaultModel, nil); err == nil {
 		t.Fatal("removing an absent model succeeded")
 	}
 	if !bytes.Equal(f.active(), prev) {
@@ -309,7 +309,7 @@ func TestRemoveConfinement(t *testing.T) {
 		{KindModel, "../tools"}, {KindModel, ""}, {KindModel, "test--model/" + f.model("").Revision},
 		{KindModel, "test/model"}, {"tools", "uv"}, {"", ""},
 	} {
-		if err := Remove(f.H, c[0], c[1]); err == nil {
+		if err := Remove(f.H, c[0], c[1], nil); err == nil {
 			t.Fatalf("Remove(%q,%q) accepted", c[0], c[1])
 		}
 	}
@@ -320,7 +320,7 @@ func TestRemoveConfinement(t *testing.T) {
 	// Wrong roots: relative, empty, filesystem root, and a directory that is
 	// not a Hachidori home.
 	for _, h := range []home.Home{{Root: ""}, {Root: "relative/home"}, {Root: string(filepath.Separator)}, {Root: t.TempDir()}} {
-		if err := Remove(h, KindModel, DefaultModel); err == nil {
+		if err := Remove(h, KindModel, DefaultModel, nil); err == nil {
 			t.Fatalf("Remove under %q accepted", h.Root)
 		}
 	}
@@ -345,7 +345,7 @@ func TestRemoveConfinement(t *testing.T) {
 	if err := os.Symlink(outside, f.H.Path("runtime", spec.ID())); err != nil {
 		t.Fatal(err)
 	}
-	if err := Remove(f.H, KindRuntime, spec.ID()); err == nil {
+	if err := Remove(f.H, KindRuntime, spec.ID(), nil); err == nil {
 		t.Fatal("symlinked runtime removed")
 	}
 	// A runtime/ directory that is itself a link elsewhere is refused too.
@@ -357,7 +357,7 @@ func TestRemoveConfinement(t *testing.T) {
 	os.Rename(f2.H.Path("runtime"), moved)
 	os.Symlink(moved, f2.H.Path("runtime"))
 	cpu, _ := Desired("cpu")
-	if err := Remove(f2.H, KindRuntime, cpu.ID()); err == nil {
+	if err := Remove(f2.H, KindRuntime, cpu.ID(), nil); err == nil {
 		t.Fatal("runtime/ symlinked out of the home was removed")
 	}
 	if _, err := os.Stat(filepath.Join(moved, cpu.ID())); err != nil {
@@ -374,7 +374,7 @@ func TestRemoveRefusedWithoutReadableActivation(t *testing.T) {
 	f.mustRun("cpu")
 	f.mustRunModel("cpu", tunedModel)
 	os.WriteFile(f.H.Path("state", "active-runtime.json"), []byte("{not json"), 0o644)
-	if err := Remove(f.H, KindModel, DefaultModel); err == nil {
+	if err := Remove(f.H, KindModel, DefaultModel, nil); err == nil {
 		t.Fatal("removed with an unreadable activation record")
 	}
 	if inv := Inspect(f.H, false); inv.ActiveErr == "" || inv.Active != nil {

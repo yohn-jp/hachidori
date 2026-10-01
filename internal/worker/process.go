@@ -22,6 +22,7 @@ import (
 
 // Failure classes reported by the worker or detected by the supervisor.
 const (
+	ClassPreflight     = "preflight"          // the runtime was refused before any process started
 	ClassStartup       = "worker_startup"     // process could not be started or died before hello
 	ClassProviderInit  = "provider_import"    // provider stack failed to import/initialize
 	ClassDevice        = "device_unavailable" // requested accelerator unavailable
@@ -59,6 +60,11 @@ type Config struct {
 	Log            io.Writer // receives worker stderr
 	StartTimeout   time.Duration
 	RequestTimeout time.Duration
+	// Preflight, if set, runs before every launch. A non-nil error refuses
+	// the launch: no process is started and the supervisor fails with
+	// ClassPreflight and the error's text. It is for conditions that make a
+	// launch pointless and whose cause the operator can fix.
+	Preflight func() error
 }
 
 // Info is what the worker reports once READY.
@@ -145,31 +151,61 @@ func Start(ctx context.Context, cfg Config, onPhase func(string)) (*Process, err
 	timeout := time.NewTimer(cfg.StartTimeout)
 	defer timeout.Stop()
 	hello := false
+	// handle applies one startup message. It returns done=true once startup
+	// has ended: with the process when ready, or with the failure.
+	handle := func(m message) (done bool, err error) {
+		switch m.Event {
+		case "hello":
+			hello = true
+		case "phase":
+			if onPhase != nil {
+				onPhase(m.Phase)
+			}
+		case "fatal":
+			p.setExit(&Failure{Class: m.Class, Message: m.Message})
+			p.kill()
+			<-p.done
+			return true, p.failure()
+		case "ready":
+			p.Info = m.Info
+			return true, nil
+		default:
+			p.setExit(&Failure{Class: ClassProtocolError, Message: "unexpected message before ready"})
+			p.kill()
+			<-p.done
+			return true, p.failure()
+		}
+		return false, nil
+	}
 	for {
 		select {
 		case m := <-p.msgs:
-			switch m.Event {
-			case "hello":
-				hello = true
-			case "phase":
-				if onPhase != nil {
-					onPhase(m.Phase)
+			if done, err := handle(m); done {
+				if err != nil {
+					return nil, err
 				}
-			case "fatal":
-				p.setExit(&Failure{Class: m.Class, Message: m.Message})
-				p.kill()
-				<-p.done
-				return nil, p.failure()
-			case "ready":
-				p.Info = m.Info
 				return p, nil
-			default:
-				p.setExit(&Failure{Class: ClassProtocolError, Message: "unexpected message before ready"})
-				p.kill()
-				<-p.done
-				return nil, p.failure()
 			}
 		case <-p.done:
+			// The process is gone, but everything it wrote before exiting
+			// is already queued (p.done closes only after both pipes were
+			// read to the end). Apply it first: a worker that reported its
+			// phase or a fatal class and then exited must be attributed to
+			// that phase and class, not to a startup that never began.
+			for {
+				select {
+				case m := <-p.msgs:
+					if done, err := handle(m); done {
+						if err != nil {
+							return nil, err
+						}
+						return p, nil
+					}
+					continue
+				default:
+				}
+				break
+			}
 			f := p.failure()
 			if !hello {
 				f.Class = ClassStartup
@@ -343,6 +379,13 @@ func (p *Process) readStdout(r io.Reader) {
 			p.setExit(&Failure{Class: ClassProtocolError, Message: "non-protocol output on stdout: " + truncate(sc.Text(), 200)})
 			p.kill()
 			break
+		}
+		if m.Event == "fatal" {
+			// The worker's own account of why it is ending. Recorded here,
+			// by the reader that always finishes before the exit is judged,
+			// so a consumer that is slow to take the message cannot let the
+			// generic "worker exited" take its place.
+			p.setExit(&Failure{Class: m.Class, Message: m.Message})
 		}
 		select {
 		case p.msgs <- m:

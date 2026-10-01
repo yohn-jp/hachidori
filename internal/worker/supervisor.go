@@ -18,6 +18,10 @@ const (
 	StateStopped    = "stopped"
 )
 
+// PhasePreflight is the supervisor's phase while it checks that a launch is
+// possible, before any process exists.
+const PhasePreflight = "preflight"
+
 // Policy bounds restarts after a worker that was READY dies.
 // Startup failures (import, device, model load, warmup) are deterministic and
 // are not retried: the supervisor reports them and stays failed.
@@ -74,6 +78,18 @@ func (s *Supervisor) Run(ctx context.Context) {
 	for {
 		s.mu.Lock()
 		s.starts++
+		s.phase = PhasePreflight
+		s.mu.Unlock()
+		if s.cfg.Preflight != nil {
+			if err := s.cfg.Preflight(); err != nil {
+				s.mu.Lock()
+				s.lastFail = &Failure{Class: ClassPreflight, Message: err.Error()}
+				s.state = StateFailed
+				s.mu.Unlock()
+				return
+			}
+		}
+		s.mu.Lock()
 		s.phase = "spawning"
 		s.mu.Unlock()
 		p, err := Start(ctx, s.cfg, func(ph string) { s.mu.Lock(); s.phase = ph; s.mu.Unlock() })

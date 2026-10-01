@@ -41,7 +41,7 @@ func newRecEnv(t *testing.T) (*Controller, *recFake, *atomic.Int32, *atomic.Int3
 		Home:      "/h",
 		Installed: func(string) bool { return true },
 		Open:      func(string) (Runtime, error) { opens.Add(1); return rt, nil },
-		Setup: func(string, string, string, io.Writer, func(setup.Phase)) error {
+		Setup: func(string, string, string, io.Writer, *setup.Observer) error {
 			setups.Add(1)
 			return nil
 		},

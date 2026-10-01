@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,11 +29,11 @@ func TestFetchVerifiesDigest(t *testing.T) {
 	defer srv.Close()
 	sum := sha256.Sum256([]byte("payload"))
 	dst := filepath.Join(t.TempDir(), "a", "f")
-	if err := fetch(srv.URL, dst, hex.EncodeToString(sum[:]), io.Discard); err != nil {
+	if err := fetch(srv.URL, dst, hex.EncodeToString(sum[:]), io.Discard, nil, Progress{}); err != nil {
 		t.Fatal(err)
 	}
 	bad := filepath.Join(t.TempDir(), "g")
-	if err := fetch(srv.URL, bad, strings.Repeat("0", 64), io.Discard); err == nil {
+	if err := fetch(srv.URL, bad, strings.Repeat("0", 64), io.Discard, nil, Progress{}); err == nil {
 		t.Fatal("digest mismatch accepted")
 	}
 	if _, err := os.Stat(bad); !os.IsNotExist(err) {
@@ -57,7 +59,7 @@ func TestFetchAbandonsAStalledDownload(t *testing.T) {
 			srv := httptest.NewServer(handler)
 			defer srv.Close()
 			dst := filepath.Join(t.TempDir(), "f")
-			err := fetch(srv.URL, dst, want, io.Discard)
+			err := fetch(srv.URL, dst, want, io.Discard, nil, Progress{})
 			if err == nil || !strings.Contains(err.Error(), "stalled") {
 				t.Fatalf("err = %v, want a stall failure", err)
 			}
@@ -88,7 +90,7 @@ func TestFetchKeepsASlowButProgressingDownload(t *testing.T) {
 	sum := sha256.Sum256([]byte(strings.Repeat("0123456789", chunks)))
 	dst := filepath.Join(t.TempDir(), "f")
 	t0 := time.Now()
-	if err := fetch(srv.URL, dst, hex.EncodeToString(sum[:]), io.Discard); err != nil {
+	if err := fetch(srv.URL, dst, hex.EncodeToString(sum[:]), io.Discard, nil, Progress{}); err != nil {
 		t.Fatal(err)
 	}
 	if time.Since(t0) <= downloadStall {
@@ -178,11 +180,11 @@ func TestUVBootstrapVerifiesDigest(t *testing.T) {
 	good := uvArtifacts[platform()]
 
 	uvArtifacts[platform()] = uvArtifact{URL: good.URL, SHA256: strings.Repeat("0", 64), Member: good.Member, BinarySHA256: good.BinarySHA256}
-	if _, err := ensureUV(f.H, io.Discard); err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
+	if _, err := ensureUV(f.H, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
 		t.Fatalf("archive digest mismatch: %v", err)
 	}
 	uvArtifacts[platform()] = uvArtifact{URL: good.URL, SHA256: good.SHA256, Member: good.Member, BinarySHA256: strings.Repeat("0", 64)}
-	if _, err := ensureUV(f.H, io.Discard); err == nil || !strings.Contains(err.Error(), "extracted executable") {
+	if _, err := ensureUV(f.H, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "extracted executable") {
 		t.Fatalf("executable digest mismatch: %v", err)
 	}
 	exe := filepath.Join(uvDir(f.H), "uv")
@@ -191,7 +193,7 @@ func TestUVBootstrapVerifiesDigest(t *testing.T) {
 	}
 
 	uvArtifacts[platform()] = good
-	uv, err := ensureUV(f.H, io.Discard)
+	uv, err := ensureUV(f.H, io.Discard, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +211,7 @@ func TestUVBootstrapVerifiesDigest(t *testing.T) {
 		t.Fatal("tampered uv ran")
 	}
 	// ... and the next bootstrap restores the pinned executable from the verified archive.
-	if _, err := ensureUV(f.H, io.Discard); err != nil {
+	if _, err := ensureUV(f.H, io.Discard, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := FileSHA256(exe); got != good.BinarySHA256 {
@@ -748,7 +750,7 @@ func TestNoPipInstallPath(t *testing.T) {
 func TestRunObservedPhases(t *testing.T) {
 	f := newFixture(t)
 	var got []Phase
-	if err := RunObserved(f.H, "cpu", DefaultModel, io.Discard, func(p Phase) { got = append(got, p) }); err != nil {
+	if err := RunObserved(f.H, "cpu", DefaultModel, io.Discard, &Observer{OnPhase: func(p Phase) { got = append(got, p) }}); err != nil {
 		t.Fatal(err)
 	}
 	want := []Phase{PhasePreparing, PhaseRuntime, PhaseModel, PhaseActivation}
@@ -759,10 +761,230 @@ func TestRunObservedPhases(t *testing.T) {
 	f2 := newFixture(t)
 	f2.control(fakeControl{Fail: "venv"})
 	got = nil
-	if err := RunObserved(f2.H, "cpu", DefaultModel, io.Discard, func(p Phase) { got = append(got, p) }); err == nil {
+	if err := RunObserved(f2.H, "cpu", DefaultModel, io.Discard, &Observer{OnPhase: func(p Phase) { got = append(got, p) }}); err == nil {
 		t.Fatal("injected uv failure did not fail setup")
 	}
 	if want := []Phase{PhasePreparing, PhaseRuntime}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("phases on runtime failure %v, want %v", got, want)
+	}
+}
+
+// observed records everything an Observer is told, in order.
+type observed struct {
+	mu       sync.Mutex
+	phases   []Phase
+	progress []Progress
+}
+
+func (o *observed) observer() *Observer {
+	return &Observer{
+		OnPhase:    func(p Phase) { o.mu.Lock(); o.phases = append(o.phases, p); o.mu.Unlock() },
+		OnProgress: func(p Progress) { o.mu.Lock(); o.progress = append(o.progress, p); o.mu.Unlock() },
+	}
+}
+
+func (o *observed) steps(s Step) []Progress {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var out []Progress
+	for _, p := range o.progress {
+		if p.Step == s {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func unthrottled(t *testing.T) {
+	old := progressInterval
+	progressInterval = 0
+	t.Cleanup(func() { progressInterval = old })
+}
+
+// A download whose size the server states reports determinate bytes that end
+// at the full size; one without a stated size is reported without a total, so
+// no percentage can be derived from it.
+func TestFetchReportsDeterminateOnlyWhenTheSizeIsKnown(t *testing.T) {
+	unthrottled(t)
+	payload := strings.Repeat("0123456789", 1000)
+	sum := sha256.Sum256([]byte(payload))
+	want := hex.EncodeToString(sum[:])
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+		total   int64
+	}{
+		{"content-length", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+			io.WriteString(w, payload)
+		}, int64(len(payload))},
+		{"chunked", func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, payload[:5000])
+			w.(http.Flusher).Flush()
+			io.WriteString(w, payload[5000:])
+		}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+			var o observed
+			err := fetch(srv.URL, filepath.Join(t.TempDir(), "f"), want, io.Discard, o.observer(),
+				Progress{Step: StepDownload, Detail: "f", Item: 2, Items: 3})
+			if err != nil {
+				t.Fatal(err)
+			}
+			dl := o.steps(StepDownload)
+			if len(dl) < 2 {
+				t.Fatalf("progress = %+v", o.progress)
+			}
+			last := dl[len(dl)-1]
+			if last.Done != int64(len(payload)) || last.Total != tc.total || last.Detail != "f" || last.Item != 2 || last.Items != 3 {
+				t.Fatalf("last = %+v", last)
+			}
+			prev := int64(-1)
+			for _, p := range dl {
+				if p.Done < prev || p.Total != tc.total || (tc.total > 0 && p.Done > p.Total) {
+					t.Fatalf("progress is not monotonic and bounded: %+v", dl)
+				}
+				prev = p.Done
+			}
+			if det := last.Determinate(); det != (tc.total > 0) {
+				t.Fatalf("Determinate = %v for total %d", det, tc.total)
+			}
+			if tc.total == 0 && last.Fraction() != 0 {
+				t.Fatal("an indeterminate step produced a fraction")
+			}
+		})
+	}
+}
+
+// A real setup reports what it is busy with in each phase: the model download
+// carries per-file byte totals and its position in the sequence, hashing an
+// existing file is determinate, the private uv's steps are indeterminate and
+// named, and activation is its own step. A second run only verifies.
+func TestRunObservedReportsStepsAndProgress(t *testing.T) {
+	unthrottled(t)
+	f := newFixture(t)
+	var o observed
+	if err := RunObserved(f.H, "cpu", DefaultModel, io.Discard, o.observer()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []Phase{PhasePreparing, PhaseRuntime, PhaseModel, PhaseActivation}; !reflect.DeepEqual(o.phases, want) {
+		t.Fatalf("phases %v, want %v", o.phases, want)
+	}
+	dl := o.steps(StepDownload)
+	var files []string
+	for _, p := range dl {
+		if p.Detail != "config.json" {
+			continue
+		}
+		if p.Item != 1 || p.Items != 1 || p.Total != int64(len(`{"model":"fake"}`)) {
+			t.Fatalf("model download progress = %+v", p)
+		}
+		files = append(files, p.Detail)
+	}
+	if len(files) == 0 {
+		t.Fatalf("no model download progress: %+v", o.progress)
+	}
+	var uv []string
+	for _, p := range o.steps(StepMaterialize) {
+		if p.Determinate() {
+			t.Errorf("uv step %+v claims a total it cannot know", p)
+		}
+		uv = append(uv, p.Detail)
+	}
+	for _, want := range []string{"installing Python " + pythonVersion, "creating the private environment", "installing the locked packages (cpu)"} {
+		if !slices.Contains(uv, want) {
+			t.Errorf("materialization steps %q lack %q", uv, want)
+		}
+	}
+	if len(o.steps(StepPublish)) == 0 || len(o.steps(StepActivate)) != 1 {
+		t.Fatalf("publish %v activate %v", o.steps(StepPublish), o.steps(StepActivate))
+	}
+	// Steps are reported inside a phase: the first progress report of the
+	// run follows the preparing phase, and activation is the last.
+	if last := o.progress[len(o.progress)-1]; last.Step != StepActivate {
+		t.Fatalf("last step %+v, want activation", last)
+	}
+
+	// Everything is present now: nothing is downloaded or materialized, and
+	// the model is hashed with a determinate size.
+	var again observed
+	if err := RunObserved(f.H, "cpu", DefaultModel, io.Discard, again.observer()); err != nil {
+		t.Fatal(err)
+	}
+	if len(again.steps(StepMaterialize)) != 0 {
+		t.Fatalf("a reused runtime was materialized again: %+v", again.steps(StepMaterialize))
+	}
+	var hashed bool
+	for _, p := range again.steps(StepVerify) {
+		if p.Detail == "config.json" && p.Total == int64(len(`{"model":"fake"}`)) && p.Done == p.Total {
+			hashed = true
+		}
+	}
+	if !hashed {
+		t.Fatalf("model verification progress missing: %+v", again.steps(StepVerify))
+	}
+}
+
+// Failing in a step leaves the observer at that phase and step, which is what
+// the application reports as the failed phase.
+func TestObservedFailureStopsAtItsStep(t *testing.T) {
+	unthrottled(t)
+	f := newFixture(t)
+	f.control(fakeControl{Fail: "sync"})
+	var o observed
+	if err := Materialize(f.H, "cpu", "", io.Discard, o.observer()); err == nil {
+		t.Fatal("injected uv failure did not fail materialization")
+	}
+	last := o.progress[len(o.progress)-1]
+	if o.phases[len(o.phases)-1] != PhaseRuntime || last.Step != StepMaterialize || !strings.Contains(last.Detail, "installing the locked packages") {
+		t.Fatalf("phases %v, last step %+v", o.phases, last)
+	}
+}
+
+// Maintenance actions report their phase and step as well.
+func TestMaintenanceActionsReportPhases(t *testing.T) {
+	unthrottled(t)
+	f := newFixture(t)
+	f.mustRun("cpu")
+	spec, _ := Desired("cpu")
+
+	var v observed
+	if err := Verify(f.H, KindModel, DefaultModel, v.observer()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(v.phases, []Phase{PhaseModel}) || len(v.steps(StepVerify)) == 0 {
+		t.Fatalf("model verify: phases %v progress %+v", v.phases, v.progress)
+	}
+	v = observed{}
+	if err := Verify(f.H, KindRuntime, spec.ID(), v.observer()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(v.phases, []Phase{PhaseRuntime}) || len(v.steps(StepVerify)) == 0 {
+		t.Fatalf("runtime verify: phases %v progress %+v", v.phases, v.progress)
+	}
+
+	var a observed
+	if _, err := Activate(f.H, "cpu", tunedModel, io.Discard, a.observer()); err == nil {
+		t.Fatal("activating a model that is not materialized succeeded")
+	}
+	if err := Materialize(f.H, "cpu", tunedModel, io.Discard, nil); err != nil {
+		t.Fatal(err)
+	}
+	a = observed{}
+	if changed, err := Activate(f.H, "cpu", tunedModel, io.Discard, a.observer()); err != nil || !changed {
+		t.Fatalf("Activate = %v, %v", changed, err)
+	}
+	if want := []Phase{PhaseRuntime, PhaseModel, PhaseActivation}; !reflect.DeepEqual(a.phases, want) || len(a.steps(StepActivate)) != 1 {
+		t.Fatalf("activate: phases %v progress %+v", a.phases, a.progress)
+	}
+
+	var r observed
+	if err := Remove(f.H, KindModel, DefaultModel, r.observer()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(r.phases, []Phase{PhaseModel}) || len(r.steps(StepRemove)) != 1 {
+		t.Fatalf("remove: phases %v progress %+v", r.phases, r.progress)
 	}
 }

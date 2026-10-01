@@ -21,6 +21,9 @@ ol.phases li.done { color: var(--text-2); } ol.phases li.done::before { backgrou
 ol.phases li.current { color: var(--text); font-weight: 600; } ol.phases li.current::before { background: var(--accent); border-color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 ol.phases li.failed { color: var(--bad); } ol.phases li.failed::before { background: var(--bad); border-color: var(--bad); }
 pre { max-height: 12rem; }
+.bar.progress.indeterminate > span { width: 35%; animation: indeterminate 1.4s ease-in-out infinite; }
+@keyframes indeterminate { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .bar.progress.indeterminate > span { width: 100%; animation: none; opacity: .4; } }
 </style>
 </head>
 <body>
@@ -58,6 +61,8 @@ pre { max-height: 12rem; }
   <section id="progress" class="step tone-active" aria-labelledby="ptitle" hidden>
     <h2 id="ptitle" tabindex="-1"></h2>
     <ol class="phases" id="phases"></ol>
+    <p id="step"></p>
+    <div class="bar progress indeterminate" id="stepbar" role="progressbar"><span></span></div>
     <p class="note" id="worker"></p>
     <p class="vh" id="plive" role="status"></p>
   </section>
@@ -139,6 +144,24 @@ function render(v) {
       phaseKey = key; ol.textContent = "";
       for (const p of phases) { const li = document.createElement("li"); li.className = p.status; li.textContent = label[p.name] || p.name; if (p.status === "current") li.setAttribute("aria-current", "step"); ol.appendChild(li); }
     }
+    // What the current phase is busy with. A percentage exists only when the
+    // step reported a total; otherwise the bar only says it is working.
+    const stepWord = { downloading: tr("Downloading"), verifying: tr("Verifying"), materializing: tr("Materializing"), publishing: tr("Publishing"), activating: tr("Activating"), removing: tr("Removing") };
+    const workerWord = { spawning: tr("Starting worker process"), importing: tr("Importing provider"), loading: tr("Loading model"), warming: tr("Warming up") };
+    const mib = b => (b / 1048576).toFixed(1) + " MiB", st = v.step, bar = $("stepbar");
+    let line = "", pct = null;
+    if (v.stage === "installing") {
+      line = st ? (stepWord[st.step] || st.step) + (st.detail ? " " + st.detail : "") : tr("Working");
+      if (st && st.items) line += " (" + st.item + tr(" of ") + st.items + ")";
+      if (st && st.total > 0) { pct = Math.min(100, Math.floor(100 * st.done / st.total)); line += " · " + mib(st.done) + tr(" of ") + mib(st.total) + " (" + pct + "%)"; }
+    } else {
+      line = workerWord[v.worker_phase] || tr("Working");
+    }
+    $("step").textContent = line;
+    bar.classList.toggle("indeterminate", pct === null);
+    if (pct === null) { bar.removeAttribute("aria-valuenow"); bar.removeAttribute("aria-valuemin"); bar.removeAttribute("aria-valuemax"); bar.firstChild.style.width = ""; }
+    else { bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", "100"); bar.setAttribute("aria-valuenow", String(pct)); bar.firstChild.style.width = pct + "%"; }
+    bar.setAttribute("aria-label", line);
     const cur = phases.find(p => p.status === "current");
     const say = cur ? (label[cur.name] || cur.name) : "";
     if (say && say !== spoken) { spoken = say; $("plive").textContent = say; }
@@ -151,7 +174,7 @@ function render(v) {
   }
   if (v.stage === "failed") {
     const f = v.failure || {};
-    $("fmsg").textContent = tr(f.message) || tr("The last action failed.");
+    $("fmsg").textContent = (f.phase ? tr("Failed in phase") + " " + f.phase + ": " : "") + (tr(f.message) || tr("The last action failed."));
     $("fdetail").textContent = (f.class ? f.class + "\n" : "") + (f.stderr_tail || []).join("\n");
     $("flog").textContent = v.setup_log ? tr("Details are kept in ") + v.setup_log : "";
     $("retry").disabled = !v.can_retry; show("change", v.can_change);

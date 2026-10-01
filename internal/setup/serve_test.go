@@ -1,7 +1,9 @@
 package setup_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/app"
 	"github.com/yohn-jp/hachidori/internal/doctor"
 	"github.com/yohn-jp/hachidori/internal/firstrun"
 	"github.com/yohn-jp/hachidori/internal/home"
@@ -65,6 +68,137 @@ func TestServeIndependentOfUV(t *testing.T) {
 	os.WriteFile(filepath.Join(h.Root, "runtime", id, "worker", "hachidori_worker.py"), []byte("import os"), 0o644)
 	if _, _, err := server.WorkerConfig(h, io.Discard); err == nil {
 		t.Fatal("tampered worker accepted")
+	}
+}
+
+// Issue #117: a runtime materialized by an older build is self-consistent (its
+// identity, manifest and worker digest all agree) but carries a worker script
+// that does not know the arguments this build passes. Launching it ended in
+// the interpreter's argument parser ("exit status 2") with the cause only in
+// the stderr tail. It is refused before any process starts, with the cause and
+// the recovery, and the inventory says the active pair cannot start.
+func TestOlderWorkerRuntimeIsRefusedBeforeSpawn(t *testing.T) {
+	h, name := setup.MaterializeFakeOlderWorker(t, "cpu")
+	cfg, rt, err := server.WorkerConfig(h, io.Discard)
+	if err != nil {
+		t.Fatalf("the binding must still come up so the operator can recover: %v", err)
+	}
+	if rt.Runtime != name || rt.ModelID != setup.DefaultModel {
+		t.Fatalf("runtime %+v", rt)
+	}
+	err = cfg.Preflight()
+	if !errors.Is(err, setup.ErrWorkerContract) {
+		t.Fatalf("Preflight = %v, want ErrWorkerContract", err)
+	}
+	// The supervisor refuses the launch before any process exists.
+	cfg.Python = filepath.Join(t.TempDir(), "must-not-be-started")
+	sup := worker.NewSupervisor(cfg, worker.DefaultPolicy)
+	sup.Run(context.Background())
+	snap := sup.Snapshot()
+	if snap.State != worker.StateFailed || snap.Phase != worker.PhasePreflight || snap.LastFailure == nil ||
+		snap.LastFailure.Class != worker.ClassPreflight || !strings.Contains(snap.LastFailure.Message, "older Hachidori") || snap.PID != 0 {
+		t.Fatalf("snapshot %+v failure %+v", snap, snap.LastFailure)
+	}
+	for _, want := range []string{name, "older Hachidori", "Materialize", "hachidori setup --device cpu"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q: %v", want, err)
+		}
+	}
+	var report strings.Builder
+	if doctor.Run(h.Root, &report) || !strings.Contains(report.String(), "FAIL runtime") || !strings.Contains(report.String(), "older Hachidori") {
+		t.Fatalf("doctor accepted a runtime this build cannot start:\n%s", report.String())
+	}
+	inv := setup.Inspect(h, false)
+	if inv.Active == nil || inv.Active.Runtime != name || !strings.Contains(inv.ActiveProblem, "older Hachidori") {
+		t.Fatalf("inventory active %+v problem %q", inv.Active, inv.ActiveProblem)
+	}
+	for _, r := range inv.Runtimes {
+		if r.Active {
+			t.Errorf("an older runtime is not a catalog identity, yet %s is marked active", r.ID)
+		}
+	}
+
+	// Materializing and activating the current runtime recovers it: the model
+	// is reused and the same call that was refused now succeeds.
+	if err := setup.Materialize(h, "cpu", "", io.Discard, nil); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := setup.Activate(h, "cpu", "", io.Discard, nil); err != nil || !changed {
+		t.Fatalf("Activate = %v, %v", changed, err)
+	}
+	cfg, _, err = server.WorkerConfig(h, io.Discard)
+	if err != nil || cfg.Preflight() != nil {
+		t.Fatalf("current runtime refused: %v / %v", err, cfg.Preflight())
+	}
+	if inv := setup.Inspect(h, false); inv.ActiveProblem != "" {
+		t.Fatalf("problem %q after recovery", inv.ActiveProblem)
+	}
+}
+
+// Issue #117 through the application: with a runtime from an older build
+// active, Start still binds the runtime (so Settings is reachable) and reports a
+// preflight failure naming the cause, without spawning anything. Materialize and
+// Activate of the current runtime, then Restart, rebind the application to the
+// activation; the failed binding is not restarted again.
+func TestOlderWorkerRuntimeRecoversThroughTheApplication(t *testing.T) {
+	h, old := setup.MaterializeFakeOlderWorker(t, "cpu")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctl := app.New(app.Config{Home: h.Root, Open: app.WorkerRuntime(ctx, io.Discard, worker.DefaultPolicy, nil)})
+	defer func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ccancel()
+		ctl.Close(cctx)
+	}()
+	waitSnap := func(what string, ok func(app.Snapshot) bool) app.Snapshot {
+		t.Helper()
+		for i := 0; i < 1000; i++ {
+			if s := ctl.Snapshot(); ok(s) {
+				return s
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("%s: last snapshot %+v", what, ctl.Snapshot())
+		return app.Snapshot{}
+	}
+
+	if err := ctl.Start(); err != nil {
+		t.Fatalf("Start must bind the runtime even when it cannot be started: %v", err)
+	}
+	s := waitSnap("preflight failure", func(s app.Snapshot) bool { return s.State == app.Failed })
+	if f := s.Failure; f == nil || f.Source != app.SourceWorker || f.Class != worker.ClassPreflight || f.Phase != worker.PhasePreflight ||
+		!strings.Contains(f.Message, "older Hachidori") || s.Status == nil || s.Status.Worker.PID != 0 || s.Status.Runtime.Runtime != old {
+		t.Fatalf("failure %+v status %+v", s.Failure, s.Status)
+	}
+	if s.Status.Worker.Starts != 1 || s.Status.Worker.LastFailure.Stderr != nil {
+		t.Fatalf("a process was started: %+v", s.Status.Worker)
+	}
+
+	// Recover through the same application the Settings manager drives.
+	for _, act := range []func() error{
+		func() error { return ctl.Materialize(app.SetupParams{Device: "cpu"}) },
+		func() error { return ctl.Activate(app.SetupParams{Device: "cpu"}) },
+	} {
+		if err := act(); err != nil {
+			t.Fatal(err)
+		}
+		s = waitSnap("maintenance", func(s app.Snapshot) bool { return s.Operation == nil })
+		if s.Maintenance == nil || s.Maintenance.Failure != nil {
+			t.Fatalf("maintenance %+v", s.Maintenance)
+		}
+	}
+	current, _ := setup.RuntimeName("cpu")
+	if inv, err := ctl.Inventory(false); err != nil || inv.Active == nil || inv.Active.Runtime != current || inv.ActiveProblem != "" {
+		t.Fatalf("inventory active %+v problem %q (%v)", inv.Active, inv.ActiveProblem, err)
+	}
+	if err := ctl.Restart(); err != nil {
+		t.Fatal(err)
+	}
+	s = waitSnap("rebound to the activation", func(s app.Snapshot) bool {
+		return s.Status != nil && s.Status.Runtime.Runtime == current && s.Status.Worker.Starts >= 1 && s.State != app.Starting
+	})
+	if s.Failure != nil && s.Failure.Class == worker.ClassPreflight {
+		t.Fatalf("restart ran the old runtime again: %+v", s.Failure)
 	}
 }
 

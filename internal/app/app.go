@@ -80,20 +80,34 @@ var (
 	ErrClosed       = errors.New("controller is closed")
 )
 
+// PhasePreflight is the failure phase of a runtime that could not be opened for
+// serving: the active runtime was refused before any worker process started.
+const PhasePreflight = "preflight"
+
 // Failure is a structured application failure. Class and Message come from
-// the owning authority (worker.Failure classes for worker failures).
+// the owning authority (worker.Failure classes for worker failures). Phase
+// names where it failed: the setup phase for a setup or maintenance action,
+// the worker's last reported phase (spawning, importing, loading, warming)
+// for a worker, PhasePreflight for a runtime that was never started. Step is
+// the setup step that was running when a setup or maintenance action failed.
 type Failure struct {
 	Source  string   `json:"source"`
 	Class   string   `json:"class,omitempty"`
+	Phase   string   `json:"phase,omitempty"`
+	Step    string   `json:"step,omitempty"`
 	Message string   `json:"message"`
 	Stderr  []string `json:"stderr_tail,omitempty"`
 }
 
 func (f *Failure) Error() string {
-	if f.Class != "" {
-		return f.Source + ": " + f.Class + ": " + f.Message
+	where := f.Source
+	if f.Phase != "" {
+		where += " (" + f.Phase + ")"
 	}
-	return f.Source + ": " + f.Message
+	if f.Class != "" {
+		return where + ": " + f.Class + ": " + f.Message
+	}
+	return where + ": " + f.Message
 }
 
 // Runtime is one serving binding of an active runtime: the worker.Lifecycle
@@ -128,7 +142,7 @@ func project(home string, op string, running bool, st *server.Status, lastFail *
 		case worker.StateReady:
 			return Ready, nil
 		case worker.StateFailed:
-			return Failed, workerFailure(st.Worker.LastFailure)
+			return Failed, workerFailure(st.Worker.LastFailure, st.Worker.Phase)
 		case worker.StateStarting:
 			if st.Worker.Phase == "warming" {
 				return Warming, nil
@@ -151,7 +165,7 @@ func project(home string, op string, running bool, st *server.Status, lastFail *
 	// A supervisor that gave up (startup failure, restart budget exhausted)
 	// is no longer running but still reports failed.
 	if st != nil && st.Worker.State == worker.StateFailed {
-		return Failed, workerFailure(st.Worker.LastFailure)
+		return Failed, workerFailure(st.Worker.LastFailure, st.Worker.Phase)
 	}
 	if installed {
 		return Installed, nil
@@ -159,9 +173,12 @@ func project(home string, op string, running bool, st *server.Status, lastFail *
 	return NotInstalled, nil
 }
 
-func workerFailure(v *worker.FailureView) *Failure {
+// workerFailure is the application view of the supervisor's last failure.
+// phase is the supervisor's phase, which stays at the last one the worker
+// reported once it has failed.
+func workerFailure(v *worker.FailureView, phase string) *Failure {
 	if v == nil {
-		return &Failure{Source: SourceWorker, Message: "worker failed"}
+		return &Failure{Source: SourceWorker, Phase: phase, Message: "worker failed"}
 	}
-	return &Failure{Source: SourceWorker, Class: v.Class, Message: v.Message, Stderr: v.Stderr}
+	return &Failure{Source: SourceWorker, Class: v.Class, Phase: phase, Message: v.Message, Stderr: v.Stderr}
 }

@@ -327,7 +327,7 @@ func TestFirstRunSetupTransitionsIntoResidentLifecycle(t *testing.T) {
 		}
 		return home.Active{}, nil
 	}
-	a.Setup = func(string, string, string, io.Writer, func(setup.Phase)) error {
+	a.Setup = func(string, string, string, io.Writer, *setup.Observer) error {
 		setups.Add(1)
 		installed.Store(true)
 		return nil

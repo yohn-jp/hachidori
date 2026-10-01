@@ -164,6 +164,14 @@ func num(m map[string]any, key string) (float64, bool) {
 	return 0, false
 }
 
+// ratio64 is a/b as a clamped percentage (0 when b is not positive).
+func ratio64(a, b int64) float64 {
+	if b <= 0 {
+		return 0
+	}
+	return max(0, min(100, 100*float64(a)/float64(b)))
+}
+
 // ratio is a/b as a clamped percentage (0 when b is not positive).
 func ratio(a, b int) float64 {
 	if b <= 0 {

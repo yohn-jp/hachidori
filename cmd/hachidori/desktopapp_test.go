@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/app"
 	"github.com/yohn-jp/hachidori/internal/dashboard"
@@ -138,7 +139,7 @@ func testApp(p desktop.Platform, d func() (home.Discovery, error)) (*desktopApp,
 		Platform: p, Picker: &neverPicker{}, Discover: d,
 		Remember: func(string) (home.Home, error) { remembers.Add(1); return home.Home{}, errors.New("unexpected") },
 		APIAddr:  "127.0.0.1:0", DashAddr: "127.0.0.1:0",
-		Setup:  func(string, string, string, io.Writer, func(setup.Phase)) error { setups.Add(1); return nil },
+		Setup:  func(string, string, string, io.Writer, *setup.Observer) error { setups.Add(1); return nil },
 		Stderr: &bytes.Buffer{},
 	}, &setups, &remembers
 }
@@ -263,9 +264,10 @@ func TestModelManagerOverRealSetupAuthority(t *testing.T) {
 			t.Fatalf("empty home reports %+v", r)
 		}
 	}
-	if err := m.Activate("cuda", setup.DefaultModel); err == nil {
-		t.Fatal("activating an unmaterialized choice succeeded")
+	if err := m.Activate("cuda", setup.DefaultModel); err != nil {
+		t.Fatalf("activation was not accepted: %v", err)
 	}
+	waitModelsIdle(t, m)
 	if _, err := os.Stat(h.Path("state", "active-runtime.json")); !os.IsNotExist(err) {
 		t.Fatal("failed activation wrote an activation record")
 	}
@@ -273,8 +275,12 @@ func TestModelManagerOverRealSetupAuthority(t *testing.T) {
 		t.Fatalf("failure not reported: %+v", got)
 	}
 	for _, c := range [][2]string{{"runtime", "../../outside"}, {"runtime", outside}, {"model", "../outside"}, {"model", ""}, {"runtime", "cuda-notcatalog"}} {
-		if err := m.Remove(c[0], c[1]); err == nil {
-			t.Fatalf("Remove(%v) accepted", c)
+		if err := m.Remove(c[0], c[1]); err != nil {
+			t.Fatalf("Remove(%v) was not accepted: %v", c, err)
+		}
+		waitModelsIdle(t, m)
+		if got := m.State().Last; got == nil || got.Kind != app.OpRemove || got.Failure == "" {
+			t.Fatalf("Remove(%v) did not fail: %+v", c, got)
 		}
 	}
 	if _, err := os.Stat(outside); err != nil {
@@ -283,6 +289,19 @@ func TestModelManagerOverRealSetupAuthority(t *testing.T) {
 	// Without a home nothing is inspected.
 	if st := (modelManager{ctl: func() *app.Controller { return app.New(app.Config{}) }}).State(); st.Err == "" {
 		t.Fatal("no home is not reported")
+	}
+}
+
+// waitModelsIdle waits for the maintenance action in flight to finish: the
+// actions are accepted at once and run in the background.
+func waitModelsIdle(t *testing.T, m modelManager) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for m.State().Busy != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("maintenance action did not finish")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

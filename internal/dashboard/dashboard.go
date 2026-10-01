@@ -98,32 +98,65 @@ type Config struct {
 	PathPicker PathPicker
 }
 
-// Models is the explicit model/runtime maintenance authority. Every method
-// is an operator action; none restarts the worker except Restart.
+// Models is the explicit model/runtime maintenance authority, and the
+// application's own runtime lifecycle. Every method is an operator action;
+// none restarts the worker except Start and Restart. Each maintenance action
+// returns once it is accepted and runs in the background: its phases,
+// progress and outcome are read from State.
 type Models interface {
 	State() ModelsState
 	Verify(kind, id string) error
-	Materialize(device, model string) error // asynchronous: returns once accepted
-	Repair(device, model string) error      // asynchronous
-	Activate(device, model string) error    // activation only; the worker keeps running as it is
+	Materialize(device, model string) error
+	Repair(device, model string) error
+	Activate(device, model string) error // activation only; the worker keeps running as it is
 	Remove(kind, id string) error
-	Restart() error // the application's restart, which rebinds the active runtime
+	// The application's lifecycle. Unlike the worker lifecycle bound at
+	// startup, it always acts on the active runtime and model: a start or
+	// restart after an activation binds the activation, not the runtime
+	// this dashboard was created for.
+	Start() error
+	Stop() error
+	Restart() error
 }
 
 // ModelsState is the maintenance authority's view at one instant.
 type ModelsState struct {
 	Inventory       setup.Inventory
-	Err             string   // the inventory could not be read
-	Busy            *ModelOp // an action in flight
-	Last            *ModelOp // the most recently finished action
-	RestartRequired bool     // the running worker predates the current activation
+	Err             string                // the inventory could not be read
+	Busy            *ModelOp              // an action in flight
+	Last            *ModelOp              // the most recently finished action
+	Checks          map[string]ModelCheck // last explicit verification per "<kind> <id>"
+	RestartRequired bool                  // the running worker predates the current activation
 }
 
-// ModelOp describes one maintenance action.
-type ModelOp struct {
-	Kind, Device, Model, Target, Phase string
-	Failure                            string // empty when it succeeded
+// ModelCheck is the outcome of the last explicit verification of one artifact.
+type ModelCheck struct {
+	OK   bool
+	Msg  string
+	Time time.Time
 }
+
+// ModelOp describes one maintenance action: where it is (Phase of Plan), what
+// it is doing (Step, Detail) and how far, when that is measurable (Done/Total
+// bytes; Total is zero for an indeterminate step), and how it ended.
+type ModelOp struct {
+	Kind, Device, Model, Target string
+	Plan, Phases                []string
+	Phase                       string
+	Step, Detail                string
+	Done, Total                 int64
+	Item, Items                 int
+	Started, Finished           time.Time
+	Failure                     string // empty when it succeeded
+	FailurePhase, FailureStep   string
+	Log                         string // the setup log holding the action's output
+}
+
+// Determinate reports whether the step has a measurable total.
+func (o ModelOp) Determinate() bool { return o.Total > 0 }
+
+// Percent is the completed share of a determinate step (0 otherwise).
+func (o ModelOp) Percent() float64 { return ratio64(o.Done, o.Total) }
 
 // ModelsView is the Models & Runtimes view model.
 type ModelsView struct {
@@ -151,12 +184,6 @@ type ModelRow struct {
 	setup.ModelEntry
 	Check   string
 	Running bool // the resident worker is serving this model now
-}
-
-type checkResult struct {
-	OK   bool
-	Msg  string
-	Time time.Time
 }
 
 // Connections stores the named, non-secret Development Connection profiles.
@@ -227,8 +254,6 @@ type Dashboard struct {
 	last   *Action
 	doctor DoctorRun
 
-	checks map[string]checkResult // last explicit Verify per "<kind> <id>"; guarded by mu
-
 	exp     experiments
 	errs    explorer
 	hist    *history.Store // nil when Config.HistoryDir is empty or unusable
@@ -285,6 +310,17 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"short":     func(s string) string { return s[:min(len(s), 12)] },
 	"systemCSS": ui.CSS,
 	"add":       func(a, b int) int { return a + b },
+	// long-running work (ops.go)
+	"opStages":        opStages,
+	"phasePosition":   phasePosition,
+	"phaseLabel":      phaseLabel,
+	"stepLabel":       stepLabel,
+	"workerStages":    workerStages,
+	"workerPhaseWord": workerPhaseWord,
+	"bytesIn":         bytesIn,
+	"since":           since,
+	"took":            took,
+	"failureOf":       failureOf,
 }).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html"))
 
 // pages are the workstation templates for each supported locale. Rendering
@@ -447,6 +483,7 @@ type view struct {
 	Desktop *DesktopView     // nil unless the desktop shell is hosting the dashboard
 	Set     *SettingsView    // nil unless the settings authority is configured
 	Models  *ModelsView      // nil unless the model/runtime manager is configured
+	Next    *nextStart       // nil unless the model/runtime manager is configured
 	Conns   *ConnectionsView // nil unless Development Connections are configured
 	// FormName is the profile the Diagnostics tunnel form saves to; empty
 	// when profiles are not configured.
@@ -472,6 +509,9 @@ func (d *Dashboard) view(title, nav string) view {
 	v.Live, v.Form = true, d.formDefaults()
 	if d.cfg.Connections != nil {
 		v.FormName = d.formName(v.Form)
+	}
+	if d.cfg.Models != nil {
+		v.Next = nextOf(d.cfg.Models.State(), v.S.Runtime)
 	}
 	if d.cfg.Desktop != nil {
 		dv := &DesktopView{}
@@ -581,18 +621,27 @@ func (d *Dashboard) runtimeOp(w http.ResponseWriter, r *http.Request) {
 	lc := d.cfg.Lifecycle
 	switch op := r.PathValue("op"); op {
 	case "start":
-		if lc.Start() {
+		if m := d.cfg.Models; m != nil {
+			d.done(w, r, "start runtime", m.Start(), "worker starting; READY once the model is loaded and warmed up")
+		} else if lc.Start() {
 			d.done(w, r, "start runtime", nil, "worker starting; READY once the model is loaded and warmed up")
 		} else {
 			d.done(w, r, "start runtime", fmt.Errorf("runtime is already running"), "")
 		}
 	case "stop":
-		lc.Stop()
-		d.done(w, r, "stop runtime", nil, "worker stopped; the API stays bound and reports not ready")
+		if m := d.cfg.Models; m != nil {
+			d.done(w, r, "stop runtime", m.Stop(), "worker stopped; the API stays bound and reports not ready")
+		} else {
+			lc.Stop()
+			d.done(w, r, "stop runtime", nil, "worker stopped; the API stays bound and reports not ready")
+		}
 	case "restart":
-		if m := d.cfg.Models; m != nil && m.State().RestartRequired {
-			// The activation changed: only the application's restart
-			// rebinds the worker to it.
+		if m := d.cfg.Models; m != nil {
+			// With the application hosted, every lifecycle action is the
+			// application's: only it binds the current activation, so a
+			// restart after an activation (or after a failure) starts the
+			// activated model, never the runtime this dashboard was
+			// created for.
 			d.done(w, r, "restart runtime", m.Restart(), "runtime restarting on the active runtime/model")
 			return
 		}
@@ -643,10 +692,8 @@ func (d *Dashboard) modelsView(v view) *ModelsView {
 	if v.Running {
 		mv.RunningModel, mv.RunningDevice = v.S.Runtime.ModelID, v.S.Runtime.Device
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	check := func(kind, id string) string {
-		c, ok := d.checks[kind+" "+id]
+		c, ok := st.Checks[kind+" "+id]
 		switch {
 		case !ok:
 			return ""
@@ -677,32 +724,15 @@ func (d *Dashboard) modelsOp(w http.ResponseWriter, r *http.Request) {
 	kind, id := strings.TrimSpace(r.PostFormValue("kind")), strings.TrimSpace(r.PostFormValue("id"))
 	switch op := r.PathValue("op"); op {
 	case "verify":
-		err := m.Verify(kind, id)
-		c := checkResult{OK: err == nil, Time: time.Now()}
-		if err != nil {
-			c.Msg = err.Error()
-		}
-		d.mu.Lock()
-		if d.checks == nil {
-			d.checks = map[string]checkResult{}
-		}
-		d.checks[kind+" "+id] = c
-		d.mu.Unlock()
-		d.done(w, r, "verify "+kind+" "+id, err, "verified against its pinned identity")
+		d.done(w, r, "verify "+kind+" "+id, m.Verify(kind, id), "started; the result is shown beside the artifact")
 	case "materialize":
 		d.done(w, r, "materialize", m.Materialize(device, model), "started; it is not activated until you activate it")
 	case "repair":
 		d.done(w, r, "repair", m.Repair(device, model), "started; the active state is unchanged unless the rebuild succeeds")
 	case "activate":
-		d.done(w, r, "activate", m.Activate(device, model), "activated; a running worker keeps its current runtime until you restart it")
+		d.done(w, r, "activate", m.Activate(device, model), "started; once it finishes, a running worker keeps its current runtime until you restart it")
 	case "remove":
-		err := m.Remove(kind, id)
-		if err == nil {
-			d.mu.Lock()
-			delete(d.checks, kind+" "+id)
-			d.mu.Unlock()
-		}
-		d.done(w, r, "remove "+kind+" "+id, err, "removed")
+		d.done(w, r, "remove "+kind+" "+id, m.Remove(kind, id), "started; the result is shown below")
 	case "restart":
 		d.done(w, r, "restart runtime", m.Restart(), "runtime restarting on the active runtime/model")
 	default:

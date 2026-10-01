@@ -40,7 +40,7 @@ func uvDir(h home.Home) string { return h.Path("tools", "uv", uvVersion) }
 // pinned release archive is downloaded (or reused from packages/), verified,
 // and the executable is extracted, verified and published atomically.
 // A bootstrap failure is a setup failure: there is no fallback to another uv.
-func ensureUV(h home.Home, log io.Writer) (uvTool, error) {
+func ensureUV(h home.Home, log io.Writer, obs *Observer) (uvTool, error) {
 	a, err := uvFor(platform())
 	if err != nil {
 		return uvTool{}, err
@@ -52,12 +52,13 @@ func ensureUV(h home.Home, log io.Writer) (uvTool, error) {
 		fmt.Fprintf(log, "private uv %s digest mismatch (%s); replacing it from the pinned artifact\n", uvVersion, got)
 	}
 	archive := h.Path("packages", "uv-"+uvVersion+"-"+path.Base(a.URL))
-	if err := fetch(a.URL, archive, a.SHA256, log); err != nil {
+	if err := fetch(a.URL, archive, a.SHA256, log, obs, Progress{Step: StepDownload, Detail: "uv " + uvVersion}); err != nil {
 		return uvTool{}, fmt.Errorf("uv %s: %w", uvVersion, err)
 	}
 	if err := os.MkdirAll(uvDir(h), 0o755); err != nil {
 		return uvTool{}, err
 	}
+	obs.step(StepMaterialize, "extracting uv "+uvVersion)
 	tmp := u.exe + ".part"
 	if err := extractMember(archive, a.Member, tmp); err != nil {
 		os.Remove(tmp)

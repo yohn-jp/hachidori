@@ -105,10 +105,10 @@ type fakeSetup struct {
 	onFinish func()
 }
 
-func (s *fakeSetup) run(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error {
+func (s *fakeSetup) run(root, device, model string, log io.Writer, obs *setup.Observer) error {
 	s.calls.Add(1)
 	for i, p := range s.phases {
-		onPhase(p)
+		obs.OnPhase(p)
 		if i == 0 && s.gate != nil {
 			<-s.gate
 		}

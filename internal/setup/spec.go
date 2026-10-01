@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"runtime"
 	"sort"
@@ -128,6 +129,43 @@ func desiredFor(device, plat string) (home.RuntimeSpec, error) {
 		Lock:     digest(specFile("uv.lock")),
 		Worker:   digest(py.Script),
 	}, nil
+}
+
+// WorkerDigest is the digest of the worker script this build embeds and
+// materializes into every runtime it creates.
+func WorkerDigest() string { return digest(py.Script) }
+
+// ErrWorkerContract marks an activated runtime whose worker script is not the
+// one this build embeds.
+var ErrWorkerContract = errors.New("runtime carries a different worker script")
+
+// CheckWorkerContract is the launch-contract authority for an activated
+// runtime. The worker script is half of the contract between Hachidori and its
+// private Python process (its command line and its protocol); the other half
+// is built into this executable. A runtime is immutable, so one materialized
+// by an older build keeps its older script, which can be internally
+// consistent (its manifest, identity and digests all agree) and still not
+// understand the arguments this build passes. Starting it would only fail in
+// the interpreter's argument parser, so it is refused here with the cause and
+// the recovery instead.
+func CheckWorkerContract(a home.Active, rm home.RuntimeManifest) error {
+	if rm.Spec.Worker == WorkerDigest() {
+		return nil
+	}
+	return fmt.Errorf("%w: runtime %s was materialized by an older Hachidori (worker %s, this build %s) and cannot be started by this build. "+
+		"Materialize the current runtime and activate it: Settings, Models & runtimes, choose %s and your model, Materialize, Activate, then Restart; "+
+		"or run `hachidori setup --device %s`. Installed models are reused",
+		ErrWorkerContract, a.Runtime, shortDigest(rm.Spec.Worker), shortDigest(WorkerDigest()), a.Device, a.Device)
+}
+
+func shortDigest(d string) string {
+	if len(d) > 12 {
+		return d[:12]
+	}
+	if d == "" {
+		return "none"
+	}
+	return d
 }
 
 // RuntimeName is the runtime identity (directory name under runtime/) for a device.

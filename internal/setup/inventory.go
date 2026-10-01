@@ -25,10 +25,15 @@ var Devices = []string{"cuda", "cpu"}
 // catalog-pinned runtime and model identities. Artifacts that are not
 // catalog identities are neither listed nor manageable.
 type Inventory struct {
-	Active    *home.Active   `json:"active,omitempty"` // the activation record, when one is readable
-	ActiveErr string         `json:"active_error,omitempty"`
-	Runtimes  []RuntimeEntry `json:"runtimes"`
-	Models    []ModelEntry   `json:"models"`
+	Active    *home.Active `json:"active,omitempty"` // the activation record, when one is readable
+	ActiveErr string       `json:"active_error,omitempty"`
+	// ActiveProblem is set when the activation record names a runtime this
+	// build cannot start (for example one materialized before the current
+	// worker contract). It is what a start of the active pair would be
+	// refused for; it never changes the record.
+	ActiveProblem string         `json:"active_problem,omitempty"`
+	Runtimes      []RuntimeEntry `json:"runtimes"`
+	Models        []ModelEntry   `json:"models"`
 }
 
 // RuntimeEntry is one supported runtime identity (one per device).
@@ -78,6 +83,7 @@ func Inspect(h home.Home, verify bool) Inventory {
 		if m, err := ActiveModel(a); err == nil {
 			activeModel = m.ID
 		}
+		inv.ActiveProblem = activeRuntimeProblem(h, a)
 	}
 
 	for _, device := range Devices {
@@ -135,6 +141,22 @@ func Inspect(h home.Home, verify bool) Inventory {
 	return inv
 }
 
+// activeRuntimeProblem explains why the active runtime cannot be started by
+// this build, or returns "". The activated runtime must carry the worker
+// script this build embeds: that script is the other half of the launch
+// contract (command line and protocol), and an immutable runtime keeps the one
+// it was materialized with.
+func activeRuntimeProblem(h home.Home, a home.Active) string {
+	var rm home.RuntimeManifest
+	if err := home.ReadJSON(h.Path("runtime", a.Runtime, "manifest.json"), &rm); err != nil {
+		return "" // an unreadable runtime is reported by the start itself
+	}
+	if err := CheckWorkerContract(a, rm); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 // presentModel is the cheap check behind "materialized": the manifest names
 // exactly the catalog identity and every pinned file exists.
 func presentModel(dir string, m home.ModelManifest) error {
@@ -175,8 +197,10 @@ func modelByID(id string) (home.ModelManifest, error) {
 	return LookupModel(id)
 }
 
-// Verify fully re-verifies one materialized catalog artifact (offline).
-func Verify(h home.Home, kind, id string) error {
+// Verify fully re-verifies one materialized catalog artifact (offline). It
+// reports its phase (runtime or model) and, for a model, the progress of
+// hashing each file.
+func Verify(h home.Home, kind, id string, obs *Observer) error {
 	switch kind {
 	case KindRuntime:
 		device, ok := runtimeDevice(id)
@@ -188,6 +212,8 @@ func Verify(h home.Home, kind, id string) error {
 		if _, err := os.Stat(dir); err != nil {
 			return fmt.Errorf("runtime %s is not materialized", id)
 		}
+		obs.phase(PhaseRuntime)
+		obs.step(StepVerify, "runtime "+id)
 		return verifyPublished(h, dir, spec)
 	case KindModel:
 		m, err := modelByID(id)
@@ -198,7 +224,8 @@ func Verify(h home.Home, kind, id string) error {
 		if _, err := os.Stat(dir); err != nil {
 			return fmt.Errorf("model %s is not materialized", id)
 		}
-		return VerifyModel(dir, m)
+		obs.phase(PhaseModel)
+		return verifyModel(dir, m, obs)
 	}
 	return fmt.Errorf("unknown artifact kind %q", kind)
 }
@@ -209,30 +236,35 @@ func Verify(h home.Home, kind, id string) error {
 // and only then is state/active-runtime.json replaced (atomically). Any
 // failure leaves the current activation exactly as it was. changed reports
 // whether the activation record differs from the one it replaced.
-func Activate(h home.Home, device, modelID string, log io.Writer) (changed bool, err error) {
+func Activate(h home.Home, device, modelID string, log io.Writer, obs *Observer) (changed bool, err error) {
 	spec, m, err := choose(device, modelID)
 	if err != nil {
 		return false, err
 	}
+	obs.phase(PhaseRuntime)
 	dir := h.Path("runtime", spec.ID())
 	if _, err := os.Stat(dir); err != nil {
 		return false, fmt.Errorf("runtime %s (%s) is not materialized; materialize it first", spec.ID(), device)
 	}
+	obs.step(StepVerify, "runtime "+spec.ID())
 	if err := verifyPublished(h, dir, spec); err != nil {
 		return false, fmt.Errorf("runtime %s failed verification: %w", spec.ID(), err)
 	}
+	obs.phase(PhaseModel)
 	mdir := h.Path("models", filepath.FromSlash(ModelDirName(m)))
 	if _, err := os.Stat(mdir); err != nil {
 		return false, fmt.Errorf("model %s is not materialized; materialize it first", m.ID)
 	}
-	if err := VerifyModel(mdir, m); err != nil {
+	if err := verifyModel(mdir, m, obs); err != nil {
 		return false, fmt.Errorf("model %s failed verification: %w", m.ID, err)
 	}
+	obs.phase(PhaseActivation)
 	next := home.Active{Runtime: spec.ID(), ModelID: m.ID, Model: ModelDirName(m), Device: device}
 	var prev home.Active
 	if home.ReadJSON(h.Path("state", "active-runtime.json"), &prev) == nil && prev == next {
 		return false, nil
 	}
+	obs.step(StepActivate, "activation record")
 	if err := writeActive(h, next, log); err != nil {
 		return false, err
 	}
@@ -246,7 +278,7 @@ func Activate(h home.Home, device, modelID string, log io.Writer) (changed bool,
 // only once the rebuild succeeded; on any failure it is put back. The
 // activation record is never written. The caller must ensure no worker is
 // running from the artifact.
-func Repair(h home.Home, device, modelID string, log io.Writer, onPhase func(Phase)) error {
+func Repair(h home.Home, device, modelID string, log io.Writer, obs *Observer) error {
 	spec, m, err := choose(device, modelID)
 	if err != nil {
 		return err
@@ -289,7 +321,7 @@ func Repair(h home.Home, device, modelID string, log io.Writer, onPhase func(Pha
 			}
 		}
 	}
-	if err := Materialize(h, device, modelID, log, onPhase); err != nil {
+	if err := Materialize(h, device, modelID, log, obs); err != nil {
 		restore()
 		return err
 	}
@@ -307,7 +339,7 @@ var ErrActive = errors.New("the active runtime/model cannot be removed")
 // runtime and model, anything that is not a catalog identity, and any path
 // that does not resolve to a real directory beneath HACHIDORI_HOME. The
 // caller must ensure no worker is running from the artifact.
-func Remove(h home.Home, kind, id string) error {
+func Remove(h home.Home, kind, id string, obs *Observer) error {
 	var a home.Active
 	hasActive := false
 	switch err := home.ReadJSON(h.Path("state", "active-runtime.json"), &a); {
@@ -326,6 +358,7 @@ func Remove(h home.Home, kind, id string) error {
 			return fmt.Errorf("runtime %s: %w", id, ErrActive)
 		}
 		base, target = h.Path("runtime"), h.Path("runtime", id)
+		obs.phase(PhaseRuntime)
 	case KindModel:
 		m, err := modelByID(id)
 		if err != nil {
@@ -335,9 +368,11 @@ func Remove(h home.Home, kind, id string) error {
 			return fmt.Errorf("model %s: %w", id, ErrActive)
 		}
 		base, target = h.Path("models"), h.Path("models", filepath.FromSlash(ModelDirName(m)))
+		obs.phase(PhaseModel)
 	default:
 		return fmt.Errorf("unknown artifact kind %q", kind)
 	}
+	obs.step(StepRemove, kind+" "+id)
 	if err := removeConfined(h, base, target); err != nil {
 		return err
 	}

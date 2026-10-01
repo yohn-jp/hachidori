@@ -48,3 +48,12 @@ func MaterializeFakeLegacy(t *testing.T, device string) home.Home {
 	f.legacyize(device)
 	return f.H
 }
+
+// MaterializeFakeOlderWorker is MaterializeFake followed by olderWorker: a home
+// whose active runtime is consistent but carries an older build's worker script.
+func MaterializeFakeOlderWorker(t *testing.T, device string) (home.Home, string) {
+	f := newFixture(t)
+	f.mustRun(device)
+	name := f.olderWorker(device)
+	return f.H, name
+}
