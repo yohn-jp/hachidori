@@ -38,3 +38,13 @@ func MaterializeFakeCounting(t *testing.T, device, model string) (home.Home, fun
 
 // TunedModel is the ID of the fake catalog's second (non-default) model.
 const TunedModel = tunedModel
+
+// MaterializeFakeLegacy is MaterializeFake followed by legacyize: a home whose
+// active runtime is a pre-declarative runtime that still has its worker and
+// interpreter on disk.
+func MaterializeFakeLegacy(t *testing.T, device string) home.Home {
+	f := newFixture(t)
+	f.mustRun(device)
+	f.legacyize(device)
+	return f.H
+}

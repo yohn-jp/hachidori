@@ -12,6 +12,7 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/doctor"
+	"github.com/yohn-jp/hachidori/internal/firstrun"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
@@ -150,6 +151,117 @@ func TestServeResolvesActivatedModel(t *testing.T) {
 	}
 	if n := requests(); n != 0 {
 		t.Fatalf("serve/doctor made %d artifact requests", n)
+	}
+}
+
+// Issue #107: serve/worker startup, the desktop's installed decision and
+// doctor apply one runtime-validity rule. For every manifest state they all
+// accept or all reject, and a state is never READY-capable while doctor calls
+// the runtime invalid.
+func TestActivationAndDoctorAgreeOnRuntimeIdentity(t *testing.T) {
+	type mutate func(t *testing.T, h home.Home, id string)
+	edit := func(f func(m map[string]any, id string) string) mutate {
+		return func(t *testing.T, h home.Home, id string) {
+			var m map[string]any
+			if err := home.ReadJSON(h.Path("runtime", id, "manifest.json"), &m); err != nil {
+				t.Fatal(err)
+			}
+			name := f(m, id)
+			if err := home.WriteJSON(h.Path("runtime", id, "manifest.json"), m); err != nil {
+				t.Fatal(err)
+			}
+			if name != id {
+				if err := os.Rename(h.Path("runtime", id), h.Path("runtime", name)); err != nil {
+					t.Fatal(err)
+				}
+				var a home.Active
+				home.ReadJSON(h.Path("state", "active-runtime.json"), &a)
+				a.Runtime = name
+				home.WriteJSON(h.Path("state", "active-runtime.json"), a)
+			}
+		}
+	}
+	for name, tc := range map[string]struct {
+		change mutate
+		valid  bool
+	}{
+		"valid current identity": {change: func(*testing.T, home.Home, string) {}, valid: true},
+		"identity key missing, spec missing": {change: edit(func(m map[string]any, id string) string {
+			delete(m, "identity")
+			delete(m, "spec")
+			return id
+		})},
+		"empty identity, spec missing": {change: edit(func(m map[string]any, id string) string {
+			m["identity"] = ""
+			delete(m, "spec")
+			return id
+		})},
+		"empty identity, spec present": {change: edit(func(m map[string]any, id string) string {
+			m["identity"] = ""
+			return id
+		})},
+		"incorrect non-empty identity": {change: edit(func(m map[string]any, id string) string {
+			m["identity"] = "cu128-0000000000000000"
+			return id
+		})},
+		"identity differs from the activated directory": {change: edit(func(m map[string]any, id string) string {
+			return "0.1.0-cu128"
+		})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := setup.MaterializeFake(t, "cuda")
+			id, _ := setup.RuntimeName("cuda")
+			tc.change(t, h, id)
+
+			_, _, serveErr := server.WorkerConfig(h, io.Discard)
+			var out strings.Builder
+			doctor.Run(h.Root, &out)
+			doctorRuntimeFails := strings.Contains(out.String(), "FAIL runtime")
+			installed := firstrun.Env{}.IsInstalled(h.Root)
+
+			if tc.valid {
+				if serveErr != nil || doctorRuntimeFails || !installed || !strings.Contains(out.String(), "PASS runtime") {
+					t.Fatalf("valid runtime rejected: serve=%v installed=%v\n%s", serveErr, installed, out.String())
+				}
+				return
+			}
+			if serveErr == nil || !doctorRuntimeFails || installed {
+				t.Fatalf("activation and doctor disagree: serve=%v doctorFails=%v installed=%v\n%s", serveErr, doctorRuntimeFails, installed, out.String())
+			}
+			if !strings.Contains(out.String(), "class: "+doctor.RuntimeInvalid) || !strings.Contains(serveErr.Error(), "hachidori setup") {
+				t.Fatalf("rejection is not actionable: %v\n%s", serveErr, out.String())
+			}
+		})
+	}
+}
+
+// Issue #107: the physical state (a legacy runtime that reaches READY-capable
+// activation, requested device cuda) is rejected by serve and doctor alike,
+// and `setup` for the same device is the repair that makes both pass the
+// runtime check, without selecting the CPU.
+func TestLegacyRuntimeRejectedThenRepairedForCUDA(t *testing.T) {
+	h := setup.MaterializeFakeLegacy(t, "cuda")
+	if _, _, err := server.WorkerConfig(h, io.Discard); err == nil {
+		t.Fatal("serve accepted a runtime without a Runtime Spec identity")
+	}
+	var out strings.Builder
+	if doctor.Run(h.Root, &out) || !strings.Contains(out.String(), "FAIL runtime") || !strings.Contains(out.String(), "run `hachidori setup`") {
+		t.Fatalf("doctor:\n%s", out.String())
+	}
+	if err := setup.Run(h, "cuda", "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	cfg, rt, err := server.WorkerConfig(h, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Device != "cuda" || !slices.Contains(cfg.Args, "cuda") || slices.Contains(cfg.Args, "cpu") {
+		t.Fatalf("requested CUDA not preserved: %+v %v", rt, cfg.Args)
+	}
+	out.Reset()
+	doctor.Run(h.Root, &out)
+	if !strings.Contains(out.String(), "PASS runtime") || !strings.Contains(out.String(), "PASS model") {
+		t.Fatalf("doctor did not reach the checks after runtime:\n%s", out.String())
 	}
 }
 

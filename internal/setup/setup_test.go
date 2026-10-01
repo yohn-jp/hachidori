@@ -616,6 +616,96 @@ func TestLegacyRuntimeNotReused(t *testing.T) {
 	}
 }
 
+// Issue #107: a legacy runtime that is still activated (identity and spec
+// missing, a valid independent model present) is repaired only by the
+// declarative setup. Setup materializes the current runtime beside it, reuses
+// the verified model without any download, never edits the legacy directory,
+// switches the activation only after everything verified, keeps the requested
+// device, and is idempotent.
+func TestLegacyActiveRuntimeRepairedBySetup(t *testing.T) {
+	f := newFixture(t)
+	f.mustRun("cuda")
+	// The model of a pre-catalog install carries no id/provider.
+	model := f.model("")
+	modelDir := f.H.Path("models", filepath.FromSlash(ModelDirName(model)))
+	if err := home.WriteJSON(filepath.Join(modelDir, "hachidori-model.json"),
+		home.ModelManifest{Repo: model.Repo, Revision: model.Revision, Files: model.Files}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := f.legacyize("cuda")
+	legacyDir := f.H.Path("runtime", legacy)
+	legacyBefore, modelBefore := snapshot(t, legacyDir), snapshot(t, modelDir)
+	activeBefore := f.active()
+	modelHits := func() int { return f.hitCount("/test/model/resolve/" + model.Revision + "/config.json") }
+	hitsBefore, callsBefore := modelHits(), len(f.calls())
+
+	if _, _, _, err := f.H.LoadActive(); err == nil {
+		t.Fatal("legacy runtime is still a valid active runtime")
+	}
+
+	// A failed repair changes nothing: the active record stays on the legacy
+	// runtime, nothing is published, and no other device is substituted.
+	f.control(fakeControl{Fail: "sync"})
+	if _, err := f.run("cuda"); err == nil {
+		t.Fatal("injected failure not reported")
+	}
+	f.control(fakeControl{})
+	cuda, _ := Desired("cuda")
+	cpu, _ := Desired("cpu")
+	if !bytes.Equal(f.active(), activeBefore) {
+		t.Fatal("failed repair changed the activation record")
+	}
+	for _, id := range []string{cuda.ID(), cpu.ID()} {
+		if _, err := os.Stat(f.H.Path("runtime", id)); !os.IsNotExist(err) {
+			t.Fatalf("runtime %s published by a failed repair", id)
+		}
+	}
+
+	f.mustRun("cuda")
+	var a home.Active
+	if err := home.ReadJSON(f.H.Path("state", "active-runtime.json"), &a); err != nil {
+		t.Fatal(err)
+	}
+	if a != (home.Active{Runtime: cuda.ID(), ModelID: DefaultModel, Model: ModelDirName(model), Device: "cuda"}) {
+		t.Fatalf("active %+v", a)
+	}
+	if _, rm, _, err := f.H.LoadActive(); err != nil || rm.Spec != cuda || rm.Spec.Flavor != "cu128" || !slices.Contains(rm.Installed, "torch==2.11.0+cu128") {
+		t.Fatalf("repaired runtime does not load as the current CUDA spec: %v %+v", err, rm)
+	}
+	if !maps(legacyBefore, snapshot(t, legacyDir)) {
+		t.Fatal("legacy runtime modified in place")
+	}
+	if !maps(modelBefore, snapshot(t, modelDir)) {
+		t.Fatal("independent model artifact rewritten by runtime repair")
+	}
+	if modelHits() != hitsBefore {
+		t.Fatalf("model downloaded again by runtime repair (%d requests)", modelHits()-hitsBefore)
+	}
+	// Both the failed and the successful attempt materialized the runtime via
+	// uv exactly as a first setup does; nothing else was invoked.
+	for _, c := range f.calls()[callsBefore:] {
+		if c.Args[0] != "python" && c.Args[0] != "venv" && c.Args[0] != "sync" {
+			t.Fatalf("unexpected uv call %v", c.Args)
+		}
+	}
+	for _, c := range f.calls()[callsBefore:] {
+		if sync := c.Args[0] == "sync"; sync && flagValue(c.Args, "--extra") != "cu128" {
+			t.Fatalf("CUDA repair resolved %q, not cu128", flagValue(c.Args, "--extra"))
+		}
+	}
+
+	// Idempotent: a second setup reuses everything and changes nothing.
+	activeAfter, calls, hits := f.active(), len(f.calls()), modelHits()
+	repaired := snapshot(t, f.H.Path("runtime", cuda.ID()))
+	f.mustRun("cuda")
+	if !bytes.Equal(f.active(), activeAfter) || len(f.calls()) != calls || modelHits() != hits {
+		t.Fatal("second setup was not idempotent")
+	}
+	if !maps(repaired, snapshot(t, f.H.Path("runtime", cuda.ID()))) {
+		t.Fatal("verified runtime rewritten by a second setup")
+	}
+}
+
 // Proof 10: Hachidori no longer owns a pip-install / requirements /
 // package-index construction path; environment construction goes through uv.
 func TestNoPipInstallPath(t *testing.T) {

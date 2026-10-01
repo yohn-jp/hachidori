@@ -329,3 +329,42 @@ func (f *fixture) active() []byte {
 	b, _ := os.ReadFile(f.H.Path("state", "active-runtime.json"))
 	return b
 }
+
+// legacyize turns the runtime setup just materialized for device into the
+// state of a runtime written by the procedural pip-based setup: a version-named
+// directory whose manifest carries no identity and no Runtime Spec, still
+// activated. Models are left exactly as setup materialized them. It returns
+// the legacy runtime directory name.
+func (f *fixture) legacyize(device string) string {
+	f.t.Helper()
+	spec, err := Desired(device)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var rm home.RuntimeManifest
+	if err := home.ReadJSON(f.H.Path("runtime", spec.ID(), "manifest.json"), &rm); err != nil {
+		f.t.Fatal(err)
+	}
+	name := "0.1.0-" + spec.Flavor
+	if err := os.Rename(f.H.Path("runtime", spec.ID()), f.H.Path("runtime", name)); err != nil {
+		f.t.Fatal(err)
+	}
+	legacy := map[string]any{
+		"version": "0.1.0", "flavor": spec.Flavor, "platform": spec.Platform, "python_version": rm.PythonVersion,
+		"python": rm.PythonRelPath, "packages": []string{"torch==" + spec.Torch},
+		"package_indexes": []string{"https://download.pytorch.org/whl/" + spec.Flavor},
+		"installed":       rm.Installed, "worker": rm.Worker,
+	}
+	if err := home.WriteJSON(f.H.Path("runtime", name, "manifest.json"), legacy); err != nil {
+		f.t.Fatal(err)
+	}
+	var a home.Active
+	if err := home.ReadJSON(f.H.Path("state", "active-runtime.json"), &a); err != nil {
+		f.t.Fatal(err)
+	}
+	a.Runtime = name
+	if err := home.WriteJSON(f.H.Path("state", "active-runtime.json"), a); err != nil {
+		f.t.Fatal(err)
+	}
+	return name
+}
