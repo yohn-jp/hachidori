@@ -454,6 +454,35 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </section>
 {{end}}
 
+{{with .S.Routing}}
+<section class="region section" id="routing" aria-labelledby="route-h">
+  <div class="region-h"><div><h2 id="route-h">{{t "Resident routing"}}</h2><p class="sub">{{t "Requests with route auto are routed by this policy: each question goes to its first-path resident and only the questions the policy selects are handed off. Direct requests are never routed."}}</p></div></div>
+  <dl class="kv">
+    <div><dt>{{t "Policy"}}</dt><dd class="id">{{.Policy.ID}}<span class="sub mono">{{.Policy.SHA256}}</span></dd></div>
+    <div><dt>{{t "Routed requests"}}</dt><dd class="num">{{.Requests}}<span class="sub">{{t "failed"}} {{.Failures}}</span></dd></div>
+    <div><dt>{{t "Questions"}}</dt><dd class="num">{{.Questions}}<span class="sub">{{t "handed off"}} {{.Handoffs}}{{if .HandoffFailures}} · {{t "optional handoffs failed"}} {{.HandoffFailures}}{{end}}</span></dd></div>
+    {{with .Calibration}}<div><dt>{{t "Calibration evidence"}}</dt><dd class="id mono">{{.EvidenceSHA256}}</dd></div>{{end}}
+  </dl>
+  <table class="data" id="routing-providers">
+    <thead><tr><th scope="col">{{t "Model"}}</th><th scope="col">{{t "First-path questions"}}</th><th scope="col">{{t "Handoff questions"}}</th><th scope="col">{{t "Final results"}}</th><th scope="col">{{t "Worker calls"}}</th><th scope="col">{{t "Inference total"}}</th></tr></thead>
+    <tbody>{{range .Providers}}
+      <tr data-model="{{.Model}}">
+        <td class="id">{{.Model}}<span class="sub">{{.Provider}}</span></td>
+        <td class="num">{{.FirstPathQuestions}}</td>
+        <td class="num">{{.HandoffQuestions}}</td>
+        <td class="num">{{.FinalResults}}</td>
+        <td class="num">{{.Calls}}</td>
+        <td class="num">{{ms .InferenceMSTotal}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table>
+  {{with .Reasons}}<table class="data" id="routing-reasons">
+    <thead><tr><th scope="col">{{t "Reason"}}</th><th scope="col">{{t "Results"}}</th></tr></thead>
+    <tbody>{{range $code, $n := .}}<tr><td class="id mono">{{$code}}</td><td class="num">{{$n}}</td></tr>{{end}}</tbody>
+  </table>{{end}}
+</section>
+{{end}}
+
 {{with failureOf $w}}
 <section class="attention tone-bad failure" id="worker-failure" aria-labelledby="wf-h">
   <h2 id="wf-h">{{t "Worker failed while:"}} {{t .PhaseWord}}</h2>

@@ -17,6 +17,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/redact"
+	"github.com/yohn-jp/hachidori/internal/route"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -43,6 +44,19 @@ type Decider interface {
 type Router interface {
 	DecideOn(model string, items []worker.Item) ([][]api.Result, float64, error)
 	Identity(model string) (api.Served, bool)
+}
+
+// AutoRouting is implemented by a Decider that can route by policy. A nil
+// router means no routing policy is configured, and a routed request is then
+// refused with routing_failed; it is never answered by the default resident.
+type AutoRouting interface {
+	AutoRouter() *route.Router
+}
+
+// RoutingReporter is implemented by a Decider that applies a routing policy;
+// the status document then carries its counters.
+type RoutingReporter interface {
+	RoutingStatus() *route.Status
 }
 
 // Residents is implemented by a Decider that can report every resident; the
@@ -94,7 +108,19 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
-		res, ms, served, err := decideTargeted(d, rt, api.ModelRef(req.Model), []worker.Item{{State: req.State, Questions: req.Questions}})
+		items := []worker.Item{{State: req.State, Questions: req.Questions}}
+		if req.Route == api.RouteAuto {
+			out, rtr, err := decideRouted(d, items)
+			if err != nil {
+				writeWorkerErr(w, sc, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, api.DecideResponse{Schema: api.SchemaV1, Results: out.Items[0].Results,
+				Timing:  &api.Timing{InferenceMS: out.InferenceMS, TotalMS: msSince(t0)},
+				Routing: rtr.Routing(out.Items[0], out.Providers)})
+			return
+		}
+		res, ms, served, err := decideTargeted(d, rt, api.ModelRef(req.Model), items)
 		if err != nil {
 			writeWorkerErr(w, sc, err)
 			return
@@ -116,6 +142,20 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 		for i, q := range req.Requests {
 			items[i] = worker.Item{State: q.State, Questions: q.Questions}
 		}
+		if mode, _ := req.RouteMode(); mode == api.RouteAuto { // validated above
+			out, rtr, err := decideRouted(d, items)
+			if err != nil {
+				writeWorkerErr(w, sc, err)
+				return
+			}
+			resp := api.BatchResponse{Schema: api.SchemaV1, Timing: api.Timing{InferenceMS: out.InferenceMS, TotalMS: msSince(t0)},
+				Routing: &api.Routing{Mode: api.RouteAuto, Policy: rtr.Ref(), Handoffs: out.Handoffs, Providers: out.Providers}}
+			for _, it := range out.Items {
+				resp.Responses = append(resp.Responses, api.DecideResponse{Schema: api.SchemaV1, Results: it.Results, Routing: rtr.Routing(it, nil)})
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
 		target, _ := req.Target() // validated above
 		res, ms, served, err := decideTargeted(d, rt, target, items)
 		if err != nil {
@@ -129,6 +169,22 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 		writeJSON(w, http.StatusOK, out)
 	})
 	return mux
+}
+
+// decideRouted routes items by the runtime's routing policy. A runtime
+// without a policy refuses the request; it never falls back to the default
+// resident.
+func decideRouted(d Decider, items []worker.Item) (route.Outcome, *route.Router, error) {
+	var rtr *route.Router
+	if a, ok := d.(AutoRouting); ok {
+		rtr = a.AutoRouter()
+	}
+	if rtr == nil {
+		return route.Outcome{}, nil, &worker.RequestError{Class: api.ErrRoutingFailed,
+			Message: route.CodeNoPolicy + ": no routing policy is configured for this runtime (serve with --resident and --routing-policy); the request was not answered by any resident"}
+	}
+	out, err := rtr.Decide(items)
+	return out, rtr, err
 }
 
 // decideTargeted runs items on the resident the caller named, or on the
@@ -219,12 +275,15 @@ func LoopbackHost(hostport string) bool {
 // default first, each with its own runtime identity and worker snapshot
 // (state, PID, device, dtype, load and warmup timing, counters, queue,
 // latency and accelerator evidence); it is absent for a single worker.
+// Routing is the deterministic routing policy and its counters (per reason
+// code and per resident); it is absent when no policy is configured.
 type Status struct {
 	Schema    string           `json:"schema"`
 	Runtime   Runtime          `json:"runtime"`
 	UptimeS   int              `json:"uptime_s"`
 	Worker    worker.Snapshot  `json:"worker"`
 	Residents []ResidentStatus `json:"residents,omitempty"`
+	Routing   *route.Status    `json:"routing,omitempty"`
 }
 
 // ResidentStatus is one resident's view in Status.Residents: the status of
@@ -242,6 +301,9 @@ func StatusBody(d Decider, rt Runtime, started time.Time) Status {
 	st := Status{Schema: api.SchemaV1, Runtime: rt, UptimeS: int(time.Since(started).Seconds()), Worker: d.Snapshot()}
 	if r, ok := d.(Residents); ok {
 		st.Residents = r.ResidentStatuses()
+	}
+	if r, ok := d.(RoutingReporter); ok {
+		st.Routing = r.RoutingStatus()
 	}
 	return st
 }
@@ -418,6 +480,7 @@ var statusFor = map[string]int{
 	api.ErrNotReady:        http.StatusServiceUnavailable,
 	api.ErrWorkerFailure:   http.StatusBadGateway,
 	api.ErrCapacity:        http.StatusTooManyRequests,
+	api.ErrRoutingFailed:   http.StatusFailedDependency,
 }
 
 func writeErr(w http.ResponseWriter, class, msg string) {

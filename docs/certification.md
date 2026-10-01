@@ -229,6 +229,35 @@ that record the default stays `float32`.
 | physical Windows, RTX 3060, `bfloat16` OpenDecider-nano | NOT_CHECKED | user-side; never inferred from CI |
 | default dtype | unchanged: `float32` | no recorded evidence supports a change |
 
+### Deterministic resident routing (#124)
+
+With both models resident and a routing policy bound (`serve --resident
+opendecider-nano --routing-policy policy.json [--routing-evidence comparison.json]`,
+see [runtime.md](runtime.md)), one application can run laya-only, nano-only and
+`route: "auto"` calls without a reload of either model. The evidence of a routed
+run is in the response and in status, not in a separate report:
+
+| claim | evidence |
+|---|---|
+| which model produced each final result and why | `routing.results[].served` and `reason` (stable codes) on every response |
+| what a handoff replaced | `routing.results[].first_path` (model, choice, confidence) |
+| the policy that decided | `routing.policy` `id` and SHA-256; `routing.calibration` (evidence digest, dataset digest, observations per threshold rule) when `--routing-evidence` was given |
+| per-provider latency contribution, handoff counts | `routing.providers` per response; `routing` counters in `/v1/status` (`handoffs`, `handoff_failures`, `reasons`, per-resident calls and inference ms) |
+| no reload | each resident's `pid` and `starts` in `/v1/status` unchanged across direct and routed calls (the same stability evidence as the resident comparison) |
+| required handoff failure is explicit | `routing_failed` with `first_path_failed` / `required_handoff_failed`, no results |
+
+A routing certification records, for a stated policy and corpus: a kept
+first-path result that did not wake the alternate (alternate `requests` counter
+unchanged), a selective handoff that replaced only the selected results,
+alternating direct and routed calls with unchanged PIDs and `starts`, and a
+required handoff to a stopped resident failing explicitly while the other
+resident keeps serving. Thresholds are justified from the resident comparison
+(`per_family`, `quality.thresholds`, `quality.calibration`), not set from a
+single universal confidence value.
+
+Portable tests cover all of this with fake residents and real fake-worker
+processes and download no model. They are not physical evidence.
+
 ### Recorded state for the change that introduced OpenDecider-nano
 
 | item | outcome | note |
@@ -238,6 +267,7 @@ that record the default stays `float32`.
 | comparative run, Laya vs OpenDecider-nano, fixed Hachidori corpus | NOT_CHECKED | the external corpus is not in this repository; no comparative evidence exists, so the default is unchanged |
 | resident comparison (#123) on real models, including physical Windows / RTX 3060 | NOT_CHECKED | implemented and tested with fake residents only; running it with both real models resident is user-side and never inferred from CI |
 | physical Windows, RTX 3060, OpenDecider-nano (materialize, activate, restart, CUDA load/warmup, latency, VRAM) | NOT_CHECKED | user-side; never inferred from CI or the Linux run |
+| deterministic resident routing and selective handoff (#124) on real models, including physical Windows / RTX 3060 (co-residency, keep/handoff/required-failure routes, no reload, latency, VRAM) | NOT_CHECKED | implemented and tested with fake residents and fake worker processes only; running it with both real models resident is user-side and never inferred from CI |
 
 ## Linux GPU host
 

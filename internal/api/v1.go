@@ -37,13 +37,23 @@ type Question struct {
 // the request takes the default route exactly as before; named, it is served
 // by that resident or fails explicitly, and is never redirected to another.
 // An explicitly empty selector is invalid input, not an omitted one.
+//
+// Route optionally selects deterministic policy routing ("auto") instead of
+// the default route. It cannot be combined with Model: a direct request is
+// strict and a routed request is answered per the runtime's routing policy.
 type DecideRequest struct {
 	Schema    string         `json:"schema"`
 	State     string         `json:"state"`
 	Questions []Question     `json:"questions"`
 	Options   map[string]any `json:"options,omitempty"`
 	Model     *string        `json:"model,omitempty"`
+	Route     string         `json:"route,omitempty"`
 }
+
+// RouteAuto selects the runtime's deterministic routing policy: each question
+// is answered by its first-path resident and handed off to the alternate
+// resident only when the policy requires it.
+const RouteAuto = "auto"
 
 // Result is one typed observation. Confidence is the calibrated probability
 // mass on the reported choice (max p).
@@ -58,12 +68,74 @@ type Result struct {
 // DecideResponse carries one result per question, in request order.
 //
 // Served identifies the resident that answered a directly targeted request;
-// it is omitted for the default route.
+// it is omitted for the default route. Routing is present only for a routed
+// request and says which resident produced each final result and why.
 type DecideResponse struct {
 	Schema  string   `json:"schema"`
 	Results []Result `json:"results"`
 	Timing  *Timing  `json:"timing,omitempty"` // omitted inside batch responses
 	Served  *Served  `json:"served,omitempty"`
+	Routing *Routing `json:"routing,omitempty"`
+}
+
+// Stable routing reason codes (RoutedResult.Reason). They are part of the
+// public contract; policy changes never rename them.
+const (
+	ReasonFirstPathOnly    = "first_path_only"                // the policy defines no handoff for the question
+	ReasonFirstPathKept    = "first_path_kept"                // a handoff is defined and its condition was not met
+	ReasonHandoffAlways    = "handoff_always"                 // the policy hands this question off unconditionally
+	ReasonHandoffChoice    = "handoff_choice"                 // the first-path choice is one the policy hands off
+	ReasonHandoffLowConf   = "handoff_low_confidence"         // first-path confidence is below the policy threshold
+	ReasonHandoffLowMargin = "handoff_low_margin"             // first-path top-two margin is below the policy threshold
+	ReasonHandoffFailed    = "handoff_failed_kept_first_path" // an optional handoff failed; the first-path result is kept
+)
+
+// Routing is the provenance of a routed request. Policy identifies the exact
+// policy that decided; Results has one entry per question in question order.
+// Providers reports each resident's latency contribution to this request and
+// is present on a /v1/decide response and on a batch response, not on the
+// entries of a batch.
+type Routing struct {
+	Mode      string           `json:"mode"`
+	Policy    PolicyRef        `json:"policy"`
+	Results   []RoutedResult   `json:"results,omitempty"`
+	Handoffs  int              `json:"handoffs"`
+	Providers []ProviderTiming `json:"providers,omitempty"`
+}
+
+// PolicyRef names a routing policy by its id and canonical content digest.
+type PolicyRef struct {
+	ID     string `json:"id"`
+	SHA256 string `json:"sha256"`
+}
+
+// RoutedResult is the routing provenance of one final result. Served is the
+// resident that produced the final result. FirstPath is present only when the
+// result was handed off and records the replaced first-path observation.
+type RoutedResult struct {
+	ID        string     `json:"id"`
+	Served    Served     `json:"served"`
+	Reason    string     `json:"reason"`
+	Profile   string     `json:"profile,omitempty"`
+	FirstPath *FirstPath `json:"first_path,omitempty"`
+}
+
+// FirstPath is the first-path observation that a handoff replaced.
+type FirstPath struct {
+	Model      string  `json:"model"`
+	Provider   string  `json:"provider"`
+	Choice     string  `json:"choice"`
+	Confidence float64 `json:"confidence"`
+}
+
+// ProviderTiming is one resident's contribution to a routed request: the
+// worker calls it served, the questions in them and their inference time.
+type ProviderTiming struct {
+	Model       string  `json:"model"`
+	Provider    string  `json:"provider"`
+	Calls       int     `json:"calls"`
+	Questions   int     `json:"questions"`
+	InferenceMS float64 `json:"inference_ms"`
 }
 
 // Served is the Hachidori catalog identity of the resident that answered:
@@ -85,10 +157,14 @@ type Timing struct {
 // Model optionally targets every request of the batch at one resident (see
 // DecideRequest.Model). A batch is served by one resident, so a request that
 // names a different model is invalid.
+//
+// Route optionally routes every request of the batch by policy (see
+// DecideRequest.Route); a request that names a different route is invalid.
 type BatchRequest struct {
 	Schema   string          `json:"schema"`
 	Requests []DecideRequest `json:"requests"`
 	Model    *string         `json:"model,omitempty"`
+	Route    string          `json:"route,omitempty"`
 }
 
 // BatchResponse is aligned with BatchRequest.Requests by index.
@@ -97,6 +173,7 @@ type BatchResponse struct {
 	Responses []DecideResponse `json:"responses"`
 	Timing    Timing           `json:"timing"`
 	Served    *Served          `json:"served,omitempty"`
+	Routing   *Routing         `json:"routing,omitempty"`
 }
 
 // Error classes (architecture §15).
@@ -106,6 +183,11 @@ const (
 	ErrNotReady        = "not_ready"
 	ErrWorkerFailure   = "worker_failure"
 	ErrCapacity        = "capacity"
+	// ErrRoutingFailed is a routed request that could not be answered by its
+	// policy: the first-path resident or a required handoff target was
+	// unavailable or failed, or no routing policy is configured. It never
+	// carries results; a weaker result is never substituted.
+	ErrRoutingFailed = "routing_failed"
 )
 
 // ErrorBody is the structured error envelope.
@@ -138,6 +220,9 @@ func (r *DecideRequest) Validate() error {
 		return fmt.Errorf("state must not be empty")
 	}
 	if err := validModelRef(r.Model); err != nil {
+		return err
+	}
+	if err := validRoute(r.Route, ModelRef(r.Model)); err != nil {
 		return err
 	}
 	if len(r.Questions) == 0 || len(r.Questions) > MaxQuestions {
@@ -198,6 +283,9 @@ func (b *BatchRequest) Validate() error {
 	if err := validModelRef(b.Model); err != nil {
 		return err
 	}
+	if err := validRoute(b.Route, ModelRef(b.Model)); err != nil {
+		return err
+	}
 	for i := range b.Requests {
 		if b.Requests[i].Schema == "" {
 			b.Requests[i].Schema = SchemaV1
@@ -206,8 +294,32 @@ func (b *BatchRequest) Validate() error {
 			return fmt.Errorf("requests[%d]: %w", i, err)
 		}
 	}
-	_, err := b.Target()
-	return err
+	target, err := b.Target()
+	if err != nil {
+		return err
+	}
+	route, err := b.RouteMode()
+	if err != nil {
+		return err
+	}
+	return validRoute(route, target)
+}
+
+// RouteMode is the routing a batch asks for: its own Route, or the one every
+// request names, "" for the default route. Requests naming different routes
+// are invalid: one batch is routed one way.
+func (b *BatchRequest) RouteMode() (string, error) {
+	mode := b.Route
+	for i, r := range b.Requests {
+		switch {
+		case r.Route == "" || r.Route == mode:
+		case mode == "":
+			mode = r.Route
+		default:
+			return "", fmt.Errorf("requests[%d]: route %q differs from route %q of the same batch", i, r.Route, mode)
+		}
+	}
+	return mode, nil
 }
 
 // Target is the model a batch is directed at: its own Model, or the one
@@ -233,6 +345,21 @@ func ModelRef(m *string) string {
 		return ""
 	}
 	return *m
+}
+
+// validRoute checks a routing selector: absent or "auto", and never together
+// with a direct model, because a direct request is strict.
+func validRoute(route, model string) error {
+	switch route {
+	case "":
+		return nil
+	case RouteAuto:
+		if model != "" {
+			return fmt.Errorf("route %q cannot be combined with model %q: a direct request is answered by that resident only", route, model)
+		}
+		return nil
+	}
+	return fmt.Errorf("route must be %q when present, got %q", RouteAuto, route)
 }
 
 // maxModelRef bounds a model reference; catalog IDs are short.
