@@ -12,8 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/settings"
+	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -188,6 +190,39 @@ func TestRuntimeSummarySeparatesDiagnosticEvidence(t *testing.T) {
 	live := e.get(t, "/live").Body.String()
 	if !strings.Contains(live, `<p class="state-word"><span class="dot"></span>stopped</p>`) || !strings.Contains(live, "<dt>worker state</dt><dd>stopped (phase ready)</dd>") {
 		t.Error("runtime summary and diagnostic evidence do not both follow /v1/status")
+	}
+}
+
+// The Runtime summary must not let a model id collapse into a column of single
+// characters (#119). Model and Next start values are machine identities inside
+// the summary's fact grid; that grid and the identity treatment wrap at the
+// container edge with overflow-wrap:break-word (which keeps the minimum content
+// width of a value at its longest word), never overflow-wrap:anywhere (which
+// drops it to one character).
+func TestRuntimeSummaryKeepsModelIdsReadable(t *testing.T) {
+	e := newEnv(t)
+	inv := modelsInventory()
+	inv.Active = &home.Active{Runtime: "cu128-aaaa", ModelID: "opendecider-nano", Device: "cuda"}
+	inv.Models = append(inv.Models, setup.ModelEntry{ID: "opendecider-nano", Provider: "opendecider", Materialized: true, Active: true})
+	withModels(e, &fakeModels{state: ModelsState{Inventory: inv}})
+	body := e.get(t, "/").Body.String()
+
+	panel := body[strings.Index(body, `class="readiness-panel`):]
+	panel = panel[:strings.Index(panel, "</section>")]
+	for _, want := range []string{`class="spec"`, `<dt>Model</dt><dd class="id">laya-base`, `id="next-start"`, `<dd class="id">opendecider-nano · cuda`} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("runtime summary lacks %q", want)
+		}
+	}
+	css := strings.Split(body, "</style>")[0]
+	for _, sel := range []string{".spec dd", ".id"} {
+		rule := cssRule(t, css, sel)
+		if !strings.Contains(rule, "overflow-wrap: break-word") || strings.Contains(rule, "overflow-wrap: anywhere") {
+			t.Errorf("%s can collapse to one character per line: %s", sel, rule)
+		}
+	}
+	if rule := cssRule(t, css, ".spec > div"); !strings.Contains(rule, "min-width: 0") {
+		t.Errorf("fact cells cannot shrink with the grid: %s", rule)
 	}
 }
 
