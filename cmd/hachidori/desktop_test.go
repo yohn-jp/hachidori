@@ -98,7 +98,7 @@ func (r *fakeRuntime) counts() (int, int, int) {
 // installedApp is the unified composition on a configured, installed home whose
 // runtime is the returned fake. opens counts how many runtimes were bound: more
 // than one would be a second worker owner.
-func installedApp(t *testing.T, p desktop.Platform, background bool) (*desktopApp, *fakeRuntime, *atomic.Int32) {
+func installedApp(t testing.TB, p desktop.Platform, background bool) (*desktopApp, *fakeRuntime, *atomic.Int32) {
 	t.Helper()
 	root := t.TempDir()
 	rt, opens := &fakeRuntime{}, &atomic.Int32{}

@@ -39,6 +39,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
+	"github.com/yohn-jp/hachidori/internal/ui"
 )
 
 // DefaultListen is the default dashboard address (loopback only).
@@ -274,6 +275,8 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"sd":        func(v float64) string { return signed(v, "") },
 	"sms":       func(v float64) string { return signed(v, "ms") },
 	"short":     func(s string) string { return s[:min(len(s), 12)] },
+	"systemCSS": ui.CSS,
+	"add":       func(a, b int) int { return a + b },
 }).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html"))
 
 // pages are the workstation templates for each supported locale. Rendering

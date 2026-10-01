@@ -15,12 +15,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
+
+// Epoch is the origin of the startup marks: the instant the executable's
+// main function was entered, taken there by the caller. It is not the OS
+// process creation time (Go does not provide one); loader and runtime
+// initialization before main are outside the measurement.
+type Epoch time.Time
+
+// Mark logs one startup milestone to w as the time since e, so the startup
+// budgets in docs/desktop.md can be read from a physical Windows launch
+// without a profiler. A zero epoch (no entry time supplied) logs nothing.
+func (e Epoch) Mark(w io.Writer, stage string) {
+	if time.Time(e).IsZero() {
+		return
+	}
+	fmt.Fprintf(w, "hachidori: startup %s +%dms since entry\n", stage, time.Since(time.Time(e)).Milliseconds())
+}
 
 // ErrUnsupported is returned by the Native platform on non-Windows systems.
 var ErrUnsupported = errors.New("hachidori desktop is only available on Windows; " +
@@ -56,6 +73,9 @@ type Window struct {
 	// StartHidden starts in the tray without showing the window (only
 	// meaningful with Resident).
 	StartHidden bool
+	// Epoch is the executable entry time the shell's startup marks are
+	// measured from.
+	Epoch Epoch
 }
 
 // Platform is the OS surface the shell needs. Native returns the real one;

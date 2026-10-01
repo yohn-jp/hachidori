@@ -41,6 +41,7 @@ const (
 	swHide             = 0
 	swShowNormal       = 1
 	swMinimize         = 6
+	sizeMinimized      = 1 // WM_SIZE wParam SIZE_MINIMIZED
 	swRestore          = 9
 	idcArrow           = 32512
 	colorWindow        = 5
@@ -106,6 +107,8 @@ type shell struct {
 	// the loopback dashboard, and then surfaced natively.
 	failures FailureTracker
 	navURL   string
+	firstNav bool // the first successful navigation has been marked
+	visible  bool // WebView2 IsVisible as last set by setVisible
 }
 
 var (
@@ -127,6 +130,7 @@ func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 		return 0
 	case wmSize:
 		if s != nil && s.chromium != nil {
+			s.setVisible(wp != sizeMinimized)
 			s.chromium.Resize()
 		}
 	case wmMove:
@@ -259,8 +263,10 @@ func (s *shell) perform(a Action) {
 		s.show(true)
 	case ActionHide:
 		procShowWindow.Call(s.hwnd, swHide)
+		s.setVisible(false)
 	case ActionHideWithNotice:
 		procShowWindow.Call(s.hwnd, swHide)
+		s.setVisible(false)
 		s.tray.balloon("Hachidori is still running", trayNotice)
 	case ActionQuit:
 		s.quit()
@@ -276,12 +282,34 @@ func (s *shell) show(diagnostics bool) {
 	}
 	procSetForegroundWindow.Call(s.hwnd)
 	if s.chromium != nil {
+		s.setVisible(true)
 		s.chromium.Resize()
 		s.chromium.Focus()
 		if diagnostics {
 			s.chromium.Navigate(s.url + DiagnosticsFragment)
 		}
 	}
+}
+
+// setVisible tells WebView2 whether its window can be seen. A window hidden
+// to the tray or minimized reports the page as hidden, so the dashboard
+// stops its live polling and WebView2 may throttle rendering; showing it
+// again refreshes immediately. ShowWindow alone does not do this.
+func (s *shell) setVisible(v bool) {
+	if s.chromium == nil || s.visible == v {
+		return
+	}
+	var err error
+	if v {
+		err = s.chromium.Show()
+	} else {
+		err = s.chromium.Hide()
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hachidori: WebView2 visibility %v: %v\n", v, err)
+		return
+	}
+	s.visible = v
 }
 
 // showMenu pops the tray menu and dispatches the choice.
@@ -418,6 +446,7 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	if !w.StartHidden {
 		procShowWindow.Call(hwnd, swShowNormal)
 		procUpdateWindow.Call(hwnd)
+		w.Epoch.Mark(os.Stderr, "native window shown")
 	}
 
 	destroyed := false
@@ -459,6 +488,10 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 			s.webViewFailed(f)
 			return
 		}
+		if !s.firstNav {
+			s.firstNav = true
+			w.Epoch.Mark(os.Stderr, "first navigation completed")
+		}
 		fmt.Fprintf(os.Stderr, "hachidori: WebView2 navigation completed: success=%v status=%d %s\n", ok != 0, status, w.URL)
 	}
 	c.ProcessFailedCallback = func(_ *edge.ICoreWebView2, args *edge.ICoreWebView2ProcessFailedEventArgs) {
@@ -494,6 +527,8 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 		return fmt.Errorf("installing the navigation policy: %w", err)
 	}
 	s.chromium = c
+	s.visible = true // a new controller is visible
+	w.Epoch.Mark(os.Stderr, "WebView2 controller ready")
 	c.Resize()
 	// A resident shell starts in the tray only if the tray icon really exists;
 	// otherwise a hidden window would be unreachable.
@@ -502,6 +537,9 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 		sum := s.res.Summary()
 		s.lastLevel = sum.Level
 		hidden = s.tray.add(sum) && w.StartHidden
+	}
+	if hidden {
+		s.setVisible(false)
 	}
 	if !hidden {
 		// Visible launches were presented before controller creation. A requested

@@ -6,129 +6,63 @@
 <meta name="color-scheme" content="dark light">
 <title>{{t .Title}} · Hachidori</title>
 <style>
-/* ---- tokens ---------------------------------------------------------- */
-:root {
-  --bg: #131519; --chrome: #0f1114; --surface: #181b20; --raised: #1f232a; --inset: #101216;
-  --line: #262a31; --line-2: #353b44;
-  --text: #e6e8eb; --text-2: #a4abb5; --text-3: #707884;
-  --accent: #6da6f7; --accent-ink: #0a1628; --accent-soft: rgba(109, 166, 247, .14);
-  --ok: #45bf8b; --ok-soft: rgba(69, 191, 139, .13);
-  --warn: #e3a63c; --warn-soft: rgba(227, 166, 60, .14);
-  --bad: #ef6a6a; --bad-soft: rgba(239, 106, 106, .13);
-  --idle: #8b939e; --idle-soft: rgba(139, 147, 158, .13);
-  --track: #262b33; --seg-alloc: #6da6f7; --seg-cache: #37669f; --seg-other: #8a7fd4;
-  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --mono: "Cascadia Mono", Consolas, ui-monospace, "SF Mono", Menlo, monospace;
-  --r: 6px; --r-lg: 8px; --bar-h: 2.75rem; --toolbar-h: 3.4rem;
-}
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f4f5f7; --chrome: #ebedf0; --surface: #ffffff; --raised: #f3f4f6; --inset: #ffffff;
-    --line: #e0e3e8; --line-2: #c9ced6;
-    --text: #15181c; --text-2: #525a65; --text-3: #7a828d;
-    --accent: #1f5fbf; --accent-ink: #ffffff; --accent-soft: rgba(31, 95, 191, .1);
-    --ok: #17804f; --ok-soft: rgba(23, 128, 79, .1);
-    --warn: #9a6200; --warn-soft: rgba(190, 125, 0, .12);
-    --bad: #c42b2b; --bad-soft: rgba(196, 43, 43, .08);
-    --idle: #646d78; --idle-soft: rgba(100, 109, 120, .1);
-    --track: #e3e6ea; --seg-alloc: #1f5fbf; --seg-cache: #8db2e6; --seg-other: #8c80d8;
-  }
-}
-.tone-ok { --tone: var(--ok); --tone-soft: var(--ok-soft); }
-.tone-warn { --tone: var(--warn); --tone-soft: var(--warn-soft); }
-.tone-bad { --tone: var(--bad); --tone-soft: var(--bad-soft); }
-.tone-idle { --tone: var(--idle); --tone-soft: var(--idle-soft); }
-.tone-active { --tone: var(--accent); --tone-soft: var(--accent-soft); }
-
-/* ---- base ------------------------------------------------------------ */
-* { box-sizing: border-box; }
-html, body { height: 100%; }
-body { margin: 0; color: var(--text); background: var(--bg); font: 14px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
-h1 { font-size: 1.35rem; font-weight: 650; letter-spacing: -.005em; margin: 0; }
-h2 { font-size: .95rem; font-weight: 620; margin: 0; }
-h3 { font-size: .72rem; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); margin: 0 0 .5rem; }
-p { margin: 0; }
-a { color: var(--accent); text-underline-offset: 2px; }
-code, pre, .mono { font-family: var(--mono); font-size: .92em; }
-.muted { color: var(--text-2); } .faint { color: var(--text-3); }
-.ok-t { color: var(--ok); } .warn-t { color: var(--warn); } .bad-t { color: var(--bad); }
-.num { font-variant-numeric: tabular-nums; }
-.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.skip { position: absolute; left: -999px; top: .4rem; z-index: 20; padding: .4rem .7rem; border-radius: var(--r); background: var(--surface); color: var(--text); }
-.skip:focus { left: .75rem; }
-
+{{systemCSS}}
+/* GPU memory breakdown series (allocated, reserved cache, other processes) */
+:root { --seg-alloc: #6da6f7; --seg-cache: #37669f; --seg-other: #8a7fd4; }
+@media (prefers-color-scheme: light) { :root { --seg-alloc: #1f5fbf; --seg-cache: #8db2e6; --seg-other: #8c80d8; } }
 /* ---- workstation shell ------------------------------------------------ */
+html, body { height: 100%; }
 .shell { display: grid; height: 100vh; grid-template-columns: 13rem minmax(0, 1fr); grid-template-rows: var(--bar-h) minmax(0, 1fr) auto;
-  grid-template-areas: "bar bar" "nav main" "status status"; }
-.appbar { grid-area: bar; display: flex; align-items: center; gap: 1rem; padding: 0 1rem; background: var(--chrome); border-bottom: 1px solid var(--line); min-width: 0; }
+  grid-template-areas: "bar bar" "nav main" "status status"; --bar-h: 2.75rem; --toolbar-h: 3.4rem; }
+.appbar { grid-area: bar; display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-4); background: var(--chrome); border-bottom: 1px solid var(--line); min-width: 0; }
 .brand { display: flex; align-items: center; gap: .55rem; font-weight: 650; letter-spacing: .01em; color: var(--text); text-decoration: none; }
 .mark { width: 13px; height: 13px; border-radius: 4px; border: 2px solid var(--accent); }
-.appbar-status { margin-left: auto; display: flex; align-items: center; gap: 1rem; min-width: 0; font-size: .8rem; color: var(--text-2); }
+.appbar-status { margin-left: auto; display: flex; align-items: center; gap: var(--sp-4); min-width: 0; font-size: var(--fs-small); color: var(--text-2); }
 .appbar-status[data-stale] { opacity: .55; }
 .appbar-fact { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.readiness { display: inline-flex; align-items: center; gap: .45rem; font-size: .74rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--tone); white-space: nowrap; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
-.tone-warn .dot, .tone-active .dot { animation: pulse 1.6s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: .35; } }
+.readiness { display: inline-flex; align-items: center; gap: .45rem; font-size: var(--fs-label); font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--tone); white-space: nowrap; }
 .attention-link { color: var(--warn); font-weight: 600; white-space: nowrap; text-decoration: none; }
 .attention-link:hover { text-decoration: underline; }
 
-.sidenav { grid-area: nav; display: flex; flex-direction: column; gap: .9rem; padding: .9rem .6rem; background: var(--chrome); border-right: 1px solid var(--line); overflow: auto; }
+.sidenav { grid-area: nav; display: flex; flex-direction: column; gap: var(--sp-4); padding: var(--sp-4) .6rem; background: var(--chrome); border-right: 1px solid var(--line); overflow: auto; }
 .sidenav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-.sidenav a { display: block; padding: .45rem .75rem; border-radius: var(--r); color: var(--text-2); text-decoration: none; font-weight: 520; white-space: nowrap; }
+.sidenav a { display: flex; align-items: center; min-height: var(--ctl-h); padding: 0 var(--sp-3); border-radius: var(--r); color: var(--text-2); text-decoration: none; font-weight: 520; white-space: nowrap; }
 .sidenav a:hover { color: var(--text); background: var(--raised); }
 .sidenav a[aria-current="page"] { color: var(--text); background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }
-.nav-support { padding-top: .9rem; border-top: 1px solid var(--line); }
+.nav-support { padding-top: var(--sp-4); border-top: 1px solid var(--line); }
 
-.workspace { grid-area: main; overflow: auto; padding: 0 2rem 3rem; display: flex; flex-direction: column; gap: 1.6rem; outline: none; }
-.workspace > * { width: 100%; max-width: min(100%, 88rem); margin-inline: auto; }
+.workspace { grid-area: main; overflow: auto; padding: 0 var(--sp-6) 3rem; display: flex; flex-direction: column; gap: var(--sp-5); outline: none; }
+.workspace > * { width: 100%; max-width: min(100%, var(--ws-max)); margin-inline: auto; }
 .slot { display: contents; }
-.statusbar { grid-area: status; display: flex; align-items: center; gap: 1.4rem; min-height: 1.75rem; padding: 0 1rem; background: var(--chrome); border-top: 1px solid var(--line);
-  font-size: .74rem; color: var(--text-3); white-space: nowrap; overflow: hidden; }
+.statusbar { grid-area: status; display: flex; align-items: center; gap: var(--sp-5); min-height: 1.75rem; padding: 0 var(--sp-4); background: var(--chrome); border-top: 1px solid var(--line);
+  font-size: var(--fs-label); color: var(--text-3); white-space: nowrap; overflow: hidden; }
 .statusbar span { overflow: hidden; text-overflow: ellipsis; }
 .statusbar .endpoint { margin-left: auto; }
 
 /* ---- workspace primitives --------------------------------------------- */
-.ws-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: .6rem 1.5rem; padding: 1.5rem 0 1rem; border-bottom: 1px solid var(--line); }
-.lede { margin-top: .25rem; color: var(--text-2); max-width: 62rem; }
-.ws-meta { font-size: .78rem; color: var(--text-3); overflow-wrap: anywhere; }
-.region { display: grid; gap: .8rem; min-width: 0; }
-.region-h { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .4rem 1rem; }
-.region-h .sub, .sub { color: var(--text-3); font-size: .8rem; font-weight: 400; }
-.surface { display: grid; gap: .9rem; align-content: start; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 1.1rem 1.2rem; min-width: 0; }
-.note { font-size: .8rem; color: var(--text-3); }
-.note code { color: var(--text-2); }
-.empty { color: var(--text-3); font-size: .88rem; }
+.ws-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: .6rem var(--sp-5); padding: var(--sp-5) 0 var(--sp-4); border-bottom: 1px solid var(--line); }
+.ws-head .lede { margin-top: var(--sp-1); }
+.ws-meta { font-size: var(--fs-small); color: var(--text-3); overflow-wrap: anywhere; }
+.region { display: grid; gap: var(--sp-3); min-width: 0; }
+.region-h { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--sp-1) var(--sp-4); }
+.surface { display: grid; gap: var(--sp-3); align-content: start; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--sp-4) var(--sp-5); min-width: 0; }
 #sync.tone-warn #sync-text { color: var(--warn); }
-
-/* status vocabulary */
-.badge { display: inline-flex; align-items: center; gap: .35rem; padding: .12rem .5rem; border-radius: 99px; font-size: .7rem; font-weight: 650; letter-spacing: .05em;
-  text-transform: uppercase; white-space: nowrap; color: var(--tone, var(--idle)); background: var(--tone-soft, var(--idle-soft)); }
-.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.state-word { display: flex; align-items: center; gap: .6rem; font-size: 2.2rem; font-weight: 700; line-height: 1.1; letter-spacing: .04em; text-transform: uppercase; color: var(--tone); }
-.state-word .dot { width: 12px; height: 12px; box-shadow: 0 0 0 5px var(--tone-soft); }
-.state-word.compact { font-size: 1.05rem; gap: .5rem; letter-spacing: .06em; }
-.state-word.compact .dot { width: 8px; height: 8px; box-shadow: none; }
-.msg { padding: .55rem .8rem; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface); font-size: .86rem; overflow-wrap: anywhere; }
-.msg.bad { border-color: color-mix(in srgb, var(--bad) 60%, var(--line)); background: var(--bad-soft); color: var(--bad); }
-.msg.ok { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: var(--ok-soft); }
-.last { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .8rem; padding: .5rem .8rem; border-radius: var(--r); font-size: .86rem;
-  border: 1px solid color-mix(in srgb, var(--tone) 45%, var(--line)); background: var(--tone-soft); }
-.last strong { color: var(--tone); font-size: .72rem; letter-spacing: .06em; }
-.last .what { font-weight: 600; } .last .msg-text { overflow-wrap: anywhere; } .last time { margin-left: auto; color: var(--text-3); font-size: .78rem; font-family: var(--mono); }
+.last { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem var(--sp-3); padding: var(--sp-2) var(--sp-3); border-radius: var(--r);
+  border: 1px solid color-mix(in srgb, var(--tone, var(--idle)) 45%, var(--line)); background: var(--tone-soft, var(--idle-soft)); }
+.last strong { color: var(--tone, var(--text)); font-size: var(--fs-label); letter-spacing: .06em; }
+.last .what { font-weight: 600; } .last .msg-text { overflow-wrap: anywhere; } .last time { margin-left: auto; color: var(--text-3); font-size: var(--fs-small); font-family: var(--mono); }
 
 /* metrics: numbers first, labels quiet */
-.metrics { display: flex; flex-wrap: wrap; gap: 1rem 2.4rem; margin: 0; }
+.metrics { display: flex; flex-wrap: wrap; gap: var(--sp-4) var(--sp-7); margin: 0; }
 .metric { min-width: 0; }
-.metric dt { font-size: .7rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
-.metric dd { margin: .1rem 0 0; font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.metric dd small { font-size: .76rem; font-weight: 400; color: var(--text-2); margin-left: .3rem; }
-.metric.primary dd { font-size: 2.1rem; font-weight: 650; letter-spacing: -.01em; line-height: 1.15; }
-.metric .hint { display: block; font-size: .76rem; color: var(--text-3); margin-top: .15rem; }
+.metric dt, .identity dt, .pair dt, .choices .h { font-size: var(--fs-label); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+.metric dd { margin: .1rem 0 0; font-size: var(--fs-value); font-weight: 600; font-variant-numeric: tabular-nums; }
+.metric dd small { font-size: var(--fs-small); font-weight: 400; color: var(--text-2); margin-left: .3rem; }
+.metric.primary dd { font-size: var(--fs-display); font-weight: 650; letter-spacing: -.01em; line-height: 1.15; }
+.metric .hint { display: block; font-size: var(--fs-small); color: var(--text-3); margin-top: .15rem; }
 .metric .hint a { font-weight: 550; }
-.metrics.secondary { gap: .6rem 2rem; }
-.metrics.secondary .metric dd { font-size: .95rem; font-weight: 550; }
+.metrics.secondary { gap: .6rem var(--sp-6); }
+.metrics.secondary .metric dd { font-size: var(--fs-body); font-weight: 550; }
 .metric.meter { flex: 1 1 11rem; max-width: 18rem; }
 .metric.meter .bar { margin-top: .4rem; }
 
@@ -138,149 +72,126 @@ code, pre, .mono { font-family: var(--mono); font-size: .92em; }
 .bar > span.warn { background: var(--warn); } .bar > span.bad { background: var(--bad); }
 .bar .alloc { background: var(--seg-alloc); } .bar .cache { background: var(--seg-cache); } .bar .other { background: var(--seg-other); }
 .bar.progress { height: 8px; border-radius: 4px; }
-.bar.progress > span { background: var(--tone, var(--accent)); transition: width .4s ease; }
-.legend { list-style: none; padding: 0; margin: .5rem 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .2rem 1.2rem; font-size: .8rem; color: var(--text-2); max-width: 32rem; }
+/* Progress advances (completion is the one continuous change it explains). */
+.bar.progress > span { background: var(--tone, var(--accent)); transition: width var(--dur) var(--ease); }
+.legend { list-style: none; padding: 0; margin: var(--sp-2) 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .2rem var(--sp-5); font-size: var(--fs-small); color: var(--text-2); max-width: 32rem; }
 .legend li { display: flex; align-items: center; gap: .4rem; }
 .legend strong { margin-left: auto; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
 .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; background: var(--track); }
 .sw.alloc { background: var(--seg-alloc); } .sw.cache { background: var(--seg-cache); } .sw.other { background: var(--seg-other); }
 
 /* probability distribution */
-table.dist { width: 100%; border-collapse: collapse; font-size: .86rem; }
+table.dist { width: 100%; border-collapse: collapse; }
 table.dist td { padding: .28rem 0; vertical-align: middle; }
-table.dist td.label { width: 38%; padding-right: .8rem; overflow-wrap: anywhere; }
-table.dist td.num { width: 5.2rem; padding-left: .8rem; text-align: right; font-family: var(--mono); font-size: .8rem; }
+table.dist td.label { width: 38%; padding-right: var(--sp-3); overflow-wrap: anywhere; }
+table.dist td.num { width: 5.2rem; padding-left: var(--sp-3); text-align: right; font-family: var(--mono); font-size: var(--fs-code); }
 .track { display: block; height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
 .track > span { display: block; height: 100%; background: color-mix(in srgb, var(--text-3) 70%, var(--track)); }
 table.dist tr.chosen td.label { font-weight: 650; }
 table.dist tr.chosen .track > span { background: var(--accent); }
-.tag { font-size: .72rem; font-weight: 600; color: var(--ok); margin-left: .35rem; }
+.tag { font-size: var(--fs-label); font-weight: 600; color: var(--ok); margin-left: .35rem; }
 
 /* key/value evidence */
-.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .3rem 1.25rem; margin: 0; font-size: .84rem; align-content: start; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .3rem var(--sp-5); margin: 0; font-size: var(--fs-small); align-content: start; }
 .kv dt { color: var(--text-3); white-space: nowrap; }
-.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: .8rem; }
-.kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); gap: 1.25rem 2.5rem; }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: var(--fs-code); }
+.kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); gap: var(--sp-5) var(--sp-7); }
 .endpoint-box { display: block; padding: .45rem .6rem; border-radius: var(--r); background: var(--inset); border: 1px solid var(--line); overflow-wrap: anywhere; user-select: all; }
 
 /* tables */
 .table-wrap { overflow-x: auto; min-width: 0; }
-table.data { width: 100%; border-collapse: collapse; font-size: .84rem; }
-table.data th { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--line-2); font-size: .68rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
+table.data { width: 100%; border-collapse: collapse; }
+table.data th { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--line-2); font-size: var(--fs-label); font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
 table.data td { padding: .38rem .6rem; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
 table.data .num { text-align: right; font-variant-numeric: tabular-nums; }
 table.data tbody tr:hover { background: var(--raised); }
 table.data tr[aria-current] { background: var(--accent-soft); }
 table.data td.strong, table.data th.strong { font-weight: 650; }
-table.data td .bar { width: 4.5rem; display: inline-flex; vertical-align: middle; margin-left: .5rem; }
+table.data td .bar { width: 4.5rem; display: inline-flex; vertical-align: middle; margin-left: var(--sp-2); }
 table.data td.nowrap { white-space: nowrap; overflow-wrap: normal; }
 
-/* disclosure */
+/* disclosure: raw evidence stays one keyboard step away */
 details.disclosure { border-top: 1px solid var(--line); min-width: 0; }
-details.disclosure > summary { display: flex; align-items: baseline; gap: .6rem; padding: .7rem 0; cursor: pointer; list-style: none; font-weight: 600; font-size: .9rem; }
+details.disclosure > summary { display: flex; align-items: baseline; gap: .6rem; padding: var(--sp-3) 0; cursor: pointer; list-style: none; font-weight: 600; font-size: var(--fs-heading); }
 details.disclosure > summary::-webkit-details-marker, details.inline > summary::-webkit-details-marker { display: none; }
 details.disclosure > summary::before, details.inline > summary::before { content: ""; flex: none; align-self: center; width: .42rem; height: .42rem; margin: 0 .2rem;
-  border-right: 1.5px solid var(--text-3); border-bottom: 1.5px solid var(--text-3); transform: rotate(-45deg); transition: transform .15s; }
+  border-right: 1.5px solid var(--text-3); border-bottom: 1.5px solid var(--text-3); transform: rotate(-45deg); transition: transform var(--dur-fast) var(--ease); }
 details[open] > summary::before { transform: rotate(45deg); }
 details.disclosure > summary .sub { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-details.disclosure > .body { display: grid; gap: 1rem; padding: 0 0 1.2rem; min-width: 0; }
-details.inline > summary { display: inline-flex; align-items: center; gap: .3rem; cursor: pointer; list-style: none; font-size: .82rem; color: var(--text-2); }
+details.disclosure > .body { display: grid; gap: var(--sp-4); padding: 0 0 var(--sp-5); min-width: 0; }
+details.inline > summary { display: inline-flex; align-items: center; gap: .3rem; min-height: var(--ctl-h); cursor: pointer; list-style: none; font-size: var(--fs-small); color: var(--text-2); }
 details.inline > summary:hover { color: var(--text); }
-details.inline[open] > summary { margin-bottom: .5rem; }
-
-/* controls */
-.btn { display: inline-flex; align-items: center; gap: .4rem; padding: .4rem .85rem; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--raised);
-  color: var(--text); font: inherit; font-size: .85rem; font-weight: 560; line-height: 1.3; text-decoration: none; cursor: pointer; white-space: nowrap; transition: background .12s, border-color .12s; }
-.btn:hover:not(:disabled) { border-color: var(--text-3); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 86%, var(--text)); }
-.btn.quiet { background: transparent; border-color: transparent; color: var(--text-2); }
-.btn.quiet:hover:not(:disabled) { background: var(--raised); color: var(--text); border-color: transparent; }
-.btn.danger { background: transparent; color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line-2)); }
-.btn.danger:hover:not(:disabled) { background: var(--bad-soft); border-color: var(--bad); }
-.btn.danger.quiet { border-color: transparent; }
-.btn:disabled { opacity: .45; cursor: not-allowed; }
-.btn[aria-busy="true"] { opacity: .6; cursor: progress; }
+details.inline[open] > summary { margin-bottom: var(--sp-2); }
 form.inline { display: inline-flex; margin: 0; }
-.btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
-input, textarea, select { width: 100%; min-width: 0; padding: .4rem .55rem; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--inset); color: var(--text); font: inherit; font-size: .85rem; }
-input[spellcheck="false"], textarea { font-family: var(--mono); }
-textarea { resize: vertical; line-height: 1.5; }
-input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-input::placeholder, textarea::placeholder { color: var(--text-3); }
-input[type="checkbox"] { width: auto; accent-color: var(--accent); }
-textarea[readonly] { background: var(--surface); color: var(--text-2); }
-.field { display: grid; gap: .3rem; font-size: .78rem; font-weight: 500; color: var(--text-2); min-width: 0; }
-.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .75rem; align-items: end; }
-.fields .wide { grid-column: 1 / -1; }
-label.check { display: flex; align-items: center; gap: .5rem; font-size: .85rem; color: var(--text); }
-.path-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .6rem; align-items: end; }
-pre { margin: 0; padding: .7rem .85rem; background: var(--inset); border: 1px solid var(--line); border-radius: var(--r); overflow: auto; max-height: 22rem; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; font-size: .8rem; }
+.path-form { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem; align-items: end; }
 pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: var(--bad); font-weight: 600; } pre .skip { color: var(--text-3); }
 
+/* a list of like objects: rows divided by rules, not nested boxes */
+.items { display: grid; }
+.items > .item { display: grid; gap: var(--sp-3); padding: var(--sp-4) 0; border-top: 1px solid var(--line); min-width: 0; }
+.items > .item:last-child { border-bottom: 1px solid var(--line); }
+
 /* ---- runtime ---------------------------------------------------------- */
-.readiness-panel { display: grid; grid-template-columns: minmax(13rem, auto) minmax(0, 1fr) auto; gap: 1.25rem 2.5rem; align-items: center; padding: 1.4rem 1.5rem;
+.readiness-panel { display: grid; grid-template-columns: minmax(13rem, auto) minmax(0, 1fr) auto; gap: var(--sp-5) var(--sp-7); align-items: center; padding: var(--sp-5);
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: inset 3px 0 0 var(--tone); }
-.state-sub { margin-top: .35rem; font-size: .8rem; color: var(--text-2); }
+.state-sub { margin-top: .35rem; font-size: var(--fs-small); color: var(--text-2); }
 .identity { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem 1.75rem; margin: 0; }
-.identity dt { font-size: .7rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
 .identity dd { margin: .1rem 0 0; font-weight: 580; overflow-wrap: anywhere; }
-.identity dd.model { font-family: var(--mono); font-size: 1rem; }
-.identity dd .sub { display: block; font-weight: 400; }
-.actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .5rem; }
-.attention { display: grid; gap: .6rem; padding: .85rem 1rem; border-radius: var(--r-lg); border: 1px solid color-mix(in srgb, var(--tone) 45%, var(--line)); background: var(--tone-soft); }
+.identity dd.model { font-family: var(--mono); font-size: var(--fs-heading); }
+.identity dd .sub { display: block; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--sp-2); }
+.attention { display: grid; gap: .6rem; padding: var(--sp-3) var(--sp-4); border-radius: var(--r-lg); border: 1px solid color-mix(in srgb, var(--tone) 45%, var(--line)); background: var(--tone-soft); }
 .attention.tone-warn { background: transparent; }
 .attention ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .45rem; }
-.alert { display: grid; gap: .1rem; padding-left: .75rem; border-left: 3px solid var(--warn); }
+.alert { display: grid; gap: .1rem; padding-left: var(--sp-3); border-left: 3px solid var(--warn); }
 .alert.bad { border-left-color: var(--bad); }
-.alert strong { font-weight: 600; } .alert span { font-size: .86rem; color: var(--text-2); overflow-wrap: anywhere; }
-.count { display: inline-block; min-width: 1.3rem; padding: 0 .35rem; border-radius: 99px; text-align: center; font-size: .72rem; background: var(--tone); color: var(--bg); }
-.all-clear { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; font-size: .86rem; color: var(--text-2); }
+.alert strong { font-weight: 600; } .alert span { color: var(--text-2); overflow-wrap: anywhere; }
+.count { display: inline-block; min-width: 1.3rem; padding: 0 .35rem; border-radius: var(--r-pill); text-align: center; font-size: var(--fs-label); background: var(--tone); color: var(--bg); }
+.all-clear { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); color: var(--text-2); }
 .all-clear::before { content: "✓"; color: var(--ok); font-weight: 700; }
-.transport-line { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; font-size: .86rem; }
+.transport-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-4); }
 
 /* ---- diagnostics ------------------------------------------------------ */
-.doc-sum { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; font-size: .86rem; }
-.transport-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 1.5rem 2.5rem; }
+.doc-sum { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-4); }
+.transport-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: var(--sp-5) var(--sp-7); }
 
 /* ---- two-pane workspaces (workbench, evidence) ------------------------- */
-.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(22rem, 30rem); gap: 1.5rem 2rem; align-items: start; }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(22rem, 30rem); gap: var(--sp-5) var(--sp-6); align-items: start; }
 .split.narrow-side { grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); }
-.pane { display: grid; gap: 1.2rem; min-width: 0; }
-.pane-side { position: sticky; top: calc(var(--toolbar-h) + .5rem); max-height: calc(100vh - var(--bar-h) - var(--toolbar-h) - 3rem); overflow: auto; }
-.toolbar { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-height: var(--toolbar-h); padding: .6rem 0;
+.pane { display: grid; gap: var(--sp-5); min-width: 0; }
+.pane-side { position: sticky; top: calc(var(--toolbar-h) + var(--sp-2)); max-height: calc(100vh - var(--bar-h) - var(--toolbar-h) - 3rem); overflow: auto; }
+.toolbar { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-height: var(--toolbar-h); padding: .6rem 0;
   background: var(--bg); border-bottom: 1px solid var(--line); }
 .toolbar .spacer { flex: 1; }
-.toolbar + .split { margin-top: 1.2rem; }
+.toolbar + .split { margin-top: var(--sp-5); }
 
 /* workbench */
 .block { display: grid; gap: .6rem; }
-.block-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem .8rem; }
-.question { display: grid; gap: .75rem; padding: 1rem 1.1rem; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.block-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-1) var(--sp-3); }
+.question { display: grid; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
 .choices { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(0, 2fr); gap: .35rem .6rem; }
-.choices .h { font-size: .68rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
-.result-pane { display: grid; gap: 1rem; padding: 1.1rem 1.2rem; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
-.result { display: grid; gap: .5rem; padding-top: .9rem; border-top: 1px solid var(--line); }
+.result-pane { display: grid; gap: var(--sp-4); padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.result-pane[aria-busy="true"] { opacity: .6; transition: opacity var(--dur) var(--ease); }
+.result { display: grid; gap: var(--sp-2); padding-top: var(--sp-4); border-top: 1px solid var(--line); }
 .result:first-of-type { border-top: 0; padding-top: 0; }
-.result-choice { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem 1rem; }
-.result-choice .choice { font-size: 1.6rem; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
-.result-choice .conf { font-size: .86rem; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.result-choice { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem var(--sp-4); }
+.result-choice .choice { font-size: var(--fs-figure); font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
+.result-choice .conf { color: var(--text-2); font-variant-numeric: tabular-nums; }
 .result-choice .conf strong { color: var(--text); font-weight: 600; }
 
 /* experiments */
-.run { display: grid; gap: 1.2rem; padding: 1.3rem 1.4rem; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: inset 3px 0 0 var(--tone); }
-.run-h { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: .5rem 1.5rem; }
-.progress-figures { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .9rem; margin-bottom: .5rem; }
-.progress-figures .big { font-size: 1.6rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.run { display: grid; gap: var(--sp-5); padding: var(--sp-5); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: inset 3px 0 0 var(--tone); }
+.run-h { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--sp-2) var(--sp-5); }
+.progress-figures { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem var(--sp-4); margin-bottom: var(--sp-2); }
+.progress-figures .big { font-size: var(--fs-figure); font-weight: 650; font-variant-numeric: tabular-nums; }
 .bar.progress + .note { margin-top: .45rem; }
-.run-actions { display: flex; flex-wrap: wrap; align-items: end; gap: .8rem 1.5rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.run-actions { display: flex; flex-wrap: wrap; align-items: end; gap: var(--sp-3) var(--sp-5); padding-top: var(--sp-4); border-top: 1px solid var(--line); }
 .run-actions .path-form { flex: 1 1 24rem; }
 
 /* evidence */
-.pair { display: grid; grid-template-columns: repeat(3, minmax(0, auto)); justify-content: start; gap: .6rem 2rem; margin: 0; }
-.pair dt { font-size: .7rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
-.pair dd { margin: .1rem 0 0; font-size: 1.25rem; font-weight: 650; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.filters { display: grid; gap: .75rem; }
+.pair { display: grid; grid-template-columns: repeat(3, minmax(0, auto)); justify-content: start; gap: .6rem var(--sp-6); margin: 0; }
+.pair dd { margin: .1rem 0 0; font-size: var(--fs-figure); font-weight: 650; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.filters { display: grid; gap: var(--sp-3); }
 
 /* ---- narrow windows ---------------------------------------------------- */
 @media (max-width: 1180px) {
@@ -293,26 +204,23 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
    bar, so the workspace keeps the full window width. */
 @media (max-width: 820px) {
   .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--bar-h) auto minmax(0, 1fr) auto; grid-template-areas: "bar" "nav" "main" "status"; }
-  .sidenav { flex-direction: row; align-items: center; gap: .25rem; padding: .3rem .5rem; border-right: 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .sidenav { flex-direction: row; align-items: center; gap: var(--sp-1); padding: .3rem var(--sp-2); border-right: 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
   .sidenav ul { display: flex; }
-  .nav-support { margin-left: auto; padding: 0 0 0 .5rem; border-top: 0; border-left: 1px solid var(--line); }
-  .sidenav a { padding: .35rem .65rem; }
+  .nav-support { margin-left: auto; padding: 0 0 0 var(--sp-2); border-top: 0; border-left: 1px solid var(--line); }
+  .sidenav a { padding: 0 .65rem; }
   .sidenav a[aria-current="page"] { box-shadow: inset 0 -2px 0 var(--accent); }
-  .workspace { padding: 0 1rem 2rem; gap: 1.3rem; }
+  .workspace { padding: 0 var(--sp-4) var(--sp-6); gap: var(--sp-5); }
   .appbar-fact, .statusbar .opt { display: none; }
   .readiness-panel { grid-template-columns: minmax(0, 1fr); }
   .transport-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 520px) {
-  .state-word { font-size: 1.8rem; }
-  .metric.primary dd { font-size: 1.7rem; }
+  .state-word { font-size: var(--fs-figure); }
+  .metric.primary dd { font-size: var(--fs-figure); }
   .identity, .pair { grid-template-columns: minmax(0, 1fr); }
   .kv { grid-template-columns: minmax(0, 1fr); gap: 0; } .kv dd { margin-bottom: .35rem; }
   .path-form { grid-template-columns: minmax(0, 1fr); }
   .choices { grid-template-columns: minmax(0, 1fr); }
-}
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 </style>
 </head>
@@ -323,7 +231,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>Hachidori</a>
   <div class="appbar-status" id="shell-status" data-live="shell">{{template "shell" .}}</div>
 </header>
-<nav class="sidenav" aria-label="Workspaces">
+<nav class="sidenav" aria-label="{{t "Workspaces"}}">
   <ul>
     <li><a href="/"{{if eq .Nav "runtime"}} aria-current="page"{{end}}>{{t "Runtime"}}</a></li>
     <li><a href="/workbench"{{if eq .Nav "workbench"}} aria-current="page"{{end}}>{{t "Workbench"}}</a></li>
@@ -339,15 +247,19 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{end}}
 
 {{define "close"}}</main>
-<footer class="statusbar" data-live="statusbar" aria-label="Runtime identity">{{template "statusbar" .}}</footer>
+<footer class="statusbar" data-live="statusbar" aria-label="{{t "Runtime identity"}}">{{template "statusbar" .}}</footer>
 </div>
 <script>
 // The shell refreshes every live slot present on this page from /live:
 // readiness and identity everywhere, runtime and diagnostics detail on
 // those workspaces. Forms are never inside a replaced slot's inputs, and
 // disclosures keep whatever open/closed state the operator gave them.
+// A slot whose content did not change is left alone (no relayout, no
+// repeated screen-reader announcement), and nothing is fetched while the
+// window is hidden; it refreshes as soon as it is shown again.
 (function () {
-  var shell = document.getElementById("shell-status"), sync = document.getElementById("sync"), text = document.getElementById("sync-text");
+  var shell = document.getElementById("shell-status"), sync = document.getElementById("sync"), text = document.getElementById("sync-text"),
+    live = document.getElementById("sync-live"), wasOK = true;
   function stamp(ok) {
     if (ok) shell.removeAttribute("data-stale"); else shell.setAttribute("data-stale", "");
     shell.title = ok ? "" : {{t "status stale: refresh failed"}};
@@ -355,8 +267,12 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     sync.classList.toggle("tone-warn", !ok);
     var now = new Date().toLocaleTimeString();
     text.textContent = (ok ? {{t "live · updated %s"}} : {{t "status stale · refresh failed %s"}}).replace("%s", now);
+    // Announce only the change between live and stale, not every tick.
+    if (live && ok !== wasOK) live.textContent = ok ? {{t "Status is live again."}} : {{t "Status is stale: refresh failed."}};
+    wasOK = ok;
   }
   function refresh() {
+    if (document.hidden) return;
     fetch("/live", {cache: "no-store"}).then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
       .then(function (t) {
         var open = {};
@@ -364,10 +280,9 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
         var doc = new DOMParser().parseFromString(t, "text/html");
         doc.querySelectorAll("[data-live]").forEach(function (src) {
           var dst = document.querySelector('[data-live="' + src.dataset.live + '"]');
-          if (dst) dst.innerHTML = src.innerHTML;
-        });
-        document.querySelectorAll("details[data-keep]").forEach(function (d) {
-          if (d.dataset.keep in open) d.open = open[d.dataset.keep];
+          if (!dst) return;
+          src.querySelectorAll("details[data-keep]").forEach(function (d) { if (d.dataset.keep in open) d.open = open[d.dataset.keep]; });
+          if (dst.innerHTML !== src.innerHTML) dst.innerHTML = src.innerHTML;
         });
         stamp(true);
       })
@@ -375,10 +290,22 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   }
   var button = document.getElementById("refresh");
   if (button) button.addEventListener("click", refresh);
-  // Visual feedback while a state-changing POST is in flight.
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
+  // Pending feedback while a state-changing POST is in flight; an
+  // irreversible action asks first (data-confirm), and a form already
+  // submitted is not submitted twice.
   document.addEventListener("submit", function (e) {
-    var b = e.submitter || e.target.querySelector("button[type=submit]");
+    var f = e.target, b = e.submitter || f.querySelector("button[type=submit]");
+    var ask = (b && b.dataset.confirm) || f.dataset.confirm;
+    if (f.getAttribute("aria-busy") === "true" || (ask && !confirm(ask))) { e.preventDefault(); return; }
+    f.setAttribute("aria-busy", "true");
     if (b) b.setAttribute("aria-busy", "true");
+    var target = f.dataset.busy && document.getElementById(f.dataset.busy);
+    if (target) target.setAttribute("aria-busy", "true");
+  });
+  // A page restored from the back/forward cache is not pending any more.
+  window.addEventListener("pageshow", function () {
+    document.querySelectorAll('[aria-busy="true"]').forEach(function (n) { n.removeAttribute("aria-busy"); });
   });
   setInterval(refresh, 3000);
 })();
@@ -387,7 +314,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </html>
 {{end}}
 
-{{define "shell"}}{{with .Rt}}<span class="readiness tone-{{.Tone}}" aria-label="runtime {{.Word}}"><span class="dot"></span>{{.Word}}</span>
+{{define "shell"}}{{with .Rt}}<span class="readiness tone-{{.Tone}}" aria-label="{{t "Runtime"}} {{.Word}}"><span class="dot"></span>{{.Word}}</span>
 {{with .GPU}}<span class="appbar-fact">{{.}}</span>{{end}}
 {{if .Attention}}<a class="attention-link" href="/diagnostics">{{.Attention}} {{t "needs attention"}}</a>{{end}}{{end}}{{end}}
 
@@ -395,7 +322,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{with .Device}}<span class="opt">{{.}}</span>{{end}}{{with .Memory}}<span class="opt">{{.}}</span>{{end}}{{end}}
 <span class="endpoint">{{t "inference API"}} <span class="mono">http://{{.APIAddr}}</span> {{t "· loopback only"}}</span>{{end}}
 
-{{define "sync"}}<div class="btn-row" id="sync"><span class="note" id="sync-text" role="status" aria-live="polite">{{t "live · 3 s"}}</span><button type="button" class="btn quiet" id="refresh">{{t "Refresh"}}</button></div>{{end}}
+{{define "sync"}}<div class="btn-row" id="sync"><span class="note" id="sync-text">{{t "live · 3 s"}}</span><span class="vh" id="sync-live" role="status"></span><button type="button" class="btn quiet" id="refresh">{{t "Refresh"}}</button></div>{{end}}
 
 {{define "last"}}{{with .}}<div class="last {{if .OK}}tone-ok{{else}}tone-bad{{end}}" role="status">
   <strong>{{if .OK}}OK{{else}}FAILED{{end}}</strong><span class="what">{{t .Name}}</span><span class="msg-text">{{t .Message}}</span><time>{{when .Time}}</time>
@@ -460,11 +387,11 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <div class="metric"><dt>{{t "Requests"}}</dt><dd>{{$w.Requests}}</dd></div>
     <div class="metric"><dt>{{t "Errors"}}</dt><dd class="{{if errTotal $w.Errors}}warn-t{{end}}">{{errTotal $w.Errors}}</dd></div>
     <div class="metric meter"><dt>{{t "Queue"}}</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
-      <div class="bar" role="img" aria-label="queue {{$w.QueueDepth}} of {{$w.QueueLimit}}"><span class="{{if ge $q 100.0}}bad{{else if ge $q 75.0}}warn{{end}}" style="width:{{printf "%.1f" $q}}%"></span></div></div>
+      <div class="bar" role="img" aria-label="{{t "Queue"}} {{$w.QueueDepth}} / {{$w.QueueLimit}}"><span class="{{if ge $q 100.0}}bad{{else if ge $q 75.0}}warn{{end}}" style="width:{{printf "%.1f" $q}}%"></span></div></div>
     <div class="metric meter"><dt>{{t "GPU memory"}}</dt><dd>{{with $m}}{{printf "%.0f" .Used}}%<small>{{t "of"}} {{mib $a "memory_total"}}</small>{{else}}-<small>{{t "no device stats"}}</small>{{end}}</dd>
-      {{with $m}}<div class="bar" role="img" aria-label="GPU memory {{printf "%.1f" .Used}}% used"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>{{end}}</div>
+      {{with $m}}<div class="bar" role="img" aria-label="{{t "GPU memory"}} {{printf "%.1f" .Used}}%"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>{{end}}</div>
   </dl>
-  {{with $w.Errors}}<p class="note" aria-label="errors by class">{{t "errors by class:"}} {{range $k, $v := .}}<span class="mono">{{$k}} {{$v}}</span> {{end}}</p>{{end}}
+  {{with $w.Errors}}<p class="note">{{t "errors by class:"}} {{range $k, $v := .}}<span class="mono">{{$k}} {{$v}}</span> {{end}}</p>{{end}}
 </section>
 
 {{with .Tunnel}}
@@ -497,7 +424,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <label class="check"><input type="checkbox" name="start_at_sign_in" value="1"{{if .StartAtSignIn}} checked{{end}}> {{t "Start Hachidori when I sign in"}}</label>
     <label class="check"><input type="checkbox" name="start_minimized" value="1"{{if .StartMinimized}} checked{{end}}> {{t "Start minimized (in the tray, when started at sign-in)"}}</label>
     <div class="btn-row"><button type="submit" class="btn">{{t "Save desktop preferences"}}</button></div>
-    {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+    {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   </form>
   <p class="note">{{t "Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). The startup entry itself is the source of truth."}}</p>
 </section>
@@ -535,7 +462,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
         </select></label>
     </div>
     <div class="btn-row"><button type="submit" class="btn">{{t "Save runtime defaults"}}</button></div>
-    {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+    {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   </form>
   <p class="note">{{t "Running runtime:"}} <span class="mono">{{with $.Rt.Model}}{{.}}{{else}}-{{end}}</span>{{t ". Defaults do not change it. Explicit command-line flags and environment inputs always take precedence. No secrets are stored."}}</p>
 </section>
@@ -543,7 +470,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{with .Models}}
 <section class="region" id="settings-models" aria-labelledby="sm-h">
   <div class="region-h"><h2 id="sm-h">{{t "Models & runtimes"}}</h2><span class="sub">{{t "catalog-pinned identities under HACHIDORI_HOME"}}</span></div>
-  {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+  {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   {{if .RestartRequired}}
   <div class="last tone-bad" role="status" id="restart-required">
     <strong>{{t "RESTART REQUIRED"}}</strong><span class="msg-text">{{t "The active runtime/model changed. The running worker still serves what it started with; nothing restarts automatically."}}</span>
@@ -552,12 +479,26 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   {{end}}
   {{with .Busy}}
   <div class="last" role="status" id="models-busy"><strong>RUNNING</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}{{with .Phase}} {{t "· phase:"}} {{.}}{{end}}</span></div>
-  <script>setTimeout(function () { location.reload(); }, 3000);</script>
+  <script>
+  // While a model/runtime operation runs, refresh only this section (when
+  // it changed) so focus and the rest of Settings stay where they are.
+  (function () {
+    var t = setInterval(function () {
+      if (document.hidden) return;
+      fetch(location.pathname, {cache: "no-store"}).then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); }).then(function (h) {
+        var src = new DOMParser().parseFromString(h, "text/html").getElementById("settings-models"), dst = document.getElementById("settings-models");
+        if (!src || !dst) { clearInterval(t); return; }
+        if (!src.querySelector("#models-busy")) clearInterval(t);
+        if (src.innerHTML !== dst.innerHTML) dst.innerHTML = src.innerHTML;
+      }).catch(function () {});
+    }, 3000);
+  })();
+  </script>
   {{end}}
   {{with .Last}}
   <div class="last {{if .Failure}}tone-bad{{else}}tone-ok{{end}}" role="status" id="models-last"><strong>{{if .Failure}}FAILED{{else}}DONE{{end}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}{{with .Failure}} · {{.}}{{end}}</span></div>
   {{end}}
-  {{with .Inventory.ActiveErr}}<p class="bad-t">{{t "Activation record:"}} {{.}}</p>{{end}}
+  {{with .Inventory.ActiveErr}}<p class="msg bad" role="alert">{{t "Activation record:"}} {{.}}</p>{{end}}
 
   <h3>{{t "Runtimes"}}</h3>
   <div class="table-wrap"><table class="data" id="runtime-inventory">
@@ -573,7 +514,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
           {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
         <td class="nowrap">{{if .Materialized}}
           <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
-          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" onsubmit="return confirm({{t "Remove this runtime from HACHIDORI_HOME?"}})"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
+          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" data-confirm="{{t "Remove this runtime from HACHIDORI_HOME?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
         {{end}}</td>
       </tr>{{end}}
     </tbody>
@@ -592,7 +533,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
           {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
         <td class="nowrap">{{if .Materialized}}
           <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
-          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" onsubmit="return confirm({{t "Remove this model from HACHIDORI_HOME?"}})"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
+          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" data-confirm="{{t "Remove this model from HACHIDORI_HOME?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
         {{end}}</td>
       </tr>{{end}}
     </tbody>
@@ -620,13 +561,13 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 <section class="region" id="settings-connections" aria-labelledby="sc-h">
   <div class="region-h"><h2 id="sc-h">{{t "Development connections"}}</h2><span class="sub">{{t "named SSH reverse-tunnel profiles"}}</span></div>
   <p class="note">{{t "A development host only consumes"}} <code>HACHIDORI_ENDPOINT</code>{{t ". A profile is non-secret data: SSH keys, agent, known_hosts and ssh_config stay with the host's own"}} <code>ssh</code> {{t "client and are never read, stored or prompted for. One tunnel runs at a time; both ends are loopback-only."}}</p>
-  {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+  {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   <div class="slot" id="connections-state">{{template "transport" $}}</div>
   <div class="btn-row">
     <form method="post" action="/tunnel/disconnect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><button type="submit" class="btn danger">{{t "Disconnect"}}</button></form>
   </div>
-  {{range .Items}}
-  <div class="surface" data-connection="{{.Name}}">
+  {{if .Items}}<div class="items">{{end}}{{range .Items}}
+  <div class="item" data-connection="{{.Name}}">
     <div class="region-h"><h3>{{.Name}}</h3>{{if .Running}}<span class="badge tone-ok">{{t "connected"}}</span>{{else if .Current}}<span class="badge">{{$.Tunnel.State}}</span>{{end}}</div>
     <dl class="kv">
       <dt>{{t "destination"}}</dt><dd>{{.Destination}}</dd>
@@ -637,7 +578,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <div class="btn-row">
       <form method="post" action="/settings/connections/connect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn primary">{{t "Connect"}}</button></form>
       <form method="post" action="/settings/connections/reconnect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn">{{t "Reconnect"}}</button></form>
-      <form method="post" action="/settings/connections/remove" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>
+      <form method="post" action="/settings/connections/remove" class="inline" data-confirm="{{t "Remove this saved connection?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>
     </div>
     <details class="inline"><summary>{{t "Edit"}}</summary>
       <form method="post" action="/settings/connections/save">
@@ -653,8 +594,8 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
       </form>
     </details>
   </div>
-  {{else}}<p class="empty">{{t "No saved connections."}}</p>{{end}}
-  <form method="post" action="/settings/connections/save" class="surface" id="connection-new">
+  {{else}}<p class="empty">{{t "No saved connections."}}</p>{{end}}{{if .Items}}</div>{{end}}
+  <form method="post" action="/settings/connections/save" class="stack" id="connection-new">
     <input type="hidden" name="token" value="{{$.Token}}">
     <h3>{{t "New connection"}}</h3>
     <div class="fields">
@@ -689,7 +630,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <div class="region-h"><h2 id="transport-h">{{t "Caller transport"}}</h2><span class="sub">{{t "SSH reverse tunnel"}}</span></div>
   <div class="transport-grid">
     <div class="slot" data-live="transport">{{template "transport" .}}</div>
-    <div class="surface">
+    <div class="stack">
       <form method="post" action="/tunnel/connect" id="tunnel-connect">
         <input type="hidden" name="token" value="{{.Token}}">
         <div class="fields">
@@ -718,7 +659,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <label class="check"><input type="checkbox" name="start_at_sign_in" value="1"{{if .StartAtSignIn}} checked{{end}}> {{t "Start Hachidori when I sign in"}}</label>
     <label class="check"><input type="checkbox" name="start_minimized" value="1"{{if .StartMinimized}} checked{{end}}> {{t "Start minimized (in the tray, when started at sign-in)"}}</label>
     <div class="btn-row"><button type="submit" class="btn">{{t "Save"}}</button></div>
-    {{with .Err}}<p class="bad-t">{{.}}</p>{{end}}
+    {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   </form>
   <p class="note">{{t "Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). Unchecking it removes the entry."}}</p>
 </section>

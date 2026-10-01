@@ -16,6 +16,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/server"
+	"github.com/yohn-jp/hachidori/internal/ui"
 )
 
 //go:embed page.html
@@ -26,7 +27,7 @@ var pageSrc string
 var pages = func() map[i18n.Locale]*template.Template {
 	m := map[i18n.Locale]*template.Template{}
 	for _, l := range i18n.Supported {
-		m[l] = template.Must(template.New("page").Funcs(template.FuncMap{"t": l.T}).Parse(pageSrc))
+		m[l] = template.Must(template.New("page").Funcs(template.FuncMap{"t": l.T, "systemCSS": ui.CSS}).Parse(pageSrc))
 	}
 	return m
 }()

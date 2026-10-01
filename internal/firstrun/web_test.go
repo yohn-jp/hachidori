@@ -11,6 +11,7 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/i18n"
+	"github.com/yohn-jp/hachidori/internal/ui"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -163,5 +164,27 @@ func TestHandlerRendersOperatorLocale(t *testing.T) {
 	h.Locale = func() i18n.Locale { return "xx" }
 	if b := serve(h, "GET", "/", nil, nil).Body.String(); !strings.Contains(b, `<html lang="en">`) {
 		t.Error("an unsupported locale does not fall back to English")
+	}
+}
+
+// First run is a desktop surface like any workspace: it inlines the one
+// visual system, uses its control and state roles, and gives each step a
+// focusable heading and the device choice a group name.
+func TestFirstRunUsesTheVisualSystem(t *testing.T) {
+	f := newFixture(t, Plan{Mode: ModeFirstRun})
+	h := NewHandler(f.flow, func() http.Handler { return nil })
+	body := serve(h, "GET", "/", nil, nil).Body.String()
+	sys := string(ui.CSS())
+	if strings.Count(body, sys) != 1 {
+		t.Fatal("first-run page does not inline the visual system exactly once")
+	}
+	if page := strings.Replace(body, sys, "", 1); strings.Contains(page, "--bg:") || strings.Contains(page, "--accent:") {
+		t.Error("first-run page redefines visual-system color tokens")
+	}
+	for _, want := range []string{`<button id="install" class="btn primary"`, `<legend>Device</legend>`, `<h2 id="select-h" tabindex="-1">`,
+		`<h2 id="ready-h" class="state-word" tabindex="-1">`, `<p class="vh" id="plive" role="status"></p>`, `id="error" class="bad-t" role="alert"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("first-run page lacks %q", want)
+		}
 	}
 }

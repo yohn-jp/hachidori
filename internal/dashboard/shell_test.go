@@ -86,7 +86,7 @@ func TestShellReadinessFollowsRuntimeState(t *testing.T) {
 		e.rt.mu.Lock()
 		e.rt.snap.State, e.rt.snap.Ready = tc.state, tc.ready
 		e.rt.mu.Unlock()
-		want := `<span class="readiness tone-` + tc.tone + `" aria-label="runtime ` + tc.word + `"><span class="dot"></span>` + tc.word + `</span>`
+		want := `<span class="readiness tone-` + tc.tone + `" aria-label="Runtime ` + tc.word + `"><span class="dot"></span>` + tc.word + `</span>`
 		for _, p := range []string{"/live", "/workbench", "/errors"} {
 			if !strings.Contains(e.get(t, p).Body.String(), want) {
 				t.Errorf("%s in state %s lacks %s", p, tc.state, want)
@@ -200,7 +200,7 @@ func TestShellLayoutRules(t *testing.T) {
 		`@media (max-width: 820px)`, `grid-template-areas: "bar" "nav" "main" "status"`, `.sidenav { flex-direction: row;`,
 		`@media (max-width: 1180px)`, `.split, .split.narrow-side { grid-template-columns: minmax(0, 1fr); }`,
 		`@media (prefers-reduced-motion: reduce)`, `animation: none !important; transition: none !important;`,
-		`@media (prefers-color-scheme: light)`, `:focus-visible { outline: 2px solid var(--accent)`,
+		`@media (prefers-color-scheme: light)`, `:focus-visible { outline: var(--focus);`, `--focus: 2px solid var(--accent);`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("stylesheet lacks %q", want)
@@ -214,7 +214,7 @@ func TestShellLayoutRules(t *testing.T) {
 	if strings.Contains(body, `placeholder="nixos-dev"`) {
 		t.Error("new connection form contains a developer-specific placeholder")
 	}
-	if !strings.Contains(body, `max-width: min(100%, 88rem)`) {
+	if !strings.Contains(body, `max-width: min(100%, var(--ws-max))`) || !strings.Contains(body, `--ws-max: 88rem;`) {
 		t.Error("workspace does not constrain its wide-screen measure")
 	}
 	if n := strings.Count(body, "<style>"); n != 1 {
@@ -236,7 +236,7 @@ func TestWorkbenchCompositionKeepsTheLoopPrimary(t *testing.T) {
 		t.Fatalf("first submit control is %s, want the primary Run", first)
 	}
 	state, result := strings.Index(body, `id="state-h"`), strings.Index(body, `id="result-h"`)
-	res0, wire := strings.Index(body, `aria-label="result for question 0"`), strings.Index(body, `data-keep="wire"`)
+	res0, wire := strings.Index(body, `aria-label="Result · Question 0"`), strings.Index(body, `data-keep="wire"`)
 	if state < 0 || result < state || res0 < result || wire < res0 {
 		t.Fatal("workbench is not State/Question → Result, then request detail")
 	}
@@ -268,7 +268,7 @@ func TestExperimentRunHierarchyAndEvidenceHandoff(t *testing.T) {
 	body := e.get(t, "/experiments").Body.String()
 	order := []string{`class="run tone-ok"`, `<span class="dot"></span>succeeded</p>`, `class="bar progress" role="progressbar"`,
 		`<dt>Accuracy</dt>`, `<dt>ECE <small>15 bins</small></dt>`, `<dt>Request errors</dt>`, `<dt>Cases</dt>`,
-		`action="/errors/use-experiment"`, `action="/experiments/export"`, `aria-label="per-question statistics"`,
+		`action="/errors/use-experiment"`, `action="/experiments/export"`, `aria-label="Per question"`,
 		`data-keep="evidence-identity"`, "hachidori replay -dataset", `id="setup-h"`}
 	at := 0
 	for _, s := range order {
@@ -316,7 +316,7 @@ func TestEvidenceInvestigationComposition(t *testing.T) {
 	}
 	body := e.get(t, "/errors?th=0.8&obs="+idx).Body.String()
 	order := []string{`<dt>Wrong</dt>`, `<dt>High-confidence wrong</dt><dd class="bad-t">1</dd>`, "Show high-confidence wrong",
-		"Concentration by question", `aria-label="observations"`, `id="detail"`, `data-keep="evidence-source"`}
+		"Concentration by question", `<table class="data" aria-label="Observations"`, `id="detail"`, `data-keep="evidence-source"`}
 	at := 0
 	for _, s := range order {
 		i := strings.Index(body[at:], s)
@@ -340,7 +340,7 @@ func TestEvidenceInvestigationComposition(t *testing.T) {
 	}
 	// Without a report, opening evidence is the workspace's primary content.
 	e2, _ := newWorkbenchEnv(t)
-	if b := e2.get(t, "/errors").Body.String(); !strings.Contains(b, `id="open-h"`) || !strings.Contains(b, `action="/errors/open"`) || strings.Contains(b, `aria-label="observations"`) {
+	if b := e2.get(t, "/errors").Body.String(); !strings.Contains(b, `id="open-h"`) || !strings.Contains(b, `action="/errors/open"`) || strings.Contains(b, `<table class="data" aria-label="Observations"`) {
 		t.Error("empty Evidence workspace does not lead with opening a report")
 	}
 }

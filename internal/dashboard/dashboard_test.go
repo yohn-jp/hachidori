@@ -89,7 +89,7 @@ type env struct {
 	doctorN int
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t testing.TB) *env {
 	t.Helper()
 	exe, _ := os.Executable()
 	t.Setenv("HACHIDORI_FAKE_SSH", "run")
@@ -131,14 +131,14 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
-func (e *env) get(t *testing.T, path string) *httptest.ResponseRecorder {
+func (e *env) get(t testing.TB, path string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://127.0.0.1:7844"+path, nil)
 	e.d.ServeHTTP(rec, req)
 	return rec
 }
 
-func (e *env) post(t *testing.T, path string, form url.Values) *httptest.ResponseRecorder {
+func (e *env) post(t testing.TB, path string, form url.Values) *httptest.ResponseRecorder {
 	if form == nil {
 		form = url.Values{}
 	}
