@@ -64,6 +64,7 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 		}
 		writeJSON(w, code, h)
 	})
+	mux.HandleFunc("GET "+OpenAPIPath, serveOpenAPI)
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, StatusBody(d, rt, started))
 	})
