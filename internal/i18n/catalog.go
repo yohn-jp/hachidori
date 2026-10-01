@@ -167,6 +167,7 @@ var ja = map[string]string{
 	"A started":                        "A 開始",
 	"A warmup / passes":                "A ウォームアップ / パス",
 	"Accelerator":                      "アクセラレータ",
+	"last known":                       "最終取得値",
 	"Accuracy":                         "精度",
 	"Actions":                          "操作",
 	"Activate":                         "有効化",

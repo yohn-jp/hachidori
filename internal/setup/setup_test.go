@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/home"
 )
@@ -35,6 +36,63 @@ func TestFetchVerifiesDigest(t *testing.T) {
 	}
 	if _, err := os.Stat(bad); !os.IsNotExist(err) {
 		t.Fatal("unverified file left behind")
+	}
+}
+
+func TestFetchAbandonsAStalledDownload(t *testing.T) {
+	old := downloadStall
+	downloadStall = 150 * time.Millisecond
+	t.Cleanup(func() { downloadStall = old })
+	sum := sha256.Sum256([]byte("payload"))
+	want := hex.EncodeToString(sum[:])
+	for name, handler := range map[string]http.HandlerFunc{
+		"no response headers": func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() },
+		"body stops midway": func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, "pay")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(handler)
+			defer srv.Close()
+			dst := filepath.Join(t.TempDir(), "f")
+			err := fetch(srv.URL, dst, want, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), "stalled") {
+				t.Fatalf("err = %v, want a stall failure", err)
+			}
+			for _, p := range []string{dst, dst + ".part"} {
+				if _, err := os.Stat(p); !os.IsNotExist(err) {
+					t.Fatalf("%s left behind after a stalled download", p)
+				}
+			}
+		})
+	}
+}
+
+// The bound is on progress, not on the whole download: a transfer that takes
+// much longer than the stall period but keeps arriving completes.
+func TestFetchKeepsASlowButProgressingDownload(t *testing.T) {
+	old := downloadStall
+	downloadStall = 500 * time.Millisecond
+	t.Cleanup(func() { downloadStall = old })
+	const chunks = 8
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for i := 0; i < chunks; i++ {
+			io.WriteString(w, "0123456789")
+			w.(http.Flusher).Flush()
+			time.Sleep(100 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+	sum := sha256.Sum256([]byte(strings.Repeat("0123456789", chunks)))
+	dst := filepath.Join(t.TempDir(), "f")
+	t0 := time.Now()
+	if err := fetch(srv.URL, dst, hex.EncodeToString(sum[:]), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(t0) <= downloadStall {
+		t.Fatal("the transfer was not longer than the stall period; the test proves nothing")
 	}
 }
 

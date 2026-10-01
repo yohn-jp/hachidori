@@ -202,22 +202,26 @@ func (s *Supervisor) count(class string) {
 
 // Snapshot is the supervisor's contribution to /v1/status.
 type Snapshot struct {
-	State        string           `json:"state"`
-	Phase        string           `json:"phase"`
-	Ready        bool             `json:"ready"`
-	PID          int              `json:"pid,omitempty"`
-	Starts       int              `json:"starts"`
-	Restarts     int              `json:"restarts_in_window"`
-	ReadySince   string           `json:"ready_since,omitempty"`
-	Info         Info             `json:"provider,omitempty"`
-	Accelerator  map[string]any   `json:"accelerator,omitempty"`
-	LastFailure  *FailureView     `json:"last_failure,omitempty"`
-	Requests     int64            `json:"requests"`
-	Errors       map[string]int64 `json:"errors"`
-	QueueDepth   int              `json:"queue_depth"`
-	QueueLimit   int              `json:"queue_limit"`
-	LatencyP50MS float64          `json:"inference_p50_ms"`
-	LatencyP95MS float64          `json:"inference_p95_ms"`
+	State       string         `json:"state"`
+	Phase       string         `json:"phase"`
+	Ready       bool           `json:"ready"`
+	PID         int            `json:"pid,omitempty"`
+	Starts      int            `json:"starts"`
+	Restarts    int            `json:"restarts_in_window"`
+	ReadySince  string         `json:"ready_since,omitempty"`
+	Info        Info           `json:"provider,omitempty"`
+	Accelerator map[string]any `json:"accelerator,omitempty"`
+	// AcceleratorStale is set when Accelerator was taken before the request
+	// now in flight (it is never fetched behind a running inference); every
+	// other field of the snapshot is current.
+	AcceleratorStale bool             `json:"accelerator_stale,omitempty"`
+	LastFailure      *FailureView     `json:"last_failure,omitempty"`
+	Requests         int64            `json:"requests"`
+	Errors           map[string]int64 `json:"errors"`
+	QueueDepth       int              `json:"queue_depth"`
+	QueueLimit       int              `json:"queue_limit"`
+	LatencyP50MS     float64          `json:"inference_p50_ms"`
+	LatencyP95MS     float64          `json:"inference_p95_ms"`
 }
 
 // FailureView is the JSON form of a Failure.
@@ -228,7 +232,8 @@ type FailureView struct {
 }
 
 // Snapshot reports current supervisor state; accelerator stats are queried
-// from the worker when it is idle-ready.
+// from the worker when it is idle and are the last known ones (marked stale)
+// while an inference is in flight, so a snapshot never waits for it.
 func (s *Supervisor) Snapshot() Snapshot {
 	s.mu.Lock()
 	snap := Snapshot{State: s.state, Phase: s.phase, Ready: s.state == StateReady, Starts: s.starts,
@@ -248,8 +253,8 @@ func (s *Supervisor) Snapshot() Snapshot {
 	s.mu.Unlock()
 	if p != nil {
 		snap.PID = p.PID
-		if st, err := p.Stats(); err == nil && len(st) > 0 {
-			snap.Accelerator = st
+		if st, stale, err := p.TryStats(); err == nil && len(st) > 0 {
+			snap.Accelerator, snap.AcceleratorStale = st, stale
 		}
 	}
 	return snap

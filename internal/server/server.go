@@ -16,6 +16,7 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/redact"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -54,6 +55,7 @@ func HandlerSince(d Decider, rt Runtime, started time.Time) http.Handler {
 
 func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 	mux := http.NewServeMux()
+	sc := redact.New(rt.Home)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		h := api.Health{Ready: d.Ready(), State: d.State()}
 		code := http.StatusOK
@@ -77,7 +79,7 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 		}
 		res, ms, err := d.Decide([]worker.Item{{State: req.State, Questions: req.Questions}})
 		if err != nil {
-			writeWorkerErr(w, err)
+			writeWorkerErr(w, sc, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, api.DecideResponse{Schema: api.SchemaV1, Results: res[0],
@@ -99,7 +101,7 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 		}
 		res, ms, err := d.Decide(items)
 		if err != nil {
-			writeWorkerErr(w, err)
+			writeWorkerErr(w, sc, err)
 			return
 		}
 		out := api.BatchResponse{Schema: api.SchemaV1, Timing: api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}}
@@ -236,18 +238,27 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-func writeWorkerErr(w http.ResponseWriter, err error) {
+// maxErrorDetail bounds the worker-supplied detail of an error response.
+const maxErrorDetail = 1024
+
+// writeWorkerErr answers a failed request. The error class is the stable,
+// public part; the detail is the worker's own text (Python exception text
+// for an inference failure) passed through the shared redaction policy and
+// bounded, because the caller may be a remote host behind the reverse tunnel
+// and the text can carry local paths or credential-bearing URLs. The operator
+// sees the unredacted text in the worker log and the dashboard.
+func writeWorkerErr(w http.ResponseWriter, sc redact.Scrubber, err error) {
 	var re *worker.RequestError
 	if errors.As(err, &re) {
-		writeErr(w, re.Class, re.Message)
+		writeErr(w, re.Class, sc.Line(re.Message, maxErrorDetail))
 		return
 	}
 	var f *worker.Failure
 	if errors.As(err, &f) {
-		writeErr(w, api.ErrWorkerFailure, f.Class+": "+f.Message)
+		writeErr(w, api.ErrWorkerFailure, sc.Line(f.Class+": "+f.Message, maxErrorDetail))
 		return
 	}
-	writeErr(w, api.ErrWorkerFailure, err.Error())
+	writeErr(w, api.ErrWorkerFailure, sc.Line(err.Error(), maxErrorDetail))
 }
 
 var statusFor = map[string]int{

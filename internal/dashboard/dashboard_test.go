@@ -162,6 +162,23 @@ func (e *env) lastAction(t *testing.T) *Action {
 	return e.d.last
 }
 
+// Accelerator numbers taken before the inference now in flight are shown, but
+// labelled; the label is absent when they are current.
+func TestStaleAcceleratorStatsAreLabelled(t *testing.T) {
+	e := newEnv(t)
+	shown := func() string { return e.get(t, "/").Body.String() + e.get(t, "/diagnostics").Body.String() }
+	if strings.Contains(shown(), "last known") {
+		t.Fatal("current accelerator numbers are labelled stale")
+	}
+	e.rt.mu.Lock()
+	e.rt.snap.AcceleratorStale = true
+	e.rt.mu.Unlock()
+	body := shown()
+	if strings.Count(body, "last known") != 2 || !strings.Contains(body, "allocated 600 MiB") {
+		t.Fatalf("stale numbers must stay visible and be labelled in both places (%d labels)", strings.Count(body, "last known"))
+	}
+}
+
 func TestStatusIsTheV1StatusDocument(t *testing.T) {
 	e := newEnv(t)
 	rec := e.get(t, "/api/status")

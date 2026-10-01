@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yohn-jp/hachidori/internal/redact"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -165,7 +166,7 @@ type FileEntry struct {
 
 // Collect gathers the allowlisted facts and the bounded log tail.
 func Collect(src Source) (Facts, []string) {
-	s := newScrubber(src.Home)
+	s := redact.New(src.Home)
 	st := src.Status
 	f := Facts{
 		Schema: FactsSchema,
@@ -184,7 +185,7 @@ func Collect(src Source) (Facts, []string) {
 		}
 	}
 	info := st.Worker.Info
-	str := func(k string) string { v, _ := info[k].(string); return s.line(v, maxMessageBytes) }
+	str := func(k string) string { v, _ := info[k].(string); return s.Line(v, maxMessageBytes) }
 	num := func(k string) float64 { v, _ := info[k].(float64); return v }
 	f.Provider = Provider{Provider: str("provider"), LayaVersion: str("laya_version"), TorchVersion: str("torch_version"),
 		TorchCUDA: str("torch_cuda"), PythonVersion: str("python_version"), Device: str("device"),
@@ -200,7 +201,7 @@ func Collect(src Source) (Facts, []string) {
 		f.Worker.Recovery = "gave_up"
 	}
 	if lf := w.LastFailure; lf != nil {
-		f.Worker.LastFailure = &Failure{Class: s.line(lf.Class, 64), Message: s.line(lf.Message, maxMessageBytes)}
+		f.Worker.LastFailure = &Failure{Class: s.Line(lf.Class, 64), Message: s.Line(lf.Message, maxMessageBytes)}
 	}
 	return f, tailLog(src.Home, s)
 }
@@ -291,7 +292,7 @@ func identify(path string) Executable {
 
 // tailLog returns the last MaxLogLines Hachidori-prefixed lines of
 // HOME/logs/worker.log, read from at most the last logReadWindow bytes.
-func tailLog(home string, s scrubber) []string {
+func tailLog(home string, s redact.Scrubber) []string {
 	if home == "" {
 		return nil
 	}
@@ -316,53 +317,11 @@ func tailLog(home string, s scrubber) []string {
 	for _, l := range strings.Split(string(buf), "\n") {
 		l = strings.TrimSuffix(l, "\r")
 		if strings.HasPrefix(l, logPrefix) {
-			out = append(out, s.line(l, MaxLogLineBytes))
+			out = append(out, s.Line(l, MaxLogLineBytes))
 		}
 	}
 	if len(out) > MaxLogLines {
 		out = out[len(out)-MaxLogLines:]
 	}
 	return out
-}
-
-// scrubber replaces local paths and bounds free text.
-type scrubber struct{ r *strings.Replacer }
-
-func newScrubber(home string) scrubber {
-	var pairs []string
-	add := func(p, placeholder string) {
-		if p = strings.TrimRight(p, `/\`); p == "" {
-			return
-		}
-		// Native, slash and backslash-doubled spellings (the slash form is
-		// derived the same way on every platform). Python quotes the
-		// filename of an OSError with repr(), so a Windows path in a worker
-		// failure message arrives as C:\\Users\\name\\....
-		seen := map[string]bool{}
-		for _, form := range []string{p, strings.ReplaceAll(p, `\`, `/`), strings.ReplaceAll(p, `\`, `\\`)} {
-			if !seen[form] {
-				seen[form] = true
-				pairs = append(pairs, form, placeholder)
-			}
-		}
-	}
-	add(home, "<HACHIDORI_HOME>")
-	if uh, err := os.UserHomeDir(); err == nil {
-		add(uh, "<USERPROFILE>")
-	}
-	return scrubber{strings.NewReplacer(pairs...)}
-}
-
-func (s scrubber) line(v string, max int) string {
-	v = s.r.Replace(v)
-	v = strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\t' || r == 0x7f {
-			return -1
-		}
-		return r
-	}, strings.ToValidUTF8(v, "?"))
-	if len(v) > max {
-		v = strings.ToValidUTF8(v[:max], "") + "...[truncated]"
-	}
-	return v
 }

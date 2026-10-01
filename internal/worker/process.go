@@ -98,6 +98,9 @@ type Process struct {
 	mu     sync.Mutex // serializes requests; the worker is single-threaded
 	nextID int64
 
+	statsMu sync.Mutex // guards the last accelerator statistics
+	stats   map[string]any
+
 	exitOnce sync.Once
 	exitErr  *Failure
 }
@@ -220,13 +223,44 @@ func (p *Process) Decide(items []Item) ([][]api.Result, float64, error) {
 	return m.Results, m.InferenceMS, nil
 }
 
-// Stats returns accelerator statistics from the worker.
+// Stats returns accelerator statistics from the worker. It waits behind an
+// in-flight request, because the worker serves one request at a time.
 func (p *Process) Stats() (map[string]any, error) {
 	m, err := p.call(map[string]any{"op": "stats"})
 	if err != nil {
 		return nil, err
 	}
+	p.keepStats(m.Stats)
 	return m.Stats, nil
+}
+
+// TryStats is Stats for observers that must not wait: when a request is in
+// flight it returns the last statistics taken while the worker was idle and
+// stale=true, without sending anything to the worker. The worker's serialized
+// request contract is unchanged; nothing is queued behind a long inference.
+func (p *Process) TryStats() (stats map[string]any, stale bool, err error) {
+	if !p.mu.TryLock() {
+		return p.lastStats(), true, nil
+	}
+	m, err := p.callLocked(map[string]any{"op": "stats"})
+	p.mu.Unlock()
+	if err != nil {
+		return nil, false, err
+	}
+	p.keepStats(m.Stats)
+	return m.Stats, false, nil
+}
+
+func (p *Process) keepStats(st map[string]any) {
+	p.statsMu.Lock()
+	p.stats = st
+	p.statsMu.Unlock()
+}
+
+func (p *Process) lastStats() map[string]any {
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+	return p.stats
 }
 
 // call sends one request and waits for its response. An in-flight forward
@@ -235,6 +269,11 @@ func (p *Process) Stats() (map[string]any, error) {
 func (p *Process) call(req map[string]any) (message, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.callLocked(req)
+}
+
+// callLocked is call with p.mu already held.
+func (p *Process) callLocked(req map[string]any) (message, error) {
 	select {
 	case <-p.done:
 		return message{}, p.failure()
@@ -313,6 +352,14 @@ func (p *Process) readStdout(r io.Reader) {
 			p.setExit(&Failure{Class: ClassProtocolError, Message: "unsolicited worker output"})
 			p.kill()
 		}
+	}
+	// A protocol line over the limit (or an unreadable pipe) ends the scan
+	// with the worker still alive. Nothing it sends could be read any more,
+	// so report it as the protocol failure it is now, instead of letting the
+	// next request time out as an unresponsive worker.
+	if err := sc.Err(); err != nil {
+		p.setExit(&Failure{Class: ClassProtocolError, Message: "worker protocol output unreadable: " + err.Error()})
+		p.kill()
 	}
 	_, _ = io.Copy(io.Discard, r)
 }

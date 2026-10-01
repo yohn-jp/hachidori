@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/subprocess"
@@ -342,8 +344,16 @@ func VerifyModel(dir string, m home.ModelManifest) error {
 	return nil
 }
 
+// downloadStall is how long a download may go without receiving a byte
+// (waiting for the response headers counts) before it is abandoned. It is a
+// progress bound, not a total one: a large model that keeps arriving is never
+// cut off. Connecting and the TLS handshake are already bounded by
+// http.DefaultTransport.
+var downloadStall = 2 * time.Minute
+
 // fetch downloads url to dst and verifies its SHA-256. A present file with
-// the right digest is reused.
+// the right digest is reused. The digest stays the only authority over what
+// is accepted; a download that stalls or fails leaves nothing behind.
 func fetch(url, dst, want string, log io.Writer) error {
 	if got, err := FileSHA256(dst); err == nil && got == want {
 		return nil
@@ -352,9 +362,23 @@ func fetch(url, dst, want string, log io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(log, "downloading %s\n", url)
-	resp, err := http.Get(url)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchdog := time.AfterFunc(downloadStall, cancel)
+	defer watchdog.Stop()
+	stalled := func(err error) error {
+		if ctx.Err() != nil {
+			return fmt.Errorf("GET %s: stalled, no data received for %s", url, downloadStall)
+		}
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return stalled(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -366,19 +390,33 @@ func fetch(url, dst, want string, log io.Writer) error {
 		return err
 	}
 	hash := sha256.New()
-	_, err = io.Copy(io.MultiWriter(f, hash), resp.Body)
+	_, err = io.Copy(io.MultiWriter(f, hash), progressReader{resp.Body, watchdog})
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
 		os.Remove(tmp)
-		return err
+		return stalled(err)
 	}
 	if got := hex.EncodeToString(hash.Sum(nil)); got != want {
 		os.Remove(tmp)
 		return fmt.Errorf("%s: sha256 mismatch: got %s want %s", url, got, want)
 	}
 	return os.Rename(tmp, dst)
+}
+
+// progressReader restarts the stall watchdog whenever data arrives.
+type progressReader struct {
+	r io.Reader
+	w *time.Timer
+}
+
+func (p progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.w.Reset(downloadStall)
+	}
+	return n, err
 }
 
 // FileSHA256 hashes a file.

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -182,5 +183,57 @@ func TestAPIIsHostLocal(t *testing.T) {
 				t.Errorf("%s: refusal leaks the home path: %s", c.name, rec.Body)
 			}
 		}
+	}
+}
+
+// Worker text reaches API callers (possibly remote, behind the reverse
+// tunnel) only through the shared redaction policy: the class and the useful
+// part of the detail survive; local paths and credentials do not.
+func TestWorkerErrorDetailIsRedactedAndBounded(t *testing.T) {
+	const homeDir, profile = `C:\Users\alice\Hachidori`, `C:\Users\alice`
+	t.Setenv("HOME", profile)
+	t.Setenv("USERPROFILE", profile)
+	repr := `OSError: [Errno 2] No such file or directory: 'C:\\Users\\alice\\Hachidori\\cache\\x'`
+	cases := []struct {
+		name  string
+		err   error
+		code  int
+		class string
+		keep  string
+	}{
+		{"request error with doubled backslashes", &worker.RequestError{Class: api.ErrInferenceFailed, Message: repr}, 500, api.ErrInferenceFailed, "<HACHIDORI_HOME>"},
+		{"request error with a credential url", &worker.RequestError{Class: api.ErrInferenceFailed,
+			Message: "HTTPError: https://user:pw-example@hub.example.invalid/m?token=not-a-real-token"}, 500, api.ErrInferenceFailed, "hub.example.invalid"},
+		{"worker failure", &worker.Failure{Class: worker.ClassModelLoad, Message: repr}, 502, api.ErrWorkerFailure, "model_load"},
+		{"plain error", errors.New("cache C:/Users/alice/x unreadable"), 502, api.ErrWorkerFailure, "<USERPROFILE>"},
+		{"useful detail is kept", &worker.RequestError{Class: api.ErrInferenceFailed, Message: "OutOfMemoryError: CUDA out of memory"}, 500, api.ErrInferenceFailed, "CUDA out of memory"},
+	}
+	for _, c := range cases {
+		h := Handler(&fake{ready: true, err: c.err}, Runtime{Home: homeDir})
+		for _, path := range []string{"/v1/decide", "/v1/decide/batch"} {
+			b := body
+			if strings.HasSuffix(path, "/batch") {
+				b = `{"schema":"hachidori.v1","requests":[` + body + `]}`
+			}
+			rec, m := do(h, "POST", path, b)
+			got := rec.Body.String()
+			if rec.Code != c.code || errClass(m) != c.class {
+				t.Errorf("%s %s: %d %s", c.name, path, rec.Code, got)
+			}
+			for _, leak := range []string{"alice", "pw-example", "not-a-real-token"} {
+				if strings.Contains(got, leak) {
+					t.Errorf("%s %s: response carries %q: %s", c.name, path, leak, got)
+				}
+			}
+			if msg, _ := m["error"].(map[string]any)["message"].(string); !strings.Contains(msg, c.keep) {
+				t.Errorf("%s %s: message lost %q: %q", c.name, path, c.keep, msg)
+			}
+		}
+	}
+
+	long := &worker.RequestError{Class: api.ErrInferenceFailed, Message: strings.Repeat("x", 1<<20)}
+	rec, m := do(Handler(&fake{ready: true, err: long}, Runtime{}), "POST", "/v1/decide", body)
+	if msg := m["error"].(map[string]any)["message"].(string); rec.Code != 500 || len(msg) > maxErrorDetail+len("...[truncated]") {
+		t.Fatalf("detail not bounded: %d bytes, status %d", len(msg), rec.Code)
 	}
 }

@@ -276,29 +276,13 @@ func TestExportWritesOneLocalFileUnderTheGivenDirectory(t *testing.T) {
 	}
 }
 
-// Python quotes the filename of an OSError with repr(), so a worker failure
-// on Windows names the home with doubled backslashes. Every spelling of the
-// home and the user profile must be replaced, and nothing else changed.
-func TestWindowsPathSpellingsAreScrubbed(t *testing.T) {
+// A Windows worker failure names the home the way Python quotes an OSError
+// filename (doubled backslashes). The exported facts must carry neither the
+// user name nor the home path.
+func TestWorkerFailureMessageDoesNotCarryTheWindowsHome(t *testing.T) {
 	const homeDir, profile = `C:\Users\alice\Hachidori`, `C:\Users\alice`
 	t.Setenv("HOME", profile) // os.UserHomeDir on every platform under test
 	t.Setenv("USERPROFILE", profile)
-	cases := []struct{ name, in, want string }{
-		{"native", `model under C:\Users\alice\Hachidori\models\m`, `model under <HACHIDORI_HOME>\models\m`},
-		{"slashes", `model under C:/Users/alice/Hachidori/models/m`, `model under <HACHIDORI_HOME>/models/m`},
-		{"python repr", `OSError: [Errno 2] No such file or directory: 'C:\\Users\\alice\\Hachidori\\models\\m'`,
-			`OSError: [Errno 2] No such file or directory: '<HACHIDORI_HOME>\\models\\m'`},
-		{"profile outside home, repr", `cache 'C:\\Users\\alice\\AppData\\Local\\x'`, `cache '<USERPROFILE>\\AppData\\Local\\x'`},
-		{"unrelated path kept", `D:\\data\\x and C:\\Users\\bob\\x`, `D:\\data\\x and C:\\Users\\bob\\x`},
-	}
-	s := newScrubber(homeDir)
-	for _, c := range cases {
-		if got := s.line(c.in, 512); got != c.want {
-			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
-		}
-	}
-
-	// The same through the exported facts.
 	f, _ := Collect(Source{Home: homeDir, Status: server.Status{Worker: worker.Snapshot{
 		State: worker.StateFailed,
 		LastFailure: &worker.FailureView{Class: worker.ClassModelLoad,

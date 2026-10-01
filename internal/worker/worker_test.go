@@ -62,7 +62,23 @@ func TestHelperWorker(t *testing.T) {
 			Items []Item `json:"items"`
 		}
 		_ = json.Unmarshal(sc.Bytes(), &req)
+		if mode == "hold_decide" && req.Op == "decide" {
+			// Stay inside the inference until the test releases it, so a
+			// test can observe the worker while a request is in flight.
+			dir := os.Getenv("HACHIDORI_FAKE_HOLD")
+			_ = os.WriteFile(filepath.Join(dir, "started"), nil, 0o644)
+			for {
+				if _, err := os.Stat(filepath.Join(dir, "release")); err == nil {
+					break
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+		}
 		switch {
+		case mode == "oversized_line" && req.Op == "decide":
+			// One protocol line beyond the Go side's limit, then nothing.
+			_, _ = os.Stdout.WriteString(strings.Repeat("x", 17<<20) + "\n")
+			time.Sleep(time.Minute)
 		case req.Op == "shutdown":
 			emit(map[string]any{"id": req.ID, "ok": true})
 			os.Exit(0)
@@ -71,7 +87,7 @@ func TestHelperWorker(t *testing.T) {
 		case mode == "hang_on_decide" && req.Op == "decide":
 			time.Sleep(time.Minute)
 		case req.Op == "stats":
-			emit(map[string]any{"id": req.ID, "ok": true, "stats": map[string]any{}})
+			emit(map[string]any{"id": req.ID, "ok": true, "stats": map[string]any{"memory_total": 100}})
 		case req.Op == "decide" && req.Items[0].State == "invalid":
 			emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "bad"}})
 		case req.Op == "decide":
@@ -202,6 +218,83 @@ func (l *lockedWriter) Write(b []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.w.Write(b)
+}
+
+func TestOversizedProtocolLineIsAProtocolFailure(t *testing.T) {
+	cfg := fakeConfig(t, "oversized_line")
+	// Long enough that falling back to the request timeout would be visible
+	// as the wrong failure class.
+	cfg.RequestTimeout = 20 * time.Second
+	p, err := Start(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = p.Decide([]Item{item})
+	var f *Failure
+	if !errors.As(err, &f) || f.Class != ClassProtocolError || !strings.Contains(f.Message, "unreadable") {
+		t.Fatalf("err = %v, want a protocol failure naming the unreadable output", err)
+	}
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker not reaped after the protocol failure")
+	}
+}
+
+func TestSnapshotDoesNotWaitBehindAnInference(t *testing.T) {
+	dir := t.TempDir()
+	cfg := fakeConfig(t, "hold_decide")
+	cfg.Env = append(cfg.Env, "HACHIDORI_FAKE_HOLD="+dir)
+	s := NewSupervisor(cfg, Policy{QueueDepth: 2})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	release := func() { _ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o644) }
+	t.Cleanup(func() { release(); cancel(); <-done })
+	waitState(t, s, StateReady)
+
+	idle := s.Snapshot()
+	if idle.AcceleratorStale || idle.Accelerator["memory_total"] != float64(100) {
+		t.Fatalf("idle snapshot: stale=%v accelerator=%v", idle.AcceleratorStale, idle.Accelerator)
+	}
+
+	decided := make(chan error, 1)
+	go func() { _, _, err := s.Decide([]Item{item}); decided <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "started")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the worker never received the request")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// The inference is held until release(). A snapshot taken now must come
+	// back by itself, current except for the stale accelerator numbers.
+	snapped := make(chan Snapshot, 1)
+	go func() { snapped <- s.Snapshot() }()
+	var busy Snapshot
+	select {
+	case busy = <-snapped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Snapshot waited for the in-flight inference")
+	}
+	if busy.State != StateReady || !busy.Ready || busy.QueueDepth != 1 {
+		t.Fatalf("runtime state is not current: %+v", busy)
+	}
+	if !busy.AcceleratorStale || busy.Accelerator["memory_total"] != float64(100) {
+		t.Fatalf("busy snapshot: stale=%v accelerator=%v, want the last known numbers marked stale", busy.AcceleratorStale, busy.Accelerator)
+	}
+
+	release()
+	if err := <-decided; err != nil {
+		t.Fatal(err)
+	}
+	if fresh := s.Snapshot(); fresh.AcceleratorStale || fresh.QueueDepth != 0 {
+		t.Fatalf("after the inference: stale=%v depth=%d", fresh.AcceleratorStale, fresh.QueueDepth)
+	}
 }
 
 func TestCrashIsWorkerFailureNotResult(t *testing.T) {

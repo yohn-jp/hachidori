@@ -90,6 +90,14 @@ Errors are structured and never look like a semantic answer:
 | `inference_failed` | 500 | the healthy worker failed this request |
 | `worker_failure` | 502 | the worker crashed, hung, or violated the protocol |
 
+The class is the stable part of an error. For `inference_failed` and
+`worker_failure` the message is the worker's own text, passed through the one
+redaction policy (`internal/redact`, also used by the diagnostic bundle): the
+`HACHIDORI_HOME` and user-profile paths become `<HACHIDORI_HOME>` and
+`<USERPROFILE>`, credentials in URLs, token-like `key=value` pairs and
+bearer/cookie values become `<redacted>`, and the text is at most 1 KiB. The
+operator reads the full text in the worker log and the dashboard.
+
 Only `choice` questions exist in v1. Limits: state 64 KiB, 32 questions,
 64 choices, 64 batch entries.
 
@@ -112,6 +120,8 @@ hachidori serve
 - Startup failures (`provider_import`, `device_unavailable`, `model_load`, `warmup`, `startup_timeout`) are deterministic and are not retried; the runtime stays `failed` and reports the class.
 - A worker that dies after READY is restarted (≤3 restarts per 10 minutes, 2 s backoff); readiness is false until the new worker has warmed up.
 - A request that gets no response within 2 minutes marks the worker unresponsive; it is killed and restarted.
+- A protocol line the runtime cannot read (over 16 MiB) is a `protocol` failure at once: the worker is killed and the failure is reported as such, not as an unresponsive worker.
+- `/v1/status` never waits for an inference. While one is in flight the accelerator memory is the last value taken while the worker was idle and the snapshot carries `accelerator_stale: true` (the dashboard labels it "last known"); worker state, readiness and counters are always current.
 - `SIGINT`/`SIGTERM` → shutdown message, stdin closed, kill after 10 s. The worker also exits on stdin EOF, so it cannot outlive a killed server.
 
 ### Private protocol
@@ -509,7 +519,9 @@ desired Runtime Spec (device -> flavor)
                                         uv sync --locked --no-build --no-install-project --extra <flavor>
                                         write worker, verify, write manifest.json last
   -> model (catalog entry selected by --model): reuse if every file matches its pinned digest,
-     else download to staging, verify, rename
+     else download to staging, verify, rename (a download that receives no data
+     for 2 minutes, headers included, is abandoned and leaves nothing behind; the
+     bound is on progress, never on total time, and the digest stays the authority)
   -> rename staging -> runtime/<identity>, verify again
   -> write state/active-runtime.json
 ```
