@@ -112,6 +112,30 @@ type RuntimeManifest struct {
 	Worker        map[string]string `json:"worker"`         // relpath -> sha256
 }
 
+// ErrRuntimeIdentityMissing marks a runtime manifest that carries neither a
+// declarative identity nor a Runtime Spec: the shape of a runtime written
+// before declarative setup existed. Its contents cannot be derived from the
+// current Runtime Spec, so it is not trusted and not completed in place;
+// `hachidori setup` materializes the current runtime beside it.
+var ErrRuntimeIdentityMissing = errors.New("manifest has no declarative Runtime Spec identity " +
+	"(a runtime from before declarative setup is never trusted or modified in place; " +
+	"run `hachidori setup` to materialize the current runtime, which reuses valid models)")
+
+// CheckIdentity is the runtime-validity authority for an activated runtime:
+// the manifest must carry the identity named by the activation record, and
+// that identity must be the one its own Runtime Spec derives. A missing
+// identity (with no Spec) is reported as ErrRuntimeIdentityMissing; any
+// other disagreement, including a non-empty wrong identity, is corruption.
+func (m RuntimeManifest) CheckIdentity(runtime string) error {
+	if m.Identity == "" && m.Spec == (RuntimeSpec{}) {
+		return ErrRuntimeIdentityMissing
+	}
+	if m.Identity != runtime || m.Spec.ID() != m.Identity {
+		return fmt.Errorf("manifest identity %q does not match its Runtime Spec (not materialized by declarative setup; run `hachidori setup`)", m.Identity)
+	}
+	return nil
+}
+
 // ModelManifest is an immutable model identity: an entry of the model
 // catalog, and, once materialized, models/<repo>/<revision>/hachidori-model.json.
 // Manifests written before the catalog existed carry no ID or provider.
@@ -142,7 +166,9 @@ func WriteJSON(path string, v any) error {
 	return WriteFileAtomic(path, append(b, '\n'), 0o644)
 }
 
-// LoadActive reads the activation record and both manifests.
+// LoadActive reads the activation record and both manifests. It is the one
+// definition of a valid active runtime shared by activation, serve, the
+// desktop and doctor: the runtime manifest must satisfy CheckIdentity.
 func (h Home) LoadActive() (Active, RuntimeManifest, ModelManifest, error) {
 	var a Active
 	var rm RuntimeManifest
@@ -152,6 +178,9 @@ func (h Home) LoadActive() (Active, RuntimeManifest, ModelManifest, error) {
 	}
 	if err := ReadJSON(h.Path("runtime", a.Runtime, "manifest.json"), &rm); err != nil {
 		return a, rm, mm, fmt.Errorf("runtime %s: invalid manifest: %w", a.Runtime, err)
+	}
+	if err := rm.CheckIdentity(a.Runtime); err != nil {
+		return a, rm, mm, fmt.Errorf("runtime %s: %w", a.Runtime, err)
 	}
 	if err := ReadJSON(h.ModelDir(a)+string(filepath.Separator)+"hachidori-model.json", &mm); err != nil {
 		return a, rm, mm, fmt.Errorf("model %s: invalid manifest: %w", a.Model, err)

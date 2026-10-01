@@ -1,6 +1,8 @@
 package home
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -78,5 +80,110 @@ func TestWriteJSONReplacesAtomicallyAndLeavesNothingBehind(t *testing.T) {
 	ents, _ := os.ReadDir(dir)
 	if len(ents) != 2 {
 		t.Fatalf("failed write left stray files: %v", ents)
+	}
+}
+
+// legacyManifest is a runtime manifest as the procedural pip-based setup wrote
+// it (Hachidori 0.1.0): no identity and no Runtime Spec.
+const legacyManifest = `{"version":"0.1.0","flavor":"cu128","platform":"windows/amd64","python_version":"3.12.11",
+"python_archive":{"url":"https://example.invalid/python.zip","sha256":"00"},"python":"python/python.exe",
+"packages":["torch==2.11.0+cu128"],"package_indexes":["https://download.pytorch.org/whl/cu128"],
+"installed":["laya==0.3.21","torch==2.11.0+cu128"],"worker":{"worker/hachidori_worker.py":"00"}}`
+
+func testSpec() RuntimeSpec {
+	return RuntimeSpec{Schema: "hachidori.runtime-spec/1", Platform: "linux/amd64", Python: "3.12.11",
+		Provider: "laya==0.3.21", Torch: "2.11.0+cu128", Flavor: "cu128", UV: "0.12.19",
+		UVSHA256: "a", Project: "b", Lock: "c", Worker: "d"}
+}
+
+// CheckIdentity is the one runtime-validity rule. Only an absent identity
+// with no Runtime Spec is the missing-identity (legacy) class; a wrong,
+// foreign or partial identity is corruption and is never classified as legacy.
+func TestCheckIdentity(t *testing.T) {
+	spec := testSpec()
+	id := spec.ID()
+	other := spec
+	other.Torch = "2.11.0+cpu"
+
+	for name, tc := range map[string]struct {
+		m       RuntimeManifest
+		runtime string
+		missing bool // ErrRuntimeIdentityMissing
+		invalid bool // any other rejection
+	}{
+		"valid current identity":            {m: RuntimeManifest{Identity: id, Spec: spec}, runtime: id},
+		"missing identity and spec":         {m: RuntimeManifest{}, runtime: "0.1.0-cu128", missing: true},
+		"empty identity, spec absent":       {m: RuntimeManifest{Identity: ""}, runtime: id, missing: true},
+		"empty identity with a spec":        {m: RuntimeManifest{Spec: spec}, runtime: id, invalid: true},
+		"wrong non-empty identity":          {m: RuntimeManifest{Identity: "cu128-0000000000000000", Spec: spec}, runtime: "cu128-0000000000000000", invalid: true},
+		"identity without a spec":           {m: RuntimeManifest{Identity: id}, runtime: id, invalid: true},
+		"identity of a different spec":      {m: RuntimeManifest{Identity: id, Spec: other}, runtime: id, invalid: true},
+		"identity not the activated record": {m: RuntimeManifest{Identity: id, Spec: spec}, runtime: "0.1.0-cu128", invalid: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := tc.m.CheckIdentity(tc.runtime)
+			switch {
+			case tc.missing:
+				if !errors.Is(err, ErrRuntimeIdentityMissing) {
+					t.Fatalf("got %v, want ErrRuntimeIdentityMissing", err)
+				}
+			case tc.invalid:
+				if err == nil || errors.Is(err, ErrRuntimeIdentityMissing) {
+					t.Fatalf("got %v, want a non-legacy identity rejection", err)
+				}
+			default:
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// LoadActive applies CheckIdentity, so every consumer of the activation
+// record agrees: a legacy manifest is recognized as missing its identity, a
+// corrupted non-empty identity is rejected as such, a valid one loads.
+func TestLoadActiveAppliesRuntimeIdentity(t *testing.T) {
+	spec := testSpec()
+	id := spec.ID()
+	load := func(runtime, manifest string) error {
+		h := Home{Root: t.TempDir()}
+		if err := h.Ensure(); err != nil {
+			t.Fatal(err)
+		}
+		write := func(p, s string) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write(h.Path("runtime", runtime, "manifest.json"), manifest)
+		write(h.Path("models", "m", "r", "hachidori-model.json"), `{}`)
+		if err := WriteJSON(h.Path("state", "active-runtime.json"), Active{Runtime: runtime, Model: "m/r", Device: "cuda"}); err != nil {
+			t.Fatal(err)
+		}
+		_, _, _, err := h.LoadActive()
+		return err
+	}
+	current, _ := json.Marshal(RuntimeManifest{Identity: id, Spec: spec})
+	corrupt, _ := json.Marshal(RuntimeManifest{Identity: "cu128-0000000000000000", Spec: spec})
+
+	if err := load(id, string(current)); err != nil {
+		t.Fatalf("current manifest: %v", err)
+	}
+	for name, manifest := range map[string]string{
+		"legacy, identity absent": legacyManifest,
+		"legacy, identity empty":  `{"identity":"","version":"0.1.0"}`,
+		"legacy, empty object":    `{}`,
+	} {
+		if err := load("0.1.0-cu128", manifest); !errors.Is(err, ErrRuntimeIdentityMissing) {
+			t.Errorf("%s: got %v, want ErrRuntimeIdentityMissing", name, err)
+		}
+	}
+	if err := load("cu128-0000000000000000", string(corrupt)); err == nil || errors.Is(err, ErrRuntimeIdentityMissing) {
+		t.Errorf("corrupt identity: got %v, want a non-legacy rejection", err)
 	}
 }

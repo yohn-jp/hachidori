@@ -542,8 +542,15 @@ step leaves `state/active-runtime.json` unchanged; staging is never treated as a
 runtime and is recreated on the next run. There is no retry loop beyond uv's
 own. A runtime directory that exists but does not verify is an explicit error
 (remove it to rematerialize). Runtimes created by the former pip-based setup
-(`runtime/0.1.0-*`) never match an identity; setup materializes a new one next
-to them and `doctor` reports them as `runtime_invalid`.
+(`runtime/0.1.0-*`) never match an identity and are never completed or
+modified in place. A runtime is valid as the active runtime only if its manifest
+identity is the activation record's runtime and the one its own Runtime Spec
+derives (`home.Home.LoadActive`); activation, serve, the desktop and `doctor`
+all apply that one rule, so an active legacy runtime is `runtime_invalid`
+everywhere and is never READY. `hachidori setup` (or the desktop install) is the
+repair: it materializes the current runtime next to the legacy one, reuses the
+verified model without downloading it, and switches `state/active-runtime.json`
+only after both verified, for the requested device.
 
 ### Model catalog
 

@@ -9,9 +9,9 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 )
 
-// A runtime whose manifest does not carry a Runtime Spec identity matching
-// its directory (for example one created by the former pip-based setup) is
-// reported as runtime_invalid.
+// A runtime whose manifest does not carry a Runtime Spec identity (for example
+// one created by the former pip-based setup) is reported as runtime_invalid
+// with the setup repair path.
 func TestDoctorRejectsRuntimeWithoutSpecIdentity(t *testing.T) {
 	h := home.Home{Root: t.TempDir()}
 	if err := h.Ensure(); err != nil {
@@ -28,7 +28,7 @@ func TestDoctorRejectsRuntimeWithoutSpecIdentity(t *testing.T) {
 		t.Fatal("doctor passed")
 	}
 	if !strings.Contains(out.String(), "FAIL runtime") || !strings.Contains(out.String(), "class: "+RuntimeInvalid) ||
-		!strings.Contains(out.String(), "does not match its Runtime Spec") {
+		!strings.Contains(out.String(), "no declarative Runtime Spec identity") || !strings.Contains(out.String(), "run `hachidori setup`") {
 		t.Fatalf("output:\n%s", out.String())
 	}
 }

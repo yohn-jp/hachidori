@@ -97,9 +97,7 @@ func Run(homeFlag string, out io.Writer) bool {
 	a, rm, mm, err := h.LoadActive()
 	python := h.PythonExe(a, rm)
 	if err == nil {
-		if rm.Identity != a.Runtime || rm.Spec.ID() != rm.Identity {
-			err = fmt.Errorf("runtime %s: manifest identity %q does not match its Runtime Spec (not materialized by declarative setup; run `hachidori setup`)", a.Runtime, rm.Identity)
-		} else if _, serr := os.Stat(python); serr != nil {
+		if _, serr := os.Stat(python); serr != nil {
 			err = fmt.Errorf("private python missing: %s", python)
 		} else if got, _ := setup.FileSHA256(h.WorkerScript(a)); got != rm.Worker["worker/hachidori_worker.py"] {
 			err = fmt.Errorf("worker script digest mismatch")
