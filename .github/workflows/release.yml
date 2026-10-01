@@ -12,6 +12,7 @@ jobs:
     with:
       binary-name: hachidori
       build-target: ./cmd/hachidori
+      development-line: "0.2"
     permissions:
       actions: read
       contents: write

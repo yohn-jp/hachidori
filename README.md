@@ -80,6 +80,7 @@ status and Start/Stop/Restart, doctor, the SSH tunnel launcher, and three
 operator surfaces: **Question Workbench**, **Experiment Runner**, and
 **Error Explorer**.
 
+- [docs/release-0.2.0.md](docs/release-0.2.0.md): what Hachidori 0.2.0 ships, compatibility boundaries, upgrade notes and the physical Windows verification state.
 - [docs/runtime.md](docs/runtime.md): CLI, HTTP API, worker lifecycle, `HACHIDORI_HOME` layout, evaluation format.
 - [docs/certification.md](docs/certification.md): certification levels and exact commands for a GPU host.
 
