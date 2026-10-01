@@ -369,3 +369,42 @@ func (f *fixture) legacyize(device string) string {
 	}
 	return name
 }
+
+// olderWorker rewrites the active runtime as an older build would have
+// materialized it: a self-consistent runtime (its identity is the one its own
+// Runtime Spec derives and its manifest agrees with its files) whose worker
+// script is not the one this build embeds. It returns the new runtime name.
+func (f *fixture) olderWorker(device string) string {
+	f.t.Helper()
+	spec, err := Desired(device)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var rm home.RuntimeManifest
+	if err := home.ReadJSON(f.H.Path("runtime", spec.ID(), "manifest.json"), &rm); err != nil {
+		f.t.Fatal(err)
+	}
+	script := []byte("# worker of an older build: no --provider argument\n")
+	rm.Spec.Worker = digest(script)
+	rm.Spec.Provider = "laya==0.3.21"
+	rm.Identity = rm.Spec.ID()
+	rm.Worker = map[string]string{"worker/hachidori_worker.py": rm.Spec.Worker}
+	if err := os.Rename(f.H.Path("runtime", spec.ID()), f.H.Path("runtime", rm.Identity)); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(f.H.Path("runtime", rm.Identity, "worker", "hachidori_worker.py"), script, 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := home.WriteJSON(f.H.Path("runtime", rm.Identity, "manifest.json"), rm); err != nil {
+		f.t.Fatal(err)
+	}
+	var a home.Active
+	if err := home.ReadJSON(f.H.Path("state", "active-runtime.json"), &a); err != nil {
+		f.t.Fatal(err)
+	}
+	a.Runtime = rm.Identity
+	if err := home.WriteJSON(f.H.Path("state", "active-runtime.json"), a); err != nil {
+		f.t.Fatal(err)
+	}
+	return rm.Identity
+}

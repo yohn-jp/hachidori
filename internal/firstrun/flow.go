@@ -396,6 +396,18 @@ type PhaseView struct {
 	Status string `json:"status"`
 }
 
+// StepView is the work inside the current setup phase, as the setup authority
+// reported it. Total is zero for a step whose amount of work is unknown; the
+// page then shows it as in progress without a percentage.
+type StepView struct {
+	Step   string `json:"step"`
+	Detail string `json:"detail,omitempty"`
+	Done   int64  `json:"done,omitempty"`
+	Total  int64  `json:"total,omitempty"`
+	Item   int    `json:"item,omitempty"`
+	Items  int    `json:"items,omitempty"`
+}
+
 // Identity is the runtime identity shown at READY, from the canonical
 // /v1/status document.
 type Identity struct {
@@ -408,21 +420,25 @@ type Identity struct {
 
 // View is everything the first-run screen renders.
 type View struct {
-	Mode       Mode         `json:"mode"`
-	Notice     string       `json:"notice,omitempty"`
-	StoredHome string       `json:"stored_home,omitempty"`
-	Stage      string       `json:"stage"`
-	State      app.State    `json:"state"`
-	Selection  *Validation  `json:"selection,omitempty"`
-	Device     string       `json:"device"`
-	Model      string       `json:"model"`
-	Phases     []PhaseView  `json:"phases,omitempty"`
-	Worker     string       `json:"worker,omitempty"`
-	Failure    *app.Failure `json:"failure,omitempty"`
-	CanRetry   bool         `json:"can_retry"`
-	CanChange  bool         `json:"can_change"`
-	SetupLog   string       `json:"setup_log,omitempty"`
-	Identity   *Identity    `json:"identity,omitempty"`
+	Mode       Mode        `json:"mode"`
+	Notice     string      `json:"notice,omitempty"`
+	StoredHome string      `json:"stored_home,omitempty"`
+	Stage      string      `json:"stage"`
+	State      app.State   `json:"state"`
+	Selection  *Validation `json:"selection,omitempty"`
+	Device     string      `json:"device"`
+	Model      string      `json:"model"`
+	Phases     []PhaseView `json:"phases,omitempty"`
+	Step       *StepView   `json:"step,omitempty"`
+	Worker     string      `json:"worker,omitempty"`
+	// WorkerPhase is the worker's own phase (spawning, importing, loading,
+	// warming) while the stage is starting.
+	WorkerPhase string       `json:"worker_phase,omitempty"`
+	Failure     *app.Failure `json:"failure,omitempty"`
+	CanRetry    bool         `json:"can_retry"`
+	CanChange   bool         `json:"can_change"`
+	SetupLog    string       `json:"setup_log,omitempty"`
+	Identity    *Identity    `json:"identity,omitempty"`
 }
 
 // View projects the current screen from the controller snapshot.
@@ -465,8 +481,13 @@ func (f *Flow) View() View {
 		v.Failure = &app.Failure{Source: "bootstrap", Message: remErr.Error()}
 	}
 	v.Phases = phaseViews(snap)
+	if op := snap.Operation; op != nil && op.Kind == app.OpSetup && op.Progress != nil {
+		p := op.Progress
+		v.Step = &StepView{Step: string(p.Step), Detail: p.Detail, Done: p.Done, Total: p.Total, Item: p.Item, Items: p.Items}
+	}
 	if snap.Status != nil {
 		w := snap.Status.Worker
+		v.WorkerPhase = w.Phase
 		v.Worker = w.State
 		if w.Phase != "" {
 			v.Worker += " (" + w.Phase + ")"

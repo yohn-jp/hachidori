@@ -607,6 +607,8 @@ type fakeModels struct {
 	calls   []string
 	err     error
 	restart int
+	start   int
+	stop    int
 }
 
 func (f *fakeModels) rec(s string) error {
@@ -627,6 +629,8 @@ func (f *fakeModels) Materialize(dev, model string) error {
 func (f *fakeModels) Repair(dev, model string) error   { return f.rec("repair " + dev + " " + model) }
 func (f *fakeModels) Activate(dev, model string) error { return f.rec("activate " + dev + " " + model) }
 func (f *fakeModels) Remove(kind, id string) error     { return f.rec("remove " + kind + " " + id) }
+func (f *fakeModels) Start() error                     { f.start++; return f.rec("start") }
+func (f *fakeModels) Stop() error                      { f.stop++; return f.rec("stop") }
 func (f *fakeModels) Restart() error                   { f.restart++; return f.rec("restart") }
 
 func modelsInventory() setup.Inventory {
@@ -658,14 +662,19 @@ func TestModelsManagerView(t *testing.T) {
 		t.Fatalf("models route without authority: %d", rec.Code)
 	}
 	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory(), RestartRequired: true,
-		Busy: &ModelOp{Kind: "materialize", Device: "cpu", Model: "laya-other", Phase: "model"},
-		Last: &ModelOp{Kind: "verify", Target: "model laya-base", Failure: "sha256 mismatch"}}}
+		Busy: &ModelOp{Kind: "materialize", Device: "cpu", Model: "laya-other", Phase: "model", Plan: []string{"preparing", "runtime", "model", "publish"},
+			Phases: []string{"preparing", "runtime", "model"}, Step: "downloading", Detail: "model.safetensors", Item: 3, Items: 7, Done: 412 << 20, Total: 800 << 20,
+			Started: time.Now().Add(-130 * time.Second)},
+		Last: &ModelOp{Kind: "verify", Target: "model laya-base", Plan: []string{"model"}, Phases: []string{"model"}, Failure: "sha256 mismatch",
+			FailurePhase: "model", FailureStep: "verifying", Log: "/home/x/logs/setup.log", Started: time.Now().Add(-5 * time.Second), Finished: time.Now()}}}
 	withModels(e, fm)
 	body := e.get(t, "/settings").Body.String()
 	for _, want := range []string{`id="settings-models"`, "cu128-aaaa", "windows/amd64 · python 3.12.11 · laya",
 		"convaiinnovations/laya@55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851", "5 pinned file(s)", `<span class="badge tone-ok">active</span>`,
 		`<span class="badge">not materialized</span>`, `id="restart-required"`, `action="/settings/models/restart"`,
-		`id="models-busy"`, "phase: model", `id="models-last"`, "sha256 mismatch",
+		`id="models-busy"`, "phase 3 of 4 · Downloading", `(3 of 7)`, "412.0 MiB of 800.0 MiB (52%)", `aria-valuenow="52"`,
+		`id="models-last"`, "sha256 mismatch", "Failed in phase <strong>Model</strong> · Verifying", "The active runtime and model were not changed.",
+		`href="/diagnostics"`, "/home/x/logs/setup.log",
 		`formaction="/settings/models/materialize"`, `formaction="/settings/models/repair"`, `formaction="/settings/models/activate"`,
 		`<option value="cuda">`, `<option value="laya-absent">`} {
 		if !strings.Contains(body, want) {
@@ -737,45 +746,64 @@ func TestModelsActionsForwarded(t *testing.T) {
 	}
 }
 
-// The last explicit verification is shown beside the artifact.
+// The last explicit verification, kept by the application, is shown beside
+// the artifact.
 func TestModelsVerifyResultShown(t *testing.T) {
 	e := newEnv(t)
-	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory()}}
+	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory(), Checks: map[string]ModelCheck{
+		"model laya-other": {OK: false, Msg: "config.json: sha256 bad", Time: time.Now()},
+		"model laya-base":  {OK: true, Time: time.Now()},
+	}}}
 	withModels(e, fm)
-	fm.err = errors.New("config.json: sha256 bad")
-	e.post(t, "/settings/models/verify", url.Values{"kind": {"model"}, "id": {"laya-other"}})
 	body := e.get(t, "/settings").Body.String()
-	if !strings.Contains(body, "failed") || !strings.Contains(body, "config.json: sha256 bad") {
-		t.Error("failed verification not shown")
+	if !strings.Contains(body, "failed 20") || !strings.Contains(body, "config.json: sha256 bad") || !strings.Contains(body, "verified 20") {
+		t.Error("verification results not shown")
 	}
-	fm.err = nil
-	e.post(t, "/settings/models/verify", url.Values{"kind": {"model"}, "id": {"laya-other"}})
-	if !strings.Contains(e.get(t, "/settings").Body.String(), "verified 20") {
-		t.Error("verification result not shown")
+	// Starting a verification only forwards it: the page decides nothing.
+	if rec := e.post(t, "/settings/models/verify", url.Values{"kind": {"model"}, "id": {"laya-other"}}); rec.Code != http.StatusSeeOther {
+		t.Fatal(rec.Code)
+	}
+	if a := e.lastAction(t); !a.OK || !strings.Contains(a.Message, "started") {
+		t.Fatalf("action %+v", a)
 	}
 }
 
-// With a restart required, the Runtime page's Restart goes through the
-// application's restart (which rebinds the activation); otherwise it stays
-// the worker lifecycle's.
-func TestRuntimeRestartRoutesThroughApplicationWhenRequired(t *testing.T) {
+// With the application hosted, every Runtime page lifecycle action is the
+// application's. The worker lifecycle this dashboard was created with belongs
+// to the runtime it was bound to; after an activation (or a failed start) only
+// the application binds the active runtime and model, so a restart through the
+// stale lifecycle would start the old model again.
+func TestRuntimeLifecycleRoutesThroughApplication(t *testing.T) {
 	e := newEnv(t)
 	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory()}}
 	withModels(e, fm)
+	for _, op := range []string{"start", "restart", "stop"} {
+		e.post(t, "/runtime/"+op, nil)
+	}
+	e.rt.mu.Lock()
+	lc := append([]string(nil), e.rt.calls...)
+	e.rt.mu.Unlock()
+	if len(lc) != 0 || fm.start != 1 || fm.restart != 1 || fm.stop != 1 {
+		t.Fatalf("lifecycle=%v app start=%d restart=%d stop=%d", lc, fm.start, fm.restart, fm.stop)
+	}
+	// A refusal from the application is shown, not swallowed.
+	fm.err = errors.New("no valid active runtime; run setup first")
+	e.post(t, "/runtime/restart", nil)
+	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "no valid active runtime") {
+		t.Fatalf("refusal not shown: %+v", a)
+	}
+}
+
+// Without the application (serve, dashboard) the worker lifecycle remains the
+// authority.
+func TestRuntimeLifecycleWithoutApplicationUsesTheWorkerLifecycle(t *testing.T) {
+	e := newEnv(t)
 	e.post(t, "/runtime/restart", nil)
 	e.rt.mu.Lock()
 	lc := append([]string(nil), e.rt.calls...)
 	e.rt.mu.Unlock()
-	if len(lc) != 1 || fm.restart != 0 {
-		t.Fatalf("plain restart: lifecycle=%v app=%d", lc, fm.restart)
-	}
-	fm.state.RestartRequired = true
-	e.post(t, "/runtime/restart", nil)
-	e.rt.mu.Lock()
-	lc = append([]string(nil), e.rt.calls...)
-	e.rt.mu.Unlock()
-	if len(lc) != 1 || fm.restart != 1 {
-		t.Fatalf("restart after activation: lifecycle=%v app=%d", lc, fm.restart)
+	if len(lc) != 1 {
+		t.Fatalf("lifecycle=%v", lc)
 	}
 }
 

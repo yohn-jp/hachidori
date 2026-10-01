@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,8 +36,9 @@ func Run(h home.Home, device, modelID string, log io.Writer) error {
 	return RunObserved(h, device, modelID, log, nil)
 }
 
-// Phase is a real setup boundary reported by RunObserved. There is no
-// percentage-based synthetic progress.
+// Phase is a real setup boundary reported by RunObserved. Progress inside a
+// phase is reported separately (Progress); a percentage exists only where a
+// total is actually known.
 type Phase string
 
 const (
@@ -46,13 +48,14 @@ const (
 	PhaseActivation Phase = "activation"
 )
 
-// RunObserved is Run with an optional synchronous phase callback. It preserves
-// the same materialization/verification/activation semantics as Run.
-func RunObserved(h home.Home, device, modelID string, log io.Writer, onPhase func(Phase)) error {
-	a, err := reconcile(h, device, modelID, log, onPhase, PhaseActivation)
+// RunObserved is Run with an optional Observer of its phases and progress. It
+// preserves the same materialization/verification/activation semantics as Run.
+func RunObserved(h home.Home, device, modelID string, log io.Writer, obs *Observer) error {
+	a, err := reconcile(h, device, modelID, log, obs, PhaseActivation)
 	if err != nil {
 		return err
 	}
+	obs.step(StepActivate, "activation record")
 	return writeActive(h, a, log)
 }
 
@@ -64,8 +67,8 @@ const PhasePublish Phase = "publish"
 // runtime for device and the catalog model modelID through the same staged
 // and verified path, publishes them, and leaves state/active-runtime.json
 // untouched. Activation is the separate, explicit Activate.
-func Materialize(h home.Home, device, modelID string, log io.Writer, onPhase func(Phase)) error {
-	_, err := reconcile(h, device, modelID, log, onPhase, PhasePublish)
+func Materialize(h home.Home, device, modelID string, log io.Writer, obs *Observer) error {
+	_, err := reconcile(h, device, modelID, log, obs, PhasePublish)
 	return err
 }
 
@@ -73,12 +76,8 @@ func Materialize(h home.Home, device, modelID string, log io.Writer, onPhase fun
 // publishes the runtime, entering publishPhase before the publish. It never
 // writes the activation record; it returns the record that would activate
 // exactly what it materialized.
-func reconcile(h home.Home, device, modelID string, log io.Writer, onPhase func(Phase), publishPhase Phase) (home.Active, error) {
-	enter := func(p Phase) {
-		if onPhase != nil {
-			onPhase(p)
-		}
-	}
+func reconcile(h home.Home, device, modelID string, log io.Writer, obs *Observer, publishPhase Phase) (home.Active, error) {
+	enter := obs.phase
 	enter(PhasePreparing)
 	spec, model, err := choose(device, modelID)
 	if err != nil {
@@ -87,7 +86,7 @@ func reconcile(h home.Home, device, modelID string, log io.Writer, onPhase func(
 	if err := h.Ensure(); err != nil {
 		return home.Active{}, err
 	}
-	uv, err := ensureUV(h, log)
+	uv, err := ensureUV(h, log, obs)
 	if err != nil {
 		return home.Active{}, fmt.Errorf("private uv: %w", err)
 	}
@@ -96,24 +95,27 @@ func reconcile(h home.Home, device, modelID string, log io.Writer, onPhase func(
 	final := h.Path("runtime", id)
 	stage := ""
 	if _, err := os.Stat(final); err == nil {
+		obs.step(StepVerify, "runtime "+id)
 		if err := verifyPublished(h, final, spec); err != nil {
 			return home.Active{}, fmt.Errorf("runtime %s exists but failed verification; it is never modified in place (repair it, or remove %s to rematerialize): %w", id, final, err)
 		}
 		fmt.Fprintf(log, "runtime %s verified, reusing\n", id)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return home.Active{}, err
-	} else if stage, err = materializeRuntime(h, uv, spec, log); err != nil {
+	} else if stage, err = materializeRuntime(h, uv, spec, log, obs); err != nil {
 		return home.Active{}, fmt.Errorf("runtime %s: %w", id, err)
 	}
 	enter(PhaseModel)
-	if err := materializeModel(h, model, log); err != nil {
+	if err := materializeModel(h, model, log, obs); err != nil {
 		return home.Active{}, fmt.Errorf("model %s: %w", model.ID, err)
 	}
 	enter(publishPhase)
 	if stage != "" {
+		obs.step(StepPublish, "runtime "+id)
 		if err := os.Rename(stage, final); err != nil {
 			return home.Active{}, fmt.Errorf("runtime %s: publish: %w", id, err)
 		}
+		obs.step(StepVerify, "published runtime "+id)
 		if err := verifyPublished(h, final, spec); err != nil {
 			return home.Active{}, fmt.Errorf("runtime %s: published runtime failed verification: %w", id, err)
 		}
@@ -159,7 +161,7 @@ func pythonRelPath() string {
 // materializeRuntime lets the private uv materialize spec into a fresh
 // staging directory and verifies the result. It returns the staging path; the
 // runtime becomes valid only once Run publishes it.
-func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Writer) (string, error) {
+func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Writer, obs *Observer) (string, error) {
 	stage := h.Path("runtime", ".staging-"+spec.ID())
 	if err := os.RemoveAll(stage); err != nil {
 		return "", err
@@ -178,12 +180,17 @@ func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Wr
 		spec.ID(), spec.Python, spec.Provider, spec.Torch, spec.UV)
 	// uv acquires the CPython build it pins for this version into
 	// tools/uv/<version>/python; no system interpreter is considered.
+	// uv reports no measurable total, so each step is indeterminate and only
+	// names what it is doing.
+	obs.step(StepMaterialize, "installing Python "+spec.Python)
 	if err := uv.run(stage, uv.env(), "python", "install", spec.Python, "--no-bin", "--no-registry"); err != nil {
 		return "", err
 	}
+	obs.step(StepMaterialize, "creating the private environment")
 	if err := uv.run(stage, uv.env(), "venv", "--relocatable", "--no-python-downloads", "--python", spec.Python, envDir); err != nil {
 		return "", err
 	}
+	obs.step(StepMaterialize, "installing the locked packages ("+spec.Flavor+")")
 	if err := uv.run(specDir, uv.env("UV_PROJECT_ENVIRONMENT="+envDir),
 		"sync", "--locked", "--no-build", "--no-install-project", "--no-python-downloads", "--extra", spec.Flavor); err != nil {
 		return "", err
@@ -194,6 +201,7 @@ func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Wr
 	if err := os.WriteFile(filepath.Join(stage, "worker", "hachidori_worker.py"), py.Script, 0o644); err != nil {
 		return "", err
 	}
+	obs.step(StepVerify, "runtime "+spec.ID())
 	p, err := verifyRuntime(h, stage, spec)
 	if err != nil {
 		return "", fmt.Errorf("verification: %w", err)
@@ -293,10 +301,10 @@ func normalizeDist(d string) string {
 // materializeModel materializes the catalog model m independently of the
 // Python runtime. A present model is reused only if every file still matches
 // its pinned digest.
-func materializeModel(h home.Home, m home.ModelManifest, log io.Writer) error {
+func materializeModel(h home.Home, m home.ModelManifest, log io.Writer, obs *Observer) error {
 	final := h.Path("models", filepath.FromSlash(ModelDirName(m)))
 	if _, err := os.Stat(filepath.Join(final, "hachidori-model.json")); err == nil {
-		if err := VerifyModel(final, m); err != nil {
+		if err := verifyModel(final, m, obs); err != nil {
 			return fmt.Errorf("%s exists but failed verification: %w", final, err)
 		}
 		fmt.Fprintf(log, "model %s (%s@%s) verified, reusing\n", m.ID, m.Repo, m.Revision[:12])
@@ -306,22 +314,40 @@ func materializeModel(h home.Home, m home.ModelManifest, log io.Writer) error {
 	if err := os.RemoveAll(stage); err != nil {
 		return err
 	}
-	for rel, want := range m.Files {
+	rels := sortedFiles(m.Files)
+	for i, rel := range rels {
 		url := modelBaseURL + m.Repo + "/resolve/" + m.Revision + "/" + rel
-		if err := fetch(url, filepath.Join(stage, filepath.FromSlash(rel)), want, log); err != nil {
+		at := Progress{Step: StepDownload, Detail: rel, Item: i + 1, Items: len(rels)}
+		if err := fetch(url, filepath.Join(stage, filepath.FromSlash(rel)), m.Files[rel], log, obs, at); err != nil {
 			return err
 		}
 	}
+	obs.step(StepPublish, "model "+m.ID)
 	if err := home.WriteJSON(filepath.Join(stage, "hachidori-model.json"), m); err != nil {
 		return err
 	}
 	return os.Rename(stage, final)
 }
 
+// sortedFiles lists a model's files in a fixed order, so progress is
+// reported as "file i of n" in a stable sequence.
+func sortedFiles(files map[string]string) []string {
+	rels := make([]string, 0, len(files))
+	for rel := range files {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	return rels
+}
+
 // VerifyModel checks that dir holds exactly the catalog model m: its
 // manifest names m's repository and revision (and ID, when recorded) with
 // m's digests, and every file matches its pinned digest.
-func VerifyModel(dir string, m home.ModelManifest) error {
+func VerifyModel(dir string, m home.ModelManifest) error { return verifyModel(dir, m, nil) }
+
+// verifyModel is VerifyModel reporting each file's hashing as determinate
+// byte progress (the file size is known).
+func verifyModel(dir string, m home.ModelManifest, obs *Observer) error {
 	var mm home.ModelManifest
 	if err := home.ReadJSON(filepath.Join(dir, "hachidori-model.json"), &mm); err != nil {
 		return err
@@ -329,11 +355,14 @@ func VerifyModel(dir string, m home.ModelManifest) error {
 	if mm.Repo != m.Repo || mm.Revision != m.Revision || (mm.ID != "" && mm.ID != m.ID) {
 		return fmt.Errorf("model manifest %s %s@%s is not catalog model %s (%s@%s)", mm.ID, mm.Repo, mm.Revision, m.ID, m.Repo, m.Revision)
 	}
-	for rel, want := range m.Files {
+	rels := sortedFiles(m.Files)
+	for i, rel := range rels {
+		want := m.Files[rel]
 		if mm.Files[rel] != want {
 			return fmt.Errorf("model manifest does not match pinned digest for %s", rel)
 		}
-		got, err := FileSHA256(filepath.Join(dir, filepath.FromSlash(rel)))
+		got, err := fileSHA256Observed(filepath.Join(dir, filepath.FromSlash(rel)), obs,
+			Progress{Step: StepVerify, Detail: rel, Item: i + 1, Items: len(rels)})
 		if err != nil {
 			return err
 		}
@@ -354,8 +383,8 @@ var downloadStall = 2 * time.Minute
 // fetch downloads url to dst and verifies its SHA-256. A present file with
 // the right digest is reused. The digest stays the only authority over what
 // is accepted; a download that stalls or fails leaves nothing behind.
-func fetch(url, dst, want string, log io.Writer) error {
-	if got, err := FileSHA256(dst); err == nil && got == want {
+func fetch(url, dst, want string, log io.Writer, obs *Observer, at Progress) error {
+	if got, err := fileSHA256Observed(dst, obs, Progress{Step: StepVerify, Detail: at.Detail, Item: at.Item, Items: at.Items}); err == nil && got == want {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -390,7 +419,15 @@ func fetch(url, dst, want string, log io.Writer) error {
 		return err
 	}
 	hash := sha256.New()
-	_, err = io.Copy(io.MultiWriter(f, hash), progressReader{resp.Body, watchdog})
+	// The total is the response's Content-Length when the server states one;
+	// otherwise the download is indeterminate rather than given a made-up size.
+	at.Total = max(resp.ContentLength, 0)
+	counter := newByteCounter(obs, at)
+	counter.flush()
+	_, err = io.Copy(io.MultiWriter(f, hash, counter), progressReader{resp.Body, watchdog})
+	if err == nil {
+		counter.flush()
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -420,15 +457,31 @@ func (p progressReader) Read(b []byte) (int, error) {
 }
 
 // FileSHA256 hashes a file.
-func FileSHA256(path string) (string, error) {
+func FileSHA256(path string) (string, error) { return fileSHA256Observed(path, nil, Progress{}) }
+
+// fileSHA256Observed hashes a file, reporting determinate byte progress
+// (the file's size is the total) under at when obs observes it.
+func fileSHA256Observed(path string, obs *Observer, at Progress) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	var w io.Writer = h
+	var counter *byteCounter
+	if obs != nil && obs.OnProgress != nil {
+		if fi, err := f.Stat(); err == nil {
+			at.Total = fi.Size()
+		}
+		counter = newByteCounter(obs, at)
+		w = io.MultiWriter(h, counter)
+	}
+	if _, err := io.Copy(w, f); err != nil {
 		return "", err
+	}
+	if counter != nil {
+		counter.flush()
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

@@ -130,6 +130,8 @@ subject to the host-local checks above.
 ```text
 hachidori serve
   -> resolve state/active-runtime.json, verify worker digest
+  -> preflight: the runtime's worker script must be the one this build embeds
+     (older runtime => `preflight` failure, nothing is spawned)
   -> spawn <home>/runtime/<ver>/python/... -I -X utf8 worker.py (explicit env)
   -> hello -> importing (torch, the provider of the active model: laya | opendecider)
   -> device check (cuda requested and unavailable => device_unavailable)
@@ -146,7 +148,7 @@ hachidori serve
 ```
 
 - A request never starts Python, imports the ML stack, loads the model or moves it to the device.
-- Startup failures (`provider_import`, `device_unavailable`, `model_load`, `warmup`, `startup_timeout`) are deterministic and are not retried; the runtime stays `failed` and reports the class.
+- Startup failures (`preflight`, `worker_startup`, `provider_import`, `device_unavailable`, `model_load`, `warmup`, `startup_timeout`) are deterministic and are not retried; the runtime stays `failed` and reports the class.
 - A worker that dies after READY is restarted (≤3 restarts per 10 minutes, 2 s backoff); readiness is false until the new worker has warmed up.
 - A request that gets no response within 2 minutes marks the worker unresponsive; it is killed and restarted.
 - A protocol line the runtime cannot read (over 16 MiB) is a `protocol` failure at once: the worker is killed and the failure is reported as such, not as an unresponsive worker.
@@ -499,7 +501,8 @@ same composition, including the resident tray lifecycle above), plus:
 5. **Install** passes the explicit device (`cuda` or `cpu`, never changed by
    Hachidori) and the default catalog model to `app.Controller.Setup`. Progress
    is the controller's real setup phases (`preparing`, `runtime`, `model`,
-   `activation`); there is no percentage. Setup's log is kept in
+   `activation`) and, inside the current phase, the step it is busy with
+   (see "Operation progress" below). Setup's log is kept in
    `HOME/logs/setup.log`.
 6. The bootstrap locator is written (`home.Remember`) only after setup has
    succeeded, immediately before the runtime is started. A failed or interrupted
@@ -540,9 +543,65 @@ surfaces. It projects one user-facing state over the existing setup,
 authorities; it does not create a second runtime state model.
 
 States are `unconfigured`, `not_installed`, `installing`, `installed`,
-`starting`, `warming`, `ready`, `stopping`, and `failed`. Setup reports
-only real phases entered (`preparing`, `runtime`, `model`, `activation`);
-no synthetic percentage is exposed.
+`starting`, `warming`, `ready`, `stopping`, and `failed`. Setup and the
+maintenance actions report only real phases entered, and a percentage only for
+a step that has a measurable total.
+
+### Operation progress
+
+Every setup and maintenance action (`setup`, `materialize`, `repair`,
+`activate`, `verify`, `remove`) is accepted by the controller at once and runs
+in the background (never on the caller's or the UI's thread); only the
+rejection rules (one action at a time, a running worker, an unreadable home)
+are answered synchronously. The action's `Operation` carries:
+
+- `plan`: the phases it goes through, and `phase`/`phases`: the ones it has
+  entered. Setup is `preparing`, `runtime`, `model`, `activation`; Materialize
+  and Repair end in `publish` instead; Activate is `runtime`, `model`,
+  `activation`; Verify and Remove are the phase of their artifact. A phase is
+  reported only when it is really entered.
+- `progress`: the step inside the current phase, from `internal/setup`
+  (`setup.Progress`, reported through `setup.Observer`): `downloading` (bytes
+  of the response, `Content-Length` as the total when the server states one),
+  `verifying` (bytes hashed of each file, whose size is known),
+  `materializing` (the private uv's steps: installing Python, creating the
+  environment, installing the locked packages), `publishing`, `activating`,
+  `removing`. A step without a measurable total has no `total`; it is shown as
+  in progress, and no percentage is ever derived from it. Model downloads are
+  per file ("file 3 of 7"); the catalog does not pin sizes, so there is no
+  invented overall total.
+- `failure`: `source`, the `phase` and `step` it failed in, and the cause. A
+  failed maintenance action changes neither the application state nor the
+  activation record.
+
+The outcome of an explicit Verify is kept per artifact by the controller
+(`checks`). The output of an action goes to `HOME/logs/setup.log`, headed by the
+action.
+
+For the worker, the same vocabulary is the supervisor's own phase:
+`preflight` and `spawning` are the supervisor's, `importing`, `loading` and
+`warming` are reported by the worker process itself, then `ready`. None has a
+total, so the UI shows the current one as a step with an indeterminate bar. A worker failure carries the phase it had reached, its class,
+and the tail of its stderr. Everything the worker wrote before it exited is
+applied before the exit is judged, so a reported phase or fatal class is never
+replaced by a generic startup failure.
+
+### Worker launch contract
+
+The worker script is half of the contract with the private Python process (its
+command line and protocol); the other half is the executable. An immutable
+runtime keeps the script it was materialized with, so a runtime from an older
+build can be internally consistent (identity, manifest and digests agree) and
+still not understand the arguments this build passes. `setup.CheckWorkerContract`
+therefore requires the activated runtime to carry the worker script this build
+embeds. The supervisor runs that check (`worker.Config.Preflight`) before every
+launch; a runtime that fails it is not started: the supervisor is `failed` with
+class `preflight`, phase `preflight` and the cause and the recovery as the
+message (Materialize the current runtime and Activate it, or
+`hachidori setup --device <device>`; installed models are reused). The binding
+and the dashboard still come up, so Settings is available for that recovery.
+`doctor` fails its runtime check the same way, and `Inventory.ActiveProblem`
+reports it for the Settings manager and the Runtime page.
 
 The controller serializes setup/start/stop/restart actions so UI retries cannot
 create duplicate runtime ownership. Setup accepts the same device and catalog
@@ -559,10 +618,10 @@ schema, platform, CPython version, the model providers (`laya==0.3.21` and
 pinned uv version and executable digest, the SHA-256 of both uv project files
 and of the worker script. The model is not part of it: selecting any catalog
 checkpoint reuses the same runtime. A runtime materialized before OpenDecider
-was carried has a different identity; it keeps serving the Laya model it was
-activated with, and activating any model after an upgrade needs the current
-runtime to be materialized first (`hachidori setup`, or Materialize in the
-manager), which reuses already verified models.
+was carried has a different identity and a different worker script, so this
+build cannot start it (see "Worker launch contract"): after an upgrade the
+current runtime has to be materialized first (`hachidori setup`, or Materialize
+and Activate in the manager), which reuses already verified models.
 
 The runtime identity is `<flavor>-<first 16 hex of sha256(canonical spec JSON)>`,
 for example `cu128-…` / `cpu-…`. Any semantic change (lock, versions, worker,
@@ -679,6 +738,18 @@ deletes directories. `serve` and the browser `dashboard` do not offer it, and
   status authority). After an activation under a running worker the active model
   reads "applies on restart" and the restart-required banner offers the explicit
   Restart.
+- Every action is accepted at once and runs in the background; the manager
+  shows the phases of its plan, the current step and, where the step has a
+  total, bytes and a percentage (an indeterminate bar otherwise), then keeps
+  the outcome on screen (DONE, or FAILED with the phase, the step, the cause,
+  the active-state note and a Diagnostics link) until the next action. The
+  Runtime page shows the same panel, the worker's startup phases, and a failed
+  worker's phase, class, hint and stderr tail.
+- With the application hosted, the Runtime page's Start, Stop and Restart are
+  the application's (`app.Controller`), so a restart after an activation or a
+  failure binds the active runtime and model, never the runtime the page was
+  created for. "Model" on the Runtime page is what that runtime is configured
+  for ("serving now" only when READY); "Next start" is the activation record.
 - Materialize and Repair use the same staged, verified path as setup and never
   write `state/active-runtime.json`; a failure leaves the active state as it
   was. Materialize may run beside a running worker; Repair is refused while

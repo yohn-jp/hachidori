@@ -228,6 +228,13 @@ func WorkerConfig(h home.Home, log io.Writer) (worker.Config, Runtime, error) {
 		Log:            log,
 		StartTimeout:   10 * time.Minute,
 		RequestTimeout: 2 * time.Minute,
+		// The worker script is half of the launch contract (its command line
+		// and protocol); a runtime materialized by an older build keeps its
+		// older script. The supervisor refuses such a launch with the cause
+		// instead of starting a process that can only die in argument
+		// parsing. The binding itself still comes up, so the dashboard can
+		// show why and offer the recovery (Materialize, Activate, Restart).
+		Preflight: func() error { return setup.CheckWorkerContract(a, rm) },
 	}
 	return cfg, Runtime{Home: h.Root, Runtime: a.Runtime, ModelID: model.ID, Model: a.Model, Device: a.Device}, nil
 }

@@ -38,6 +38,12 @@ func TestHelperWorker(t *testing.T) {
 	case "die":
 		fmt.Fprintln(os.Stderr, "Traceback: boom")
 		os.Exit(1)
+	case "phase_die":
+		// Reports how far it got, then exits with an argparse-like status.
+		emit(map[string]any{"event": "phase", "phase": "importing"})
+		emit(map[string]any{"event": "phase", "phase": "loading"})
+		fmt.Fprintln(os.Stderr, "loading failed")
+		os.Exit(2)
 	case "garbage":
 		fmt.Println("Warning: CUDA requested but not available")
 		time.Sleep(time.Minute)
@@ -173,6 +179,56 @@ func TestStartupFailureClasses(t *testing.T) {
 	if !errors.As(err, &f) || f.Class != ClassStartup {
 		t.Errorf("missing interpreter: err = %v", err)
 	}
+}
+
+// Everything a worker wrote before it exited is applied before the exit is
+// judged: its phases are reported and a fatal class is not replaced by a
+// generic startup failure. The exit used to race with the queued messages.
+func TestStartupExitAppliesMessagesWrittenBeforeIt(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		var phases []string
+		// A slow observer lets the process exit while its later messages
+		// are still queued, so the exit and the queue are both ready.
+		_, err := Start(context.Background(), fakeConfig(t, "phase_die"), func(ph string) {
+			phases = append(phases, ph)
+			time.Sleep(20 * time.Millisecond)
+		})
+		var f *Failure
+		if !errors.As(err, &f) || f.Class != ClassCrash || f.Message != "worker exited: exit status 2" ||
+			fmt.Sprint(phases) != "[importing loading]" || len(f.Stderr) != 1 || f.Stderr[0] != "loading failed" {
+			t.Fatalf("run %d: err = %#v phases = %v", i, err, phases)
+		}
+		_, err = Start(context.Background(), fakeConfig(t, "fatal"), func(string) { time.Sleep(20 * time.Millisecond) })
+		if !errors.As(err, &f) || f.Class != ClassModelLoad || f.Message != "no weights" {
+			t.Fatalf("run %d: fatal: err = %#v", i, err)
+		}
+	}
+}
+
+// A worker that dies before it says hello is a startup failure (for example
+// an unusable command line), and its stderr names why.
+func TestExitBeforeHelloIsAStartupFailureWithStderr(t *testing.T) {
+	s := NewSupervisor(Config{Python: os.Args[0], Args: []string{"-test.run=^TestHelperNoHello$"},
+		Env: []string{"HACHIDORI_FAKE_NOHELLO=1"}, StartTimeout: 5 * time.Second, RequestTimeout: time.Second}, DefaultPolicy)
+	s.Run(context.Background())
+	snap := s.Snapshot()
+	f := snap.LastFailure
+	if snap.State != StateFailed || snap.Phase != "spawning" || f == nil || f.Class != ClassStartup ||
+		f.Message != "worker exited: exit status 2" || len(f.Stderr) == 0 ||
+		!strings.Contains(f.Stderr[len(f.Stderr)-1], "unrecognized arguments: --provider laya") {
+		t.Fatalf("snapshot = %+v failure = %+v", snap, f)
+	}
+}
+
+// TestHelperNoHello is not a real test: a fake worker with a command line it
+// does not understand, as argparse reports it.
+func TestHelperNoHello(t *testing.T) {
+	if os.Getenv("HACHIDORI_FAKE_NOHELLO") == "" {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "usage: hachidori_worker.py [-h] --model-dir MODEL_DIR")
+	fmt.Fprintln(os.Stderr, "hachidori_worker.py: error: unrecognized arguments: --provider laya")
+	os.Exit(2)
 }
 
 func TestDieCapturesStderr(t *testing.T) {

@@ -384,7 +384,13 @@ type modelManager struct{ ctl func() *app.Controller }
 func (m modelManager) State() dashboard.ModelsState {
 	c := m.ctl()
 	snap := c.Snapshot()
-	st := dashboard.ModelsState{RestartRequired: snap.RestartRequired, Busy: modelOp(snap.Operation), Last: modelOp(snap.Maintenance)}
+	st := dashboard.ModelsState{RestartRequired: snap.RestartRequired, Busy: modelOp(snap.Operation, snap.Home), Last: modelOp(snap.Maintenance, snap.Home)}
+	if len(snap.Checks) > 0 {
+		st.Checks = make(map[string]dashboard.ModelCheck, len(snap.Checks))
+		for k, c := range snap.Checks {
+			st.Checks[k] = dashboard.ModelCheck{OK: c.OK, Msg: c.Message, Time: c.Time}
+		}
+	}
 	inv, err := c.Inventory(false)
 	if err != nil {
 		st.Err = err.Error()
@@ -393,13 +399,22 @@ func (m modelManager) State() dashboard.ModelsState {
 	return st
 }
 
-func modelOp(o *app.Operation) *dashboard.ModelOp {
+// modelOp is the dashboard's view of one application action. It restates the
+// controller's operation (plan, phase, step and progress); nothing is added.
+func modelOp(o *app.Operation, root string) *dashboard.ModelOp {
 	if o == nil {
 		return nil
 	}
-	op := &dashboard.ModelOp{Kind: o.Kind, Device: o.Device, Model: o.Model, Target: o.Target, Phase: o.Phase}
+	op := &dashboard.ModelOp{Kind: o.Kind, Device: o.Device, Model: o.Model, Target: o.Target, Phase: o.Phase,
+		Plan: o.Plan, Phases: o.Phases, Started: o.Started, Finished: o.Finished}
+	if p := o.Progress; p != nil {
+		op.Step, op.Detail, op.Done, op.Total, op.Item, op.Items = string(p.Step), p.Detail, p.Done, p.Total, p.Item, p.Items
+	}
 	if o.Failure != nil {
-		op.Failure = o.Failure.Message
+		op.Failure, op.FailurePhase, op.FailureStep = o.Failure.Message, o.Failure.Phase, o.Failure.Step
+	}
+	if root != "" {
+		op.Log = app.SetupLogPath(root)
 	}
 	return op
 }
@@ -415,6 +430,8 @@ func (m modelManager) Activate(device, model string) error {
 	return m.ctl().Activate(app.SetupParams{Device: device, Model: model})
 }
 func (m modelManager) Remove(kind, id string) error { return m.ctl().Remove(kind, id) }
+func (m modelManager) Start() error                 { return m.ctl().Start() }
+func (m modelManager) Stop() error                  { return m.ctl().Stop() }
 func (m modelManager) Restart() error               { return m.ctl().Restart() }
 
 // settingsStore is the desktop's settings authority: the desktop preference

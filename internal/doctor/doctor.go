@@ -102,6 +102,9 @@ func Run(homeFlag string, out io.Writer) bool {
 		} else if got, _ := setup.FileSHA256(h.WorkerScript(a)); got != rm.Worker["worker/hachidori_worker.py"] {
 			err = fmt.Errorf("worker script digest mismatch")
 		}
+		if err == nil {
+			err = setup.CheckWorkerContract(a, rm)
+		}
 	}
 	if err != nil {
 		report(Check{Name: "runtime", Status: "fail", Owner: "hachidori", Class: RuntimeInvalid, Detail: err.Error()})

@@ -89,7 +89,8 @@ type fixture struct {
 	devices   []string
 	models    []string
 	setupErr  error
-	gate      chan struct{} // when non-nil, setup blocks until it is closed
+	progress  *setup.Progress // when non-nil, setup reports it inside its first phase
+	gate      chan struct{}   // when non-nil, setup blocks until it is closed
 	setups    atomic.Int32
 	opens     atomic.Int32
 }
@@ -117,24 +118,27 @@ func newFixture(t *testing.T, plan Plan) *fixture {
 	f.ctl = app.New(app.Config{
 		Home: selected,
 		Open: func(string) (app.Runtime, error) { f.opens.Add(1); return f.rt, nil },
-		Setup: func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error {
+		Setup: func(root, device, model string, log io.Writer, obs *setup.Observer) error {
 			f.setups.Add(1)
 			f.mu.Lock()
 			f.devices = append(f.devices, device)
 			f.models = append(f.models, model)
-			gate, serr := f.gate, f.setupErr
+			gate, serr, prog := f.gate, f.setupErr, f.progress
 			f.mu.Unlock()
-			onPhase(setup.PhasePreparing)
+			obs.OnPhase(setup.PhasePreparing)
+			if prog != nil {
+				obs.OnProgress(*prog)
+			}
 			io.WriteString(log, "setup log line\n")
 			if gate != nil {
 				<-gate
 			}
-			onPhase(setup.PhaseRuntime)
+			obs.OnPhase(setup.PhaseRuntime)
 			if serr != nil {
 				return serr
 			}
-			onPhase(setup.PhaseModel)
-			onPhase(setup.PhaseActivation)
+			obs.OnPhase(setup.PhaseModel)
+			obs.OnPhase(setup.PhaseActivation)
 			if err := os.MkdirAll(filepath.Join(root, "runtime"), 0o755); err != nil {
 				return err
 			}
@@ -313,6 +317,32 @@ func TestSelectValidateInstallReady(t *testing.T) {
 	}
 	if len(f.devices) != 1 || f.devices[0] != "cpu" || f.models[0] != setup.DefaultModel {
 		t.Fatalf("setup got devices %v models %v", f.devices, f.models)
+	}
+}
+
+// The setup step in flight, with its bytes only when it has a total, reaches
+// the screen; a failure names the phase it happened in.
+func TestInstallShowsTheCurrentStepAndFailurePhase(t *testing.T) {
+	f := newFixture(t, Plan{Mode: ModeFirstRun})
+	f.progress = &setup.Progress{Step: setup.StepDownload, Detail: "model.safetensors", Done: 300, Total: 1200, Item: 2, Items: 7}
+	f.gate = make(chan struct{})
+	f.setupErr = errors.New("uv sync: exit status 1")
+	f.selectDir(f.dir("Models"))
+	if err := f.flow.Install("cuda"); err != nil {
+		t.Fatal(err)
+	}
+	var v View
+	for i := 0; i < 400 && v.Step == nil; i++ {
+		time.Sleep(5 * time.Millisecond)
+		v = f.flow.View()
+	}
+	if want := (&StepView{Step: "downloading", Detail: "model.safetensors", Done: 300, Total: 1200, Item: 2, Items: 7}); v.Step == nil || *v.Step != *want {
+		t.Fatalf("step %+v, want %+v", v.Step, want)
+	}
+	close(f.gate)
+	v = f.waitStage(StageFailed)
+	if v.Failure == nil || v.Failure.Phase != "runtime" || v.Step != nil {
+		t.Fatalf("failure %+v step %+v", v.Failure, v.Step)
 	}
 }
 

@@ -52,6 +52,26 @@ html, body { height: 100%; }
 .last strong { color: var(--tone, var(--text)); font-size: var(--fs-label); letter-spacing: .06em; }
 .last .what { font-weight: 600; } .last .msg-text { overflow-wrap: anywhere; } .last time { margin-left: auto; color: var(--text-3); font-size: var(--fs-small); font-family: var(--mono); }
 
+/* long-running work: phases, the current step, and progress that is measured only when it can be */
+.last.op { display: grid; gap: var(--sp-2); }
+.op-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem var(--sp-3); }
+.op-head strong { color: var(--tone, var(--text)); font-size: var(--fs-label); letter-spacing: .06em; }
+.op-head .what { font-weight: 600; } .op-head .msg-text { overflow-wrap: anywhere; }
+.op-head time { margin-left: auto; color: var(--text-3); font-size: var(--fs-small); font-family: var(--mono); }
+.op-line { margin: 0; overflow-wrap: anywhere; }
+ol.stages { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: .25rem var(--sp-4); }
+ol.stages li { display: flex; align-items: center; gap: .4rem; color: var(--text-3); font-size: var(--fs-small); }
+ol.stages li::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; flex: none; }
+ol.stages li.done { color: var(--text-2); } ol.stages li.done::before { background: var(--ok); border-color: var(--ok); }
+ol.stages li.current { color: var(--text); font-weight: 600; } ol.stages li.current::before { background: var(--accent); border-color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+ol.stages li.failed { color: var(--bad); font-weight: 600; } ol.stages li.failed::before { background: var(--bad); border-color: var(--bad); }
+ol.stages li.skipped { text-decoration: line-through; }
+/* Without a total there is no percentage: a bar that only says "working". */
+.bar.progress.indeterminate > span { width: 35%; animation: indeterminate 1.4s ease-in-out infinite; }
+@keyframes indeterminate { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .bar.progress.indeterminate > span { width: 100%; animation: none; opacity: .4; } }
+.failure pre, .op pre { margin: 0; max-height: 14rem; overflow: auto; }
+
 /* metrics: numbers first, labels quiet */
 .metrics { display: flex; flex-wrap: wrap; gap: var(--sp-4) var(--sp-7); margin: 0; }
 .metric { min-width: 0; }
@@ -338,6 +358,39 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 <div class="slot" data-live="overview">{{template "overview" .}}</div>
 {{template "close" .Chrome}}{{end}}
 
+{{/* The operation in flight and the last one finished: phases, the current step, progress (determinate only when the step has a total), outcome. */}}
+{{define "op-panels"}}
+{{with .Problem}}<div class="last tone-bad" role="alert" id="active-problem"><strong>{{t "CANNOT START"}}</strong><span class="msg-text">{{t "The active runtime cannot be started by this version of Hachidori."}} {{.}}</span></div>{{end}}
+{{with .Busy}}{{template "op-busy" .}}{{end}}
+{{with .Last}}{{template "op-last" .}}{{end}}
+{{end}}
+
+{{define "op-busy"}}
+<div class="last op" role="status" aria-live="polite" id="models-busy">
+  <div class="op-head"><strong>{{t "RUNNING"}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}</span>{{with since .Started}}<time>{{t "running for"}} {{.}}</time>{{end}}</div>
+  <ol class="stages">{{range opStages .}}<li class="{{.Status}}"{{if eq .Status "current"}} aria-current="step"{{end}}>{{t .Label}}</li>{{end}}</ol>
+  {{if .Step}}
+  <p class="op-line">{{with phasePosition .}}{{t "phase"}} {{.}} · {{end}}{{t (stepLabel .Step)}} <span class="mono">{{.Detail}}</span>{{if .Items}} ({{.Item}} {{t "of"}} {{.Items}}){{end}}{{if .Determinate}} · {{bytesIn .Done}} {{t "of"}} {{bytesIn .Total}} ({{printf "%.0f" .Percent}}%){{end}}</p>
+  {{if .Determinate}}<div class="bar progress" role="progressbar" aria-label="{{t (stepLabel .Step)}}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{printf "%.0f" .Percent}}"><span style="width:{{printf "%.1f" .Percent}}%"></span></div>
+  {{else}}<div class="bar progress indeterminate" role="progressbar" aria-label="{{t (stepLabel .Step)}}"><span></span></div>{{end}}
+  {{else}}
+  <p class="op-line">{{with phasePosition .}}{{t "phase"}} {{.}} · {{end}}{{t "Working"}}</p>
+  <div class="bar progress indeterminate" role="progressbar" aria-label="{{t "Working"}}"><span></span></div>
+  {{end}}
+</div>
+{{end}}
+
+{{define "op-last"}}
+<div class="last op {{if .Failure}}tone-bad failure{{else}}tone-ok{{end}}" role="status" id="models-last">
+  <div class="op-head"><strong>{{if .Failure}}{{t "FAILED"}}{{else}}{{t "DONE"}}{{end}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}</span>{{with took .}}<time>{{t "took"}} {{.}}</time>{{end}}</div>
+  <ol class="stages">{{range opStages .}}<li class="{{.Status}}">{{t .Label}}</li>{{end}}</ol>
+  {{with .Failure}}
+  <p class="op-line"><span class="bad-t">{{t "Failed in phase"}} {{with $.FailurePhase}}<strong>{{t (phaseLabel .)}}</strong>{{end}}{{with $.FailureStep}} · {{t (stepLabel .)}}{{end}}</span>: <span class="mono">{{.}}</span></p>
+  <p class="note">{{t "The active runtime and model were not changed."}} <a href="/diagnostics">{{t "Open Diagnostics"}}</a>{{with $.Log}} · {{t "action output:"}} <span class="mono">{{.}}</span>{{end}}</p>
+  {{end}}
+</div>
+{{end}}
+
 {{define "live"}}<div data-live="shell">{{template "shell" .Chrome}}</div>
 <div data-live="statusbar">{{template "statusbar" .Chrome}}</div>
 <div data-live="overview">{{template "overview" .}}</div>
@@ -346,15 +399,21 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 {{define "overview"}}{{$w := .S.Worker}}{{$i := $w.Info}}{{$a := $w.Accelerator}}
 {{template "last" .Last}}
+{{with .Next}}{{template "op-panels" .}}{{end}}
 
 <section class="readiness-panel tone-{{.Rt.Tone}}" aria-labelledby="rd-h">
   <div>
     <h2 class="vh" id="rd-h">{{t "Inference runtime"}}</h2>
     <p class="state-word"><span class="dot"></span>{{if $w.Ready}}READY{{else}}{{$w.State}}{{end}}</p>
     <p class="state-sub">{{t "phase"}} {{$w.Phase}}{{with $w.ReadySince}} {{t "· ready since"}} {{.}}{{end}}</p>
+    {{with workerStages $w}}
+    <ol class="stages" id="worker-stages" aria-label="{{t "Worker lifecycle"}}">{{range .}}<li class="{{.Status}}"{{if eq .Status "current"}} aria-current="step"{{end}}>{{t .Label}}</li>{{end}}</ol>
+    {{if and (not $w.Ready) (ne $w.State "failed")}}<div class="bar progress indeterminate" role="progressbar" aria-label="{{t (workerPhaseWord $w.Phase)}}"><span></span></div>{{end}}
+    {{end}}
   </div>
   <dl class="identity">
-    <div><dt>{{t "Model"}}</dt><dd class="model">{{.S.Runtime.ModelID}}</dd></div>
+    <div><dt>{{t "Model"}}</dt><dd class="model">{{.S.Runtime.ModelID}}<span class="sub">{{if $w.Ready}}{{t "serving now"}}{{else}}{{t "configured for this runtime, not serving"}}{{end}}</span></dd></div>
+    {{with .Next}}{{if .Model}}<div id="next-start"><dt>{{t "Next start"}}</dt><dd class="model">{{.Model}} · {{.Device}}<span class="sub">{{if .Problem}}<span class="bad-t">{{t "cannot start"}}</span>{{else if .Differs}}<span class="warn-t">{{t "differs from this runtime: choose Restart to apply it"}}</span>{{else}}{{t "the active model and device"}}{{end}}</span></dd></div>{{end}}{{end}}
     <div><dt>{{t "Accelerator"}}</dt><dd>{{get $i "device_name"}}<span class="sub">{{with .Rt.Device}}{{.}} · {{end}}{{t "requested"}} {{.S.Runtime.Device}}</span></dd></div>
     <div><dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd></div>
     <div><dt>{{t "Runtime"}}</dt><dd>{{.S.Runtime.Runtime}}<span class="sub">{{t "supervision"}} {{if .Running}}{{t "running"}}{{else}}<span class="bad-t">{{t "not running"}}</span>{{end}} {{t "· API up"}} <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></span></dd></div>
@@ -366,6 +425,18 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <form method="post" action="/runtime/stop" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Stop"}}</button></form>
   </div>
 </section>
+
+{{with failureOf $w}}
+<section class="attention tone-bad failure" id="worker-failure" aria-labelledby="wf-h">
+  <h2 id="wf-h">{{t "Worker failed while:"}} {{t .PhaseWord}}</h2>
+  <p class="mono">{{.Class}}: {{.Message}}</p>
+  <p>{{t .Hint}}</p>
+  <p class="note">{{t "Materialized models are unaffected. To run a different pair, Activate it in Settings and choose Restart."}}</p>
+  {{if .Stderr}}<pre>{{range .Stderr}}{{.}}
+{{end}}</pre>{{end}}
+  <p class="note"><a href="/diagnostics#worker-failure">{{t "Open Diagnostics"}}</a> {{t "for the complete worker output."}}</p>
+</section>
+{{end}}
 
 <div id="diagnostics">
 {{with alerts .}}
@@ -477,8 +548,9 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <form method="post" action="/settings/models/restart" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><button type="submit" class="btn primary">{{t "Restart runtime"}}</button></form>
   </div>
   {{end}}
+  {{with .Inventory.ActiveProblem}}<div class="last tone-bad" role="alert" id="active-problem"><strong>{{t "CANNOT START"}}</strong><span class="msg-text">{{t "The active runtime cannot be started by this version of Hachidori."}} {{.}}</span></div>{{end}}
   {{with .Busy}}
-  <div class="last" role="status" id="models-busy"><strong>RUNNING</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}{{with .Phase}} {{t "· phase:"}} {{.}}{{end}}</span></div>
+  {{template "op-busy" .}}
   <script>
   // While a model/runtime operation runs, refresh only this section (when
   // it changed) so focus and the rest of Settings stay where they are.
@@ -491,13 +563,11 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
         if (!src.querySelector("#models-busy")) clearInterval(t);
         if (src.innerHTML !== dst.innerHTML) dst.innerHTML = src.innerHTML;
       }).catch(function () {});
-    }, 3000);
+    }, 1500);
   })();
   </script>
   {{end}}
-  {{with .Last}}
-  <div class="last {{if .Failure}}tone-bad{{else}}tone-ok{{end}}" role="status" id="models-last"><strong>{{if .Failure}}FAILED{{else}}DONE{{end}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}{{with .Failure}} · {{.}}{{end}}</span></div>
-  {{end}}
+  {{with .Last}}{{template "op-last" .}}{{end}}
   {{with .Inventory.ActiveErr}}<p class="msg bad" role="alert">{{t "Activation record:"}} {{.}}</p>{{end}}
 
   <h3>{{t "Runtimes"}}</h3>

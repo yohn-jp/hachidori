@@ -22,16 +22,16 @@ import (
 func TestControllerSetupModelSelection(t *testing.T) {
 	var mu sync.Mutex
 	var gotModels []string
-	record := func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error {
+	record := func(root, device, model string, log io.Writer, obs *setup.Observer) error {
 		mu.Lock()
 		gotModels = append(gotModels, model)
 		mu.Unlock()
-		onPhase(setup.PhasePreparing)
+		obs.OnPhase(setup.PhasePreparing)
 		if _, err := setup.LookupModel(model); err != nil {
 			return err
 		}
-		onPhase(setup.PhaseModel)
-		onPhase(setup.PhaseActivation)
+		obs.OnPhase(setup.PhaseModel)
+		obs.OnPhase(setup.PhaseActivation)
 		return nil
 	}
 
@@ -63,8 +63,8 @@ func TestControllerSetupModelSelection(t *testing.T) {
 
 	// A model outside the catalog fails as a setup failure after the real
 	// phases that were entered; nothing is invented and the failure is kept.
-	e.c.cfg.Setup = func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error {
-		return setup.RunObserved(home.Home{Root: t.TempDir()}, device, model, log, onPhase)
+	e.c.cfg.Setup = func(root, device, model string, log io.Writer, obs *setup.Observer) error {
+		return setup.RunObserved(home.Home{Root: t.TempDir()}, device, model, log, obs)
 	}
 	if err := e.c.Setup(SetupParams{Device: "cpu", Model: "not-in-catalog"}); err != nil {
 		t.Fatal(err)
@@ -129,25 +129,25 @@ func newMaintEnv(t *testing.T) *maintEnv {
 				rec("inspect " + root)
 				return setup.Inventory{}
 			},
-			Materialize: func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error {
+			Materialize: func(root, device, model string, log io.Writer, obs *setup.Observer) error {
 				rec("materialize " + device + " " + model)
-				onPhase(setup.PhasePreparing)
+				obs.OnPhase(setup.PhasePreparing)
 				if e.gate != nil {
 					<-e.gate
 				}
-				onPhase(setup.PhasePublish)
+				obs.OnPhase(setup.PhasePublish)
 				return e.err
 			},
-			Repair: func(root, device, model string, log io.Writer, onPhase func(setup.Phase)) error {
+			Repair: func(root, device, model string, log io.Writer, obs *setup.Observer) error {
 				rec("repair " + device + " " + model)
 				return e.err
 			},
-			Activate: func(root, device, model string, log io.Writer) (bool, error) {
+			Activate: func(root, device, model string, log io.Writer, obs *setup.Observer) (bool, error) {
 				rec("activate " + device + " " + model)
 				return e.changed && e.err == nil, e.err
 			},
-			Verify: func(root, kind, id string) error { rec("verify " + kind + " " + id); return e.err },
-			Remove: func(root, kind, id string) error { rec("remove " + kind + " " + id); return e.err },
+			Verify: func(root, kind, id string, obs *setup.Observer) error { rec("verify " + kind + " " + id); return e.err },
+			Remove: func(root, kind, id string, obs *setup.Observer) error { rec("remove " + kind + " " + id); return e.err },
 		},
 	})
 	t.Cleanup(func() {
@@ -182,7 +182,7 @@ func TestActivateReportsRestartRequiredWithoutRestarting(t *testing.T) {
 	if err := e.c.Activate(SetupParams{Device: "cpu", Model: "laya-base"}); err != nil {
 		t.Fatal(err)
 	}
-	s := e.c.Snapshot()
+	s := waitIdle(t, e.c)
 	if !s.RestartRequired || s.Maintenance == nil || s.Maintenance.Kind != OpActivate || s.Maintenance.Failure != nil {
 		t.Fatalf("snapshot %+v", s)
 	}
@@ -213,6 +213,9 @@ func TestActivateReportsRestartRequiredWithoutRestarting(t *testing.T) {
 	if err := e.c.Remove(setup.KindModel, "laya-base"); err != nil {
 		t.Fatalf("Remove after restart: %v", err)
 	}
+	if s := waitIdle(t, e.c); s.Maintenance == nil || s.Maintenance.Kind != OpRemove || s.Maintenance.Failure != nil {
+		t.Fatalf("remove outcome %+v", s.Maintenance)
+	}
 }
 
 // An unchanged activation requires no restart; with no worker running the
@@ -223,7 +226,7 @@ func TestActivateStoppedAndUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.changed = false
-	if err := e.c.Activate(SetupParams{Device: "cpu"}); err != nil || e.c.Snapshot().RestartRequired {
+	if err := e.c.Activate(SetupParams{Device: "cpu"}); err != nil || waitIdle(t, e.c).RestartRequired {
 		t.Fatalf("unchanged activation: %v", err)
 	}
 	e.changed = true
@@ -233,7 +236,7 @@ func TestActivateStoppedAndUnchanged(t *testing.T) {
 	if err := e.c.Activate(SetupParams{Device: "cuda"}); err != nil {
 		t.Fatal(err)
 	}
-	if e.c.Snapshot().RestartRequired {
+	if waitIdle(t, e.c).RestartRequired {
 		t.Fatal("restart required with no worker running")
 	}
 	if err := e.c.Start(); err != nil || len(e.runtimes()) != 2 {
@@ -249,13 +252,16 @@ func TestActivateStoppedAndUnchanged(t *testing.T) {
 func TestMaintenanceFailureDoesNotFailApplication(t *testing.T) {
 	e := newMaintEnv(t)
 	e.err = errors.New("boom")
-	if err := e.c.Activate(SetupParams{Device: "cpu"}); err == nil {
-		t.Fatal("failure not returned")
+	if err := e.c.Activate(SetupParams{Device: "cpu"}); err != nil {
+		t.Fatal(err)
 	}
-	if err := e.c.Verify(setup.KindRuntime, "cpu-x"); err == nil {
-		t.Fatal("verify failure not returned")
+	if s := waitIdle(t, e.c); s.Maintenance == nil || s.Maintenance.Kind != OpActivate || s.Maintenance.Failure == nil {
+		t.Fatalf("activate failure not reported: %+v", s.Maintenance)
 	}
-	s := e.c.Snapshot()
+	if err := e.c.Verify(setup.KindRuntime, "cpu-x"); err != nil {
+		t.Fatal(err)
+	}
+	s := waitIdle(t, e.c)
 	if s.State != Installed || s.Failure != nil || s.Last != nil || s.RestartRequired ||
 		s.Maintenance == nil || s.Maintenance.Kind != OpVerify || s.Maintenance.Failure == nil || s.Maintenance.Target != "runtime cpu-x" {
 		t.Fatalf("snapshot %+v", s)
