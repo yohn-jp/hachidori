@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,9 @@ func TestVisualSystemContract(t *testing.T) {
 		// token families
 		"--fs-display:", "--fs-title:", "--fs-heading:", "--fs-body:", "--fs-small:", "--fs-label:", "--fs-code:",
 		"--sp-1:", "--sp-7:", "--r:", "--r-lg:", "--ctl-h:", "--measure:", "--ws-max:",
-		"--focus:", "--focus-ring:", "--dur:", "--ease:",
+		"--focus:", "--focus-ring:", "--dur:", "--ease:", "--col-min:", "--shadow-pop:",
+		// composition primitives: sections and facts, no containers
+		".section {", ".spec {", ".id {",
 		".tone-ok", ".tone-warn", ".tone-bad", ".tone-idle", ".tone-active",
 		// text scaling follows the operator's preference
 		"html { font-size: 100%; }", "font: var(--fs-body)/1.5 var(--font);",
@@ -37,6 +40,49 @@ func TestVisualSystemContract(t *testing.T) {
 	for _, banned := range []string{"zoom", "backdrop-filter", "blur(", "linear-gradient", "-apple-system", "SF Mono"} {
 		if strings.Contains(css, banned) {
 			t.Errorf("visual system uses %q", banned)
+		}
+	}
+}
+
+// The visual system composes with type, spacing and hairline rules, not
+// containers: no state edge, glow, ordinary-content shadow, or card chrome in
+// the shared primitives, and a machine identity is never given a width that
+// could squeeze it into a character-wide column.
+func TestVisualSystemHasNoCardChrome(t *testing.T) {
+	css := string(CSS())
+	for _, banned := range []string{"inset 3px", "box-shadow: inset", "border-left: 3px", "0 0 0 5px", "word-break: break-all", "radial-gradient", "conic-gradient"} {
+		if strings.Contains(css, banned) {
+			t.Errorf("visual system uses %q", banned)
+		}
+	}
+	// The only elevation tokens: the focus ring and the popover shadow.
+	for _, rule := range regexp.MustCompile(`[^;{}]*box-shadow:[^;}]*`).FindAllString(css, -1) {
+		if !strings.Contains(rule, "var(--focus-ring)") && !strings.Contains(rule, "--shadow-pop") {
+			t.Errorf("shadow outside focus and popover: %q", strings.TrimSpace(rule))
+		}
+	}
+	for _, role := range []string{".section", ".spec", ".id"} {
+		m := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(role) + ` \{([^}]*)\}`).FindStringSubmatch(css)
+		if m == nil {
+			t.Fatalf("no %s rule", role)
+		}
+		for _, banned := range []string{"background", "border-radius", "box-shadow", "box-shadow"} {
+			if strings.Contains(m[1], banned) {
+				t.Errorf("%s rule carries %s", role, banned)
+			}
+		}
+		if role == ".id" && regexp.MustCompile(`(^|[^-])(width|max-width)\s*:`).MatchString(m[1]) {
+			t.Error(".id sets a width")
+		}
+	}
+	// A state fills nothing: messages color their text and rule only.
+	if m := regexp.MustCompile(`\.msg\.(bad|ok|warn) \{([^}]*)\}`).FindAllStringSubmatch(css, -1); len(m) != 3 {
+		t.Fatal("message state rules missing")
+	} else {
+		for _, r := range m {
+			if strings.Contains(r[2], "background") {
+				t.Errorf(".msg.%s fills the surface", r[1])
+			}
 		}
 	}
 }

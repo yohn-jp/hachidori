@@ -1,6 +1,12 @@
 /* Hachidori visual system: the one token and primitive definition shared by
    every desktop surface (workstation and first run). docs/desktop.md is the
-   contract; change a role here, never per surface. */
+   contract; change a role here, never per surface.
+
+   Composition comes before containers: the page is the canvas, and hierarchy
+   is carried by type, spacing, alignment and hairline rules (.section). There
+   is no card chrome, no state edge, no gradient, glow or glass, and no shadow
+   on ordinary content; elevation is reserved for a surface that sits above the
+   page (--shadow-pop: dialogs and popovers). */
 
 /* ---- color roles (dark is the default; light follows the OS) ----------- */
 :root {
@@ -31,10 +37,12 @@
   --sp-1: .25rem; --sp-2: .5rem; --sp-3: .75rem; --sp-4: 1rem; --sp-5: 1.5rem; --sp-6: 2rem; --sp-7: 2.5rem;
 
   /* geometry */
-  --r: 6px; --r-lg: 8px; --r-pill: 99px;
+  --r: 6px; --r-lg: 8px; --r-pill: 99px;  /* radius is for controls and transient surfaces, never for grouping content */
   --ctl-h: 2rem;           /* buttons, inputs, selects: one control height */
   --measure: 72ch;         /* prose measure: ledes, notes, explanations */
   --ws-max: 88rem;         /* workspace content width on wide windows */
+  --col-min: 14rem;        /* narrowest column that may hold a label and a machine identity */
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, .32);  /* the only elevation: dialogs and popovers */
 
   /* focus and motion */
   --focus: 2px solid var(--accent);
@@ -52,6 +60,7 @@
     --bad: #c42b2b; --bad-soft: rgba(196, 43, 43, .08);
     --idle: #646d78; --idle-soft: rgba(100, 109, 120, .1);
     --track: #e3e6ea;
+    --shadow-pop: 0 8px 24px rgba(21, 24, 28, .16);
   }
 }
 
@@ -74,6 +83,11 @@ h3 { font-size: var(--fs-label); font-weight: 600; letter-spacing: .07em; text-t
 p { margin: 0; }
 a { color: var(--accent); text-underline-offset: 2px; }
 code, pre, .mono { font-family: var(--mono); font-size: .92em; }
+/* A machine identity (model, runtime, digest, endpoint): one monospace
+   treatment, wrapped at the container edge. It is never given a width of its
+   own, so it cannot be squeezed into a character-wide column. */
+.id { font-family: var(--mono); font-size: var(--fs-code); font-weight: 500; overflow-wrap: break-word; hyphens: none; }
+.id .sub { font-family: var(--font); font-size: var(--fs-small); }
 .muted { color: var(--text-2); } .faint { color: var(--text-3); }
 .ok-t { color: var(--ok); } .warn-t { color: var(--warn); } .bad-t { color: var(--bad); }
 .num { font-variant-numeric: tabular-nums; }
@@ -97,14 +111,26 @@ code, pre, .mono { font-family: var(--mono); font-size: .92em; }
 .badge { display: inline-flex; align-items: center; gap: .35rem; padding: .125rem var(--sp-2); border-radius: var(--r-pill); font-size: var(--fs-label); font-weight: 650; letter-spacing: .05em;
   text-transform: uppercase; white-space: nowrap; color: var(--tone, var(--idle)); background: var(--tone-soft, var(--idle-soft)); }
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.state-word { display: flex; align-items: center; gap: .6rem; font-size: var(--fs-display); font-weight: 700; line-height: 1.1; letter-spacing: .04em; text-transform: uppercase; color: var(--tone); }
-.state-word .dot { width: 12px; height: 12px; box-shadow: 0 0 0 5px var(--tone-soft); }
-.state-word.compact { font-size: var(--fs-value); gap: var(--sp-2); letter-spacing: .06em; }
-.state-word.compact .dot { width: 8px; height: 8px; box-shadow: none; }
-.msg { padding: var(--sp-2) var(--sp-3); border-radius: var(--r); border: 1px solid var(--line); background: var(--surface); overflow-wrap: anywhere; max-width: var(--ws-max); }
-.msg.bad { border-color: color-mix(in srgb, var(--bad) 60%, var(--line)); background: var(--bad-soft); color: var(--bad); }
-.msg.ok { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: var(--ok-soft); }
-.msg.warn { border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); background: var(--warn-soft); }
+.state-word { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-figure); font-weight: 700; line-height: 1.15; letter-spacing: .05em; text-transform: uppercase; color: var(--tone); }
+.state-word .dot { width: 10px; height: 10px; }
+.state-word.compact { font-size: var(--fs-value); letter-spacing: .06em; }
+.state-word.compact .dot { width: 8px; height: 8px; }
+/* A message colors its text and rule by state; it never fills the surface. */
+.msg { padding: var(--sp-2) var(--sp-3); border-radius: var(--r); border: 1px solid var(--line); overflow-wrap: anywhere; max-width: var(--ws-max); }
+.msg.bad { border-color: var(--bad); color: var(--bad); }
+.msg.ok { border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); }
+.msg.warn { border-color: color-mix(in srgb, var(--warn) 60%, var(--line)); }
+
+/* ---- composition ----------------------------------------------------------
+   .section   a group on the page canvas: a hairline rule, then its content
+   .spec      label/value facts in a stable column grid (technical state)
+   Neither has a fill, radius, shadow or state edge. */
+.section { display: grid; gap: var(--sp-3); align-content: start; min-width: 0; padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+.spec { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-min)), 1fr)); gap: var(--sp-3) var(--sp-6); margin: 0; }
+.spec > div { min-width: 0; }
+.spec dt { font-size: var(--fs-label); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+.spec dd { margin: .1rem 0 0; font-weight: 560; overflow-wrap: break-word; }
+.spec dd .sub { display: block; font-weight: 400; }
 
 /* ---- controls ------------------------------------------------------------- */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: var(--ctl-h); padding: .3rem .85rem; border-radius: var(--r); border: 1px solid var(--line-2);
@@ -152,6 +178,7 @@ pre { margin: 0; padding: var(--sp-3); background: var(--inset); border: 1px sol
 @media (forced-colors: active) {
   :focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
   .badge, .msg, .btn { border: 1px solid CanvasText; }
+  .section { border-top-color: CanvasText; }
   .btn.primary { border-color: Highlight; }
   .dot, .badge::before { background: CanvasText; forced-color-adjust: none; }
   [aria-current] { outline: 2px solid Highlight; outline-offset: -2px; }

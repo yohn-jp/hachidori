@@ -6,7 +6,7 @@
 {{template "last" .Last}}
 {{with .Upd}}
 <div id="updates-region">
-<section class="region" id="updates-installed" aria-labelledby="ui-h">
+<section class="region section" id="updates-installed" aria-labelledby="ui-h">
   <div class="region-h"><h2 id="ui-h">{{t "Installed"}}</h2><a href="/settings">{{t "Settings"}}</a></div>
   <dl class="kv">
     <dt>{{t "Installed version"}}</dt><dd class="mono" id="updates-installed-version">{{if .Installed.Known}}{{.Installed.Version}}{{else}}{{t "unknown (identified by an explicit check)"}}{{end}}</dd>
@@ -24,7 +24,7 @@
   <p class="note">{{t "Stable offers stable releases (X.Y.Z). Development offers development releases (X.Y.Z-dev) and stable releases. The channel only selects which releases an explicit check offers: it never downloads, installs or downgrades anything."}}</p>
 </section>
 
-<section class="region" id="updates-check" aria-labelledby="uc-h">
+<section class="region section" id="updates-check" aria-labelledby="uc-h">
   <div class="region-h"><h2 id="uc-h">{{t "Releases"}}</h2><span class="sub">{{t "yohn-jp/hachidori GitHub Releases"}}</span></div>
   <form method="post" action="/settings/updates/check" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><button type="submit" class="btn primary"{{if or .Busy .Checking}} disabled{{end}}>{{t "Check for updates"}}</button></form>
   <p class="note">{{t "Retrieves the release list from GitHub, only now. Results below stay until you check again, change the channel or restart Hachidori."}}</p>
@@ -54,7 +54,7 @@
   {{end}}
 </section>
 
-<section class="region" id="updates-op" aria-labelledby="uo-h">
+<section class="region section" id="updates-op" aria-labelledby="uo-h">
   <div class="region-h"><h2 id="uo-h">{{t "Download and verification"}}</h2></div>
   {{with .Op}}{{template "op-busy" .}}
   <script>
@@ -77,7 +77,7 @@
   {{else}}{{with .LastOp}}{{template "op-last" .}}{{with $.Upd.OpHint}}{{if $.Upd.LastOp.Failure}}<p class="note" id="updates-op-hint">{{t .}}</p>{{end}}{{end}}{{else}}<p class="note">{{t "No download in progress."}}</p>{{end}}{{end}}
 </section>
 
-<section class="region" id="updates-ready" aria-labelledby="ur-h">
+<section class="region section" id="updates-ready" aria-labelledby="ur-h">
   <div class="region-h"><h2 id="ur-h">{{t "Ready to install"}}</h2></div>
   {{with .Ready}}
   <dl class="kv">
@@ -98,7 +98,7 @@
 </section>
 
 {{with .Result}}
-<section class="region" id="updates-result" aria-labelledby="urs-h">
+<section class="region section" id="updates-result" aria-labelledby="urs-h">
   <div class="region-h"><h2 id="urs-h">{{t "Last update attempt"}}</h2></div>
   <div class="last {{if eq .Outcome "applied"}}tone-ok{{else}}tone-bad failure{{end}}" role="status">
     <strong>{{if eq .Outcome "applied"}}{{t "UPDATED"}}{{else if eq .Outcome "restart_failed"}}{{t "RESTART FAILED"}}{{else}}{{t "NOT UPDATED"}}{{end}}</strong>

@@ -266,7 +266,7 @@ func TestExperimentRunHierarchyAndEvidenceHandoff(t *testing.T) {
 		t.Fatalf("experiment %+v", x)
 	}
 	body := e.get(t, "/experiments").Body.String()
-	order := []string{`class="run tone-ok"`, `<span class="dot"></span>succeeded</p>`, `class="bar progress" role="progressbar"`,
+	order := []string{`class="run section tone-ok"`, `<span class="dot"></span>succeeded</p>`, `class="bar progress" role="progressbar"`,
 		`<dt>Accuracy</dt>`, `<dt>ECE <small>15 bins</small></dt>`, `<dt>Request errors</dt>`, `<dt>Cases</dt>`,
 		`action="/errors/use-experiment"`, `action="/experiments/export"`, `aria-label="Per question"`,
 		`data-keep="evidence-identity"`, "hachidori replay -dataset", `id="setup-h"`}
