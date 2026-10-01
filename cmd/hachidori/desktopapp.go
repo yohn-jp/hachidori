@@ -47,8 +47,12 @@ type desktopApp struct {
 	DashAddr string // loopback address of the window's origin
 	Setup    app.SetupFunc
 	// Open, when set, replaces the production worker binding (tests only).
-	Open   app.OpenFunc
-	Stderr io.Writer
+	Open app.OpenFunc
+	// OpenRuntime, when set, replaces app.ConfiguredRuntime beneath the real
+	// dashboard binding (tests only): it receives the desired-residents
+	// reader and the bind callback the production opener would use.
+	OpenRuntime func(requested func() ([]string, error), bind bindFunc) app.OpenFunc
+	Stderr      io.Writer
 
 	// Startup and PrefsPath back the tray and dashboard desktop preferences.
 	Startup   desktop.Startup
@@ -235,12 +239,14 @@ func (a *desktopApp) run() error {
 		if err != nil {
 			return nil, err
 		}
-		rt, err := app.WorkerRuntime(rctx, lf, worker.DefaultPolicy, func(b *app.WorkerBinding) {
+		// bind attaches the dashboard and the API handler to a newly opened
+		// runtime, whether it is the one worker or a resident set.
+		bind := func(status func() server.Status, lc dashboard.Lifecycle, dec server.Decider, info server.Runtime, started time.Time) {
 			h := home.Home{Root: root}
 			dash := dashboard.New(dashboard.Config{
 				APIAddr:   a.APIAddr,
-				Status:    b.Status,
-				Lifecycle: b.Lifecycle,
+				Status:    status,
+				Lifecycle: lc,
 				Doctor:    func(out io.Writer) bool { return doctor.Run(root, out) },
 				Tunnel:    tun,
 				PrefsPath: h.Path("state", "dashboard.json"),
@@ -249,6 +255,9 @@ func (a *desktopApp) run() error {
 				Desktop:    prefs,
 				Settings:   prefs,
 				Models:     models,
+				// The desired resident models are saved by the same settings
+				// authority and honored by the next open of the runtime.
+				Residency: prefs,
 				// Development Connection profiles persist in the same
 				// settings authority; the live tunnel is the one tun
 				// manager, shared by every runtime's dashboard.
@@ -266,8 +275,9 @@ func (a *desktopApp) run() error {
 			if prev != nil {
 				prev.StopExperiment()
 			}
-			sw.set(server.HandlerSince(b.Supervisor, b.Info, b.Started), dash)
-		})(root)
+			sw.set(server.HandlerSince(dec, info, started), dash)
+		}
+		rt, err := a.openRuntime(rctx, lf, prefs.Residents, bind)(root)
 		if err != nil {
 			lf.Close()
 			return nil, err
@@ -295,7 +305,10 @@ func (a *desktopApp) run() error {
 	if plan.Mode == firstrun.ModeLaunch || plan.Mode == firstrun.ModeResume {
 		selected = plan.Home
 	}
-	ctl = app.New(app.Config{Home: selected, Open: open, Setup: a.Setup, Installed: a.Env.IsInstalled})
+	ctl = app.New(app.Config{Home: selected, Open: open, Setup: a.Setup, Installed: a.Env.IsInstalled,
+		// The controller compares the desired residents with the bound set
+		// to tell the operator a restart is required; it keeps no copy.
+		Residents: func() []string { r, _ := prefs.Residents(); return r }})
 	flow := firstrun.New(firstrun.Config{Ctl: ctl, Plan: plan, Picker: a.Picker, Env: a.Env, Remember: a.Remember})
 	startFailed := false
 	if plan.Mode == firstrun.ModeLaunch {
@@ -371,6 +384,22 @@ func (a *desktopApp) run() error {
 	return err
 }
 
+// bindFunc attaches the dashboard and API handler to a newly opened runtime.
+type bindFunc func(status func() server.Status, lc dashboard.Lifecycle, dec server.Decider, info server.Runtime, started time.Time)
+
+// openRuntime is the production runtime binding of the desktop: the active
+// model's one worker, or a resident set when the saved selection adds
+// residents beside it (app.ConfiguredRuntime). requested is the settings
+// authority's desired residents, read at every open.
+func (a *desktopApp) openRuntime(parent context.Context, log io.Writer, requested func() ([]string, error), bind bindFunc) app.OpenFunc {
+	if a.OpenRuntime != nil {
+		return a.OpenRuntime(requested, bind)
+	}
+	return app.ConfiguredRuntime(parent, log, worker.DefaultPolicy, requested,
+		func(b *app.WorkerBinding) { bind(b.Status, b.Lifecycle, b.Supervisor, b.Info, b.Started) },
+		func(s *app.ResidentSet) { bind(s.Status, s, s, s.Runtime(), s.Started()) })
+}
+
 // dashboardPathPicker exposes the native picker to the dashboard when it can
 // choose files, translating a dismissed dialog to the dashboard's
 // cancellation. A folder-only picker leaves typed paths.
@@ -410,7 +439,7 @@ type modelManager struct{ ctl func() *app.Controller }
 func (m modelManager) State() dashboard.ModelsState {
 	c := m.ctl()
 	snap := c.Snapshot()
-	st := dashboard.ModelsState{RestartRequired: snap.RestartRequired, Busy: modelOp(snap.Operation, snap.Home), Last: modelOp(snap.Maintenance, snap.Home)}
+	st := dashboard.ModelsState{RestartRequired: snap.RestartRequired, ResidencyChanged: snap.ResidencyChanged, Busy: modelOp(snap.Operation, snap.Home), Last: modelOp(snap.Maintenance, snap.Home)}
 	if len(snap.Checks) > 0 {
 		st.Checks = make(map[string]dashboard.ModelCheck, len(snap.Checks))
 		for k, c := range snap.Checks {

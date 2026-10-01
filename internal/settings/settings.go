@@ -88,6 +88,31 @@ func Models() []string {
 	return ids
 }
 
+// NormalizeResidents validates the additional resident selection and returns
+// it in catalog order without duplicates. Only stable Hachidori catalog model
+// IDs are accepted; there is no way to name a repository or revision. The
+// active model is not special-cased here: it is always the default resident
+// whatever is selected, and selecting it again adds nothing.
+func NormalizeResidents(ids []string) ([]string, error) {
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			return nil, errors.New("a resident model must be named by its catalog ID")
+		}
+		if _, err := setup.LookupModel(id); err != nil {
+			return nil, err
+		}
+		want[id] = true
+	}
+	var out []string
+	for _, id := range Models() {
+		if want[id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
 // ValidateLocale accepts an unset locale ("") or a supported one (en, ja).
 func ValidateLocale(l string) error {
 	if l != "" && !i18n.Valid(l) {
@@ -138,12 +163,15 @@ func (c Connection) Validate() error {
 // Locale is additive in the same way: absent means no explicit selection.
 // Updates is the update subsystem's channel, last explicit check and installed
 // identity (internal/update); absent means Stable and nothing remembered.
+// Residents is the desired set of additional resident catalog models for the
+// next start; absent means only the active model is resident.
 type record struct {
 	Schema          string           `json:"schema"`
 	RuntimeDefaults Defaults         `json:"runtime_defaults"`
 	Connections     []Connection     `json:"connections,omitempty"`
 	Locale          string           `json:"locale,omitempty"`
 	Updates         *update.Settings `json:"updates,omitempty"`
+	Residents       []string         `json:"resident_models,omitempty"`
 }
 
 // Store is the settings authority. An empty Path keeps its values in memory.
@@ -180,6 +208,7 @@ func (s *Store) load() (record, error) {
 		r := s.mem
 		r.Connections = append([]Connection(nil), r.Connections...)
 		r.Updates = cloneUpdates(r.Updates)
+		r.Residents = append([]string(nil), r.Residents...)
 		return r, nil
 	}
 	var r record
@@ -197,6 +226,9 @@ func (s *Store) load() (record, error) {
 	}
 	if err := ValidateLocale(r.Locale); err != nil {
 		return record{}, fmt.Errorf("settings %s: %w", s.Path, err)
+	}
+	if _, err := NormalizeResidents(r.Residents); err != nil {
+		return record{}, fmt.Errorf("settings %s: resident_models: %w", s.Path, err)
 	}
 	if r.Updates != nil {
 		if err := r.Updates.Validate(); err != nil {
@@ -247,6 +279,28 @@ func (s *Store) SetDefaults(d Defaults) error {
 		return err
 	}
 	return s.update(func(r *record) error { r.RuntimeDefaults = d; return nil })
+}
+
+// Residents reads the desired additional resident models (catalog order). It
+// is the selection the next start of the runtime honors, not what is running.
+// A missing file is not an error; an unreadable one yields none plus the error.
+func (s *Store) Residents() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.load()
+	return r.Residents, err
+}
+
+// SetResidents validates and stores the desired additional resident models.
+// It only stores: nothing is downloaded, materialized, activated, started,
+// stopped or restarted, and the active model does not change. The selection
+// applies at the next start of the runtime.
+func (s *Store) SetResidents(ids []string) error {
+	norm, err := NormalizeResidents(ids)
+	if err != nil {
+		return err
+	}
+	return s.update(func(r *record) error { r.Residents = norm; return nil })
 }
 
 // Locale reads the explicit operator UI locale selection; "" means none was
