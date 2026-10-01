@@ -20,7 +20,7 @@ func (pair) Decide(r api.DecideRequest) (api.DecideResponse, error) {
 			Probabilities: map[string]float64{"yes": 0.8, "no": 0.2}})
 	}
 	return api.DecideResponse{Schema: api.SchemaV1, Results: rs, Timing: &api.Timing{InferenceMS: 3},
-		Served: &api.Served{Model: r.Model, Provider: "p-" + r.Model}}, nil
+		Served: &api.Served{Model: api.ModelRef(r.Model), Provider: "p-" + api.ModelRef(r.Model)}}, nil
 }
 
 func (pair) Status() (json.RawMessage, error) {

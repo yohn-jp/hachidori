@@ -33,15 +33,16 @@ type Question struct {
 // DecideRequest asks every question against one state.
 //
 // Model optionally names the resident that must answer, by its stable
-// Hachidori catalog model ID (never a repository or revision). Omitted, the
-// request takes the default route exactly as before; named, it is served by
-// that resident or fails explicitly, and is never redirected to another.
+// Hachidori catalog model ID (never a repository or revision). Omitted (nil),
+// the request takes the default route exactly as before; named, it is served
+// by that resident or fails explicitly, and is never redirected to another.
+// An explicitly empty selector is invalid input, not an omitted one.
 type DecideRequest struct {
 	Schema    string         `json:"schema"`
 	State     string         `json:"state"`
 	Questions []Question     `json:"questions"`
 	Options   map[string]any `json:"options,omitempty"`
-	Model     string         `json:"model,omitempty"`
+	Model     *string        `json:"model,omitempty"`
 }
 
 // Result is one typed observation. Confidence is the calibrated probability
@@ -87,7 +88,7 @@ type Timing struct {
 type BatchRequest struct {
 	Schema   string          `json:"schema"`
 	Requests []DecideRequest `json:"requests"`
-	Model    string          `json:"model,omitempty"`
+	Model    *string         `json:"model,omitempty"`
 }
 
 // BatchResponse is aligned with BatchRequest.Requests by index.
@@ -213,25 +214,42 @@ func (b *BatchRequest) Validate() error {
 // every request names, "" for the default route. Requests naming different
 // models are invalid: one batch is served by one resident.
 func (b *BatchRequest) Target() (string, error) {
-	target := b.Model
+	target := ModelRef(b.Model)
 	for i, r := range b.Requests {
-		switch {
-		case r.Model == "" || r.Model == target:
+		switch m := ModelRef(r.Model); {
+		case m == "" || m == target:
 		case target == "":
-			target = r.Model
+			target = m
 		default:
-			return "", fmt.Errorf("requests[%d]: model %q differs from model %q of the same batch", i, r.Model, target)
+			return "", fmt.Errorf("requests[%d]: model %q differs from model %q of the same batch", i, m, target)
 		}
 	}
 	return target, nil
 }
 
+// ModelRef is the value of an optional model selector, "" when omitted.
+func ModelRef(m *string) string {
+	if m == nil {
+		return ""
+	}
+	return *m
+}
+
 // maxModelRef bounds a model reference; catalog IDs are short.
 const maxModelRef = 128
 
-// validModelRef checks the shape of a model selector: a stable catalog
-// identity token. Whether it names a resident is the runtime's decision.
-func validModelRef(m string) error {
+// validModelRef checks the shape of an optional model selector: omitted (nil),
+// or a non-empty stable catalog identity token. An explicitly empty selector
+// is invalid, never an omitted one. Whether it names a resident is the
+// runtime's decision.
+func validModelRef(sel *string) error {
+	if sel == nil {
+		return nil
+	}
+	m := *sel
+	if m == "" {
+		return fmt.Errorf("model must not be empty; omit it to use the default resident")
+	}
 	if len(m) > maxModelRef {
 		return fmt.Errorf("model must be at most %d bytes", maxModelRef)
 	}

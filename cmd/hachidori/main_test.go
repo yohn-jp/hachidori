@@ -55,8 +55,8 @@ func TestDecideModelFlagSetsTheDirectTarget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req api.DecideRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		got = append(got, req.Model)
-		_ = json.NewEncoder(w).Encode(api.DecideResponse{Schema: api.SchemaV1, Served: &api.Served{Model: req.Model}})
+		got = append(got, api.ModelRef(req.Model))
+		_ = json.NewEncoder(w).Encode(api.DecideResponse{Schema: api.SchemaV1, Served: &api.Served{Model: api.ModelRef(req.Model)}})
 	}))
 	defer srv.Close()
 	file := filepath.Join(t.TempDir(), "req.json")

@@ -577,6 +577,7 @@ func TestOpenAPILimitsMatchHandlers(t *testing.T) {
 		{"missing schema", with(func(m map[string]any) { delete(m, "schema") })},
 		{"wrong schema", with(func(m map[string]any) { m["schema"] = "hachidori.v2" })},
 		{"unknown field", with(func(m map[string]any) { m["bogus"] = 1 })},
+		{"empty model", with(func(m map[string]any) { m["model"] = "" })},
 		{"max instructions", withQ(func(q map[string]any) { q["instructions"] = strings.Repeat("a", api.MaxInstructionSize) })},
 		{"instructions too long", withQ(func(q map[string]any) { q["instructions"] = strings.Repeat("a", api.MaxInstructionSize+1) })},
 		{"empty instructions", withQ(func(q map[string]any) { q["instructions"] = "" })},
@@ -637,6 +638,7 @@ func TestOpenAPILimitsMatchHandlers(t *testing.T) {
 		{"no requests", map[string]any{"schema": api.SchemaV1, "requests": []any{}}},
 		{"missing schema", map[string]any{"requests": []any{decide()}}},
 		{"unknown field", map[string]any{"schema": api.SchemaV1, "requests": []any{decide()}, "bogus": 1}},
+		{"empty batch model", map[string]any{"schema": api.SchemaV1, "requests": []any{decide()}, "model": ""}},
 		{"entry without schema", map[string]any{"schema": api.SchemaV1, "requests": []any{with(func(m map[string]any) { delete(m, "schema") })}}},
 		{"entry with wrong schema", map[string]any{"schema": api.SchemaV1, "requests": []any{with(func(m map[string]any) { m["schema"] = "x" })}}},
 	}
@@ -872,6 +874,40 @@ func TestOpenAPIDirectSelectionAndResidentsMatchHandlers(t *testing.T) {
 	}
 	if rec, m = do(h, "POST", "/v1/decide", one("a/b")); rec.Code != 400 {
 		t.Fatalf("repository selector: %d %s", rec.Code, rec.Body)
+	}
+
+	// An explicitly empty or blank selector is invalid input, never an omitted
+	// one: it must not fall back to the default resident, on either endpoint.
+	calls := f.calls
+	item := func(sel string) string { return strings.TrimSuffix(one(""), "}") + `,"model":` + sel + `}` }
+	for _, sel := range []string{`""`, `" "`} {
+		for _, x := range []struct{ what, path, body string }{
+			{"decide", "/v1/decide", item(sel)},
+			{"batch", "/v1/decide/batch", `{"schema":"hachidori.v1","model":` + sel + `,"requests":[` + one("") + `]}`},
+			{"batch entry", "/v1/decide/batch", `{"schema":"hachidori.v1","requests":[` + item(sel) + `]}`},
+			{"batch entry under a named batch", "/v1/decide/batch", `{"schema":"hachidori.v1","model":"m2","requests":[` + item(sel) + `]}`},
+		} {
+			if rec, m = do(h, "POST", x.path, x.body); rec.Code != 400 || errClass(m) != api.ErrRequestInvalid || m["served"] != nil || m["results"] != nil {
+				t.Errorf("%s selector %s: %d %s", x.what, sel, rec.Code, rec.Body)
+			}
+		}
+	}
+	if f.calls != calls {
+		t.Errorf("an invalid selector reached a resident: %d decide calls", f.calls-calls)
+	}
+	// The document rejects the explicit empty selector; omission stays valid.
+	for _, body := range []string{item(`""`), `{"schema":"hachidori.v1","model":"","requests":[` + one("") + `]}`} {
+		var v any
+		if err := json.Unmarshal([]byte(body), &v); err != nil {
+			t.Fatal(err)
+		}
+		name := "DecideRequest"
+		if strings.Contains(body, `"requests"`) {
+			name = "BatchRequest"
+		}
+		if len(c.validate(c.schema(name), v)) == 0 {
+			t.Errorf("%s: the document admits an empty model selector: %s", name, body)
+		}
 	}
 
 	rec, m = do(h, "GET", "/v1/status", "")

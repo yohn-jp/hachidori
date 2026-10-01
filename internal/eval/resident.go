@@ -305,7 +305,7 @@ type inputInfo struct {
 // requestSHA256 is the digest of a decide request with its model selector
 // cleared: the normalized input every resident must receive identically.
 func requestSHA256(r api.DecideRequest) string {
-	r.Model = ""
+	r.Model = nil
 	b, _ := json.Marshal(r)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -331,7 +331,8 @@ type directDecider struct {
 
 func (t *directDecider) Decide(req api.DecideRequest) (api.DecideResponse, error) {
 	fmt.Fprintln(t.sent, requestSHA256(req))
-	req.Model = t.model
+	model := t.model
+	req.Model = &model
 	resp, err := t.d.Decide(req)
 	if err != nil {
 		return resp, err
