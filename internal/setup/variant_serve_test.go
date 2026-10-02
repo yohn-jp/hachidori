@@ -234,6 +234,42 @@ func TestProbeConfigLaunchesThePersistedVariantWithoutActivation(t *testing.T) {
 	}
 }
 
+// SourceConfig launches the pinned source on an explicit device and dtype by
+// the same worker script and arguments as serving it, from neither the
+// activation record nor the environment dtype control, and never as a variant.
+func TestSourceConfigLaunchesTheExactSourceWithoutActivation(t *testing.T) {
+	h, _ := setup.MaterializeFakeClef(t, "cpu")
+	v := buildVariant(t, h)
+	if _, err := setup.ActivateTarget(h, "cpu", setup.ClefFlash, setup.ActivateOptions{Variant: v.ID, AllowUncertified: true}, io.Discard, nil); err != nil {
+		t.Fatal(err)
+	}
+	activeBefore, _ := os.ReadFile(h.Path("state", "active-runtime.json"))
+	t.Setenv(server.EnvClefDType, "bfloat16")
+
+	cfg, rt, err := server.SourceConfig(h, "cpu", setup.ClefFlash, "float32", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Variant != nil || rt.ModelID != setup.ClefFlash || rt.Device != "cpu" || argValue(cfg.Args, "--dtype") != "float32" || argValue(cfg.Args, "--device") != "cpu" ||
+		slices.Contains(cfg.Args, "--variant-dir") || argValue(cfg.Args, "--provider") != "clef" {
+		t.Fatalf("source launch %+v %v: the active variant and the environment dtype must not apply", rt, cfg.Args)
+	}
+	if after, _ := os.ReadFile(h.Path("state", "active-runtime.json")); string(after) != string(activeBefore) {
+		t.Fatal("SourceConfig changed the activation record")
+	}
+	for name, tc := range map[string]struct{ device, model, dtype string }{
+		"an unsupported dtype":        {"cpu", setup.ClefFlash, "float16"},
+		"a provider with no dtype":    {"cpu", setup.DefaultModel, "float32"},
+		"an unmaterialized device":    {"cuda", setup.ClefFlash, "float32"},
+		"an unknown device":           {"tpu", setup.ClefFlash, "float32"},
+		"a model outside the catalog": {"cpu", "not-a-model", "float32"},
+	} {
+		if cfg, _, err := server.SourceConfig(h, tc.device, tc.model, tc.dtype, io.Discard); err == nil || cfg.Python != "" {
+			t.Errorf("%s launched: %v", name, err)
+		}
+	}
+}
+
 // Experimental is only for a variant with no certification record at all. A
 // record that exists but no longer verifies (here a rejecting record whose
 // report is gone) is not "no record": neither activation nor launch admits

@@ -67,7 +67,8 @@ func TestForgePreflightThroughTheCLI(t *testing.T) {
 		t.Fatalf("exit %d output:\n%s", code, out)
 	}
 	for _, args := range [][]string{{"forge"}, {"forge", "nope"}, {"forge", "preflight"}, {"forge", "preflight", "nope"}, {"forge", "preflight", "probe", "-home", h.Root},
-		{"forge", "probe", "-home", h.Root}, {"forge", "diagnostics"}, {"forge", "diagnostics", "nope", "-home", h.Root}} {
+		{"forge", "probe", "-home", h.Root}, {"forge", "diagnostics"}, {"forge", "diagnostics", "nope", "-home", h.Root},
+		{"forge", "execute"}, {"forge", "execute", "-home", h.Root, "-device", "cuda", "/nonexistent.jsonl"}} {
 		if code := run(args, nil); code == 0 {
 			t.Errorf("%v succeeded", args)
 		}

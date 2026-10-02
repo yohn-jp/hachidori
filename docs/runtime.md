@@ -23,7 +23,7 @@ client CLI / any HTTP caller
 | `hachidori activate [--home H] [--device cuda\|cpu] [--model ID] [--variant ID [--experimental]]` | host, offline | make an already materialized catalog model, or for a System One model one of its variants, active; the same operation as Settings, Activate (see System One variants) |
 | `hachidori variant list\|show\|verify\|optimize\|remove\|recipes …` | host | derived System One variants: `optimize` builds one with a canonical recipe in the separate optimizer runtime; the rest inspect, verify and remove (see System One variants) |
 | `hachidori certify run\|evaluate\|show …` | client / host | record a resident run, certify a variant against its high-precision reference, inspect the certification (certification.md) |
-| `hachidori forge preflight\|probe\|diagnostics …` | host | System One Forge readiness: `preflight` checks identity, runtime, recipe, disk, RAM and the requested device before expensive work, `probe` loads a persisted variant in an isolated worker and asks one typed decision (not a certification), `diagnostics` lists, shows and exports the bounded redacted failure diagnostics (see Forge readiness) |
+| `hachidori forge preflight\|probe\|execute\|diagnostics …` | host | System One Forge readiness: `preflight` checks identity, runtime, recipe, disk, RAM and the requested device before expensive work, `probe` loads a persisted variant in an isolated worker and asks one typed decision (not a certification), `execute` runs an exact source or variant over a dataset as temporary maintenance work and records the resident run as internal evidence, `diagnostics` lists, shows and exports the bounded redacted failure diagnostics (see Forge readiness and Forge execution sessions) |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843] [--resident ID]…` | host | run HTTP + one resident worker (plus one more worker process per `--resident` catalog model ID; see Multi-resident serving); non-loopback binds are refused |
 | `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh] [--resident ID]…` | host | `serve` plus the host-local dashboard (see below) |
 | `hachidori desktop [--home H] [--listen …] [--addr …] [--ssh ssh] [--background]` | host (Windows) | the same desktop composition as a no-argument `hachidori.exe`: first run/recovery or normal start in a resident WebView2 window with a tray icon (see below); fails with a clear error on other systems |
@@ -1212,6 +1212,45 @@ device (no cpu fallback). The record (`state/forge/probe/`) says
 changes the activation record or the default route, never binds or replaces a
 resident and runs beside a running runtime without touching it.
 
+**Forge execution sessions** (`app.RunExecution`, `server.SourceConfig`,
+`Controller.Execute`). `hachidori forge execute --device D [--variant ID | --model
+M --dtype float32|bfloat16] <dataset.jsonl>` runs one exact target — the pinned
+source model (explicit device and, for a provider with a dtype control, explicit
+reference dtype) or one persisted variant (its manifest, its dtype) — as temporary
+maintenance work, without activating it. The launch is `server.SourceConfig` or
+`server.ProbeConfig`: the serving worker script and arguments resolved from the
+target and the device's runtime, never from the activation record, never
+requiring a certified variant. Once the worker is READY, a single status snapshot
+must prove the target: the source model and its pinned revision, the requested
+device, the dtype and, for a variant, its exact ID, its quantized execution
+(`execution: variant`, the manifest's scheme, quantized modules, its declared
+dtype); a worker that loaded the source for a variant, another variant, another
+device or another dtype fails the session before any observation is taken (no
+fallback). The existing `eval.RunResident` then evaluates the normalized cases
+through that worker, the recorded run's own identity is checked again, and the
+`ResidentRun` is published atomically as `state/forge/runs/<id>.json`
+(`hachidori.forge-run.v1`, `eval.ForgeRun`): the run bound to the source
+model/revision/files digest, the variant manifest digest, the runtime, requested
+and actual device and dtype, the quantization facts, the dataset digest and the
+Question Definitions digest, with an ID derived from that content. Callers get
+the evidence ID (`eval.LoadForgeRun`) and never choose a path; a cancelled or
+unstable run records nothing. `certify run -out` stays as the low-level
+compatibility command.
+
+`Controller.Execute` is the same session as one controller action (one action at
+a time, phases `quiescing`, `executing`, `restoring`) that shares the accelerator
+with the serving residents. It records the activation record, the desired
+residents and the routing policy, stops only the Hachidori-owned running
+residents that occupy the accelerator the target needs (nothing for a CPU target
+or for CPU residents; no other process is ever inspected or stopped), runs the
+session and, on success, failure and cancellation alike, starts the stopped
+residents again through their own lifecycle and waits for them to be READY. Those
+three records are never written and are compared afterwards. A failure to restore
+is `ExecutionError.Restore`, reported beside the primary failure and never
+instead of it; an execution that succeeded but could not restore is a failure. A
+GPU held by a process Hachidori does not own makes the worker fail to load; that
+is reported, not worked around.
+
 **Diagnostics** (`internal/diagnostics/forge.go`, `app.RecordForgeFailure`). A
 failed materialization, optimization, probe or certification (from the CLI or the
 desktop) records one bounded, redacted diagnostic under
@@ -1437,6 +1476,7 @@ HACHIDORI_HOME/
   state/certifications/<variant ID>/   certification reports and the records that bind them to the variant
   state/forge/preflight/       the latest preflight report of each target
   state/forge/probe/           the latest probe record of each variant and device
+  state/forge/runs/            resident runs recorded by Forge execution sessions, one document per evidence ID
   state/forge/diagnostics/     bounded, redacted failure diagnostics of Forge operations (newest 20)
   state/dashboard.json         last tunnel form values (non-secret), dashboard only
   state/updates/               explicit update downloads only: <tag>/ staged executable, ready.json,
