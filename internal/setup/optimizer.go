@@ -86,7 +86,6 @@ func EnsureOptimizer(h home.Home, log io.Writer, obs *Observer) (OptimizerRuntim
 	if err != nil {
 		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: %w", spec.ID(), err)
 	}
-	obs.phase(PhasePublish)
 	obs.step(StepPublish, "optimizer runtime "+spec.ID())
 	if err := os.Rename(stage, final); err != nil {
 		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: publish: %w", spec.ID(), err)

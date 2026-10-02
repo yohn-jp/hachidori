@@ -255,6 +255,8 @@ func (a *desktopApp) run() error {
 				Desktop:    prefs,
 				Settings:   prefs,
 				Models:     models,
+				// System One variant actions go through the same controller.
+				Variants: models,
 				// The desired resident models are saved by the same settings
 				// authority and honored by the next open of the runtime.
 				Residency: prefs,
@@ -485,9 +487,18 @@ func (m modelManager) Activate(device, model string) error {
 	return m.ctl().Activate(app.SetupParams{Device: device, Model: model})
 }
 func (m modelManager) Remove(kind, id string) error { return m.ctl().Remove(kind, id) }
-func (m modelManager) Start() error                 { return m.ctl().Start() }
-func (m modelManager) Stop() error                  { return m.ctl().Stop() }
-func (m modelManager) Restart() error               { return m.ctl().Restart() }
+
+// The System One variant actions are likewise the controller's.
+func (m modelManager) ActivateVariant(device, model, variant string, experimental bool) error {
+	return m.ctl().ActivateVariant(app.SetupParams{Device: device, Model: model}, variant, experimental)
+}
+func (m modelManager) Optimize(model, recipe string) error { return m.ctl().Optimize(model, recipe) }
+func (m modelManager) Certify(variant, reference, candidate, policy string) error {
+	return m.ctl().Certify(app.CertifyParams{Variant: variant, Reference: reference, Candidate: candidate, Policy: policy})
+}
+func (m modelManager) Start() error   { return m.ctl().Start() }
+func (m modelManager) Stop() error    { return m.ctl().Stop() }
+func (m modelManager) Restart() error { return m.ctl().Restart() }
 
 // settingsStore is the desktop's settings authority: the desktop preference
 // manager plus the saved runtime defaults in settings.json beside desktop.json.

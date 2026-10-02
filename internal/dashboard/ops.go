@@ -37,6 +37,17 @@ var phaseLabels = map[string]string{
 	"model":      "Model",
 	"publish":    "Publishing",
 	"activation": "Activation",
+	// System One variants: optimization and certification
+	"variant":        "Variant",
+	"starting":       "Starting optimizer",
+	"loading_source": "Loading source model",
+	"resolving":      "Resolving modules",
+	"quantizing":     "Quantizing",
+	"serializing":    "Serializing",
+	"verifying":      "Verifying output",
+	"loading_runs":   "Loading runs",
+	"comparing":      "Comparing runs",
+	"recording":      "Recording certification",
 	// update check and download (internal/update)
 	"releases": "Release list",
 	"checksum": "Checksum file",
@@ -248,6 +259,10 @@ type nextStart struct {
 	// one this runtime was configured with (an activation is waiting for a
 	// restart).
 	Differs bool
+	// Variant is the variant the activation record selects ("" for the source
+	// artifact) and VariantDiffers whether the runtime executes another one.
+	Variant        string
+	VariantDiffers bool
 	// Problem is why the active pair cannot be started by this build.
 	Problem    string
 	Busy, Last *ModelOp
@@ -264,7 +279,13 @@ func nextOf(st ModelsState, rt server.Runtime) *nextStart {
 				n.Model = m.ID
 			}
 		}
-		n.Differs = n.Model != "" && (n.Model != rt.ModelID || n.Device != rt.Device)
+		n.Variant = a.Variant
+		running := ""
+		if rt.Variant != nil {
+			running = rt.Variant.ID
+		}
+		n.VariantDiffers = n.Model != "" && n.Variant != running
+		n.Differs = n.Model != "" && (n.Model != rt.ModelID || n.Device != rt.Device || n.VariantDiffers)
 	}
 	return n
 }

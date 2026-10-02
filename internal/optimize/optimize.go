@@ -153,6 +153,14 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 		return Result{Variant: *existing, Dir: h.VariantDir(model.ID, existing.ID), Existing: true}, nil
 	}
 
+	// Every phase is reported once, when it is first entered.
+	entered := map[setup.Phase]bool{}
+	enter := func(p setup.Phase) {
+		if !entered[p] {
+			entered[p] = true
+			obs.Phase(p)
+		}
+	}
 	stageParent := h.VariantsDir(model.ID)
 	if err := os.MkdirAll(stageParent, 0o755); err != nil {
 		return Result{}, err
@@ -170,9 +178,9 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	}
 
 	fmt.Fprintf(log, "optimizing %s (%s@%s) with recipe %s, optimizer runtime %s\n", model.ID, model.Repo, model.Revision[:12], recipe.Name, runtimeID)
-	obs.Phase(setup.PhaseStarting)
+	enter(setup.PhaseStarting)
 	engine, err := runOptimizer(ctx, runner, []string{"--source-dir", h.Path("models", filepath.FromSlash(setup.ModelDirName(model))),
-		"--recipe", recipeFile, "--out", stage, "--device", opt.Device}, log, obs)
+		"--recipe", recipeFile, "--out", stage, "--device", opt.Device}, log, enter, obs)
 	if err != nil {
 		return Result{}, err
 	}
@@ -182,7 +190,7 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	}
 	opt.Versions = engine.Versions
 
-	obs.Phase(setup.PhaseVerifying)
+	enter(setup.PhaseVerifying)
 	files, err := setup.DigestTree(stage, nil, obs)
 	if err != nil {
 		return Result{}, fmt.Errorf("digesting the optimizer output: %w", err)
@@ -223,7 +231,7 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 		return Result{Variant: v, Dir: final, Existing: true}, nil
 	}
 	// The manifest is written last: its presence marks a complete variant.
-	obs.Phase(setup.PhasePublish)
+	enter(setup.PhasePublish)
 	obs.Step(setup.StepPublish, "variant "+v.ID)
 	if err := writeManifest(stage, v); err != nil {
 		return Result{}, err
@@ -307,7 +315,7 @@ type event struct {
 // the optimizer starting up and stays in the starting phase.
 var phaseOf = map[string]setup.Phase{
 	"loading_source": setup.PhaseLoadingSource,
-	"preparing":      setup.PhasePreparing,
+	"preparing":      setup.PhaseResolving,
 	"quantizing":     setup.PhaseQuantizing,
 	"serializing":    setup.PhaseSerializing,
 	"verifying":      setup.PhaseVerifying,
@@ -316,7 +324,7 @@ var phaseOf = map[string]setup.Phase{
 // runOptimizer runs the optimizer and reports its phases. Progress inside a
 // phase is indeterminate: the backend reports no measurable total, so none is
 // shown.
-func runOptimizer(ctx context.Context, r Runner, args []string, log io.Writer, obs *setup.Observer) (engineFacts, error) {
+func runOptimizer(ctx context.Context, r Runner, args []string, log io.Writer, enter func(setup.Phase), obs *setup.Observer) (engineFacts, error) {
 	pr, pw := io.Pipe()
 	var (
 		mu       sync.Mutex
@@ -344,7 +352,7 @@ func runOptimizer(ctx context.Context, r Runner, args []string, log io.Writer, o
 				facts = engineFacts{Engine: ev.Engine, Version: ev.Version, Versions: ev.Versions}
 			case "phase":
 				if ph, ok := phaseOf[ev.Phase]; ok {
-					obs.Phase(ph)
+					enter(ph)
 				}
 				obs.Step(stepFor(ev.Phase), ev.Detail)
 			case "fatal":

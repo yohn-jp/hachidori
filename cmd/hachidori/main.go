@@ -39,6 +39,8 @@ const usage = `usage: hachidori <command> [flags]
 runtime (inference host):
   setup      materialize the pinned runtime and a catalog model (--model) under
              HACHIDORI_HOME and activate them
+  activate   make an already materialized catalog model (and, for a System One
+             model, one of its certified variants) active; offline
   serve      run the HTTP runtime with a resident inference worker
   dashboard  serve, plus a host-local Web dashboard (status, start/stop/restart,
              doctor, SSH reverse-tunnel launcher) on 127.0.0.1:7844
@@ -52,6 +54,14 @@ runtime (inference host):
   apply-update  (internal) the replacement helper the desktop starts after
              Settings > Updates > Restart & update; it replaces only the
              executable a verified update was prepared for. Not run by hand.
+
+System One model forge (inference host, offline except where noted):
+  variant    list|show|verify|optimize|remove|recipes: derived, source-linked
+             quantized variants of a System One model; optimize builds one with
+             a canonical recipe in the separate optimizer runtime
+  certify    run|evaluate|show: compare a high-precision reference run and a
+             variant run on identical inputs (decision fidelity), record the
+             certification a variant needs before it can be activated
 
 client (caller side, uses HACHIDORI_ENDPOINT):
   status     print /v1/status
@@ -72,7 +82,7 @@ Run 'hachidori <command> -h' for flags.
 // commands is the command dispatch table; every command in usage must be here.
 func commands() map[string]func([]string) error {
 	return map[string]func([]string) error{
-		"setup": cmdSetup, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
+		"setup": cmdSetup, "activate": cmdActivate, "variant": cmdVariant, "certify": cmdCertify, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
 		"dashboard": func(a []string) error { return runHost("dashboard", a) },
 		"desktop":   func(a []string) error { return cmdDesktop(desktop.Native(), a) },
 		"decide":    cmdDecide, "eval": func(a []string) error { return cmdEval("eval", a) },

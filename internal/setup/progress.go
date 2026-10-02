@@ -25,6 +25,7 @@ const (
 const (
 	PhaseStarting      Phase = "starting"       // the optimizer process is being launched and importing
 	PhaseLoadingSource Phase = "loading_source" // the pinned source is being loaded
+	PhaseResolving     Phase = "resolving"      // the recipe's targets and preserved modules are being resolved against the loaded model
 	PhaseQuantizing    Phase = "quantizing"     // the recipe is being applied
 	PhaseSerializing   Phase = "serializing"    // the transformed model is being written
 	PhaseVerifying     Phase = "verifying"      // artifacts are being digested and checked

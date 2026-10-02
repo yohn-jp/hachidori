@@ -33,9 +33,11 @@ import (
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/diagnostics"
+	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/history"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/i18n"
+	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
@@ -106,6 +108,25 @@ type Config struct {
 	WebView2 string
 	// PathPicker is present only in the native desktop composition.
 	PathPicker PathPicker
+	// Variants, when set, adds the System One variant actions (activate a
+	// variant, optimize, certify) to Settings > Models & runtimes. The
+	// variants themselves, their certification state and the operations'
+	// progress are projections of the same inventory and operation state
+	// Models reports; Variants only forwards the operator's actions.
+	Variants VariantActions
+}
+
+// VariantActions are the System One forge actions of the maintenance
+// authority. Like Models, each returns once the action is accepted and runs in
+// the background; its phases, progress and outcome are read from
+// Models.State.
+type VariantActions interface {
+	// ActivateVariant activates the variant of the model. experimental
+	// requests the operator-only launch of a variant without a certification
+	// record.
+	ActivateVariant(device, model, variant string, experimental bool) error
+	Optimize(model, recipe string) error
+	Certify(variant, reference, candidate, policy string) error
 }
 
 // Models is the explicit model/runtime maintenance authority, and the
@@ -211,6 +232,39 @@ type ModelsView struct {
 	ActiveModel, ActiveDevice   string
 	RunningModel, RunningDevice string
 	Residency                   *ResidencyView // nil unless the resident selection is configured
+	// RunningVariant is the variant the resident worker executes now (from
+	// the status authority), "" for the source artifact or no worker.
+	RunningVariant string
+	// Variants are the derived System One variants with their certification
+	// state, restating the inventory. VariantControls is set when the
+	// variant actions are configured; OptimizeModels are the materialized
+	// catalog models that can be optimized and Recipes their recipe names.
+	Variants        []VariantRow
+	VariantControls bool
+	OptimizeModels  []OptimizeTarget
+}
+
+// VariantRow is one variant of the inventory with the last explicit
+// verification and what it is doing now.
+type VariantRow struct {
+	setup.VariantEntry
+	Check   string
+	Running bool // the resident worker executes this variant now
+	// Pending: it is the active variant but the running worker started from
+	// something else; it applies on restart.
+	Pending bool
+	// CanActivate: activation is allowed without the experimental
+	// escape: an accepted certification record exists.
+	CanActivate bool
+	// CanExperiment: no record exists, so the explicit operator-only
+	// experimental/uncertified launch is offered (never for a rejected one).
+	CanExperiment bool
+}
+
+// OptimizeTarget is a materialized catalog model that can be optimized.
+type OptimizeTarget struct {
+	ID      string
+	Recipes []string
 }
 
 // RuntimeRow and ModelRow add the last explicit verification to an entry.
@@ -443,6 +497,7 @@ func New(cfg Config) *Dashboard {
 	}
 	if cfg.Models != nil {
 		d.mux.HandleFunc("POST /settings/models/{op}", d.modelsOp)
+		d.mux.HandleFunc("POST /settings/variants/{op}", d.variantsOp)
 	}
 	if cfg.Models != nil && cfg.Residency != nil {
 		d.mux.HandleFunc("POST /settings/residents", d.settingsResidents)
@@ -769,10 +824,56 @@ func (d *Dashboard) modelsView(v view) *ModelsView {
 		}
 		mv.Models = append(mv.Models, ModelRow{m, check(setup.KindModel, m.ID), m.ID == mv.RunningModel})
 	}
+	if v.Running {
+		if rv := v.S.Runtime.Variant; rv != nil {
+			mv.RunningVariant = rv.ID
+		}
+	}
+	mv.VariantControls = d.cfg.Variants != nil
+	for _, e := range st.Inventory.Variants {
+		row := VariantRow{VariantEntry: e, Check: check(setup.KindVariant, e.ID), Running: v.Running && e.ID == mv.RunningVariant}
+		row.Pending = e.Active && st.RestartRequired && !row.Running
+		row.CanActivate = e.Problem == "" && e.SourceMaterialized && e.Certification == eval.StateAccepted
+		row.CanExperiment = e.Problem == "" && e.SourceMaterialized && e.Certification == eval.StateUncertified
+		mv.Variants = append(mv.Variants, row)
+	}
+	if mv.VariantControls {
+		for _, m := range st.Inventory.Models {
+			if m.Materialized && setup.SupportsVariants(home.ModelManifest{Provider: m.Provider}) {
+				mv.OptimizeModels = append(mv.OptimizeModels, OptimizeTarget{ID: m.ID, Recipes: optimize.RecipeNames(m.ID)})
+			}
+		}
+	}
 	if d.cfg.Residency != nil {
 		mv.Residency = d.residencyView(v, mv)
 	}
 	return mv
+}
+
+// variantsOp forwards one explicit System One variant action to the
+// maintenance authority. The form names only catalog and variant identities
+// and, for certification, local run files; the authority refuses anything
+// else.
+func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
+	va := d.cfg.Variants
+	if va == nil {
+		http.NotFound(w, r)
+		return
+	}
+	f := func(k string) string { return strings.TrimSpace(r.PostFormValue(k)) }
+	switch op := r.PathValue("op"); op {
+	case "activate":
+		d.done(w, r, "activate variant "+f("variant"), va.ActivateVariant(f("device"), f("model"), f("variant"), f("experimental") == "1"),
+			"started; once it finishes, a running worker keeps what it started with until you restart it")
+	case "optimize":
+		d.done(w, r, "optimize "+f("model"), va.Optimize(f("model"), f("recipe")),
+			"started; the source and the active runtime are not touched, and nothing is selectable until the build is verified and published")
+	case "certify":
+		d.done(w, r, "certify "+f("variant"), va.Certify(f("variant"), f("reference"), f("candidate"), f("policy")),
+			"started; the evidence is recorded whatever the verdict")
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 // residencyView restates the desired selection beside the inventory and the
