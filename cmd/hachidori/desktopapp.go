@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -460,12 +461,26 @@ func (m modelManager) State() dashboard.ModelsState {
 }
 
 // forgeState restates the controller's Forge records (preflights, probes,
-// diagnostics) for the dashboard. Nothing is added or derived.
+// diagnostics) for the dashboard. Nothing is derived beyond the evidence
+// state the controller judged: a preflight that is not current evidence is
+// shown with that state as its outcome (never READY) and the reason first.
 func forgeState(f app.ForgeState) dashboard.ForgeState {
 	var out dashboard.ForgeState
 	for _, r := range f.Preflights {
 		row := dashboard.PreflightRow{Kind: r.Kind, Model: r.Model, Variant: r.Variant, Recipe: r.Recipe, Device: r.Device, At: r.CreatedAt, Outcome: r.Outcome,
 			Pass: r.Counts.Pass, Warning: r.Counts.Warning, Blocker: r.Counts.Blocker, Unknown: r.Counts.Unknown, NotMeasured: r.NotMeasured}
+		if !r.Current() {
+			row.Outcome = r.Evidence
+			if row.Outcome == "" {
+				row.Outcome = setup.EvidenceLegacy
+			}
+			why := "this report predates identity binding and proves nothing about the current runtime, source, variant or recipe"
+			if len(r.Stale) > 0 {
+				why = "recorded for identities that changed since (" + strings.Join(r.Stale, ", ") + ")"
+			}
+			row.Findings = append(row.Findings, dashboard.FindingRow{ID: "preflight.evidence", Status: row.Outcome,
+				Summary: "not current: " + why + "; its recorded outcome was " + r.Outcome + ". Run the preflight again."})
+		}
 		for _, fd := range setup.SortedFindings(r.Findings) {
 			if fd.Status != setup.FindingPass {
 				row.Findings = append(row.Findings, dashboard.FindingRow{ID: fd.ID, Status: string(fd.Status), Summary: fd.Summary})

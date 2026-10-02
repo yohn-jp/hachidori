@@ -3,6 +3,7 @@ package setup_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -412,4 +413,36 @@ func TestCarriedFilesMustBeSourceBytes(t *testing.T) {
 func sha256Hex(b []byte) string {
 	d, _ := setup.FileSHA256Bytes(b)
 	return d
+}
+
+// Legacy certification records created within the same second have no order:
+// the variant is neither accepted nor uncertified, so it is refused even on an
+// explicit experimental request, and an accepted record among them never
+// certifies it.
+func TestAmbiguousLegacyCertificationIsNeverActivated(t *testing.T) {
+	h, m := setup.MaterializeFakeClef(t, "cpu")
+	v := buildVariant(t, h)
+	at := time.Now()
+	dir := filepath.Join(h.Root, filepath.FromSlash(home.CertificationDir(v.ID)))
+	for _, accepted := range []bool{true, false} {
+		rec := certify(t, h, m, v, accepted, at)
+		path := filepath.Join(dir, rec.ReportSHA256[:16]+".record.json")
+		b, _ := os.ReadFile(path)
+		s := strings.Replace(string(b), eval.RecordSchema, eval.LegacyRecordSchema, 1)
+		s = strings.Replace(s, fmt.Sprintf("  \"sequence\": %d,\n", rec.Sequence), "", 1)
+		os.WriteFile(path, []byte(s), 0o644)
+	}
+	claims, _ := filepath.Glob(filepath.Join(dir, "*.order"))
+	for _, c := range claims {
+		os.Remove(c)
+	}
+	if st := eval.ResolveCertification(h, v); st.State != eval.StateAmbiguous {
+		t.Fatalf("state %+v", st)
+	}
+	for _, allow := range []bool{false, true} {
+		_, err := setup.ActivateTarget(h, "cpu", setup.ClefFlash, setup.ActivateOptions{Variant: v.ID, AllowUncertified: allow}, io.Discard, nil)
+		if !errors.Is(err, setup.ErrVariantNotCertified) || !strings.Contains(err.Error(), "order cannot be determined") {
+			t.Fatalf("ambiguous variant (experimental=%v): %v", allow, err)
+		}
+	}
 }

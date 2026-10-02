@@ -213,7 +213,7 @@ func TestProbeLoadsThePersistedVariantDecidesOnceAndTearsDown(t *testing.T) {
 	if !ok || got.Result != ProbePassed || got.FinishedAt == "" || !got.TornDown {
 		t.Fatalf("persisted probe %+v ok=%v", got, ok)
 	}
-	if pf, ok := LatestPreflight(h, setup.PreflightProbe, setup.ClefFlash, v.ID); !ok || pf.Blocked() {
+	if pf, ok := LatestPreflight(h, PreflightTarget{Kind: setup.PreflightProbe, Model: setup.ClefFlash, Variant: v.ID, Recipe: v.Recipe.Name, Device: "cuda"}); !ok || pf.Blocked() {
 		t.Fatal("the probe's preflight was not recorded")
 	}
 }

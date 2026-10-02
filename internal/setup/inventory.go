@@ -212,22 +212,56 @@ func activeRuntimeProblem(h home.Home, a home.Active) string {
 // presentModel is the cheap check behind "materialized": the manifest names
 // exactly the catalog identity and every pinned file exists.
 func presentModel(dir string, m home.ModelManifest) error {
+	_, err := InspectSource(dir, m)
+	return err
+}
+
+// SourceCondition is what a model directory holds relative to its catalog
+// model, as far as it is knowable without hashing the pinned files.
+type SourceCondition string
+
+const (
+	// SourceAbsent: there is no source manifest; nothing is materialized.
+	SourceAbsent SourceCondition = "absent"
+	// SourcePresent: the manifest is the catalog model's and every pinned
+	// file exists. The files' digests are not checked (VerifyModel does).
+	SourcePresent SourceCondition = "present"
+	// SourceManifestCorrupt: a manifest exists but cannot be read or decoded.
+	SourceManifestCorrupt SourceCondition = "manifest_corrupt"
+	// SourceIdentityMismatch: the manifest names another repository,
+	// revision, ID or file digests than the catalog pins.
+	SourceIdentityMismatch SourceCondition = "identity_mismatch"
+	// SourceFileMissing: the manifest matches but a pinned file is missing.
+	SourceFileMissing SourceCondition = "file_missing"
+)
+
+// InspectSource classifies the model directory dir against the catalog model
+// m without hashing anything: the one presence check the inventory, the
+// preflight and the Forge readers share. A condition other than
+// SourcePresent comes with the reason.
+func InspectSource(dir string, m home.ModelManifest) (SourceCondition, error) {
+	path := filepath.Join(dir, "hachidori-model.json")
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return SourceAbsent, fmt.Errorf("incomplete model: %w", err)
+	}
 	var mm home.ModelManifest
-	if err := home.ReadJSON(filepath.Join(dir, "hachidori-model.json"), &mm); err != nil {
-		return fmt.Errorf("incomplete model: %w", err)
+	if err := home.ReadJSON(path, &mm); err != nil {
+		return SourceManifestCorrupt, fmt.Errorf("incomplete model: %w", err)
 	}
 	if mm.Repo != m.Repo || mm.Revision != m.Revision || (mm.ID != "" && mm.ID != m.ID) {
-		return fmt.Errorf("manifest %s@%s is not catalog model %s", mm.Repo, mm.Revision, m.ID)
+		return SourceIdentityMismatch, fmt.Errorf("manifest %s@%s is not catalog model %s", mm.Repo, mm.Revision, m.ID)
 	}
-	for rel, want := range m.Files {
-		if mm.Files[rel] != want {
-			return fmt.Errorf("manifest does not match pinned digest for %s", rel)
+	for _, rel := range sortedFiles(m.Files) {
+		if mm.Files[rel] != m.Files[rel] {
+			return SourceIdentityMismatch, fmt.Errorf("manifest does not match pinned digest for %s", rel)
 		}
+	}
+	for _, rel := range sortedFiles(m.Files) {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
-			return fmt.Errorf("missing %s", rel)
+			return SourceFileMissing, fmt.Errorf("missing %s", rel)
 		}
 	}
-	return nil
+	return SourcePresent, nil
 }
 
 // runtimeDevice resolves a catalog runtime identity to its device.
@@ -376,7 +410,8 @@ func ActivateTarget(h home.Home, device, modelID string, opt ActivateOptions, lo
 // checkCertified is the certification gate of a variant: activation needs an
 // accepted record. experimental reports that the variant is being launched
 // without one, which is allowed only on an explicit request and only for a
-// variant nothing has judged; a variant with a rejecting record is refused.
+// variant nothing has judged; a variant with a rejecting record, or with
+// records whose latest cannot be determined, is refused.
 func checkCertified(h home.Home, v home.VariantManifest, allowUncertified bool) (experimental bool, err error) {
 	st := eval.ResolveCertification(h, v)
 	switch {
@@ -385,6 +420,9 @@ func checkCertified(h home.Home, v home.VariantManifest, allowUncertified bool) 
 	case st.State == eval.StateRejected:
 		return false, fmt.Errorf("%w: variant %s has a rejecting certification record (%s); its evidence is kept, but it is not activated",
 			ErrVariantNotCertified, v.ID, st.Record.Policy.ID)
+	case st.State == eval.StateAmbiguous:
+		return false, fmt.Errorf("%w: variant %s has certification records whose order cannot be determined (%s); certify it again before activating it",
+			ErrVariantNotCertified, v.ID, strings.Join(st.Problems, "; "))
 	case allowUncertified:
 		return true, nil
 	}

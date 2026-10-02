@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yohn-jp/hachidori/internal/redact"
 )
 
 var fakeSecrets = []string{
@@ -178,5 +180,124 @@ func TestForgeDiagnosticStoreListsLoadsAndPrunes(t *testing.T) {
 	}
 	if _, err := ExportForge(d, filepath.Join(out, "x", "copy.json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// storedRoundTrip saves d, reads the stored bytes back as an independent
+// reader would and returns the decoded document.
+func storedRoundTrip(t *testing.T, root string, d ForgeDiagnostic) ForgeDiagnostic {
+	t.Helper()
+	path, err := SaveForge(root, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back ForgeDiagnostic
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	return back
+}
+
+// The ID of a stored diagnostic is the content identity of the stored document:
+// recomputing it from what was read back reproduces it, for a normal document
+// and for one the bound truncated.
+func TestForgeDiagnosticIDIsTheStoredContentIdentity(t *testing.T) {
+	for name, build := range map[string]func(root string) ForgeInput{
+		"normal": input,
+		"oversized, truncated": func(root string) ForgeInput {
+			in := input(root)
+			for i := 0; i < 400; i++ {
+				in.StderrTail = append(in.StderrTail, fmt.Sprintf("stderr %d %s", i, strings.Repeat("s", 600)))
+				in.LogTail = append(in.LogTail, fmt.Sprintf("log %d %s", i, strings.Repeat("l", 600)))
+			}
+			for i := 0; i < 60; i++ {
+				in.Preflight.Findings = append(in.Preflight.Findings, ForgeFinding{ID: "f", Status: "unknown", Summary: strings.Repeat("p", 600)})
+			}
+			return in
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			d := BuildForge(build(root), root, time.Unix(1_700_000_000, 0))
+			if want := name != "normal"; d.Truncated != want {
+				t.Fatalf("truncated = %v, want %v", d.Truncated, want)
+			}
+			if b, _ := json.Marshal(d); len(b) > MaxForgeBytes {
+				t.Fatalf("%d bytes over the bound", len(b))
+			}
+			if err := VerifyForge(d); err != nil {
+				t.Fatal(err)
+			}
+			back := storedRoundTrip(t, root, d)
+			if back.ID != d.ID || ForgeContentID(back) != d.ID {
+				t.Fatalf("stored ID %s, recomputed %s", back.ID, ForgeContentID(back))
+			}
+			if err := VerifyForge(back); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadForge(root, d.ID); err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			// Any change of the stored content no longer verifies, and the
+			// reader refuses it.
+			back.Failure.Error += "!"
+			if VerifyForge(back) == nil {
+				t.Fatal("an edited document verified")
+			}
+			b, _ := marshalForge(back)
+			os.WriteFile(filepath.Join(root, "state", "forge", "diagnostics", d.ID+".json"), b, 0o600)
+			if _, err := LoadForge(root, d.ID); err == nil || !strings.Contains(err.Error(), "content identity") {
+				t.Fatalf("an edited stored document loaded: %v", err)
+			}
+		})
+	}
+}
+
+// Truncation happens before the identity is taken: a truncated document's ID
+// is not the identity of the document before truncation.
+func TestForgeDiagnosticIDIsTakenAfterTruncation(t *testing.T) {
+	root := t.TempDir()
+	in := input(root)
+	for i := 0; i < 400; i++ {
+		in.StderrTail = append(in.StderrTail, fmt.Sprintf("stderr %d %s", i, strings.Repeat("s", 600)))
+		in.LogTail = append(in.LogTail, fmt.Sprintf("log %d %s", i, strings.Repeat("l", 600)))
+	}
+	for i := 0; i < 60; i++ {
+		in.Preflight.Findings = append(in.Preflight.Findings, ForgeFinding{ID: "f", Status: "unknown", Summary: strings.Repeat("p", 600)})
+	}
+	d := BuildForge(in, root, time.Unix(1_700_000_000, 0))
+	if !d.Truncated {
+		t.Fatal("fixture was not truncated")
+	}
+	full := d
+	full.Failure.StderrTail = tail(in.StderrTail, redact.New(root), MaxForgeStderrLines)
+	full.Failure.LogTail = tail(in.LogTail, redact.New(root), MaxForgeLogLines)
+	full.Truncated = false
+	if len(full.Failure.LogTail) == len(d.Failure.LogTail) && len(full.Failure.StderrTail) == len(d.Failure.StderrTail) {
+		t.Fatal("nothing was truncated from the tails")
+	}
+	if ForgeContentID(full) == d.ID {
+		t.Fatal("the ID describes the document before truncation")
+	}
+}
+
+// A document from before content identities stays readable without
+// verification; it is a legacy document.
+func TestLegacyForgeDiagnosticStaysReadable(t *testing.T) {
+	root := t.TempDir()
+	d := BuildForge(input(root), root, time.Unix(1_700_000_000, 0))
+	d.Schema = LegacyForgeSchema
+	d.Failure.Error = "changed after the ID was taken, as a v1 truncation did"
+	b, _ := marshalForge(d)
+	dir := filepath.Join(root, "state", "forge", "diagnostics")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, d.ID+".json"), b, 0o600)
+	got, err := LoadForge(root, d.ID)
+	if err != nil || got.Schema != LegacyForgeSchema || VerifyForge(got) == nil {
+		t.Fatalf("legacy load %v; verify must not pass for its pre-truncation ID", err)
 	}
 }

@@ -33,8 +33,15 @@ import (
 // credentials or tokens. It is stored under HACHIDORI_HOME/state/forge and is
 // only written locally; it is exported only by an explicit operator action.
 
-// ForgeSchema identifies the document.
-const ForgeSchema = "hachidori.forge-diagnostic/v1"
+// ForgeSchema identifies the document. Its ID is the content identity of the
+// stored document (ForgeContentID): recomputing it from the stored document
+// reproduces it.
+const ForgeSchema = "hachidori.forge-diagnostic/v2"
+
+// LegacyForgeSchema is the document written before the ID was derived from the
+// final, bounded content. Such a document stays readable; its ID was taken
+// before truncation, so a truncated one does not verify.
+const LegacyForgeSchema = "hachidori.forge-diagnostic/v1"
 
 // Bounds of a Forge diagnostic.
 const (
@@ -174,11 +181,18 @@ type ForgeFinding struct {
 	Summary string `json:"summary"`
 }
 
-// ForgePreflight is the latest preflight of the target, if there was one.
+// ForgePreflight is the latest current preflight of exactly the failed
+// operation's target, if there was one: the target it was bound to and its
+// evidence state are recorded with it.
 type ForgePreflight struct {
 	Kind     string         `json:"kind"`
 	Outcome  string         `json:"outcome"`
 	At       string         `json:"at"`
+	Evidence string         `json:"evidence,omitempty"`
+	Model    string         `json:"model,omitempty"`
+	Variant  string         `json:"variant,omitempty"`
+	Recipe   string         `json:"recipe,omitempty"`
+	Device   string         `json:"device,omitempty"`
 	Findings []ForgeFinding `json:"findings"` // everything that is not a pass
 }
 
@@ -247,7 +261,9 @@ func BuildForge(in ForgeInput, root string, now time.Time) ForgeDiagnostic {
 		d.Certification = &c
 	}
 	if in.Preflight != nil {
-		p := ForgePreflight{Kind: line(in.Preflight.Kind, 32), Outcome: line(in.Preflight.Outcome, 32), At: line(in.Preflight.At, 64), Findings: []ForgeFinding{}}
+		p := ForgePreflight{Kind: line(in.Preflight.Kind, 32), Outcome: line(in.Preflight.Outcome, 32), At: line(in.Preflight.At, 64),
+			Evidence: line(in.Preflight.Evidence, 32), Model: line(in.Preflight.Model, 128), Variant: line(in.Preflight.Variant, 128),
+			Recipe: line(in.Preflight.Recipe, 128), Device: line(in.Preflight.Device, 32), Findings: []ForgeFinding{}}
 		for _, f := range in.Preflight.Findings {
 			if len(p.Findings) == maxForgeFindings {
 				break
@@ -265,9 +281,10 @@ func BuildForge(in ForgeInput, root string, now time.Time) ForgeDiagnostic {
 	d.Failure.LogTail = tail(in.LogTail, s, MaxForgeLogLines)
 	d.Secondary = scrubList(in.Secondary, s, 16, 400)
 
-	d.ID = forgeID(d)
 	// Hold the whole document to its bound: the evidence tails give way first,
-	// oldest lines first.
+	// oldest lines first. A provisional ID of the final shape (its length
+	// does not depend on the content) keeps the measured size the stored one.
+	d.ID = ForgeContentID(d)
 	for size(d) > MaxForgeBytes && (len(d.Failure.LogTail) > 0 || len(d.Failure.StderrTail) > 0) {
 		d.Truncated = true
 		switch {
@@ -281,6 +298,9 @@ func BuildForge(in ForgeInput, root string, now time.Time) ForgeDiagnostic {
 		d.Truncated = true
 		d.Preflight, d.Secondary = nil, d.Secondary[:min(len(d.Secondary), 2)]
 	}
+	// The identity is taken last, from the content as it is stored: nothing
+	// changes the document after this.
+	d.ID = ForgeContentID(d)
 	return d
 }
 
@@ -334,9 +354,22 @@ func chain(err error, s redact.Scrubber) []ForgeChainLink {
 	return out
 }
 
-// forgeID is the stable identity of a diagnostic: its kind, its time and a
-// short digest of its content.
-func forgeID(d ForgeDiagnostic) string {
+// ForgeContentID is the content identity of a diagnostic, the one procedure
+// that both assigns and verifies a diagnostic's ID:
+//
+//  1. take the final document (redacted, bounded and truncated: as stored);
+//  2. clear its ID field;
+//  3. serialize it canonically: encoding/json's compact Marshal of the
+//     ForgeDiagnostic struct (fields in declaration order, omitempty as
+//     declared, strings HTML-escaped), which a stored document decodes back
+//     to exactly;
+//  4. take the SHA-256 of those bytes;
+//  5. the ID is "<kind>-<created, UTC, seconds>-<first 4 bytes of the
+//     digest, hex>".
+//
+// A document's ID is valid when ForgeContentID of the document reproduces it
+// (VerifyForge).
+func ForgeContentID(d ForgeDiagnostic) string {
 	d.ID = ""
 	b, _ := json.Marshal(d)
 	sum := sha256.Sum256(b)
@@ -346,6 +379,16 @@ func forgeID(d ForgeDiagnostic) string {
 	}
 	t, _ := time.Parse(time.RFC3339, d.CreatedUTC)
 	return kind + "-" + t.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(sum[:4])
+}
+
+// VerifyForge reports whether d's ID is the content identity of d as it is:
+// the document is the one the ID was assigned to, after every bound and
+// truncation.
+func VerifyForge(d ForgeDiagnostic) error {
+	if want := ForgeContentID(d); d.ID != want {
+		return fmt.Errorf("diagnostic %s: its content identity is %s; the document is not the one its ID was assigned to", d.ID, want)
+	}
+	return nil
 }
 
 var idRe = regexp.MustCompile(`^[a-z0-9]+-\d{8}T\d{6}Z-[0-9a-f]{8}$`)
@@ -476,8 +519,14 @@ func LoadForge(root, id string) (ForgeDiagnostic, error) {
 	if err := json.Unmarshal(b, &d); err != nil {
 		return d, fmt.Errorf("diagnostic %s: %w", id, err)
 	}
-	if d.Schema != ForgeSchema || d.ID != id {
+	switch {
+	case d.ID != id || (d.Schema != ForgeSchema && d.Schema != LegacyForgeSchema):
 		return d, fmt.Errorf("diagnostic %s is not a %s document", id, ForgeSchema)
+	case d.Schema == ForgeSchema:
+		// A current document must be the one its ID names.
+		if err := VerifyForge(d); err != nil {
+			return d, err
+		}
 	}
 	return d, nil
 }

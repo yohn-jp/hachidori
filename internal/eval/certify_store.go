@@ -13,14 +13,23 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/home"
 )
 
 // RecordSchema identifies a certification record: the small, durable binding
-// between one certification report and the exact variant it is about.
-const RecordSchema = "hachidori.certification-record/1"
+// between one certification report and the exact variant it is about. A
+// record of this schema carries Sequence, its position in the variant's total
+// order of certifications.
+const RecordSchema = "hachidori.certification-record/2"
+
+// LegacyRecordSchema is the record schema written before records carried a
+// sequence. Its records stay readable; they are ordered only by their
+// second-precision creation time, so two of them created within the same
+// second have no order, and that ambiguity is reported, never resolved.
+const LegacyRecordSchema = "hachidori.certification-record/1"
 
 // Certification states of a variant, as resolved from its records.
 const (
@@ -30,6 +39,12 @@ const (
 	// StateExperimental is what status reports for a variant that was
 	// activated on an explicit operator request without an accepted record.
 	StateExperimental = "experimental/uncertified"
+	// StateAmbiguous: valid records exist but the latest of them cannot be
+	// determined (legacy records created within the same second, or two
+	// records claiming the same sequence). The variant is neither accepted nor
+	// uncertified: it is not activated, not even experimentally, until it is
+	// certified again.
+	StateAmbiguous = "ambiguous"
 )
 
 // PolicyRef names the policy a record applied.
@@ -42,8 +57,15 @@ type PolicyRef struct {
 // It is written after the report it names, so its presence marks a complete
 // certification. It carries the identities activation checks and the verdict;
 // everything else is in the report, whose digest it records.
+//
+// Sequence is the ordering authority: the n-th certification of the variant
+// has sequence n, claimed exclusively on disk before the record is written
+// (see claimSequence). A later certification therefore always has a larger
+// sequence, whatever the wall clock, the report content or the order a
+// directory is listed in. Legacy records have none (zero).
 type CertificationRecord struct {
 	Schema                  string             `json:"schema"`
+	Sequence                uint64             `json:"sequence,omitempty"`
 	CreatedAt               string             `json:"created_at"`
 	VariantID               string             `json:"variant_id"`
 	VariantManifestSHA256   string             `json:"variant_manifest_sha256"`
@@ -94,10 +116,61 @@ func SaveCertification(h home.Home, c Certification) (CertificationRecord, error
 	if err := home.WriteFileAtomic(filepath.Join(dir, rec.Report), body, 0o644); err != nil {
 		return rec, err
 	}
+	seq, err := claimSequence(dir)
+	if err != nil {
+		return rec, fmt.Errorf("claiming the certification sequence: %w", err)
+	}
+	rec.Sequence = seq
 	if err := home.WriteJSON(filepath.Join(dir, name+".record.json"), rec); err != nil {
 		return rec, err
 	}
 	return rec, nil
+}
+
+// orderSuffix names the sequence claims of a certification directory:
+// <sequence, 20 digits>.order, empty files created exclusively.
+const orderSuffix = ".order"
+
+// claimSequence claims the next certification sequence of dir: one more than
+// the highest claim or record sequence present, taken by creating its claim
+// file exclusively, so two writers never hold the same sequence and a claim
+// is never reused, even when its record was never written. The claims are
+// files of the home, so the order survives a restart.
+func claimSequence(dir string) (uint64, error) {
+	var next uint64
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range entries {
+		var n uint64
+		switch name := e.Name(); {
+		case strings.HasSuffix(name, orderSuffix):
+			n, err = strconv.ParseUint(strings.TrimSuffix(name, orderSuffix), 10, 64)
+			if err != nil {
+				continue
+			}
+		case strings.HasSuffix(name, ".record.json"):
+			var rec struct {
+				Sequence uint64 `json:"sequence"`
+			}
+			if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil && json.Unmarshal(b, &rec) == nil {
+				n = rec.Sequence
+			}
+		}
+		next = max(next, n)
+	}
+	for attempt := 0; attempt < 64; attempt++ {
+		next++
+		f, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("%020d%s", next, orderSuffix)), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err == nil {
+			return next, f.Close()
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return 0, err
+		}
+	}
+	return 0, errors.New("no certification sequence could be claimed")
 }
 
 // DecodeCertification parses a certification report strictly.
@@ -118,9 +191,10 @@ func DecodeCertification(data []byte) (Certification, error) {
 }
 
 // CertificationState is the certification state of a variant resolved from
-// its records: the verdict of the latest valid record, or uncertified when
-// there is none. Problems lists records that were found and not trusted, and
-// why; they never make a variant certified.
+// its records: the verdict of the latest valid record, uncertified when there
+// is none, or ambiguous when the latest cannot be determined. Problems lists
+// records that were found and not trusted, and why, and any ordering
+// ambiguity; they never make a variant certified.
 type CertificationState struct {
 	State    string               `json:"state"`
 	Record   *CertificationRecord `json:"record,omitempty"`
@@ -134,6 +208,13 @@ type CertificationState struct {
 // digests to the recorded one; and the verdict recomputed from that policy and
 // the report's evidence is the recorded verdict. A record that fails any of
 // that is ignored, so a hand-edited verdict can never certify a variant.
+//
+// The latest valid record is the one with the highest sequence. Every
+// sequenced record is later than every legacy record (sequences were
+// introduced after them). Among legacy records only, the latest is the one
+// with the latest creation time; when several share it, they have no order
+// and the state is ambiguous. Neither the report digest nor the order of the
+// directory listing ever decides which record is the latest.
 func ResolveCertification(h home.Home, v home.VariantManifest) CertificationState {
 	st := CertificationState{State: StateUncertified}
 	dir := certDir(h, v.ID)
@@ -159,15 +240,52 @@ func ResolveCertification(h home.Home, v home.VariantManifest) CertificationStat
 	if len(valid) == 0 {
 		return st
 	}
-	sort.SliceStable(valid, func(i, j int) bool {
-		if valid[i].CreatedAt != valid[j].CreatedAt {
-			return valid[i].CreatedAt < valid[j].CreatedAt
+	latest, tied := latestRecords(valid)
+	if len(tied) > 1 {
+		names := make([]string, 0, len(tied))
+		for _, r := range tied {
+			names = append(names, r.Report)
 		}
-		return valid[i].ReportSHA256 < valid[j].ReportSHA256
-	})
-	latest := valid[len(valid)-1]
-	st.State, st.Record = latest.Verdict, &latest
+		sort.Strings(names)
+		st.State = StateAmbiguous
+		st.Problems = append(st.Problems, fmt.Sprintf("records of reports %s %s: their order cannot be determined; certify the variant again",
+			strings.Join(names, ", "), latest))
+		sort.Strings(st.Problems)
+		return st
+	}
+	rec := tied[0]
+	st.State, st.Record = rec.Verdict, &rec
+	sort.Strings(st.Problems)
 	return st
+}
+
+// latestRecords returns the records that are latest under the total order
+// (one, unless the order is ambiguous) and how they tie.
+func latestRecords(valid []CertificationRecord) (string, []CertificationRecord) {
+	var top []CertificationRecord
+	var best uint64
+	for _, r := range valid {
+		switch {
+		case r.Sequence == 0:
+		case r.Sequence > best:
+			best, top = r.Sequence, []CertificationRecord{r}
+		case r.Sequence == best:
+			top = append(top, r)
+		}
+	}
+	if best > 0 {
+		return fmt.Sprintf("claim the same sequence %d", best), top
+	}
+	var at string
+	for _, r := range valid {
+		switch {
+		case r.CreatedAt > at:
+			at, top = r.CreatedAt, []CertificationRecord{r}
+		case r.CreatedAt == at:
+			top = append(top, r)
+		}
+	}
+	return "are legacy records created within the same second (" + at + ")", top
 }
 
 func verifyRecord(dir, name string, v home.VariantManifest) (CertificationRecord, error) {
@@ -181,7 +299,12 @@ func verifyRecord(dir, name string, v home.VariantManifest) (CertificationRecord
 	if err := dec.Decode(&rec); err != nil {
 		return rec, err
 	}
-	if rec.Schema != RecordSchema {
+	switch {
+	case rec.Schema == RecordSchema && rec.Sequence == 0:
+		return rec, errors.New("record carries no sequence")
+	case rec.Schema == LegacyRecordSchema && rec.Sequence != 0:
+		return rec, errors.New("legacy record claims a sequence")
+	case rec.Schema != RecordSchema && rec.Schema != LegacyRecordSchema:
 		return rec, fmt.Errorf("record schema %q", rec.Schema)
 	}
 	if rec.VariantID != v.ID || rec.VariantManifestSHA256 != v.ManifestSHA256() || rec.Source != v.Source {

@@ -453,3 +453,145 @@ func TestPreflightUnwritableTargetIsABlocker(t *testing.T) {
 		t.Fatalf("storage.writable = %s (%s)", f.Status, f.Summary)
 	}
 }
+
+// Materialize preflight distinguishes an absent source from a present one, and
+// checks a present one before materialization would reuse it: a corrupt
+// manifest, another catalog identity, a missing or a corrupt pinned file is a
+// blocker, never a pass because a manifest file exists. Quick mode reports the
+// unhashed digests UNKNOWN.
+func TestPreflightMaterializeChecksAnExistingSource(t *testing.T) {
+	h, m := source(t)
+	servingRuntime(t, h, "cpu")
+	dir := h.Path("models", filepath.FromSlash(setup.ModelDirName(m)))
+	manifest := filepath.Join(dir, "hachidori-model.json")
+	good, _ := os.ReadFile(manifest)
+	ok := host(1<<40, true, ram(64*gib, 60*gib))
+	run := func(quick bool) setup.PreflightReport {
+		t.Helper()
+		return optimize.Preflight(context.Background(), h, optimize.PreflightRequest{Kind: setup.PreflightMaterialize, Model: m.ID, Device: "cpu", Quick: quick},
+			optimize.PreflightDeps{Host: ok}, nil)
+	}
+	restore := func() {
+		t.Helper()
+		if err := os.WriteFile(manifest, good, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Present and valid: the manifest matches and every digest is hashed.
+	r := run(false)
+	if f := find(t, r, "source.manifest"); f.Status != setup.FindingPass || f.Facts["condition"] != string(setup.SourcePresent) {
+		t.Fatalf("valid source: %s %s %+v", f.Status, f.Summary, f.Facts)
+	}
+	if f := find(t, r, "source.digests"); f.Status != setup.FindingPass || r.Blocked() {
+		t.Fatalf("valid source digests: %s %s", f.Status, f.Summary)
+	}
+	// Quick: the digests are not hashed, so they are UNKNOWN, not PASS.
+	if f := find(t, run(true), "source.digests"); f.Status != setup.FindingUnknown {
+		t.Fatalf("quick digests = %s", f.Status)
+	}
+
+	for name, tc := range map[string]struct {
+		mutate func()
+		cond   setup.SourceCondition
+	}{
+		"corrupt manifest": {func() { os.WriteFile(manifest, []byte("{not json"), 0o644) }, setup.SourceManifestCorrupt},
+		"another catalog revision": {func() {
+			other := m
+			other.Revision = strings.Repeat("ab", 20)
+			home.WriteJSON(manifest, other)
+		}, setup.SourceIdentityMismatch},
+		"another pinned digest": {func() {
+			other := m
+			other.Files = map[string]string{}
+			for k, v := range m.Files {
+				other.Files[k] = v
+			}
+			other.Files["config.json"] = strings.Repeat("0", 64)
+			home.WriteJSON(manifest, other)
+		}, setup.SourceIdentityMismatch},
+		"missing pinned file": {func() { os.Remove(filepath.Join(dir, "config.json")) }, setup.SourceFileMissing},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer os.WriteFile(filepath.Join(dir, "config.json"), []byte("fixture config.json"), 0o644)
+			defer restore()
+			tc.mutate()
+			for _, quick := range []bool{false, true} {
+				r := run(quick)
+				f := find(t, r, "source.manifest")
+				if f.Status != setup.FindingBlocker || f.Facts["condition"] != string(tc.cond) || !r.Blocked() {
+					t.Fatalf("quick=%v: source.manifest = %s (%s) %+v, want a %s blocker", quick, f.Status, f.Summary, f.Facts, tc.cond)
+				}
+			}
+		})
+	}
+
+	// A corrupt pinned artifact under a valid manifest: knowable by hashing,
+	// so the normal preflight blocks; quick mode says UNKNOWN, not PASS.
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte("tampered"), 0o644)
+	r = run(false)
+	if f := find(t, r, "source.digests"); f.Status != setup.FindingBlocker || !strings.Contains(f.Summary, "config.json") || !r.Blocked() {
+		t.Fatalf("corrupt artifact: %s %s", f.Status, f.Summary)
+	}
+	if r := run(true); find(t, r, "source.digests").Status != setup.FindingUnknown || r.Outcome == setup.OutcomeReady {
+		t.Fatalf("quick with a corrupt artifact: %s", r.Outcome)
+	}
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte("fixture config.json"), 0o644)
+
+	// Absent: nothing to check; materialization will download it.
+	os.RemoveAll(dir)
+	r = run(false)
+	if f := find(t, r, "source.manifest"); f.Status != setup.FindingPass || f.Facts["condition"] != string(setup.SourceAbsent) {
+		t.Fatalf("absent source: %s %+v", f.Status, f.Facts)
+	}
+	for _, f := range r.Findings {
+		if f.ID == "source.digests" {
+			t.Fatalf("an absent source has no digests to report: %+v", f)
+		}
+	}
+}
+
+// Every report is bound to the identities its findings were drawn from,
+// derived from the existing authorities.
+func TestPreflightReportIsBoundToItsIdentities(t *testing.T) {
+	h, m := source(t)
+	withIndex(t, h, m)
+	m = setup.Models[0]
+	v := builtVariant(t, h)
+	servingRuntime(t, h, "cpu")
+	spec, _ := setup.Desired("cpu")
+	rt, _ := setup.FileSHA256(h.Path("runtime", spec.ID(), "manifest.json"))
+	srcManifest, _ := setup.FileSHA256(h.Path("models", filepath.FromSlash(setup.ModelDirName(m)), "hachidori-model.json"))
+	src := home.SourceOf(m)
+
+	r := probePre(t, h, v, "cpu", optimize.PreflightDeps{})
+	want := setup.PreflightBinding{Kind: setup.PreflightProbe, Device: "cpu", Model: m.ID, Provider: m.Provider, SourceRepo: m.Repo, SourceRevision: m.Revision,
+		SourceFilesSHA256: src.FilesSHA256, SourceManifestSHA256: srcManifest, Runtime: spec.ID(), RuntimeManifestSHA256: rt,
+		Variant: v.ID, VariantManifestSHA256: v.ManifestSHA256(), Recipe: v.Recipe.Name, RecipeSHA256: v.RecipeSHA256}
+	if r.Binding == nil || *r.Binding != want {
+		t.Fatalf("probe binding\n got %+v\nwant %+v", r.Binding, want)
+	}
+	if again := optimize.PreflightBindingOf(h, optimize.PreflightRequestOf(r)); len(r.Binding.Mismatch(again)) != 0 {
+		t.Fatalf("recomputed binding differs: %v", r.Binding.Mismatch(again))
+	}
+
+	recipe, _ := optimize.LookupRecipe(m.ID, optimize.RecipeClefFlashW4A16)
+	opt, _ := setup.DesiredOptimizer()
+	r = pre(t, h, optimize.PreflightRequest{Verified: true}, host(1<<40, true, ram(64*gib, 60*gib)))
+	if b := r.Binding; b == nil || b.Kind != setup.PreflightOptimize || b.Recipe != recipe.Name || b.RecipeSHA256 != recipe.SHA256() || b.Runtime != opt.ID() ||
+		b.RuntimeManifestSHA256 != "" || b.Variant != "" || b.Device != "" || b.SourceManifestSHA256 != srcManifest {
+		t.Fatalf("optimize binding %+v", b)
+	}
+
+	// A materialize report of an absent source binds no source manifest; once
+	// the source exists the recomputed binding differs.
+	r = optimize.Preflight(context.Background(), h, optimize.PreflightRequest{Kind: setup.PreflightMaterialize, Model: m.ID, Device: "cpu", Quick: true},
+		optimize.PreflightDeps{Host: host(1<<40, true, ram(64*gib, 60*gib))}, nil)
+	if r.Binding.SourceManifestSHA256 != srcManifest {
+		t.Fatalf("materialize binding %+v", r.Binding)
+	}
+	os.Remove(h.Path("models", filepath.FromSlash(setup.ModelDirName(m)), "hachidori-model.json"))
+	if d := r.Binding.Mismatch(optimize.PreflightBindingOf(h, optimize.PreflightRequestOf(r))); len(d) != 1 || d[0] != "source_manifest_sha256" {
+		t.Fatalf("mismatch %v", d)
+	}
+}
