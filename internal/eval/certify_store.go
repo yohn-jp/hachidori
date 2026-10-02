@@ -80,6 +80,10 @@ type CertificationRecord struct {
 	Failed                  []string           `json:"failed_criteria"`
 	ReportSHA256            string             `json:"report_sha256"`
 	Report                  string             `json:"report"` // file name beside the record
+	// Producer is the evidence of the Forge runs the certification was
+	// computed from (additive: absent for run-file certifications and for
+	// records written before it existed).
+	Producer *RecordProducer `json:"producer,omitempty"`
 }
 
 func certDir(h home.Home, variantID string) string {
@@ -108,7 +112,7 @@ func SaveCertification(h home.Home, c Certification) (CertificationRecord, error
 		DatasetSHA256: c.Dataset.SHA256, QuestionsSHA256: c.Dataset.QuestionsSHA256, InputSHA256: c.Dataset.InputSHA256,
 		Policy:  PolicyRef{ID: c.Policy.ID, SHA256: c.PolicySHA256},
 		Verdict: c.Verdict.Status, Failed: append([]string{}, c.Verdict.Failed()...),
-		ReportSHA256: reportSHA, Report: name + ".report.json"}
+		ReportSHA256: reportSHA, Report: name + ".report.json", Producer: c.Producer.record()}
 	dir := certDir(h, c.Variant.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return rec, err
@@ -327,6 +331,7 @@ func verifyRecord(dir, name string, v home.VariantManifest) (CertificationRecord
 	if err != nil {
 		return rec, err
 	}
+	producerMismatch := checkProducer(rec, c)
 	switch {
 	case c.Variant.ID != v.ID || c.Variant.ManifestSHA256 != rec.VariantManifestSHA256 || c.Source != v.Source:
 		return rec, errors.New("report binds a different variant or source")
@@ -336,6 +341,8 @@ func verifyRecord(dir, name string, v home.VariantManifest) (CertificationRecord
 		return rec, errors.New("report binds a different dataset, questions or inputs")
 	case c.Candidate.VariantID != v.ID || c.Reference.VariantID != "":
 		return rec, errors.New("report's runs are not the source reference and this variant")
+	case producerMismatch != nil:
+		return rec, producerMismatch
 	case c.Policy.Validate() != nil || c.Policy.SHA256() != c.PolicySHA256 || c.PolicySHA256 != rec.Policy.SHA256 || c.Policy.ID != rec.Policy.ID:
 		return rec, errors.New("report's policy does not match the recorded policy")
 	}

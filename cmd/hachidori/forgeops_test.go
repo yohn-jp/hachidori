@@ -68,7 +68,8 @@ func TestForgePreflightThroughTheCLI(t *testing.T) {
 	}
 	for _, args := range [][]string{{"forge"}, {"forge", "nope"}, {"forge", "preflight"}, {"forge", "preflight", "nope"}, {"forge", "preflight", "probe", "-home", h.Root},
 		{"forge", "probe", "-home", h.Root}, {"forge", "diagnostics"}, {"forge", "diagnostics", "nope", "-home", h.Root},
-		{"forge", "execute"}, {"forge", "execute", "-home", h.Root, "-device", "cuda", "/nonexistent.jsonl"}} {
+		{"forge", "execute"}, {"forge", "execute", "-home", h.Root, "-device", "cuda", "/nonexistent.jsonl"},
+		{"forge", "certify"}, {"forge", "certify", "-home", h.Root, "-device", "cuda", "only-a-variant"}} {
 		if code := run(args, nil); code == 0 {
 			t.Errorf("%v succeeded", args)
 		}
@@ -112,6 +113,24 @@ func TestForgeDiagnosticsThroughTheCLI(t *testing.T) {
 		{"forge", "diagnostics", "show", "-home", h.Root, "-kind", "probe"}, {"forge", "diagnostics", "show", "-home", h.Root, "../../x"}} {
 		if code := run(args, nil); code == 0 {
 			t.Errorf("%v succeeded", args)
+		}
+	}
+}
+
+// forge certify names no run file, and a failure leaves a diagnostic of the
+// phase it failed in, with no run evidence and no certification recorded.
+func TestForgeCertifyThroughTheCLIFailsInItsPhase(t *testing.T) {
+	h, _ := forgeSource(t)
+	if code := run([]string{"forge", "certify", "-home", h.Root, "-device", "cuda", "clef-flash--w4a16--ffffffffffff", "/nonexistent.jsonl"}, nil); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	list := diagnostics.ListForge(h.Root, diagnostics.ForgeFilter{Kind: app.OpForgeCertify})
+	if len(list) != 1 || list[0].Phase != string(app.CertPhaseResolving) || list[0].Variant != "clef-flash--w4a16--ffffffffffff" || !strings.Contains(list[0].Error, "resolving") {
+		t.Fatalf("diagnostics %+v", list)
+	}
+	for _, dir := range []string{filepath.Join("state", "forge", "runs"), filepath.Join("state", "certifications")} {
+		if es, _ := os.ReadDir(h.Path(dir)); len(es) != 0 {
+			t.Fatalf("%s holds %v after a failed certification", dir, es)
 		}
 	}
 }

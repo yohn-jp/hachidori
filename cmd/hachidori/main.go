@@ -61,12 +61,17 @@ System One model forge (inference host, offline except where noted):
              a canonical recipe in the separate optimizer runtime
   certify    run|evaluate|show: compare a high-precision reference run and a
              variant run on identical inputs (decision fidelity), record the
-             certification a variant needs before it can be activated
-  forge      preflight|probe|diagnostics: check readiness before expensive
-             work (disk, RAM, runtime, recipe, device; unknown fit stays
-             unknown), smoke-test a persisted variant through the normal worker
-             (not a certification), inspect or export the bounded redacted
-             diagnostic a failed materialize/optimize/probe/certify leaves
+             certification a variant needs before it can be activated (run
+             and evaluate are the advanced, run-file level; forge certify is
+             the normal path)
+  forge      preflight|probe|execute|certify|diagnostics: check readiness
+             before expensive work (disk, RAM, runtime, recipe, device; unknown
+             fit stays unknown), smoke-test a persisted variant through the
+             normal worker (not a certification), execute the exact source or
+             variant over a dataset as maintenance work, certify a variant
+             from a dataset alone (it produces both runs itself; never
+             activates), inspect or export the bounded redacted diagnostic a
+             failed materialize/optimize/probe/certify leaves
 
 client (caller side, uses HACHIDORI_ENDPOINT):
   status     print /v1/status

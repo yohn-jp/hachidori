@@ -299,6 +299,30 @@ variant identities, runtime, device, dtype, dataset and Question Definitions,
 returning an evidence ID instead of a path (see runtime.md, Forge execution
 sessions). It decides nothing: certification stays the comparison below.
 
+**The normal path is one command.** `hachidori forge certify --device cuda <variant-id> <corpus.jsonl>`
+(with `--questions`, `--policy`, `--reference-device`, `--reference-dtype`,
+`--materialize`) does steps 1 to 3 above and nothing else: it resolves the exact
+source, variant, policy and corpus; runs the preflights and, if allowed,
+materializes a missing runtime; probes the variant; executes the pinned source
+(reference, default `cpu`, `bfloat16`) and the exact variant (candidate, the
+explicit device) as `forge execute` does; proves from the stored evidence that
+each is the exact target; proves the two runs are the same normalized dataset,
+Question Definitions, questions, requests and case order; calls `eval.Certify`
+with the unchanged policy; and records the certification. No run file is named,
+no experimental activation is needed and nothing is activated, whatever the
+verdict. The report and its record carry a versioned `producer` block
+(`hachidori.certification-producer.v1`): the evidence ID and digest of the
+reference and candidate runs, their exact targets (source and variant identity,
+runtime, requested and actual device and dtype, quantized execution) and the
+outcomes of the preflight and the probe. Activation re-verifies that the record's
+and the report's producer blocks name the same runs; certifications of run files
+and records written before the block existed carry none and stay valid. A failure
+leaves a diagnostic naming its phase (`resolving`, `preflight`, `materializing`,
+`probe`, `reference_run`, `candidate_run`, `aligning`, `certifying`,
+`persisting`) and the evidence of any run that did complete, and never a
+certification. The reference remains the authority for fidelity only. The rest of
+this section describes the run-file level, which stays as the low-level surface.
+
 `certify run` records one resident's pass as `hachidori.resident-run.v1` (the
 same per-model evidence a resident comparison records: identity from the
 resident's own status, startup load and warmup, accelerator and host memory
@@ -374,6 +398,7 @@ fields in memory samples and `hachidori.resident-run.v1` (new).
 | Q4 variant on the RTX 3060 (fits, exact VRAM, RAM, load, latency) | NOT_CHECKED | physical; never inferred from CI or the tiny model |
 | decision fidelity of the real variant (flips, drift, divergence, labelled deltas) and the policy verdict | NOT_CHECKED | needs the two real runs on the operator's corpus |
 | physical Windows desktop: Optimize, Certify, Activate, Restart for a variant | NOT_CHECKED | Windows checklist W20-W24 |
+| `forge certify` of the real Clef-Flash W4A16 variant on Windows / CUDA / Clef (probe, BF16 reference, candidate run, certification) | NOT_CHECKED | portable tests use fake workers and fixtures only; no real weights are downloaded; user-side |
 
 ### Deterministic resident routing (#124)
 
