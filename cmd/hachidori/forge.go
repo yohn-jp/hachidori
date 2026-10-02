@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/yohn-jp/hachidori/internal/app"
 	"github.com/yohn-jp/hachidori/internal/client"
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
@@ -26,16 +27,27 @@ import (
 
 const forgeUsage = `usage: hachidori variant <list|show|verify|optimize|remove|recipes> [flags]
        hachidori certify <run|evaluate|show> [flags]
+       hachidori forge <preflight|probe|diagnostics> [flags]
        hachidori activate [flags]
 `
 
 // cliObserver prints the real phases and progress of an operation to w. A
 // percentage is printed only for a step that reported a total.
 func cliObserver(w io.Writer) *setup.Observer {
-	last := ""
+	last, resumedAt := "", ""
 	return &setup.Observer{
 		OnPhase: func(p setup.Phase) { fmt.Fprintf(w, "== %s\n", p) },
 		OnProgress: func(p setup.Progress) {
+			// A download that continues an interrupted partial says so once,
+			// with the bytes already held.
+			if key := fmt.Sprintf("%s/%d", p.Detail, p.Resumed); p.Step == setup.StepDownload && p.Resumed > 0 && key != resumedAt {
+				resumedAt = key
+				if p.Determinate() {
+					fmt.Fprintf(w, "   resuming %s at %d of %d bytes (%.0f%% already held)\n", p.Detail, p.Resumed, p.Total, 100*float64(p.Resumed)/float64(p.Total))
+				} else {
+					fmt.Fprintf(w, "   resuming %s at %d bytes (total length not known)\n", p.Detail, p.Resumed)
+				}
+			}
 			line := fmt.Sprintf("   %s %s", p.Step, p.Detail)
 			if p.Items > 0 {
 				line += fmt.Sprintf(" (%d of %d)", p.Item, p.Items)
@@ -199,11 +211,17 @@ func variantOptimize(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	run := newForgeRun(h, app.OpOptimize, *model, "", *recipe, "")
+	log, closeLog := run.log()
+	defer closeLog()
 	fmt.Fprintln(os.Stderr, "== accepted")
-	res, err := optimize.Build(ctx, h, optimize.Request{Model: *model, Recipe: *recipe, Reproduce: *reproduce}, optimize.Deps{}, os.Stderr, cliObserver(os.Stderr))
+	res, err := optimize.Build(ctx, h, optimize.Request{Model: *model, Recipe: *recipe, Reproduce: *reproduce}, optimize.Deps{}, log, run.observer())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "== failed")
-		return err
+		if pe, ok := setup.AsPreflightError(err); ok {
+			printPreflight(os.Stderr, pe.Report)
+		}
+		return run.fail(err)
 	}
 	fmt.Fprintln(os.Stderr, "== completed")
 	switch {
@@ -314,25 +332,30 @@ func certifyEvaluate(args []string) error {
 			return err
 		}
 	}
+	run := newForgeRun(h, app.OpCertify, "", *variant, "", "")
+	run.failure.Certify = &app.CertifyParams{Variant: *variant, Reference: *refPath, Candidate: *candPath, Policy: *policyPath}
+	run.phase = string(setup.PhaseLoadingRuns)
 	src, v, err := setup.FindVariant(h, *variant)
 	if err != nil {
-		return err
+		return run.fail(err)
 	}
 	ref, err := eval.LoadResidentRun(*refPath)
 	if err != nil {
-		return err
+		return run.fail(err)
 	}
 	cand, err := eval.LoadResidentRun(*candPath)
 	if err != nil {
-		return err
+		return run.fail(err)
 	}
+	run.phase = string(setup.PhaseComparing)
 	cert, err := eval.Certify(eval.CertifyInput{Source: src, Variant: v, Reference: ref, Candidate: cand, Policy: policy})
 	if err != nil {
-		return err
+		return run.fail(err)
 	}
+	run.phase = string(setup.PhaseRecording)
 	rec, err := eval.SaveCertification(h, cert)
 	if err != nil {
-		return err
+		return run.fail(err)
 	}
 	eval.CertificationSummary(os.Stdout, cert)
 	if *out != "" {

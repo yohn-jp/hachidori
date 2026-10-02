@@ -374,7 +374,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <div class="op-head"><strong>{{t "RUNNING"}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}</span>{{with since .Started}}<time>{{t "running for"}} {{.}}</time>{{end}}</div>
   <ol class="stages">{{range opStages .}}<li class="{{.Status}}"{{if eq .Status "current"}} aria-current="step"{{end}}>{{t .Label}}</li>{{end}}</ol>
   {{if .Step}}
-  <p class="op-line">{{with phasePosition .}}{{t "phase"}} {{.}} · {{end}}{{t (stepLabel .Step)}} <span class="mono">{{.Detail}}</span>{{if .Items}} ({{.Item}} {{t "of"}} {{.Items}}){{end}}{{if .Determinate}} · {{bytesIn .Done}} {{t "of"}} {{bytesIn .Total}} ({{printf "%.0f" .Percent}}%){{end}}</p>
+  <p class="op-line">{{with phasePosition .}}{{t "phase"}} {{.}} · {{end}}{{t (stepLabel .Step)}} <span class="mono">{{.Detail}}</span>{{if .Items}} ({{.Item}} {{t "of"}} {{.Items}}){{end}}{{if .Determinate}} · {{bytesIn .Done}} {{t "of"}} {{bytesIn .Total}} ({{printf "%.0f" .Percent}}%){{else if and (eq .Step "downloading") .Done}} · {{bytesIn .Done}} {{t "received (the server did not state a total size)"}}{{end}}{{if .Resumed}} · <strong class="resumed">{{t "resuming"}}</strong>: {{bytesIn .Resumed}} {{t "were already held; the whole file is verified against its pinned digest once it is complete"}}{{end}}</p>
   {{if .Determinate}}<div class="bar progress" role="progressbar" aria-label="{{t (stepLabel .Step)}}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{printf "%.0f" .Percent}}"><span style="width:{{printf "%.1f" .Percent}}%"></span></div>
   {{else}}<div class="bar progress indeterminate" role="progressbar" aria-label="{{t (stepLabel .Step)}}"><span></span></div>{{end}}
   {{else}}
@@ -391,7 +391,8 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   {{with .Failure}}
   <p class="op-line"><span class="bad-t">{{t "Failed in phase"}} {{with $.FailurePhase}}<strong>{{t (phaseLabel .)}}</strong>{{end}}{{with $.FailureStep}} · {{t (stepLabel .)}}{{end}}</span>: <span class="mono">{{.}}</span></p>
   {{if eq $.Kind "update"}}<p class="note">{{t "The installed executable was not changed."}}</p>
-  {{else}}<p class="note">{{t "The active runtime and model were not changed."}} <a href="/diagnostics">{{t "Open Diagnostics"}}</a>{{with $.Log}} · {{t "action output:"}} <span class="mono">{{.}}</span>{{end}}</p>{{end}}
+  {{else}}<p class="note">{{t "The active runtime and model were not changed."}} <a href="/diagnostics">{{t "Open Diagnostics"}}</a>{{with $.Log}} · {{t "action output:"}} <span class="mono">{{.}}</span>{{end}}</p>
+  {{with $.Diagnostic}}<p class="note" id="forge-diagnostic-last">{{t "A bounded, redacted diagnostic was recorded for this failure:"}} <a class="mono" href="/settings/forge/diagnostics/{{.}}" download>{{.}}</a> · <span class="mono">hachidori forge diagnostics show {{.}}</span> · <span class="mono">hachidori forge diagnostics export -out DIR {{.}}</span></p>{{end}}{{end}}
   {{end}}
 </div>
 {{end}}
@@ -668,6 +669,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
         <td class="mono">{{.Provider}} · {{.Repo}}@{{.Revision}} · {{.Files}} {{t "pinned file(s)"}}</td>
         <td>{{if .Running}}<span class="badge tone-ok">{{t "running"}}</span>{{end}}{{if .Active}}<span class="badge tone-ok">{{if and $.Models.RestartRequired (not .Running)}}{{t "active · applies on restart"}}{{else}}{{t "active"}}{{end}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
           {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
+          {{if .PartialBytes}}<div class="muted partial-download">{{t "interrupted download kept for resume (not a materialized model):"}} {{bytesIn .PartialBytes}} · {{t "Materialize again to resume it"}}</div>{{end}}
           {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
           {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
         <td class="nowrap">{{if .Materialized}}
@@ -694,10 +696,19 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
         <td>{{if .Running}}<span class="badge tone-ok">{{t "running"}}</span>{{end}}{{if .Active}}<span class="badge tone-ok">{{if .Pending}}{{t "active · applies on restart"}}{{else}}{{t "active"}}{{end}}</span>{{if .Experimental}}<span class="badge tone-bad">{{t "experimental/uncertified"}}</span>{{end}}{{else}}<span class="badge">{{t "materialized"}}</span>{{end}}
           {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
           {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
-          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
+          {{with .Check}}<div class="muted">{{.}}</div>{{end}}
+          {{if $.Models.VariantControls}}{{$row := .}}<div class="probe-state" data-probe="{{with .Probe}}{{.Result}}{{else}}none{{end}}">
+            {{with .Probe}}
+            {{if eq .Result "passed"}}{{if $row.ProbeStale}}<span class="badge">{{t "probe passed for another manifest of this variant ID (stale)"}}</span>{{else}}<span class="badge tone-ok">{{t "probe passed"}}</span>{{end}}
+            {{else}}<span class="badge tone-bad">{{t "probe failed"}}{{with .Phase}} · {{t "phase"}} {{.}}{{end}}</span>{{end}}
+            <div class="muted mono">{{.Device}}{{with .DeviceName}} · {{.}}{{end}}{{with .DType}} · {{.}}{{end}} · {{t "load"}} {{ms .LoadMS}} · {{t "warmup"}} {{ms .WarmupMS}} · {{t "request"}} {{ms .RequestMS}} · {{.StartedAt}}</div>
+            {{with .Error}}<div class="bad-t">{{.}}</div>{{end}}
+            {{else}}<span class="badge">{{t "not probed"}}</span>{{end}}
+          </div>{{end}}</td>
         <td class="nowrap">
           <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="variant"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
           {{if $.Models.VariantControls}}
+          {{if and (not .Problem) .SourceMaterialized}}<form method="post" action="/settings/variants/probe" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="variant" value="{{.ID}}"><input type="hidden" name="model" value="{{.SourceID}}"><select name="device" aria-label="{{t "Device"}}">{{$ad := $.Models.ActiveDevice}}{{range $.Models.Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select><button type="submit" class="btn" formaction="/settings/variants/preflight" name="kind" value="probe">{{t "Preflight"}}</button><button type="submit" class="btn">{{t "Probe"}}</button></form>{{end}}
           {{if .CanActivate}}<form method="post" action="/settings/variants/activate" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="device" value="{{$.Models.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><button type="submit" class="btn primary">{{t "Activate"}}</button></form>
           {{else if .CanExperiment}}<form method="post" action="/settings/variants/activate" class="inline" data-confirm="{{t "Activate this variant as experimental/uncertified? It has no certification record. It is marked as such in status and is never promoted automatically."}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="device" value="{{$.Models.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><input type="hidden" name="experimental" value="1"><button type="submit" class="btn">{{t "Activate as experimental"}}</button></form>{{end}}
           {{end}}
@@ -713,7 +724,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="model" value="{{.ID}}">
     <div class="fields"><label class="field">{{t "Recipe"}} ({{.ID}})
       <select name="recipe">{{range .Recipes}}<option value="{{.}}">{{.}}</option>{{end}}</select></label></div>
-    <div class="btn-row"><button type="submit" class="btn primary">{{t "Optimize"}}</button></div>
+    <div class="btn-row"><button type="submit" class="btn" formaction="/settings/variants/preflight" name="kind" value="optimize">{{t "Preflight"}}</button><button type="submit" class="btn primary">{{t "Optimize"}}</button></div>
   </form>
   {{end}}
   {{if .Variants}}
@@ -724,11 +735,32 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
       <label class="field">{{t "Reference run (resident run file of the source model)"}}<input type="text" name="reference" autocomplete="off"></label>
       <label class="field">{{t "Candidate run (resident run file of the variant)"}}<input type="text" name="candidate" autocomplete="off"></label>
       <label class="field">{{t "Policy file (optional; default is the built-in profile)"}}<input type="text" name="policy" autocomplete="off"></label>
+      <label class="field">{{t "Device (Preflight only: the device of the runs)"}}<select name="device">{{$ad := .ActiveDevice}}{{range .Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label>
     </div>
-    <div class="btn-row"><button type="submit" class="btn">{{t "Certify"}}</button></div>
+    <div class="btn-row"><button type="submit" class="btn" formaction="/settings/variants/preflight" name="kind" value="certify">{{t "Preflight"}}</button><button type="submit" class="btn">{{t "Certify"}}</button></div>
   </form>
   <p class="note">{{t "Certification reads two saved resident runs, one of the source at high precision and one of the variant (hachidori certify run), and records the evidence and the policy's verdict. It starts, stops and reloads nothing."}}</p>
   {{end}}
+  {{end}}
+  {{if or .VariantControls .Forge.Preflights .Forge.Diagnostics}}
+  <h3 id="forge-h">{{t "Forge readiness"}}</h3>
+  <p class="note">{{t "A preflight reports what Hachidori can know before an expensive operation: integrity, runtime, recipe, disk, RAM and the requested device. It never claims that a model fits: an unknown stays unknown. A probe loads one persisted variant in its own worker and asks one typed decision; it is not a certification and changes no resident, activation or route."}}</p>
+  <div id="forge-readiness">
+  {{range .Forge.Preflights}}
+  <div class="forge-preflight" data-outcome="{{.Outcome}}">
+    <p class="op-line"><span class="badge{{if eq .Outcome "blocked"}} tone-bad{{else if eq .Outcome "ready"}} tone-ok{{end}}">{{if eq .Outcome "blocked"}}{{t "BLOCKED"}}{{else if eq .Outcome "ready"}}{{t "READY"}}{{else}}{{t "ATTENTION"}}{{end}}</span>
+      <strong>{{t "preflight"}} {{.Kind}}</strong> <span class="mono">{{.Model}}{{with .Variant}} {{.}}{{end}}{{with .Recipe}} {{.}}{{end}}{{with .Device}} · {{.}}{{end}}</span> · {{.At}}
+      · {{.Pass}} {{t "pass"}}, {{.Warning}} {{t "warning"}}, {{.Blocker}} {{t "blocker"}}, {{.Unknown}} {{t "unknown"}}</p>
+    {{if .Findings}}<ul class="findings">{{range .Findings}}<li class="finding-{{.Status}}"><span class="badge{{if eq .Status "blocker"}} tone-bad{{end}}">{{.Status}}</span> <span class="mono">{{.ID}}</span> {{.Summary}}</li>{{end}}</ul>{{end}}
+    {{if ne .Outcome "ready"}}<p class="note">{{t "Not READY: this is not a promise that the operation fits or succeeds."}}</p>{{end}}
+  </div>
+  {{else}}<p class="muted">{{t "No preflight recorded yet."}}</p>{{end}}
+  {{if .Forge.Diagnostics}}
+  <h4>{{t "Failure diagnostics"}}</h4>
+  <ul class="diagnostics-list" id="forge-diagnostics">{{range .Forge.Diagnostics}}<li><a class="mono" href="/settings/forge/diagnostics/{{.ID}}" download>{{.ID}}</a> · {{.Kind}}{{with .Phase}} · {{t "phase"}} {{.}}{{end}} · {{.Created}}<div class="muted">{{.Error}}</div></li>{{end}}</ul>
+  <p class="note">{{t "A diagnostic holds identities, versions, resource observations and a bounded, redacted error and log tail. It never holds weights, datasets or credentials. CLI:"}} <span class="mono">hachidori forge diagnostics list|show|export</span></p>
+  {{end}}
+  </div>
   {{end}}
   {{end}}
   {{with .Residency}}
@@ -766,6 +798,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
         <select name="model">{{$am := .ActiveModel}}{{range .ModelIDs}}<option value="{{.}}"{{if eq . $am}} selected{{end}}>{{.}}</option>{{end}}</select></label>
     </div>
     <div class="btn-row">
+      {{if .VariantControls}}<button type="submit" class="btn" formaction="/settings/variants/preflight" name="kind" value="materialize">{{t "Preflight"}}</button>{{end}}
       <button type="submit" class="btn" formaction="/settings/models/materialize">{{t "Materialize"}}</button>
       <button type="submit" class="btn" formaction="/settings/models/repair">{{t "Repair"}}</button>
       <button type="submit" class="btn primary" formaction="/settings/models/activate">{{t "Activate"}}</button>

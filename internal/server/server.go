@@ -446,6 +446,40 @@ func providerDType(model home.ModelManifest, variant bool) (string, error) {
 // workerConfig is the launch configuration of the model an activation-shaped
 // record names, on the runtime rm.
 func workerConfig(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.ModelManifest, log io.Writer) (worker.Config, Runtime, error) {
+	return workerConfigFor(h, a, rm, mm, log, false)
+}
+
+// ProbeConfig is the launch configuration of an isolated probe worker for one
+// persisted variant on an explicit device: the same worker script, arguments,
+// environment and variant-digest verification as serving it, resolved from the
+// variant and the device's runtime instead of from the activation record. It
+// reads only: nothing is activated, no certification is required (the
+// variant's actual state is reported, never implied) and nothing falls back to
+// the source or to another device.
+func ProbeConfig(h home.Home, device, variantID string, log io.Writer) (worker.Config, Runtime, error) {
+	model, v, err := setup.FindVariant(h, variantID)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	spec, err := setup.Desired(device)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	var rm home.RuntimeManifest
+	if err := home.ReadJSON(filepath.Join(h.Path("runtime", spec.ID()), "manifest.json"), &rm); err != nil || rm.Identity != spec.ID() || rm.Spec != spec {
+		return worker.Config{}, Runtime{}, fmt.Errorf("the %s runtime %s is not materialized for this build (run `hachidori setup --device %s`)", device, spec.ID(), device)
+	}
+	a := home.Active{Runtime: spec.ID(), ModelID: model.ID, Model: setup.ModelDirName(model), Device: device, Variant: v.ID}
+	var mm home.ModelManifest
+	if err := home.ReadJSON(filepath.Join(h.ModelDir(a), "hachidori-model.json"), &mm); err != nil {
+		return worker.Config{}, Runtime{}, fmt.Errorf("source model %s is not materialized in this home: %w", model.ID, err)
+	}
+	return workerConfigFor(h, a, rm, mm, log, true)
+}
+
+// workerConfigFor is workerConfig; probe launches a variant whatever its
+// certification state is (the state is still reported).
+func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.ModelManifest, log io.Writer, probe bool) (worker.Config, Runtime, error) {
 	model, err := setup.ActiveModel(a)
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
@@ -469,7 +503,7 @@ func workerConfig(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.M
 	args := []string{"-I", "-X", "utf8", script, "--model-dir", modelDir, "--device", a.Device,
 		"--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", model.Provider}
 	status := Runtime{Home: h.Root, Runtime: a.Runtime, ModelID: model.ID, Model: a.Model, Device: a.Device}
-	variant, err := launchVariant(h, a, rm, model)
+	variant, err := launchVariant(h, a, rm, model, probe)
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
 	}
@@ -511,7 +545,7 @@ func workerConfig(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.M
 // cannot be launched fails the launch with the cause, and the source artifact
 // is never started in its place. The worker verifies every artifact digest
 // before it loads anything.
-func launchVariant(h home.Home, a home.Active, rm home.RuntimeManifest, model home.ModelManifest) (*Variant, error) {
+func launchVariant(h home.Home, a home.Active, rm home.RuntimeManifest, model home.ModelManifest, probe bool) (*Variant, error) {
 	v, ok, err := h.LoadVariant(a)
 	if err != nil {
 		return nil, err
@@ -531,6 +565,9 @@ func launchVariant(h home.Home, a home.Active, rm home.RuntimeManifest, model ho
 	st := eval.ResolveCertification(h, v)
 	cert := st.State
 	switch {
+	case probe:
+		// A probe is not an activation: it loads the persisted variant
+		// whatever its state, and reports that state as it is.
 	case st.State == eval.StateAccepted:
 	case st.State == eval.StateUncertified && a.Experimental:
 		cert = eval.StateExperimental

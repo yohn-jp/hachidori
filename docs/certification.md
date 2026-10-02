@@ -248,6 +248,24 @@ the resident-comparison machinery (direct resident targeting, the status
 identity, alignment, `QualityOf`, the calibration and slice formulas) and adds
 only what pairing a reference with a variant needs.
 
+Before the expensive steps, check readiness and smoke-test what was built
+(runtime.md "System One Forge readiness"). None of these commands certifies
+anything; an interrupted source download resumes by repeating `setup`; a failed
+step leaves a diagnostic (`hachidori forge diagnostics show`):
+
+```powershell
+hachidori forge preflight materialize --device cpu                 # before the ~19 GB download
+hachidori forge preflight optimize                                 # before the build
+hachidori forge preflight probe --variant <variant-id> --device cuda
+hachidori forge probe --device cuda <variant-id>                   # the persisted variant loads and answers one typed decision
+hachidori forge preflight certify --variant <variant-id> --device cpu [--reference-dtype float32]   # RAM lower bound of the reference run
+```
+
+A passing probe says only that the exact persisted variant loaded and produced
+one valid typed decision on that device; its latency, RAM and VRAM figures are
+single observations, not certification evidence, and `NOT_CHECKED` stays the
+state of every physical claim until the run happens on the workstation.
+
 ```powershell
 # 0. a corpus: eval JSONL; "expected" labels are optional (all questions or none)
 # 1. reference: serve the source on the CPU in high precision, record the run

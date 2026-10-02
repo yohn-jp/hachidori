@@ -19,6 +19,7 @@ type fakeVariants struct {
 	mu    sync.Mutex
 	calls []string
 	err   error
+	diag  map[string][]byte
 }
 
 func (f *fakeVariants) rec(s string) error {
@@ -39,6 +40,24 @@ func (f *fakeVariants) Optimize(model, recipe string) error {
 }
 func (f *fakeVariants) Certify(variant, reference, candidate, policy string) error {
 	return f.rec("certify " + variant + " " + reference + " " + candidate + " [" + policy + "]")
+}
+
+func (f *fakeVariants) Preflight(kind, model, recipe, variant, device string) error {
+	return f.rec("preflight " + kind + " [" + model + "] [" + recipe + "] [" + variant + "] [" + device + "]")
+}
+func (f *fakeVariants) Probe(variant, device string) error {
+	return f.rec("probe " + variant + " " + device)
+}
+func (f *fakeVariants) Diagnostic(id string) ([]byte, error) {
+	f.rec("diagnostic " + id)
+	if f.diag == nil {
+		return nil, errors.New("no such diagnostic")
+	}
+	b, ok := f.diag[id]
+	if !ok {
+		return nil, errors.New("no such diagnostic")
+	}
+	return b, f.err
 }
 
 func withVariants(e *env, fv VariantActions) {
@@ -258,4 +277,147 @@ func TestOptimizeOperationProgressIsTruthful(t *testing.T) {
 		}
 	}
 	_ = worker.StateReady
+}
+
+// Forge readiness is a projection of the recorded reports: blockers, warnings
+// and unknowns are shown as such, an unknown is never turned into READY, the
+// probe of each variant is shown with its outcome (and marked stale when it was
+// recorded for another manifest), and nothing is derived from text.
+func TestForgeReadinessProjection(t *testing.T) {
+	e := newEnv(t)
+	inv := variantInventory()
+	inv.Variants[0].ManifestSHA256, inv.Variants[1].ManifestSHA256 = "sha-a", "sha-b"
+	inv.Models[len(inv.Models)-1].PartialBytes = 3 << 30
+	inv.Models[len(inv.Models)-1].Materialized = false
+	fm := &fakeModels{state: ModelsState{Inventory: inv, Forge: ForgeState{
+		Preflights: []PreflightRow{
+			{Kind: "optimize", Model: "clef-flash", Recipe: "clef-flash-w4a16-rtn-g128", At: "2026-10-02T01:00:00Z", Outcome: "blocked", Pass: 5, Blocker: 1, Unknown: 1,
+				Findings: []FindingRow{{ID: "storage.capacity", Status: "blocker", Summary: "1.0 GiB is free but even the smallest possible variant needs 4.6 GiB"},
+					{ID: "memory.fit", Status: "unknown", Summary: "host RAM is 64.0 GiB; whether it fits is not known"}}},
+			{Kind: "probe", Model: "clef-flash", Variant: "clef-flash--r--aaaaaaaaaaaa", Device: "cuda", At: "2026-10-02T00:00:00Z", Outcome: "attention", Pass: 8, Unknown: 1,
+				Findings: []FindingRow{{ID: "accelerator.vram", Status: "unknown", Summary: "the weights are below the observed VRAM but fit is not known until it loads"}}},
+		},
+		Probes: []ProbeRow{
+			{Variant: "clef-flash--r--aaaaaaaaaaaa", Device: "cuda", Result: "passed", StartedAt: "2026-10-02T00:00:00Z", ManifestSHA256: "sha-a", LoadMS: 1234.5, WarmupMS: 67.8, RequestMS: 12.5, DType: "bfloat16", DeviceName: "RTX 3060"},
+			{Variant: "clef-flash--r--bbbbbbbbbbbb", Device: "cuda", Result: "passed", ManifestSHA256: "sha-OLD"},
+			{Variant: "clef-flash--r--cccccccccccc", Device: "cpu", Result: "failed", Phase: "provenance", Error: "device cuda was requested but the probe worker is on cpu", ManifestSHA256: ""},
+		},
+		Diagnostics: []DiagnosticRow{{ID: "probe-20261002T000000Z-0123abcd", Kind: "probe", Phase: "probing", Model: "clef-flash", Created: "2026-10-02T00:00:00Z", Error: "boom"}},
+	}}}
+	withModels(e, fm)
+	withVariants(e, &fakeVariants{})
+	body := e.get(t, "/settings").Body.String()
+	for _, want := range []string{`id="forge-readiness"`, `data-outcome="blocked"`, `data-outcome="attention"`, "storage.capacity", "memory.fit", "BLOCKED", "ATTENTION",
+		"Not READY: this is not a promise", "interrupted download kept for resume", "3.0 GiB", `id="forge-diagnostics"`, `href="/settings/forge/diagnostics/probe-20261002T000000Z-0123abcd"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("settings lacks %q", want)
+		}
+	}
+	forge := body[strings.Index(body, `id="forge-readiness"`):]
+	if strings.Contains(forge, ">READY<") {
+		t.Error("a report with an unknown or a blocker was shown as READY")
+	}
+	row := func(id string) string {
+		i := strings.Index(body, `data-variant="`+id+`"`)
+		end := strings.Index(body[i:], "</tr>")
+		return body[i : i+end]
+	}
+	if r := row("clef-flash--r--aaaaaaaaaaaa"); !strings.Contains(r, `data-probe="passed"`) || !strings.Contains(r, "probe passed") || !strings.Contains(r, "1234.5 ms") || strings.Contains(r, "stale") ||
+		!strings.Contains(r, `action="/settings/variants/probe"`) || !strings.Contains(r, `formaction="/settings/variants/preflight"`) {
+		t.Errorf("probed variant row:\n%s", r)
+	}
+	if r := row("clef-flash--r--bbbbbbbbbbbb"); !strings.Contains(r, "stale") || strings.Contains(r, `class="badge tone-ok">probe passed`) {
+		t.Errorf("stale probe row:\n%s", r)
+	}
+	if r := row("clef-flash--r--cccccccccccc"); !strings.Contains(r, "probe failed") || !strings.Contains(r, "phase provenance") || !strings.Contains(r, "no fallback") && !strings.Contains(r, "the probe worker is on cpu") {
+		t.Errorf("failed probe row:\n%s", r)
+	}
+	if r := row("clef-flash--r--dddddddddddd"); !strings.Contains(r, "not probed") || strings.Contains(r, `action="/settings/variants/probe"`) {
+		t.Errorf("a variant with a problem can be probed, or is shown as probed:\n%s", r)
+	}
+	// Probe is not certification: a passing probe never offers Activate.
+	if r := row("clef-flash--r--bbbbbbbbbbbb"); strings.Contains(r, `class="btn primary">Activate`) {
+		t.Errorf("a probe made a variant activatable:\n%s", r)
+	}
+}
+
+func TestForgeActionsForwardedAndDiagnosticDownload(t *testing.T) {
+	e := newEnv(t)
+	withModels(e, &fakeModels{state: ModelsState{Inventory: variantInventory()}})
+	fv := &fakeVariants{diag: map[string][]byte{"probe-20261002T000000Z-0123abcd": []byte(`{"schema":"hachidori.forge-diagnostic/v1"}`)}}
+	withVariants(e, fv)
+	for _, c := range []struct {
+		op   string
+		form url.Values
+		want string
+	}{
+		{"preflight", url.Values{"kind": {"optimize"}, "model": {"clef-flash"}, "recipe": {"r1"}}, "preflight optimize [clef-flash] [r1] [] []"},
+		{"preflight", url.Values{"kind": {"probe"}, "variant": {"v1"}, "device": {"cuda"}}, "preflight probe [] [] [v1] [cuda]"},
+		{"probe", url.Values{"variant": {"v1"}, "device": {"cpu"}}, "probe v1 cpu"},
+	} {
+		c.form.Set("return", "settings")
+		rec := e.post(t, "/settings/variants/"+c.op, c.form)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings" {
+			t.Fatalf("%s: %d", c.op, rec.Code)
+		}
+		if got := fv.calls[len(fv.calls)-1]; got != c.want {
+			t.Fatalf("%s forwarded %q, want %q", c.op, got, c.want)
+		}
+	}
+	if rec := e.post(t, "/settings/variants/probe", url.Values{"token": {"forged"}, "variant": {"v1"}}); rec.Code != http.StatusForbidden {
+		t.Fatalf("forged token: %d", rec.Code)
+	}
+	// The stored diagnostic is served as a download of exactly that document.
+	rec := e.get(t, "/settings/forge/diagnostics/probe-20261002T000000Z-0123abcd")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Disposition"), "attachment") || !strings.Contains(rec.Body.String(), "forge-diagnostic") ||
+		rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("diagnostic download: %d %v %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	n := len(fv.calls)
+	for _, id := range []string{"..%2F..%2Fetc%2Fpasswd", "x", "probe-1-2", "optimize-20261002T000000Z-ffffffff.json"} {
+		if rec := e.get(t, "/settings/forge/diagnostics/"+id); rec.Code != http.StatusNotFound {
+			t.Errorf("%q: %d", id, rec.Code)
+		}
+	}
+	if rec := e.get(t, "/settings/forge/diagnostics/optimize-20261002T000000Z-ffffffff"); rec.Code != http.StatusNotFound {
+		t.Errorf("an unknown diagnostic: %d", rec.Code)
+	}
+	if len(fv.calls) != n+1 {
+		t.Fatalf("malformed identities reached the authority: %v", fv.calls[n:])
+	}
+}
+
+// The failure state shows the exact failing phase, where the diagnostic is and
+// how to inspect it; a resumed download reports the bytes it already held and
+// the real transferred bytes, and an unknown total is not turned into a percentage.
+func TestForgeFailureAndResumeAreShownTruthfully(t *testing.T) {
+	e := newEnv(t)
+	plan := []string{"preparing", "runtime", "model", "publish"}
+	fm := &fakeModels{state: ModelsState{Inventory: variantInventory(),
+		Busy: &ModelOp{Kind: "materialize", Device: "cpu", Model: "clef-flash", Plan: plan, Phases: plan[:3], Phase: "model", Step: "downloading", Detail: "model-00002-of-00004.safetensors",
+			Item: 2, Items: 15, Done: 5 << 30, Total: 0, Resumed: 4 << 30, Started: time.Now().Add(-time.Minute)}}}
+	withModels(e, fm)
+	withVariants(e, &fakeVariants{})
+	body := e.get(t, "/settings").Body.String()
+	busy := body[strings.Index(body, `id="models-busy"`):]
+	busy = busy[strings.Index(busy, `<p class="op-line">`):]
+	busy = busy[:strings.Index(busy, "</p>")+4]
+	if !strings.Contains(busy, "resuming") || !strings.Contains(busy, "4.0 GiB") || !strings.Contains(busy, "5.0 GiB received") || strings.Contains(busy, "aria-valuenow") || strings.Contains(busy, "%)") {
+		t.Errorf("resuming download:\n%s", busy)
+	}
+	fm.state.Busy = nil
+	fm.state.Last = &ModelOp{Kind: "optimize", Model: "clef-flash", Plan: plan, Phases: plan[:2], Phase: "quantizing", Failure: "optimizer quantize: out of memory",
+		FailurePhase: "quantizing", FailureStep: "materializing", Diagnostic: "optimize-20261002T000000Z-0123abcd", Started: time.Now().Add(-time.Minute), Finished: time.Now()}
+	body = e.get(t, "/settings").Body.String()
+	for _, want := range []string{`id="forge-diagnostic-last"`, `href="/settings/forge/diagnostics/optimize-20261002T000000Z-0123abcd"`,
+		"hachidori forge diagnostics show optimize-20261002T000000Z-0123abcd", "hachidori forge diagnostics export -out DIR", "Failed in phase"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("failure state lacks %q", want)
+		}
+	}
+	// A failure without a diagnostic does not invent one.
+	fm.state.Last.Diagnostic = ""
+	if body = e.get(t, "/settings").Body.String(); strings.Contains(body, `id="forge-diagnostic-last"`) {
+		t.Error("a diagnostic link was shown for a failure that has none")
+	}
 }

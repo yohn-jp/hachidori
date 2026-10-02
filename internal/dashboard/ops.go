@@ -48,6 +48,9 @@ var phaseLabels = map[string]string{
 	"loading_runs":   "Loading runs",
 	"comparing":      "Comparing runs",
 	"recording":      "Recording certification",
+	// Forge readiness: the preflight and the probe of a persisted variant
+	"preflight": "Preflight",
+	"probing":   "Probing variant",
 	// update check and download (internal/update)
 	"releases": "Release list",
 	"checksum": "Checksum file",
@@ -63,6 +66,7 @@ var stepLabels = map[string]string{
 	"publishing":    "Publishing",
 	"activating":    "Activating",
 	"removing":      "Removing",
+	"probing":       "Probing",
 }
 
 func phaseLabel(p string) string {

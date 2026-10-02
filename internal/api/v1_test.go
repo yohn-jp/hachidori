@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -144,5 +145,37 @@ func TestModelSelectorWireForm(t *testing.T) {
 	}
 	if b, _ := json.Marshal(r); !strings.Contains(string(b), `"model":""`) {
 		t.Fatalf("explicit empty selector lost on the wire: %s", b)
+	}
+}
+
+func TestResultValidateAppliesTheTypedDecisionContract(t *testing.T) {
+	q := Question{ID: "q", Type: "choice", Instructions: "i", Choices: []string{"yes", "no"}}
+	ok := Result{ID: "q", Type: "choice", Choice: "yes", Confidence: 0.75, Probabilities: map[string]float64{"yes": 0.75, "no": 0.25}}
+	if err := ok.Validate(q); err != nil {
+		t.Fatal(err)
+	}
+	mod := func(f func(*Result)) Result {
+		r := ok
+		r.Probabilities = map[string]float64{"yes": 0.75, "no": 0.25}
+		f(&r)
+		return r
+	}
+	nan := math.NaN()
+	for name, r := range map[string]Result{
+		"another question":          mod(func(r *Result) { r.ID = "x" }),
+		"a choice not offered":      mod(func(r *Result) { r.Choice = "maybe" }),
+		"a missing probability":     mod(func(r *Result) { r.Probabilities = map[string]float64{"yes": 1} }),
+		"an unknown option":         mod(func(r *Result) { r.Probabilities = map[string]float64{"yes": 0.75, "maybe": 0.25} }),
+		"a NaN probability":         mod(func(r *Result) { r.Probabilities["no"] = nan }),
+		"an infinite probability":   mod(func(r *Result) { r.Probabilities["no"] = math.Inf(1) }),
+		"a negative probability":    mod(func(r *Result) { r.Probabilities["no"] = -0.25; r.Probabilities["yes"] = 1.25 }),
+		"probabilities not summing": mod(func(r *Result) { r.Probabilities["no"] = 0.5 }),
+		"a NaN confidence":          mod(func(r *Result) { r.Confidence = nan }),
+		"confidence not max p":      mod(func(r *Result) { r.Confidence = 0.5 }),
+		"a non-argmax choice":       mod(func(r *Result) { r.Choice, r.Confidence = "no", 0.25 }),
+	} {
+		if err := r.Validate(q); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
 	}
 }

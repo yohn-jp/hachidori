@@ -6,6 +6,8 @@ package api
 
 import (
 	"fmt"
+	"math"
+	"slices"
 	"strings"
 )
 
@@ -63,6 +65,49 @@ type Result struct {
 	Choice        string             `json:"choice"`
 	Confidence    float64            `json:"confidence"`
 	Probabilities map[string]float64 `json:"probabilities"`
+}
+
+// probabilityTolerance bounds how far the probabilities of a typed decision
+// may sum from 1: they are one softmax over the question's closed choices.
+const probabilityTolerance = 1e-3
+
+// Validate checks a result against the question it answers, by the typed
+// decision contract: the question's own ID and type, a choice that is one of
+// its choices, a probability for exactly each choice, every probability a
+// finite number in [0, 1] and together a distribution, and a confidence that
+// is the probability mass on the reported choice (max p) and finite.
+func (r Result) Validate(q Question) error {
+	if r.ID != q.ID || r.Type != q.Type {
+		return fmt.Errorf("result %q (%s) does not answer question %q (%s)", r.ID, r.Type, q.ID, q.Type)
+	}
+	if !slices.Contains(q.Choices, r.Choice) {
+		return fmt.Errorf("question %q: choice %q is not one of its choices", q.ID, r.Choice)
+	}
+	if len(r.Probabilities) != len(q.Choices) {
+		return fmt.Errorf("question %q: %d probabilities for %d choices", q.ID, len(r.Probabilities), len(q.Choices))
+	}
+	sum, top := 0.0, 0.0
+	for _, c := range q.Choices {
+		p, ok := r.Probabilities[c]
+		if !ok {
+			return fmt.Errorf("question %q: no probability for choice %q", q.ID, c)
+		}
+		if math.IsNaN(p) || math.IsInf(p, 0) || p < 0 || p > 1 {
+			return fmt.Errorf("question %q: probability %v for choice %q is not a finite number in [0, 1]", q.ID, p, c)
+		}
+		sum += p
+		top = max(top, p)
+	}
+	if math.Abs(sum-1) > probabilityTolerance {
+		return fmt.Errorf("question %q: probabilities sum to %v, not 1", q.ID, sum)
+	}
+	if math.IsNaN(r.Confidence) || math.IsInf(r.Confidence, 0) || math.Abs(r.Confidence-r.Probabilities[r.Choice]) > 1e-6 {
+		return fmt.Errorf("question %q: confidence %v is not the probability of the reported choice (%v)", q.ID, r.Confidence, r.Probabilities[r.Choice])
+	}
+	if r.Probabilities[r.Choice] < top-1e-9 {
+		return fmt.Errorf("question %q: the reported choice %q is not the most probable", q.ID, r.Choice)
+	}
+	return nil
 }
 
 // DecideResponse carries one result per question, in request order.
