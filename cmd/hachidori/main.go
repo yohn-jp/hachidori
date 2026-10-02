@@ -261,6 +261,9 @@ func runHost(name string, args []string) error {
 	go func() { errc <- srv.ListenAndServe() }()
 	fmt.Fprintf(os.Stderr, "hachidori: serving %s (runtime %s, model %s (%s), device %s); worker log %s\n",
 		*listen, rt.Runtime, rt.ModelID, rt.Model, rt.Device, logf.Name())
+	if v := rt.Variant; v != nil {
+		fmt.Fprintf(os.Stderr, "hachidori: executing variant %s of %s (%s, %s, certification %s)\n", v.ID, rt.ModelID, v.Scheme, v.Recipe, v.Certification)
+	}
 	if len(residents) > 0 {
 		fmt.Fprintf(os.Stderr, "hachidori: resident set: default %s, extra %s (one worker process each)\n", rt.ModelID, strings.Join(residents, ", "))
 	}
