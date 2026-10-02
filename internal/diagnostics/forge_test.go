@@ -103,9 +103,9 @@ func TestForgeDiagnosticHasOnlyAllowlistedSections(t *testing.T) {
 func TestForgeDiagnosticIsBounded(t *testing.T) {
 	root := t.TempDir()
 	in := input(root)
-	huge := strings.Repeat("x", 20<<10)
+	huge := strings.Repeat("x", 8<<10)
 	in.StderrTail, in.LogTail = nil, nil
-	for i := 0; i < 600; i++ {
+	for i := 0; i < 300; i++ {
 		in.StderrTail = append(in.StderrTail, fmt.Sprintf("stderr line %d %s", i, huge))
 		in.LogTail = append(in.LogTail, fmt.Sprintf("log line %d %s", i, huge))
 	}

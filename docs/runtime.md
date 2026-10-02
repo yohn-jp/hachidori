@@ -1151,8 +1151,10 @@ fetched once more from the start, so a damaged partial can never be published.
 Progress counts the bytes already held (`resumed`) plus the new ones, and carries a
 `total` only when the server stated one. Cancellation (Ctrl-C of `hachidori setup`)
 keeps the partial only when the object's identity was recorded, otherwise nothing
-ambiguous is left. Small artifacts (the private uv) keep the whole-object
-download. Normal CI uses local HTTP servers only.
+ambiguous is left. To give up on an interrupted download, delete
+`models/<dir>.staging`; the next materialization then starts from nothing. Small
+artifacts (the private uv) keep the whole-object download. Normal CI uses local
+HTTP servers only.
 
 **Preflight** (`optimize.Preflight`, `setup.PreflightReport`). `hachidori forge
 preflight <materialize|optimize|probe|certify> [-json]` returns typed findings

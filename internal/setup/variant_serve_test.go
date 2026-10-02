@@ -182,3 +182,54 @@ func TestResidentSetCarriesVariantProvenance(t *testing.T) {
 	}
 	_ = m
 }
+
+// A probe launches the persisted variant by the same worker script, arguments
+// and verification as serving it, on an explicit device and whatever the
+// variant's certification state, and never reads or changes the activation
+// record. Nothing falls back to the source or to another device.
+func TestProbeConfigLaunchesThePersistedVariantWithoutActivation(t *testing.T) {
+	h, m := setup.MaterializeFakeClef(t, "cpu")
+	v := buildVariant(t, h)
+	activeBefore, _ := os.ReadFile(h.Path("state", "active-runtime.json"))
+
+	cfg, rt, err := server.ProbeConfig(h, "cpu", v.ID, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vdir := h.VariantDir(setup.ClefFlash, v.ID)
+	if argValue(cfg.Args, "--variant-dir") != vdir || argValue(cfg.Args, "--variant-manifest") != filepath.Join(vdir, home.VariantManifestFile) ||
+		argValue(cfg.Args, "--device") != "cpu" || argValue(cfg.Args, "--provider") != "clef" || argValue(cfg.Args, "--model-dir") == "" {
+		t.Fatalf("probe launch args %v", cfg.Args)
+	}
+	if rt.Variant == nil || rt.Variant.ID != v.ID || rt.Variant.Certification != eval.StateUncertified || rt.ModelID != setup.ClefFlash {
+		t.Fatalf("probe provenance %+v", rt.Variant)
+	}
+	// The same variant is not launchable for serving until it is certified;
+	// certification state is reported by the probe, never required by it.
+	if _, _, err := server.WorkerConfig(h, io.Discard); err != nil {
+		t.Fatalf("source launch: %v", err)
+	}
+	certify(t, h, m, v, false, time.Now())
+	if _, rt, err = server.ProbeConfig(h, "cpu", v.ID, io.Discard); err != nil || rt.Variant.Certification != eval.StateRejected {
+		t.Fatalf("a rejected variant must still be probeable and reported as rejected: %+v %v", rt.Variant, err)
+	}
+	if after, _ := os.ReadFile(h.Path("state", "active-runtime.json")); string(after) != string(activeBefore) {
+		t.Fatal("ProbeConfig changed the activation record")
+	}
+
+	// No fallback: an unknown variant, an unmaterialized device runtime and a
+	// missing variant directory are launch errors.
+	if _, _, err := server.ProbeConfig(h, "cpu", "clef-flash--none--000000000000", io.Discard); err == nil {
+		t.Fatal("an unknown variant launched")
+	}
+	if cfg, _, err := server.ProbeConfig(h, "cuda", v.ID, io.Discard); err == nil || cfg.Python != "" || !strings.Contains(err.Error(), "not materialized") {
+		t.Fatalf("a device without a runtime launched or fell back: %v", err)
+	}
+	if _, _, err := server.ProbeConfig(h, "tpu", v.ID, io.Discard); err == nil {
+		t.Fatal("an unsupported device was accepted")
+	}
+	os.RemoveAll(vdir)
+	if cfg, _, err := server.ProbeConfig(h, "cpu", v.ID, io.Discard); err == nil || cfg.Python != "" {
+		t.Fatalf("a missing variant launched: %v", err)
+	}
+}

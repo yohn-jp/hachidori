@@ -95,7 +95,7 @@ func parseContentRange(v string) (first, last, total int64, ok bool) {
 	return first, last, total, last >= first && total > last
 }
 
-// PartialPaths are the files of the partial of dst.
+// partialPaths are the files of the partial of dst.
 func partialPaths(dst string) (part, meta string) { return dst + ".part", dst + ".part.json" }
 
 func discardPartial(dst string) {

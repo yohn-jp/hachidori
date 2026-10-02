@@ -428,3 +428,45 @@ func realOpenCounting(t *testing.T, ctx context.Context, mode string, opens *ato
 		return &WorkerBinding{Lifecycle: worker.NewLifecycle(ctx, sup), Supervisor: sup, Info: server.Runtime{Home: root}, Started: time.Now()}, nil
 	}
 }
+
+// A probe, passing or failing, leaves a live ResidentSet exactly as it found
+// it: the same members, the same worker processes (no restart, no reload), the
+// same default route, and the residents keep answering from the same sequence.
+func TestProbeLeavesTheResidentSetUnchanged(t *testing.T) {
+	// The set first: building the forge home narrows the catalog to Clef-Flash.
+	s := newResidentSet(t, noRestart, residentMember(t, modelA, "ok"), residentMember(t, modelB, "ok"))
+	s.Start()
+	bothReady(t, s)
+	h, v := forgeHome(t)
+	type snap struct {
+		pid, starts int
+		state       string
+	}
+	take := func() map[string]snap {
+		out := map[string]snap{}
+		for _, m := range s.Models() {
+			w := residentState(s, m)
+			out[m] = snap{w.PID, w.Starts, w.State}
+		}
+		return out
+	}
+	_, pidA, seqA := decideOn(t, s, modelA, "before")
+	before, models, def := take(), s.Models(), s.Default().Model
+
+	for _, mode := range []string{"ok", "crash_on_decide", "source"} {
+		rec, err := Probe(context.Background(), h, ProbeParams{Variant: v.ID, Device: "cuda"}, probeDeps(t, mode, t.TempDir(), "uncertified"), io.Discard, nil)
+		if (mode == "ok") != (err == nil) || rec.Variant != v.ID {
+			t.Fatalf("mode %s: err %v rec %+v", mode, err, rec)
+		}
+	}
+
+	if after := take(); fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Fatalf("the resident set changed: before %v after %v", before, after)
+	}
+	if fmt.Sprint(s.Models()) != fmt.Sprint(models) || s.Default().Model != def {
+		t.Fatalf("members %v default %s, before %v %s", s.Models(), s.Default().Model, models, def)
+	}
+	if _, pid, seq := decideOn(t, s, modelA, "after"); pid != pidA || seq != seqA+1 {
+		t.Fatalf("the default resident was reloaded: pid %d->%d seq %d->%d", pidA, pid, seqA, seq)
+	}
+}

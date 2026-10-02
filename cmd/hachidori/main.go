@@ -169,7 +169,7 @@ func cmdSetup(args []string) error {
 	ctx, stop := signalContext()
 	defer stop()
 	if !app.IsForgeOperation(app.OpSetup, f.model) {
-		return setup.RunContext(ctx, h, f.device, f.model, os.Stderr, cliObserver(os.Stderr))
+		return setup.RunContext(ctx, h, f.device, f.model, os.Stderr, nil)
 	}
 	run := newForgeRun(h, app.OpSetup, f.model, "", "", f.device)
 	log, closeLog := run.log()
