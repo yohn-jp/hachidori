@@ -155,6 +155,17 @@ var FirstRunScript = []string{
 }
 
 var ja = map[string]string{
+	// Shared operator presentation vocabulary.
+	"INTENT":           "意図",
+	"AUTO":             "自動",
+	"OVERRIDDEN":       "明示指定",
+	"MEASURED":         "実測",
+	"ESTIMATED":        "推定",
+	"PRESERVED":        "保持",
+	"NOT_CHECKED":      "未確認",
+	"Details":          "詳細",
+	"Operation phases": "操作フェーズ",
+
 	" (runtime ":                       "（ランタイム ",
 	" on ":                             "、デバイス ",
 	"%.1f%% of device memory in use.":  "デバイスメモリの %.1f%% を使用中。",
