@@ -208,19 +208,40 @@ func (c *Controller) phase(op *Operation, ph string) {
 }
 
 func (c *Controller) execute(ctx context.Context, op *Operation, root string, rt Runtime, p ExecuteParams) (res ExecutionResult, err error) {
-	h := home.Home{Root: root}
-	before := c.servingState(h, rt)
 	log, closeLog := OpenSetupLog(root, OpExecute, p.Target.Device, p.Target.Model, p.Target.String())
 	defer closeLog()
-
-	c.phase(op, PhaseExecQuiesce)
-	l, err := c.quiesce(rt, p.Target.Device)
-	if err == nil {
-		c.phase(op, PhaseExecRun)
+	quiesced, restored, err := c.leased(ctx, root, rt, p.Target.Device, func(ph string) { c.phase(op, ph) }, func() (err error) {
 		res, err = c.cfg.Maintenance.Execute(ctx, root, p, log)
+		return err
+	})
+	res.Quiesced, res.Restored = quiesced, restored
+	return res, err
+}
+
+// leased runs fn as maintenance work on device under the maintenance lease:
+// it records the serving state, stops only the Hachidori-owned residents that
+// occupy the accelerator device needs, runs fn, and in every outcome starts
+// them again, waits for them to be READY and compares the serving state with
+// what it recorded. A failure to restore is returned beside fn's own failure
+// (ExecutionError), never instead of it. report, when set, is told each lease
+// phase as it is entered.
+func (c *Controller) leased(ctx context.Context, root string, rt Runtime, device string, report func(string), fn func() error) (quiesced, restored []string, err error) {
+	h := home.Home{Root: root}
+	phase := func(ph string) {
+		if report != nil {
+			report(ph)
+		}
+	}
+	before := c.servingState(h, rt)
+
+	phase(PhaseExecQuiesce)
+	l, err := c.quiesce(rt, device)
+	if err == nil {
+		phase(PhaseExecRun)
+		err = fn()
 	}
 
-	c.phase(op, PhaseExecRestore)
+	phase(PhaseExecRestore)
 	timeout := c.cfg.RestoreTimeout
 	if timeout <= 0 {
 		timeout = defaultRestoreTimeout
@@ -231,9 +252,8 @@ func (c *Controller) execute(ctx context.Context, op *Operation, root string, rt
 	if rerr == nil {
 		rerr = before.changed(c.servingState(h, rt))
 	}
-	res.Quiesced, res.Restored = l.names(), l.restored
 	if rerr != nil {
-		return res, &ExecutionError{Primary: err, Restore: rerr}
+		return l.names(), l.restored, &ExecutionError{Primary: err, Restore: rerr}
 	}
-	return res, err
+	return l.names(), l.restored, err
 }

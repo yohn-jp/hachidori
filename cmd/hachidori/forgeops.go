@@ -28,6 +28,7 @@ import (
 const forgeCmdUsage = `usage: hachidori forge preflight <materialize|optimize|probe|certify> [flags]
        hachidori forge probe [flags] <variant-id>
        hachidori forge execute [flags] <dataset.jsonl>
+       hachidori forge certify [flags] <variant-id> <dataset.jsonl>
        hachidori forge diagnostics <list|show|export> [flags]
 `
 
@@ -43,6 +44,8 @@ func cmdForge(args []string) error {
 		return forgeProbe(args[1:])
 	case "execute":
 		return forgeExecute(args[1:])
+	case "certify":
+		return forgeCertify(args[1:])
 	case "diagnostics":
 		return forgeDiagnostics(args[1:])
 	}
@@ -286,6 +289,78 @@ func forgeExecute(args []string) error {
 	return nil
 }
 
+// forgeCertify is the normal certification of a persisted variant: from the
+// variant and the semantic evaluation inputs alone, Hachidori resolves and
+// preflights everything, probes the variant, executes the pinned source and the
+// exact variant over the corpus as maintenance work, aligns the two runs,
+// certifies them with the existing policy and records the certification bound to
+// both runs' evidence (app.RunForgeCertification). No run file is named. It
+// certifies; it never activates. Like `forge execute` it does not know the
+// residents of a running Hachidori: stop the runtime first, or use the desktop,
+// whose controller quiesces and restores its own residents.
+func forgeCertify(args []string) error {
+	fs := flag.NewFlagSet("forge certify", flag.ExitOnError)
+	homeFlag := fs.String("home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
+	device := fs.String("device", "", "device the candidate (the variant) runs on: cuda or cpu (required; never substituted)")
+	refDevice := fs.String("reference-device", "", "device the source reference runs on (default "+app.DefaultReferenceDevice+")")
+	refDType := fs.String("reference-dtype", "", "dtype of the source reference: float32 or bfloat16 (default "+app.DefaultReferenceDType+" for a source whose provider has a dtype control)")
+	var defPaths pathList
+	fs.Var(&defPaths, "questions", "Question Definition file or directory resolving question_refs (repeatable)")
+	policyPath := fs.String("policy", "", "certification policy file ("+eval.PolicySchema+"); default is the built-in "+eval.DefaultPolicyID+" profile")
+	warmup := fs.Int("warmup", 1, "warmup requests excluded from latency")
+	passes := fs.Int("passes", 1, "passes over the dataset for latency (the decisions of pass 1 are recorded)")
+	materialize := fs.Bool("materialize", false, "materialize a missing serving runtime through the setup authority first (it never activates anything)")
+	out := fs.String("out", "", "also write the certification report to this local file")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: hachidori forge certify [flags] <variant-id> <dataset.jsonl>")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() != 2 {
+		fs.Usage()
+		return errors.New("usage: hachidori forge certify [flags] <variant-id> <dataset.jsonl>")
+	}
+	h, err := home.Resolve(*homeFlag)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signalContext()
+	defer stop()
+	variant := fs.Arg(0)
+	run := newForgeRun(h, app.OpForgeCertify, "", variant, "", *device)
+	log, closeLog := run.log()
+	defer closeLog()
+	fmt.Fprintln(os.Stderr, "== accepted")
+	res, err := app.RunForgeCertification(ctx, h, app.ForgeCertifyParams{Variant: variant, Device: *device, ReferenceDevice: *refDevice, ReferenceDType: *refDType,
+		Dataset: fs.Arg(1), Questions: defPaths, Policy: *policyPath, Warmup: *warmup, Passes: *passes, Materialize: *materialize}, app.ForgeCertifyDeps{}, log, run.observer())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "== failed")
+		if pe, ok := setup.AsPreflightError(err); ok {
+			printPreflight(os.Stderr, pe.Report)
+		}
+		var fe *app.ForgeCertifyError
+		if errors.As(err, &fe) {
+			run.phase = fe.Phase
+		}
+		return run.fail(err)
+	}
+	fmt.Fprintln(os.Stderr, "== completed")
+	cert := res.Certification
+	eval.CertificationSummary(os.Stdout, cert)
+	if *out != "" {
+		if err := writeJSONFile(*out, cert); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("reference run evidence %s\ncandidate run evidence %s\n", res.ReferenceEvidence, res.CandidateEvidence)
+	fmt.Printf("certification recorded: %s (report sha256 %.12s)\n", res.Record.Report, res.Record.ReportSHA256)
+	if cert.Verdict.Status != eval.VerdictAccepted {
+		return fmt.Errorf("verdict %s under %s: failed %s (the evidence is recorded; the variant is not activated)", cert.Verdict.Status, cert.Policy.ID, strings.Join(cert.Verdict.Failed(), ", "))
+	}
+	fmt.Fprintln(os.Stderr, "accepted: this is evidence only; the variant is not activated (hachidori activate applies it)")
+	return nil
+}
+
 func forgeDiagnostics(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, forgeCmdUsage)
@@ -294,7 +369,7 @@ func forgeDiagnostics(args []string) error {
 	sub := args[0]
 	fs := flag.NewFlagSet("forge diagnostics "+sub, flag.ExitOnError)
 	homeFlag := fs.String("home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
-	kind := fs.String("kind", "", "only diagnostics of this operation (materialize, setup, optimize, probe, certify)")
+	kind := fs.String("kind", "", "only diagnostics of this operation (materialize, setup, optimize, probe, certify, forge_certify)")
 	model := fs.String("model", "", "only diagnostics of this catalog model")
 	variant := fs.String("variant", "", "only diagnostics of this variant")
 	out := fs.String("out", "", "export: write to this file, or into this directory (required)")

@@ -51,6 +51,10 @@ var forgePreflightKind = map[string]string{
 	OpOptimize:    setup.PreflightOptimize,
 	OpProbe:       setup.PreflightProbe,
 	OpCertify:     setup.PreflightCertify,
+	// A self-contained certification gates its candidate with the probe
+	// preflight on the candidate's device (and its reference with a certify
+	// preflight on the reference device).
+	OpForgeCertify: setup.PreflightProbe,
 }
 
 // IsForgeOperation reports whether a failed operation of this kind and model
@@ -58,7 +62,7 @@ var forgePreflightKind = map[string]string{
 // optimization, probe and certification.
 func IsForgeOperation(kind, model string) bool {
 	switch kind {
-	case OpOptimize, OpProbe, OpCertify:
+	case OpOptimize, OpProbe, OpCertify, OpForgeCertify:
 		return true
 	case OpMaterialize, OpSetup, OpRepair:
 		if m, err := setup.LookupModel(model); err == nil {

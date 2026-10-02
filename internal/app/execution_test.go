@@ -34,7 +34,7 @@ func fakeExecWorker(spec string) {
 	out := json.NewEncoder(os.Stdout)
 	emit := func(v map[string]any) { _ = out.Encode(v) }
 	emit(map[string]any{"event": "hello", "pid": os.Getpid()})
-	info := map[string]any{"provider": "clef", "provider_version": "1", "model_id": model, "model_revision": rev, "device": device, "dtype": dtype,
+	info := map[string]any{"provider": "clef", "provider_version": "1", "model_id": model, "model_revision": rev, "device": device, "dtype": "torch." + dtype,
 		"execution": "source", "weights_quantized_modules": 0, "load_ms": 12.5, "warmup_ms": 3.5}
 	if variant != "" {
 		info["dtype"] = "torch." + vdtype
@@ -117,7 +117,11 @@ func execDeps(t *testing.T, mode, marker string) ExecutionDeps {
 			if err != nil {
 				return worker.Config{}, server.Runtime{}, err
 			}
-			rt := server.Runtime{Runtime: "rt-test", ModelID: model.ID, Model: setup.ModelDirName(model), Device: tg.Device}
+			rspec, err := setup.Desired(tg.Device)
+			if err != nil {
+				return worker.Config{}, server.Runtime{}, err
+			}
+			rt := server.Runtime{Runtime: rspec.ID(), ModelID: model.ID, Model: setup.ModelDirName(model), Device: tg.Device}
 			variant, scheme, vdtype := "", "", ""
 			if v != nil {
 				variant, scheme, vdtype = v.ID, v.Weights.Scheme, v.Weights.DType
@@ -164,7 +168,7 @@ func TestExecuteSourceRecordsABoundResidentRun(t *testing.T) {
 	}
 	tg := rec.Target
 	if tg.Kind != eval.ForgeTargetSource || tg.Model != setup.ClefFlash || tg.Revision != strings.Repeat("ef", 20) || tg.Provider != "clef" || tg.SourceFilesSHA256 == "" ||
-		tg.Variant != "" || tg.Runtime != "rt-test" || tg.RequestedDevice != "cuda" || tg.Device != "cuda" || tg.RequestedDType != "float32" || tg.DType != "float32" {
+		tg.Variant != "" || tg.Runtime != cudaRuntimeID(t) || tg.RequestedDevice != "cuda" || tg.Device != "cuda" || tg.RequestedDType != "float32" || tg.DType != "float32" {
 		t.Fatalf("target %+v", tg)
 	}
 	// The dataset and the Question Definitions are bound to the stored run.
@@ -575,4 +579,14 @@ func TestLeaseReportsAnActivationChange(t *testing.T) {
 	if !errors.As(err, &ee) || ee.Primary != nil || !strings.Contains(err.Error(), "activation record changed") {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+// cudaRuntimeID is the identity of the cuda runtime of this build.
+func cudaRuntimeID(t *testing.T) string {
+	t.Helper()
+	spec, err := setup.Desired("cuda")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec.ID()
 }

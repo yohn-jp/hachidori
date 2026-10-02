@@ -566,6 +566,8 @@ type action struct {
 	// probe's record) when the failure is known.
 	forge  *ForgeFailure
 	enrich func(*ForgeFailure)
+	// plan, when set, is the plan of this action instead of the kind's.
+	plan []string
 }
 
 // Setup starts setup/materialization asynchronously with explicit params. It
@@ -614,6 +616,9 @@ func (c *Controller) async(p SetupParams, a action) error {
 	op := c.begin(a.kind, a.device, a.model)
 	op.Target = a.target
 	op.Plan = plan(a.kind, a.target)
+	if a.plan != nil {
+		op.Plan = a.plan
+	}
 	root := c.home
 	// Without a caller's log the action's output goes to the home's setup
 	// log, where its failure can be diagnosed.
@@ -708,6 +713,8 @@ func plan(kind, target string) []string {
 			setup.PhaseResolving, setup.PhaseQuantizing, setup.PhaseSerializing, setup.PhaseVerifying, setup.PhasePublish)
 	case OpCertify:
 		return p(setup.PhaseLoadingRuns, setup.PhaseComparing, setup.PhaseRecording)
+	case OpForgeCertify:
+		return p(CertPhaseResolving, CertPhasePreflight, CertPhaseProbe, CertPhaseReference, CertPhaseCandidate, CertPhaseAligning, CertPhaseCertifying, CertPhasePersisting)
 	case OpPreflight:
 		return p(setup.PhasePreflight)
 	case OpProbe:
@@ -1024,7 +1031,7 @@ func (c *Controller) Inventory(verify bool) (setup.Inventory, error) {
 
 func isMaintenance(kind string) bool {
 	switch kind {
-	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpPreflight, OpProbe, OpExecute:
+	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpPreflight, OpProbe, OpExecute:
 		return true
 	}
 	return false

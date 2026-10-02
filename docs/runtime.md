@@ -22,8 +22,8 @@ client CLI / any HTTP caller
 | `hachidori setup [--home H] [--device cuda\|cpu] [--model ID]` | host | reconcile `HACHIDORI_HOME` with the Runtime Spec: private uv materializes the locked Python environment, the selected catalog model (default `laya-base`) is materialized separately, then activate |
 | `hachidori activate [--home H] [--device cuda\|cpu] [--model ID] [--variant ID [--experimental]]` | host, offline | make an already materialized catalog model, or for a System One model one of its variants, active; the same operation as Settings, Activate (see System One variants) |
 | `hachidori variant list\|show\|verify\|optimize\|remove\|recipes …` | host | derived System One variants: `optimize` builds one with a canonical recipe in the separate optimizer runtime; the rest inspect, verify and remove (see System One variants) |
-| `hachidori certify run\|evaluate\|show …` | client / host | record a resident run, certify a variant against its high-precision reference, inspect the certification (certification.md) |
-| `hachidori forge preflight\|probe\|execute\|diagnostics …` | host | System One Forge readiness: `preflight` checks identity, runtime, recipe, disk, RAM and the requested device before expensive work, `probe` loads a persisted variant in an isolated worker and asks one typed decision (not a certification), `execute` runs an exact source or variant over a dataset as temporary maintenance work and records the resident run as internal evidence, `diagnostics` lists, shows and exports the bounded redacted failure diagnostics (see Forge readiness and Forge execution sessions) |
+| `hachidori certify run\|evaluate\|show …` | client / host | the low-level, run-file surface: record a resident run, certify a variant against two run files, inspect the certification (certification.md); `forge certify` is the normal path |
+| `hachidori forge preflight\|probe\|execute\|certify\|diagnostics …` | host | System One Forge readiness: `preflight` checks identity, runtime, recipe, disk, RAM and the requested device before expensive work, `probe` loads a persisted variant in an isolated worker and asks one typed decision (not a certification), `execute` runs an exact source or variant over a dataset as temporary maintenance work and records the resident run as internal evidence, `certify` certifies a persisted variant from a dataset alone (it produces and binds both runs itself and never activates; see Forge certification), `diagnostics` lists, shows and exports the bounded redacted failure diagnostics (see Forge readiness and Forge execution sessions) |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843] [--resident ID]…` | host | run HTTP + one resident worker (plus one more worker process per `--resident` catalog model ID; see Multi-resident serving); non-loopback binds are refused |
 | `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh] [--resident ID]…` | host | `serve` plus the host-local dashboard (see below) |
 | `hachidori desktop [--home H] [--listen …] [--addr …] [--ssh ssh] [--background]` | host (Windows) | the same desktop composition as a no-argument `hachidori.exe`: first run/recovery or normal start in a resident WebView2 window with a tray icon (see below); fails with a clear error on other systems |
@@ -1250,6 +1250,45 @@ is `ExecutionError.Restore`, reported beside the primary failure and never
 instead of it; an execution that succeeded but could not restore is a failure. A
 GPU held by a process Hachidori does not own makes the worker fail to load; that
 is reported, not worked around.
+
+**Forge certification** (`app.RunForgeCertification`, `Controller.CertifyVariant`,
+`hachidori forge certify [--device D] [--reference-device D] [--reference-dtype T]
+[--questions P]… [--policy F] [--materialize] <variant-id> <dataset.jsonl>`). One
+operation takes the semantic intent — the variant, the corpus, the Question
+Definitions, the policy, the candidate device and the reference device/dtype
+(canonical defaults `cpu` and, for a provider with a dtype control, `bfloat16`,
+recorded as requested) — and never a reference or candidate run path. It reports
+these phases when it enters them: `resolving` (the exact source, variant,
+policy, corpus and both execution targets; nothing that is not exact gets past
+it), `preflight` (the reference's certify preflight and the candidate's probe
+preflight; a blocker refuses the operation before any expensive work),
+`materializing` (only with `--materialize`, only when the one blocker is a serving
+runtime that is not materialized: `setup.MaterializeContext`, which never
+activates, then a fresh preflight), `probe` (the persisted-variant probe on the
+candidate device; a failure stops the operation before any full run),
+`reference_run` and `candidate_run` (the exact source and the exact variant as
+Forge execution sessions above, each persisted as `hachidori.forge-run.v1`),
+`aligning`, `certifying` (the existing `eval.Certify`, policy and formulas
+unchanged) and `persisting`; the operation then ends completed or failed, and a
+failure names the phase it was in and the evidence ID of any run that had
+completed. Each run is re-proved from its stored evidence before it is accepted:
+the pinned source, or the exact variant ID and manifest with quantized
+execution, the runtime of the device, the requested and actual device and dtype;
+a source run is never a candidate. Before `eval.Certify`, `aligning` proves that
+the two runs are the same evaluation input by digest — normalized dataset,
+Question Definitions, questions, normalized and sent requests, and the
+(case, question) order — and that both are over the requested corpus; any
+difference refuses.
+
+Through the controller the probe and both runs are maintenance work under the
+same lease as `Controller.Execute`: only the Hachidori-owned residents that occupy
+the accelerator are stopped for the probe and for an accelerator run, and each is
+restored and waited for afterwards, on success, failure and cancellation; a CPU
+reference stops nothing. Certification is evidence only. The accepted and the
+rejected verdict both leave the activation record, the desired residents, the
+routing policy and the default model untouched, and nothing is restarted;
+applying an accepted variant stays the separate, explicit `activate`. The CLI
+form, like `forge execute`, does not know the residents of a running Hachidori.
 
 **Diagnostics** (`internal/diagnostics/forge.go`, `app.RecordForgeFailure`). A
 failed materialization, optimization, probe or certification (from the CLI or the

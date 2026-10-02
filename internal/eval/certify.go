@@ -260,6 +260,11 @@ type Certification struct {
 	Policy       CertPolicy `json:"policy"`
 	PolicySHA256 string     `json:"policy_sha256"`
 	Verdict      Verdict    `json:"verdict"`
+
+	// Producer binds the Forge execution evidence both runs came from. It is
+	// absent for a certification of run files and for reports recorded before
+	// it existed; it never takes part in the verdict.
+	Producer *CertificationProducer `json:"producer,omitempty"`
 }
 
 // CertifyInput is everything Certify binds: the exact source and variant, the

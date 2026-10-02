@@ -172,6 +172,10 @@ func TestForgeWorkflowThroughTheCLI(t *testing.T) {
 		report.Verdict.Status != eval.VerdictAccepted || report.Fidelity.ChoiceFlips != 0 || report.Policy.ID != "smoke-test/1" {
 		t.Fatalf("report: %v %+v", err, report.Verdict)
 	}
+	// A certification of run files stays what it was: no producer linkage.
+	if st := eval.ResolveCertification(h, v); report.Producer != nil || st.Record == nil || st.Record.Producer != nil {
+		t.Fatalf("a run-file certification carries producer evidence: %+v", st.Record)
+	}
 	for _, args := range [][]string{{"certify", "show", "-home", h.Root, v.ID}, {"certify", "show", "-json", "-home", h.Root, v.ID},
 		{"variant", "list", "-home", h.Root}, {"variant", "show", "-home", h.Root, v.ID}, {"variant", "verify", "-home", h.Root, v.ID}, {"variant", "recipes"}} {
 		if code := exec(args...); code != 0 {
