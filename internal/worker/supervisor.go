@@ -113,10 +113,14 @@ func (s *Supervisor) Run(ctx context.Context) {
 
 		select {
 		case <-ctx.Done():
-			p.Close()
+			// Not ready from the moment the stop begins: while the worker
+			// shuts down gracefully, requests are not_ready and status reads
+			// no longer talk to it (a request on its closed stdin would kill
+			// it and turn the stop into a worker failure).
 			s.mu.Lock()
 			s.state, s.proc = StateStopped, nil
 			s.mu.Unlock()
+			p.Close()
 			return
 		case <-p.Done():
 		}

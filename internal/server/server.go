@@ -569,10 +569,16 @@ func launchVariant(h home.Home, a home.Active, rm home.RuntimeManifest, model ho
 		// A probe is not an activation: it loads the persisted variant
 		// whatever its state, and reports that state as it is.
 	case st.State == eval.StateAccepted:
-	case st.State == eval.StateUncertified && a.Experimental:
+	case st.State == eval.StateUncertified && a.Experimental && len(st.Problems) == 0:
+		// Experimental is only for a variant with no record at all; records
+		// that exist but do not verify never admit it.
 		cert = eval.StateExperimental
 	default:
-		return nil, fmt.Errorf("variant %s: certification state is %s; an accepted certification record is required (or an explicit experimental activation of an uncertified variant)", v.ID, st.State)
+		problems := ""
+		if len(st.Problems) > 0 {
+			problems = " (records not trusted: " + strings.Join(st.Problems, "; ") + ")"
+		}
+		return nil, fmt.Errorf("variant %s: certification state is %s%s; an accepted certification record is required (or an explicit experimental activation of a variant with no certification record)", v.ID, st.State, problems)
 	}
 	return &Variant{ID: v.ID, Recipe: v.Recipe.Name, Scheme: v.Weights.Scheme, Bits: v.Weights.Bits, DType: v.Weights.DType,
 		Format: v.Weights.Format, Engine: v.Optimizer.Engine, EngineVersion: v.Optimizer.Version, ManifestSHA256: v.ManifestSHA256(),

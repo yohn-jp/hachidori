@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -971,13 +972,20 @@ func (c *Controller) Verify(kind, id string) error {
 // Remove deletes one unused catalog artifact. The setup authority refuses
 // the active runtime and model; the controller additionally refuses while a
 // restart is required, because the running worker then still uses the
-// previously active artifacts.
+// previously active artifacts, and the model of any additional resident of
+// the running set, which the setup authority does not know about.
 func (c *Controller) Remove(kind, id string) error {
 	target := kind + " " + id
 	return c.async(SetupParams{}, action{kind: OpRemove, target: target,
 		guard: func() error {
-			if c.pending && c.rt != nil && c.rt.Running() {
+			if c.rt == nil || !c.rt.Running() {
+				return nil
+			}
+			if c.pending {
 				return ErrRestartRequired
+			}
+			if kind == setup.KindModel && slices.Contains(boundExtras(c.rt), id) {
+				return fmt.Errorf("model %s is a resident of the running runtime: %w", id, ErrRuntimeBusy)
 			}
 			return nil
 		},

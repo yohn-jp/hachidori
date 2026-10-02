@@ -1304,9 +1304,10 @@ deletes directories. `serve` and the browser `dashboard` do not offer it, and
   activation. A requested device is never replaced by another: activating
   `cuda` without a materialized CUDA runtime fails.
 - Remove deletes one materialized, unused catalog artifact. The active
-  runtime/model, non-catalog names, an unreadable activation record, a
-  restart-required state, and any path that does not resolve to a real
-  directory beneath `HACHIDORI_HOME` are refused.
+  runtime/model, the model of an additional resident while the runtime runs,
+  non-catalog names, an unreadable activation record, a restart-required
+  state, and any path that does not resolve to a real directory beneath
+  `HACHIDORI_HOME` are refused.
 - Serving performs no network resolution; only Materialize and Repair use the
   network.
 

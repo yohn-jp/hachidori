@@ -37,7 +37,10 @@ func TestOptimizerRuntimeIsSeparateAndDeterministic(t *testing.T) {
 	if serving.Provides("llmcompressor") || strings.Contains(serving.Provider, "llmcompressor") {
 		t.Fatalf("serving runtime carries the optimizer: %s", serving.Provider)
 	}
-	if _, err := FindOptimizer(f.H); err == nil || !strings.Contains(err.Error(), "not materialized") {
+	// The guidance names only a command that exists (`variant` has no
+	// `prepare` subcommand).
+	if _, err := FindOptimizer(f.H); err == nil || !strings.Contains(err.Error(), "not materialized") ||
+		!strings.Contains(err.Error(), "hachidori variant optimize") || strings.Contains(err.Error(), "variant prepare") {
 		t.Fatalf("FindOptimizer before materialization: %v", err)
 	}
 

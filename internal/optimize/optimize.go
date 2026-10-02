@@ -169,6 +169,11 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	if existing != nil && !req.Reproduce {
 		return Result{Variant: *existing, Dir: h.VariantDir(model.ID, existing.ID), Existing: true}, nil
 	}
+	if existing == nil && req.Reproduce {
+		// A reproduction compares with a published variant and publishes
+		// nothing; without one there is nothing to compare with.
+		return Result{}, fmt.Errorf("%s with recipe %s has no published variant to reproduce; build it without -reproduce first", model.ID, recipe.Name)
+	}
 
 	// Every phase is reported once, when it is first entered.
 	entered := map[setup.Phase]bool{}
@@ -244,7 +249,15 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	}
 	final := h.VariantDir(model.ID, v.ID)
 	if _, err := os.Stat(final); err == nil {
-		// Same identity means same contract and same bytes: already published.
+		// Same identity means same contract and same bytes: already published,
+		// but only if the directory holds that variant's published manifest.
+		// Without it the directory is not a variant and is never reported as one.
+		if pub, rerr := home.ReadVariant(final); rerr != nil || pub.ID != v.ID {
+			if rerr == nil {
+				rerr = fmt.Errorf("its manifest names variant %s", pub.ID)
+			}
+			return Result{}, fmt.Errorf("variant directory %s exists but is not a published variant (%v); remove it with `hachidori variant remove %s` and build again", final, rerr, v.ID)
+		}
 		return Result{Variant: v, Dir: final, Existing: true}, nil
 	}
 	// The manifest is written last: its presence marks a complete variant.

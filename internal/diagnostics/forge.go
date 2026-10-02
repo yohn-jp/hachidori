@@ -304,8 +304,9 @@ func BuildForge(in ForgeInput, root string, now time.Time) ForgeDiagnostic {
 	return d
 }
 
+// size is the length of the document as SaveForge stores it.
 func size(d ForgeDiagnostic) int {
-	b, _ := json.Marshal(d)
+	b, _ := marshalForge(d)
 	return len(b)
 }
 

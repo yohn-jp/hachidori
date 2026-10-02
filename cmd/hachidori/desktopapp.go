@@ -231,6 +231,9 @@ func (a *desktopApp) run() error {
 		}
 	})
 
+	// One form token for the whole process: every dashboard a runtime
+	// rebind creates accepts the pages the window already shows.
+	formToken := dashboard.NewToken()
 	open := func(root string) (app.Runtime, error) {
 		if a.Open != nil {
 			return a.Open(root)
@@ -270,6 +273,7 @@ func (a *desktopApp) run() error {
 				Updates:     updates,
 				WebView2:    version,
 				PathPicker:  dashboardPathPicker(a.Picker),
+				Token:       formToken,
 			})
 			// An experiment of a replaced runtime's dashboard must not keep
 			// running against the next runtime.

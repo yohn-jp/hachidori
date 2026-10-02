@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -108,7 +109,9 @@ func Parse(data []byte) (Definition, error) {
 	if err := dec.Decode(&d); err != nil {
 		return Definition{}, err
 	}
-	if dec.More() {
+	// More is false before a stray closing bracket or brace too; only the
+	// end of the input ends the document.
+	if _, err := dec.Token(); err != io.EOF {
 		return Definition{}, fmt.Errorf("trailing data after definition")
 	}
 	if err := d.Validate(); err != nil {
@@ -195,8 +198,17 @@ func Load(paths ...string) (*Set, error) {
 		}
 		files := []string{p}
 		if fi.IsDir() {
-			if files, err = filepath.Glob(filepath.Join(p, "*.json")); err != nil {
+			// The directory is listed, never used as a glob pattern: its
+			// name may contain [, * or ?.
+			ents, err := os.ReadDir(p)
+			if err != nil {
 				return nil, err
+			}
+			files = nil
+			for _, e := range ents {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+					files = append(files, filepath.Join(p, e.Name()))
+				}
 			}
 			sort.Strings(files)
 		}

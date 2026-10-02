@@ -301,3 +301,39 @@ func TestLegacyForgeDiagnosticStaysReadable(t *testing.T) {
 		t.Fatalf("legacy load %v; verify must not pass for its pre-truncation ID", err)
 	}
 }
+
+// The bound holds for the document as it is stored, which is indented: a
+// document just under the bound in compact JSON is still held to it on disk.
+func TestStoredForgeDiagnosticIsWithinTheBound(t *testing.T) {
+	root := t.TempDir()
+	line := strings.Repeat("x", 500)
+	var lines []string
+	for i := 0; i < 200; i++ {
+		lines = append(lines, fmt.Sprintf("%03d %s", i, line))
+	}
+	err := errors.New(strings.Repeat("e", 1000))
+	for i := 0; i < 20; i++ {
+		err = fmt.Errorf("%s: %w", strings.Repeat("w", 900), err)
+	}
+	var findings []ForgeFinding
+	for i := 0; i < 40; i++ {
+		findings = append(findings, ForgeFinding{ID: "f", Status: "warn", Summary: strings.Repeat("s", 400)})
+	}
+	in := ForgeInput{Operation: ForgeOperation{ID: "op", Kind: "optimize"}, Err: err, StderrTail: lines, LogTail: lines,
+		Preflight: &ForgePreflight{Kind: "optimize", Findings: findings}}
+	d := BuildForge(in, root, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	p, serr := SaveForge(root, d)
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	fi, serr := os.Stat(p)
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	if fi.Size() > MaxForgeBytes || !d.Truncated {
+		t.Fatalf("stored diagnostic is %d bytes (bound %d), truncated %v", fi.Size(), MaxForgeBytes, d.Truncated)
+	}
+	if got, lerr := LoadForge(root, d.ID); lerr != nil || VerifyForge(got) != nil {
+		t.Fatalf("the stored diagnostic does not read back as itself: %v", lerr)
+	}
+}

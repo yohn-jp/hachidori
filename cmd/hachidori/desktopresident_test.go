@@ -291,3 +291,40 @@ func TestDesktopUnreadableResidentSelectionFailsTheOpen(t *testing.T) {
 }
 
 func settingsPathOf(prefs string) string { return desktop.SettingsPath(prefs) }
+
+// The form token is per process: a page the window loaded before a runtime
+// rebind (a Restart that applies a residency change replaces the dashboard)
+// still posts with its token instead of being refused as stale.
+func TestDesktopFormTokenSurvivesARuntimeRebind(t *testing.T) {
+	prefs := filepath.Join(t.TempDir(), "desktop.json")
+	if err := settingsStore(prefs, nil).SetResidents([]string{nanoID}); err != nil {
+		t.Fatal(err)
+	}
+	d := newResidentDesktop(t, prefs)
+	d.run(t, func(origin string) {
+		m := tokenRe.FindStringSubmatch(page(t, origin, "/settings"))
+		if m == nil {
+			t.Fatal("no dashboard token on Settings")
+		}
+		loaded := m[1]
+		post(t, origin, "/settings/residents", url.Values{})
+		post(t, origin, "/settings/models/restart", url.Values{})
+		if reads, _ := d.opens(); len(reads) != 2 {
+			t.Fatalf("the restart did not rebind the runtime: %v", reads)
+		}
+		form := url.Values{"token": {loaded}, "model": {nanoID}}
+		req, _ := http.NewRequest("POST", origin+"/settings/residents", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", origin)
+		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("a post with the token of the page loaded before the rebind: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+	})
+}

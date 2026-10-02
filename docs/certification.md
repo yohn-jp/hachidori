@@ -272,7 +272,7 @@ state of every physical claim until the run happens on the workstation.
 $env:HACHIDORI_CLEF_DTYPE = "float32"        # or leave unset for bfloat16, what the release ships
 hachidori setup --device cpu --model clef-flash
 hachidori serve                              # slow load and slow requests are expected
-hachidori certify run --model clef-flash --questions <defs> --warmup 1 --out reference.json <corpus.jsonl>
+hachidori certify run --model clef-flash --questions <defs> --warmup 5 --passes 3 --out reference.json <corpus.jsonl>   # the same --warmup and --passes as the candidate run
 
 # 2. build the variant, then record the candidate run on the variant
 Remove-Item Env:HACHIDORI_CLEF_DTYPE

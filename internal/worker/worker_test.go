@@ -87,6 +87,20 @@ func TestHelperWorker(t *testing.T) {
 			// One protocol line beyond the Go side's limit, then nothing.
 			_, _ = os.Stdout.WriteString(strings.Repeat("x", 17<<20) + "\n")
 			time.Sleep(time.Minute)
+		case mode == "hold_shutdown" && req.Op == "shutdown":
+			// A graceful shutdown that takes time: it waits for the test to
+			// release it, then marks that it exited on its own.
+			dir := os.Getenv("HACHIDORI_FAKE_HOLD")
+			_ = os.WriteFile(filepath.Join(dir, "shutdown"), nil, 0o644)
+			for {
+				if _, err := os.Stat(filepath.Join(dir, "release")); err == nil {
+					break
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			_ = os.WriteFile(filepath.Join(dir, "clean_exit"), nil, 0o644)
+			emit(map[string]any{"id": req.ID, "ok": true})
+			os.Exit(0)
 		case req.Op == "shutdown":
 			emit(map[string]any{"id": req.ID, "ok": true})
 			os.Exit(0)
@@ -859,5 +873,53 @@ func TestPythonWorkerOpenDeciderDType(t *testing.T) {
 	}
 	if _, err := Start(context.Background(), pythonWorker(t, dir, "laya", "cpu", "--dtype", "bfloat16"), nil); err == nil {
 		t.Fatal("laya accepted --dtype")
+	}
+}
+
+// Stop leaves the API reporting not ready from the moment it begins. While
+// the worker shuts down gracefully the supervisor is not ready, a request is
+// not_ready (not a worker failure), and a status read does not talk to the
+// worker: the worker finishes its own shutdown instead of being killed.
+func TestStopIsNotReadyWhileTheWorkerShutsDown(t *testing.T) {
+	dir := t.TempDir()
+	cfg := fakeConfig(t, "hold_shutdown")
+	cfg.Env = append(cfg.Env, "HACHIDORI_FAKE_HOLD="+dir)
+	s := NewSupervisor(cfg, Policy{MaxRestarts: 3, Window: time.Minute, QueueDepth: 4})
+	l := NewLifecycle(context.Background(), s)
+	l.Start()
+	waitState(t, s, StateReady)
+
+	stopped := make(chan struct{})
+	go func() { l.Stop(); close(stopped) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "shutdown")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the worker never received the shutdown")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	// The worker is inside its graceful shutdown.
+	if s.Ready() || s.State() == StateReady {
+		t.Fatalf("stopping supervisor reports ready (state %s)", s.State())
+	}
+	var re *RequestError
+	if _, _, err := s.Decide([]Item{item}); !errors.As(err, &re) || re.Class != api.ErrNotReady {
+		t.Fatalf("a request during the stop: %v, want not_ready", err)
+	}
+	if snap := s.Snapshot(); snap.Ready || snap.State == StateReady {
+		t.Fatalf("status during the stop: %+v", snap)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	<-stopped
+	if _, err := os.Stat(filepath.Join(dir, "clean_exit")); err != nil {
+		t.Fatal("the worker was killed during its graceful shutdown instead of exiting on its own")
+	}
+	if s.State() != StateStopped || s.LastFailure() != nil {
+		t.Fatalf("after the stop: state %s failure %+v", s.State(), s.LastFailure())
 	}
 }

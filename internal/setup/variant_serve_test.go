@@ -233,3 +233,34 @@ func TestProbeConfigLaunchesThePersistedVariantWithoutActivation(t *testing.T) {
 		t.Fatalf("a missing variant launched: %v", err)
 	}
 }
+
+// Experimental is only for a variant with no certification record at all. A
+// record that exists but no longer verifies (here a rejecting record whose
+// report is gone) is not "no record": neither activation nor launch admits
+// the variant as experimental.
+func TestExperimentalNeverAdmitsAVariantWithUntrustedRecords(t *testing.T) {
+	h, m := setup.MaterializeFakeClef(t, "cpu")
+	v := buildVariant(t, h)
+	if _, err := setup.ActivateTarget(h, "cpu", setup.ClefFlash, setup.ActivateOptions{Variant: v.ID, AllowUncertified: true}, io.Discard, nil); err != nil {
+		t.Fatal(err)
+	}
+	rec := certify(t, h, m, v, false, time.Now())
+	dir := filepath.Join(h.Root, filepath.FromSlash(home.CertificationDir(v.ID)))
+	if err := os.Remove(filepath.Join(dir, rec.Report)); err != nil {
+		t.Fatal(err)
+	}
+	if st := eval.ResolveCertification(h, v); st.State != eval.StateUncertified || len(st.Problems) == 0 {
+		t.Fatalf("precondition: an untrusted record resolves to %+v", st)
+	}
+	before := rawActive(h)
+	if _, err := setup.ActivateTarget(h, "cpu", setup.ClefFlash, setup.ActivateOptions{Variant: v.ID, AllowUncertified: true}, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "not trusted") {
+		t.Fatalf("a variant with an untrusted rejecting record was activated as experimental: %v", err)
+	}
+	if rawActive(h) != before {
+		t.Fatal("a refused activation changed the activation record")
+	}
+	// The earlier experimental activation does not launch it either.
+	if cfg, _, err := server.WorkerConfig(h, io.Discard); err == nil || !strings.Contains(err.Error(), "not trusted") || cfg.Python != "" {
+		t.Fatalf("a variant with an untrusted rejecting record launched as experimental: %v", err)
+	}
+}

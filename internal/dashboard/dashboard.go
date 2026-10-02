@@ -114,6 +114,20 @@ type Config struct {
 	// progress are projections of the same inventory and operation state
 	// Models reports; Variants only forwards the operator's actions.
 	Variants VariantActions
+	// Token is the per-process form token. A composition that replaces its
+	// dashboard during the process (the desktop, on every runtime rebind)
+	// passes one from NewToken so a page loaded before the replacement keeps
+	// working; empty means New draws one.
+	Token string
+}
+
+// NewToken draws a form token.
+func NewToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b)
 }
 
 // VariantActions are the System One forge actions of the maintenance
@@ -473,11 +487,11 @@ func pickWasCancelled(err error) bool { return errors.Is(err, ErrPickCancelled) 
 
 // New builds the dashboard.
 func New(cfg Config) *Dashboard {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
+	token := cfg.Token
+	if token == "" {
+		token = NewToken()
 	}
-	d := &Dashboard{cfg: cfg, token: hex.EncodeToString(b), mux: http.NewServeMux()}
+	d := &Dashboard{cfg: cfg, token: token, mux: http.NewServeMux()}
 	if cfg.HistoryDir != "" {
 		var err error
 		if d.hist, err = history.Open(cfg.HistoryDir); err != nil {
