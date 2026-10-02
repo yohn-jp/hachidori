@@ -1,8 +1,8 @@
 # Operator Abstraction and Model Tuning Architecture
 
-Status: target architecture and UX authority  
-Issue: #169  
-Parent Epic: #176  
+Status: target architecture and UX authority
+Issue: #169
+Parent Epic: #176
 Baseline: main at 51e4be6d6416c4662b4e5a7c2e52cd3880597c70
 
 ## 1. Decision
