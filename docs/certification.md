@@ -229,6 +229,114 @@ that record the default stays `float32`.
 | physical Windows, RTX 3060, `bfloat16` OpenDecider-nano | NOT_CHECKED | user-side; never inferred from CI |
 | default dtype | unchanged: `float32` | no recorded evidence supports a change |
 
+### System One variant certification (#142)
+
+A System One variant (a derived, quantized execution artifact of a pinned
+model, runtime.md "System One variants") is certified by one question: **how
+much did compression change the typed decision model?** It is answered in the
+space Hachidori serves (the typed choice decisions), not by perplexity, and it
+needs no labels. The reference is the pinned source model at high precision
+(`float32` or `bfloat16`, on the CPU if that is what fits, however slowly); the
+candidate is the exact variant. Reference fidelity and labelled correctness are
+different things: the reference is the authority for *fidelity only* and is
+never treated as ground truth. The core evaluator states evidence and never
+names a "best" model; a policy turns evidence into `accepted` or `rejected`
+against explicit thresholds and changes none of it.
+
+The evaluator is `internal/eval` (`certify*.go`, `resident_run.go`): it reuses
+the resident-comparison machinery (direct resident targeting, the status
+identity, alignment, `QualityOf`, the calibration and slice formulas) and adds
+only what pairing a reference with a variant needs.
+
+```powershell
+# 0. a corpus: eval JSONL; "expected" labels are optional (all questions or none)
+# 1. reference: serve the source on the CPU in high precision, record the run
+$env:HACHIDORI_CLEF_DTYPE = "float32"        # or leave unset for bfloat16, what the release ships
+hachidori setup --device cpu --model clef-flash
+hachidori serve                              # slow load and slow requests are expected
+hachidori certify run --model clef-flash --questions <defs> --warmup 1 --out reference.json <corpus.jsonl>
+
+# 2. build the variant, then record the candidate run on the variant
+Remove-Item Env:HACHIDORI_CLEF_DTYPE
+hachidori variant optimize --model clef-flash
+hachidori setup --device cuda --model clef-flash
+hachidori activate --device cuda --model clef-flash --variant <variant-id> --experimental   # uncertified candidates run only as experimental
+hachidori serve
+hachidori certify run --model clef-flash --questions <defs> --warmup 5 --passes 3 --out candidate.json <corpus.jsonl>
+
+# 3. certify: identical normalized inputs, the exact variant, an explicit policy
+hachidori certify evaluate --variant <variant-id> --reference reference.json --candidate candidate.json [--policy policy.json] [--out certification.json]
+hachidori certify show <variant-id>          # add -json for the full report
+
+# 4. activate for real (the experimental mark is cleared), restart, status, decide
+hachidori activate --device cuda --model clef-flash --variant <variant-id>
+```
+
+`certify run` records one resident's pass as `hachidori.resident-run.v1` (the
+same per-model evidence a resident comparison records: identity from the
+resident's own status, startup load and warmup, accelerator and host memory
+samples, latency, every observation with its input digest, errors). The two
+runs need not exist at the same time. `certify evaluate` **refuses**, listing
+every reason and computing no delta, unless the runs are the pinned source
+model at the pinned revision at high precision and the exact variant (its
+`variant_id`, and the dtype its manifest declares), received the same dataset,
+question identities, normalized requests and requests actually sent in the same
+order, with the same declared controls, and are both labelled or both not.
+
+The report (`hachidori.system-one-certification/1`) binds: the source identity;
+the variant ID, manifest digest, build ID, recipe and engine; the reference and
+candidate execution identities (model, provider, revision, device, dtype,
+quantized execution, status-identity digest, stability); the dataset digest,
+question identities and normalized-request digest; the policy, embedded whole,
+with its digest. It reports:
+
+| evidence | fields |
+|---|---|
+| **fidelity** (no labels needed) | `choice_flips`, `flip_rate`, `top_choice_preserved_rate`; per-question transition matrix (`transitions`); each flip (`flips[]`); confidence delta (signed mean, spread); probability deltas per observation (mean over options and max over options, mean/p50/p95/max); Jensen-Shannon divergence per observation in bits (bounded by 1); ranking preserved; high-confidence reference decisions and how many flipped; per-question fidelity; question types (only `choice` is served by `hachidori.v1`, so noul and score drift are stated as not measurable, not reported as zero) |
+| **labelled quality** (only with labels) | accuracy, macro-F1, Brier, ECE, NLL and high-confidence-error deltas (candidate minus reference, from each run's own `QualityOf`), threshold x coverage x conditional-accuracy deltas, per-question and per-family slices, and whether each flip fixed, broke or left both wrong |
+| **resources** | load and warmup, request and inference p50/p95 and their ratios, accelerator memory (resident and peak) and host RAM of the worker where it reported them, request and error counts, and per fact `MEASURED` or `NOT_CHECKED` (`checks`): nothing is estimated, and a CPU resident reports no VRAM |
+
+The default policy `system-one-fidelity/1` (`eval.DefaultPolicy`; a policy file,
+`hachidori.certification-policy/1`, replaces it, and any threshold change is a
+new versioned ID and a new digest): at least 100 paired observations; no
+unpaired observation and no request error; both residents stable; flip rate at
+most 0.03; high-confidence (>= 0.9) reference decisions flipping at most 0.01;
+mean JS at most 0.01 bits; p95 of the largest probability change at most 0.10
+and the maximum at most 0.50; and, for labelled runs only, accuracy at most 0.02
+lower, macro-F1 at most 0.03 lower, ECE and Brier at most 0.03 higher, NLL at most
+0.10 higher and the high-confidence error rate at most 0.01 higher. Boundaries
+are inclusive. These are starting thresholds for the first physical
+certification, not a claim about Clef-Flash; the operator records the policy
+they accept. A criterion whose evidence does not exist (labelled criteria without
+labels) is reported as not applied and neither passes nor fails.
+
+`certify evaluate` writes the report and then its record under
+`state/certifications/<variant-id>/` for accepted and rejected alike (a
+rejecting verdict exits non-zero but the evidence is kept whole). Activation
+trusts a record only after re-verifying it: it names this variant by ID and
+manifest digest and source, its report hashes to the recorded digest and binds
+the same identities, the report's policy digests to the recorded one, and the
+verdict recomputed from that policy and the report's evidence is the recorded
+verdict, so a hand-edited verdict or report never certifies a variant. The latest
+valid record decides; a later rejecting record withdraws an earlier acceptance.
+
+Historical evidence is unchanged: `hachidori.evidence.v1`,
+`hachidori.resident-comparison.v1` and `hachidori.precision-comparison.v1` keep
+their schemas and readers; the only additions are optional `host_rss_bytes`
+fields in memory samples and `hachidori.resident-run.v1` (new).
+
+#### Recorded state (#142)
+
+| item | outcome | note |
+|---|---|---|
+| portable tests: variant identity and manifest contract, builder failure/cleanup/reproduction, activation gating, launch provenance and no-fallback, fidelity metrics, policy boundaries, record verification, controller and Settings projection, CLI workflow | see the pull request | fakes and tiny fixtures only; no real model is downloaded, no multi-GB optimization runs |
+| real LLM Compressor build and real `clef` adapter on a tiny random model with the Clef-Flash layout (`go test ./internal/optimize -run TinyClefEndToEnd` with `HACHIDORI_TEST_OPTIMIZER_ENV` and `HACHIDORI_TEST_JOINT_SCHEMA`): build, byte-identical reproduction, packed int4 execution, no CUDA fallback, dtype guard, corrupt-variant refusal | see the pull request | optional, outside normal CI; a tiny random model proves the machinery, not the quality of any real model |
+| Clef-Flash BF16 or FP32 reference on the CPU of a 64 GB workstation (fits, succeeds, load time, RAM, latency) | NOT_CHECKED | requires the 19 GB download and the user's machine |
+| real Q4 build of Clef-Flash with the canonical recipe (time, output size, determinism on the real model) | NOT_CHECKED | requires the real source and the optimizer runtime |
+| Q4 variant on the RTX 3060 (fits, exact VRAM, RAM, load, latency) | NOT_CHECKED | physical; never inferred from CI or the tiny model |
+| decision fidelity of the real variant (flips, drift, divergence, labelled deltas) and the policy verdict | NOT_CHECKED | needs the two real runs on the operator's corpus |
+| physical Windows desktop: Optimize, Certify, Activate, Restart for a variant | NOT_CHECKED | Windows checklist W20-W24 |
+
 ### Deterministic resident routing (#124)
 
 With both models resident and a routing policy bound (`serve --resident
