@@ -423,7 +423,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <form method="post" action="/runtime/stop" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Stop"}}</button></form>
   </div>
   <dl class="spec">
-    <div><dt>{{t "Model"}}</dt><dd class="id">{{.S.Runtime.ModelID}}<span class="sub">{{if $w.Ready}}{{t "serving now"}}{{else}}{{t "configured for this runtime, not serving"}}{{end}}</span></dd></div>
+    <div><dt>{{t "Model"}}</dt><dd class="id">{{.S.Runtime.ModelID}}<span class="sub">{{if $w.Ready}}{{t "serving now"}}{{else}}{{t "configured for this runtime, not serving"}}{{end}}</span>{{with .S.Runtime.Variant}}<span class="sub" id="runtime-variant">{{t "variant"}} {{.ID}} · {{.Scheme}} · {{.Certification}}</span>{{end}}</dd></div>
     {{with .Next}}{{if .Model}}<div id="next-start"><dt>{{t "Next start"}}</dt><dd class="id">{{.Model}} · {{.Device}}<span class="sub">{{if .Problem}}<span class="bad-t">{{t "cannot start"}}</span>{{else if .Differs}}<span class="warn-t">{{t "differs from this runtime: choose Restart to apply it"}}</span>{{else}}{{t "the active model and device"}}{{end}}</span></dd></div>{{end}}{{end}}
     <div><dt>{{t "Accelerator"}}</dt><dd>{{get $i "device_name"}}<span class="sub">{{with .Rt.Device}}{{.}} · {{end}}{{t "requested"}} {{.S.Runtime.Device}}</span></dd></div>
     <div><dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd></div>
@@ -655,8 +655,8 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   </table></div>
 
   <dl class="kv" id="models-serving">
-    <dt>{{t "Serving now"}}</dt><dd class="mono">{{with .RunningModel}}{{.}} · {{$.Models.RunningDevice}}{{else}}{{t "no worker running"}}{{end}}</dd>
-    <dt>{{t "Active (next start)"}}</dt><dd class="mono">{{with .ActiveModel}}{{.}} · {{$.Models.ActiveDevice}}{{else}}-{{end}}</dd>
+    <dt>{{t "Serving now"}}</dt><dd class="mono">{{with .RunningModel}}{{.}} · {{$.Models.RunningDevice}}{{with $.Models.RunningVariant}} · {{t "variant"}} {{.}}{{end}}{{else}}{{t "no worker running"}}{{end}}</dd>
+    <dt>{{t "Active (next start)"}}</dt><dd class="mono">{{with .ActiveModel}}{{.}} · {{$.Models.ActiveDevice}}{{with $.Models.Inventory.Active}}{{with .Variant}} · {{t "variant"}} {{.}}{{if $.Models.Inventory.Active.Experimental}} · {{t "experimental/uncertified"}}{{end}}{{end}}{{end}}{{else}}-{{end}}</dd>
   </dl>
 
   <h3>{{t "Models"}}</h3>
@@ -678,6 +678,59 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     </tbody>
   </table></div>
 
+
+  {{if or .VariantControls .Variants}}
+  <h3 id="variants-h">{{t "System One variants"}}</h3>
+  <p class="note">{{t "A variant is a derived, quantized execution artifact of one source model. The source stays intact and keeps its identity; a variant is activated only with an accepted certification record, and never falls back to the source if it cannot start."}}</p>
+  {{with .Inventory.Optimizer}}<dl class="kv" id="optimizer-runtime"><dt>{{t "Optimizer runtime"}}</dt><dd class="mono">{{.ID}} · {{if .Materialized}}{{t "materialized"}}{{else}}{{t "not materialized (the first optimization materializes it)"}}{{end}}{{if .Verified}} · {{t "verified"}}{{end}}{{with .Problem}} <span class="bad-t">{{.}}</span>{{end}}</dd></dl>{{end}}
+  <div class="table-wrap"><table class="data" id="variant-inventory" aria-labelledby="variants-h">
+    <thead><tr><th>{{t "Variant"}}</th><th>{{t "Source"}}</th><th>{{t "Precision"}}</th><th>{{t "Certification"}}</th><th>{{t "Status"}}</th><th>{{t "Actions"}}</th></tr></thead>
+    <tbody>{{range .Variants}}
+      <tr data-variant="{{.ID}}"{{if .Active}} aria-current="true"{{end}}>
+        <td class="strong mono">{{.ID}}<div class="muted">{{.Recipe}} · {{.Engine}} {{.EngineVersion}}</div></td>
+        <td class="mono">{{.SourceID}}@{{.SourceRevision}}{{if not .SourceMaterialized}}<div class="bad-t">{{t "source not materialized"}}</div>{{end}}</td>
+        <td class="mono">{{.Scheme}} · {{.Bits}}-bit g{{.GroupSize}} · {{t "compute"}} {{.DType}}<div class="muted">{{t "preserved at higher precision"}}: {{len .Preserved}}</div></td>
+        <td>{{if eq .Certification "accepted"}}<span class="badge tone-ok">{{t "accepted"}}</span>{{else if eq .Certification "rejected"}}<span class="badge tone-bad">{{t "rejected"}}</span>{{else}}<span class="badge">{{t "uncertified"}}</span>{{end}}{{with .CertificationNote}}<div class="bad-t">{{.}}</div>{{end}}</td>
+        <td>{{if .Running}}<span class="badge tone-ok">{{t "running"}}</span>{{end}}{{if .Active}}<span class="badge tone-ok">{{if .Pending}}{{t "active · applies on restart"}}{{else}}{{t "active"}}{{end}}</span>{{if .Experimental}}<span class="badge tone-bad">{{t "experimental/uncertified"}}</span>{{end}}{{else}}<span class="badge">{{t "materialized"}}</span>{{end}}
+          {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
+          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
+          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="nowrap">
+          <form method="post" action="/settings/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="variant"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
+          {{if $.Models.VariantControls}}
+          {{if .CanActivate}}<form method="post" action="/settings/variants/activate" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="device" value="{{$.Models.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><button type="submit" class="btn primary">{{t "Activate"}}</button></form>
+          {{else if .CanExperiment}}<form method="post" action="/settings/variants/activate" class="inline" data-confirm="{{t "Activate this variant as experimental/uncertified? It has no certification record. It is marked as such in status and is never promoted automatically."}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="device" value="{{$.Models.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><input type="hidden" name="experimental" value="1"><button type="submit" class="btn">{{t "Activate as experimental"}}</button></form>{{end}}
+          {{end}}
+          {{if not .Active}}<form method="post" action="/settings/models/remove" class="inline" data-confirm="{{t "Remove this variant from HACHIDORI_HOME? Its source model is not touched."}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="kind" value="variant"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
+        </td>
+      </tr>{{else}}
+      <tr><td colspan="6" class="muted">{{t "No variants yet."}}</td></tr>{{end}}
+    </tbody>
+  </table></div>
+  {{if .VariantControls}}
+  {{range .OptimizeModels}}
+  <form method="post" action="/settings/variants/optimize" class="region" id="optimize-{{.ID}}">
+    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings"><input type="hidden" name="model" value="{{.ID}}">
+    <div class="fields"><label class="field">{{t "Recipe"}} ({{.ID}})
+      <select name="recipe">{{range .Recipes}}<option value="{{.}}">{{.}}</option>{{end}}</select></label></div>
+    <div class="btn-row"><button type="submit" class="btn primary">{{t "Optimize"}}</button></div>
+  </form>
+  {{end}}
+  {{if .Variants}}
+  <form method="post" action="/settings/variants/certify" class="region" id="certify-variant">
+    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="settings">
+    <div class="fields">
+      <label class="field">{{t "Variant"}}<select name="variant">{{range .Variants}}<option value="{{.ID}}">{{.ID}}</option>{{end}}</select></label>
+      <label class="field">{{t "Reference run (resident run file of the source model)"}}<input type="text" name="reference" autocomplete="off"></label>
+      <label class="field">{{t "Candidate run (resident run file of the variant)"}}<input type="text" name="candidate" autocomplete="off"></label>
+      <label class="field">{{t "Policy file (optional; default is the built-in profile)"}}<input type="text" name="policy" autocomplete="off"></label>
+    </div>
+    <div class="btn-row"><button type="submit" class="btn">{{t "Certify"}}</button></div>
+  </form>
+  <p class="note">{{t "Certification reads two saved resident runs, one of the source at high precision and one of the variant (hachidori certify run), and records the evidence and the policy's verdict. It starts, stops and reloads nothing."}}</p>
+  {{end}}
+  {{end}}
+  {{end}}
   {{with .Residency}}
   <h3 id="resident-selection-h">{{t "Resident models"}}</h3>
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
@@ -908,6 +961,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
           <dt>{{t "runtime"}}</dt><dd>{{.S.Runtime.Runtime}}</dd>
           <dt>{{t "model"}}</dt><dd>{{.S.Runtime.ModelID}}</dd>
           <dt>{{t "model artifact"}}</dt><dd>{{.S.Runtime.Model}}</dd>
+          {{with .S.Runtime.Variant}}<dt>{{t "variant"}}</dt><dd>{{.ID}} · {{.Scheme}} ({{.Engine}} {{.EngineVersion}}) · {{.Certification}}</dd>{{end}}
           <dt>{{t "requested device"}}</dt><dd>{{.S.Runtime.Device}}</dd>
           <dt>{{t "provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd>
           <dt>Python</dt><dd>{{get $i "python_version"}}</dd>

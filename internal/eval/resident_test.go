@@ -26,6 +26,8 @@ type fakeResident struct {
 	warmupMS     float64
 	alloc, rsrv  int64
 	dtype        string
+	device       string         // reported device; "cuda" when empty
+	provExtra    map[string]any // additional worker.provider facts (for example variant_id)
 	noAccel      bool
 	decides      int
 	// answer maps a state to (choice, confidence); the default answers the
@@ -104,8 +106,14 @@ func (r *fakeResident) status() map[string]any {
 			"memory_free": float64(6 << 30), "memory_total": float64(12 << 30)}
 	}
 	prov := map[string]any{"provider": r.provider, "model_revision": "rev1", "load_ms": r.loadMS, "warmup_ms": r.warmupMS, "device": "cuda"}
+	if r.device != "" {
+		prov["device"] = r.device
+	}
 	if r.dtype != "" {
 		prov["dtype"] = r.dtype
+	}
+	for k, v := range r.provExtra {
+		prov[k] = v
 	}
 	return map[string]any{
 		"schema":    api.SchemaV1,

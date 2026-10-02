@@ -20,6 +20,9 @@ client CLI / any HTTP caller
 | command | plane | purpose |
 |---|---|---|
 | `hachidori setup [--home H] [--device cuda\|cpu] [--model ID]` | host | reconcile `HACHIDORI_HOME` with the Runtime Spec: private uv materializes the locked Python environment, the selected catalog model (default `laya-base`) is materialized separately, then activate |
+| `hachidori activate [--home H] [--device cuda\|cpu] [--model ID] [--variant ID [--experimental]]` | host, offline | make an already materialized catalog model, or for a System One model one of its variants, active; the same operation as Settings, Activate (see System One variants) |
+| `hachidori variant list\|show\|verify\|optimize\|remove\|recipes …` | host | derived System One variants: `optimize` builds one with a canonical recipe in the separate optimizer runtime; the rest inspect, verify and remove (see System One variants) |
+| `hachidori certify run\|evaluate\|show …` | client / host | record a resident run, certify a variant against its high-precision reference, inspect the certification (certification.md) |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843] [--resident ID]…` | host | run HTTP + one resident worker (plus one more worker process per `--resident` catalog model ID; see Multi-resident serving); non-loopback binds are refused |
 | `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh] [--resident ID]…` | host | `serve` plus the host-local dashboard (see below) |
 | `hachidori desktop [--home H] [--listen …] [--addr …] [--ssh ssh] [--background]` | host (Windows) | the same desktop composition as a no-argument `hachidori.exe`: first run/recovery or normal start in a resident WebView2 window with a tray icon (see below); fails with a clear error on other systems |
@@ -404,6 +407,25 @@ parsed or retried.
   state is truncated first so every option survives; Hachidori logs each
   truncation in the worker log and does not change the result shape), English
   evaluation only, roughly 2 GiB of runtime memory.
+
+- **Clef-Flash** (`clef-flash`, a System One model): a 9B Qwen3.5 post-train with
+  a joint schema head. The upstream `joint_schema_model.py` of the pinned release
+  encodes the state and the typed questions and returns one logit per allowed
+  option of every question in a single forward pass; the `clef` adapter in the
+  worker only maps Hachidori's choice questions onto it (options are scored by
+  the model's own sorted option order, softmax per question) and the
+  probabilities back. It loads the pinned release itself, text-only (the
+  multimodal processor and its extra dependencies are not needed or used), one
+  record per forward pass so a result never depends on batch composition, and
+  runs on the CPU in `bfloat16` (what the release ships) or, with
+  `HACHIDORI_CLEF_DTYPE=float32`, in `float32` as the high-precision reference. The
+  device is explicit: CUDA is never silently replaced by the CPU. A 9B model in
+  `bfloat16` does not fit an RTX 3060; the reference path is the CPU and may be
+  slow, and the CUDA path is for a variant (below). Without the optional
+  `flash-linear-attention` and `causal-conv1d` kernels (not installed by
+  Hachidori) transformers runs the gated delta rule and the causal convolution
+  of the Qwen3.5 backbone through its reference PyTorch implementation: correct,
+  and slower. Nothing is generated, parsed or retried.
 
 Which model is the default is decided by recorded evidence, not by size or
 upstream claims; see "Decision-model comparison" in `certification.md`.
@@ -902,6 +924,7 @@ required file with its SHA-256.
 |---|---|---|
 | `laya-base` (default) | `laya` | `convaiinnovations/laya@55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`, the upstream English ModernBERT-large checkpoint |
 | `opendecider-nano` (candidate) | `opendecider` | `manjunathshiva/opendecider-nano@7e42a1508d2beef44717d044831e87f2fc4db9f2`, Apache-2.0, Ettin-encoder-400m + MLP head (7 files, about 0.8 GB) |
+| `clef-flash` (System One) | `clef` | `Cloudflare/clef-flash@17f0b0ad64efb65d273590632833508766b2aae6`, Apache-2.0, Qwen3.5-9B backbone + joint schema head (15 files, about 19 GB: four BF16 safetensors shards, `joint_head.safetensors`, the tokenizer files and the upstream `joint_schema_model.py`; `README.md` is documentation and is not pinned) |
 
 `hachidori setup --model <id>` selects one; omitting `--model` selects
 `laya-base`. Only catalog IDs are accepted (an unknown ID fails before anything
@@ -933,6 +956,169 @@ package indexes.
 Updating the environment: edit `runtimespec/pyproject.toml`, run
 `uv lock --directory internal/setup/runtimespec` with the pinned uv version,
 commit both files. Setup runs `uv sync --locked`, which refuses a stale lock.
+
+### System One variants (model forge)
+
+A System One model (today `clef-flash`) has a second kind of artifact next to
+the model itself: a **variant**, a derived, immutable execution artifact of that
+one model at another weight precision. The two identities are kept apart:
+
+| concept | identity | lives in |
+|---|---|---|
+| **source model** | catalog ID, provider, upstream repository, immutable revision, pinned files | `models/<owner>--<repo>/<revision>/` (never modified by anything below) |
+| **variant** | variant ID, linked to exactly one source by repository, revision and the digest of the source's pinned files | `variants/<model ID>/<variant ID>/` |
+| **certification** | evidence about one exact reference run and one exact variant | `state/certifications/<variant ID>/` (certification.md) |
+| **activation** | the source model plus, optionally, one variant | `state/active-runtime.json` (`variant`, absent for the source artifact) |
+
+The semantic model stays `clef-flash` everywhere: routing, direct selection,
+`served.model` and the resident set see the catalog ID, and the variant is
+execution provenance (`runtime.variant` and `worker.provider.variant_id` in
+`/v1/status`). Quantization never mutates or impersonates the upstream model, and
+a variant is never a new routing identity.
+
+**Variant manifest** (`hachidori-variant.json`, schema `hachidori.variant/1`,
+`internal/home/variant.go`) is written last, when the staged artifact is
+complete and verified; its presence marks a complete variant. It records the
+source identity, provider, optimizer engine and version (and the optimizer
+runtime and library versions that ran), the canonical recipe and its digest, the
+calibration corpus identity when one was used (none for a data-free recipe), the
+weight precision (`W4A16`, 4 bit, group size 128, symmetric, serialization
+format, compute dtype), the modules intentionally preserved at higher precision,
+the SHA-256 of every artifact file, creation provenance (time, platform, the
+command that reproduces it) and a certification *link* (`pending`, and where the
+records are kept). Certification results are never embedded in it. Identity is
+derived, not chosen: `build_id` hashes source, provider, engine, engine version,
+recipe and calibration; the variant ID is
+`<model>--<recipe name>--<12 hex of build_id and every artifact digest>`, so it
+changes when any of them or any artifact byte changes. Creation time, platform
+and the optimizer runtime are provenance and not identity. A manifest whose
+derived fields do not recompute (edited, truncated, hand-assembled) is rejected.
+
+**Canonical recipe** `clef-flash-w4a16-rtn-g128` (`internal/optimize/recipe.go`,
+chosen by name; there is no free-form recipe or repository input): LLM
+Compressor (`llmcompressor==0.14.0`, `compressed-tensors==0.19.0`), data-free
+weight-only 4-bit round-to-nearest, `pack-quantized`, on the `Linear` modules of
+the backbone. What it preserves is derived from the pinned release's module graph
+(its weight map and `joint_schema_model.py` at the pinned revision), not from
+expected names:
+
+| preserved | why |
+|---|---|
+| `lm_head` | `ClefModel` passes `get_output_embeddings().weight` to the joint head, which reads its rows as lexical option vectors: quantization error would enter the decision path directly |
+| `…linear_attn.in_proj_a`, `…linear_attn.in_proj_b` | the gated delta-rule decay and beta gate projections: 32 outputs each, negligible bytes, numerically sensitive recurrent state |
+| `model.visual.*` | the vision tower: unused by text-only typed decisions, kept at source precision rather than quantized without validation |
+| `joint_head.safetensors` | the decision-specific joint schema head is not part of the backbone checkpoint and is never quantized; carried byte for byte (with the tokenizer files, `joint_schema_model.py` and the other small files, so the variant loads without the source) |
+
+`embed_tokens` is not a `Linear` module and is untouched. A preserved pattern
+that matches no module of the loaded source, a saved config whose ignore list
+differs from the preserved modules, a preserved module written below its source
+precision, an output that is not a single symmetric int4 weight group, or a
+carried file that is not byte-identical to the source file is a refused build,
+never a recorded variant. The same checks run again in `variant verify` and at
+activation.
+
+**Optimizer runtime.** The compression stack never enters the serving runtime.
+`hachidori variant optimize` materializes a second, deterministic runtime under
+`runtime/` (`optimizer-cpu-<digest>`: role `optimizer`, its own pinned
+`internal/setup/optimizerspec/` uv project and lock, its own script
+`hachidori_optimizer.py`, the same private uv, staged, verified and atomically
+published like the serving runtime) and never reuses or changes the serving one.
+That materialization is the only network access of the optimization lifecycle;
+the optimizer process itself is isolated and offline and receives only the
+verified source directory, the recipe and an empty staging directory. The first
+recipe transforms on the CPU (the optimizer runtime is the CPU flavor).
+
+**Build, publication and failure.**
+
+```text
+verify the pinned source (every file) -> optimizer runtime -> staging -> run the
+optimizer (load, resolve modules, quantize, serialize, verify output) -> digest
+every output file -> check scheme, preserved modules and carried files -> write
+the manifest last -> atomic rename into variants/<model>/<id>
+```
+
+A failed, cancelled or killed build removes its staging directory and leaves
+nothing selectable: a staging directory is never listed, resolved or reused, and
+a variant exists only once its manifest has been published. Repeating the same
+source, recipe and engine contract finds the existing variant and builds nothing;
+`--reproduce` rebuilds and compares: identical bytes report `reproduced`, any
+difference is an error naming the files (`MismatchError`), nothing is published
+and the artifact bytes remain part of the identity. Progress is the operation
+progress model: `accepted`, then the phases `model` (source verification),
+`preparing`/`runtime` (optimizer runtime, when it has to be materialized),
+`starting`, `loading_source`, `resolving`, `quantizing`, `serializing`,
+`verifying` and `publish`, then `completed` or `failed` with the phase and step.
+The optimizer's own steps are indeterminate (no total exists, so no percentage is
+shown); byte progress with a percentage exists only while artifacts are being
+hashed.
+
+**Execution.** A variant is served by the same `clef` adapter from the variant's
+own directory. The worker verifies every artifact digest of the variant before
+anything is imported or loaded (the upstream module is executed only after its
+digest matches), loads the packed `int4` weights, and runs each packed `Linear` by
+expanding its weight for that one call only (the dequantization
+compressed-tensors itself applies; verified bit-exact against its decompression).
+transformers' own route would expand the whole model to the dense dtype on the
+first forward pass, which is exactly what must not happen on a 12 GB card, so that
+hook is removed. Everything else (embeddings, preserved modules, the joint head)
+stays in `bfloat16`. The variant executes at the dtype its manifest declares;
+`HACHIDORI_CLEF_DTYPE` is refused for a variant. `/v1/status` reports the actual
+facts from the worker: `provider.device`, `provider.dtype`,
+`provider.variant_id`, `provider.quantization_scheme`,
+`provider.quantized_execution`, `provider.weights_quantized_modules` and
+`provider.host_rss_bytes`, and from the activation `runtime.variant` (id, recipe,
+scheme, bits, engine and version, manifest digest, source identity, and the
+certification the activation was admitted under).
+
+**Activation.** `ActivateTarget` (Settings, Activate, and `hachidori activate`)
+validates, before the activation record changes: the variant manifest and its
+derived identity, its link to exactly this catalog model, the digest of every
+artifact (and that nothing else is in the directory), the preserved-module
+metadata, that the runtime carries the provider, and the certification state.
+Default policy: a variant is activated only with an **accepted** certification
+record tied to its exact manifest, source and run identities, which is
+re-verified, not trusted (certification.md). `--experimental` (Settings: *Activate
+as experimental*) is the only exception: opt-in, never default, only for a
+variant with no record at all (a rejecting record is never activated), written to
+the activation record as `experimental` and reported as `experimental/uncertified`
+in status and Settings; activating anything again without it clears the mark.
+A failed activation leaves the record as it was. At every launch the same
+manifest, source, provider and certification checks run again; a variant that
+cannot be launched fails the launch and the source is never started in its place
+(no variant to source fallback), CUDA is never replaced by the CPU, and a
+requested resident is never answered by another. A variant applies to the
+active model; additional residents run their source artifacts. Changing the
+active variant is an activation change, applied by an explicit restart like any
+other: the restart rebinds the resident set exactly as a change of the active
+model does today, and Hachidori does not hot-swap one resident. Direct selection
+(`model` in a decide request) is unchanged and strict, and never starts,
+restarts or reloads any resident.
+
+**Desktop.** Settings, Models & runtimes lists the variants beside the models:
+recipe, precision, number of preserved modules, certification state, source
+materialized or not, selected/pending/running, the optimizer runtime, and the
+actions Verify, Activate, Activate as experimental, Remove, Optimize and Certify,
+all projections of the setup inventory and the application controller; operation
+progress (optimize, certify, variant activate) uses the same panel, plan and
+failure evidence as the other maintenance actions. The Runtime page states the
+variant that executes.
+
+Operator workflow (physical evidence is collected with it; certification.md has
+the full procedure and the NOT_CHECKED record):
+
+```powershell
+hachidori setup --device cpu --model clef-flash          # materialize the pinned source (about 19 GB); network only here
+hachidori variant optimize --model clef-flash            # build the W4A16 variant (materializes the optimizer runtime first)
+hachidori variant list                                   # id, recipe, precision, certification
+hachidori variant verify <variant-id>                    # offline integrity + preserved-module check
+# certification: certification.md "System One variant certification"
+hachidori certify show <variant-id>
+hachidori setup --device cuda --model clef-flash         # CUDA runtime beside the CPU one, same source
+hachidori activate --device cuda --model clef-flash --variant <variant-id>
+hachidori serve                                          # restart applies the activation
+hachidori status                                         # runtime.variant, provider.device/dtype/quantized_execution
+hachidori decide request.json
+```
 
 ### Models and runtimes manager
 
@@ -1104,9 +1290,14 @@ HACHIDORI_HOME/
   models/<owner>--<repo>/<revision>/   one per materialized catalog model
     model.safetensors …        every file sha256 pinned
     hachidori-model.json       the catalog entry (id, provider, repo, revision, files)
+  runtime/optimizer-cpu-<digest>/   the optimizer runtime (same layout, worker/hachidori_optimizer.py; never serves)
+  variants/<model ID>/<variant ID>/   one per variant: the quantized artifact files, optimizer report and
+                               hachidori-variant.json (written last); beside, never inside, models/
+  variants/<model ID>/.staging-<build>/   an in-progress build, never listed or selectable
   cache/{uv,huggingface,torch,pip,xdg,nv,tmp,home}
   logs/worker.log, logs/doctor-worker.log
-  state/active-runtime.json
+  state/active-runtime.json    runtime, model_id, model, device and, optionally, variant (+ experimental)
+  state/certifications/<variant ID>/   certification reports and the records that bind them to the variant
   state/dashboard.json         last tunnel form values (non-secret), dashboard only
   state/updates/               explicit update downloads only: <tag>/ staged executable, ready.json,
                                result.json, helper/ (Windows desktop; see Updates)
@@ -1125,7 +1316,8 @@ on Linux (host GPU driver location, e.g. NixOS `/run/opengl-driver/lib`).
 
 Pins: uv 0.12.19 (linux-amd64, windows-amd64; `internal/setup/spec.go`),
 CPython 3.12.11, `torch==2.11.0+cu128` (NVIDIA driver ≥ 570, RTX 20xx–50xx) or
-`torch==2.11.0+cpu`, `laya==0.3.21`, `opendecider==0.3.0`, `transformers==5.17.0`
+`torch==2.11.0+cpu`, `laya==0.3.21`, `opendecider==0.3.0`, `transformers==5.17.0`,
+`accelerate==1.15.0`, `compressed-tensors==0.19.0` (loading System One models and variants)
 and the full locked package set (`internal/setup/runtimespec/uv.lock`), default model `laya-base` =
 `convaiinnovations/laya@55cf4c4e…` (Laya's own reviewed revision).
 

@@ -4,8 +4,9 @@ Internal implementation detail of the Hachidori runtime. It is started by the Go
 supervisor with an explicitly constructed environment and speaks newline-delimited
 JSON over stdin/stdout. It never opens a network listener.
 
-One provider adapter serves the single active model: Laya or OpenDecider-nano.
-Both score the request's closed choices and return a probability distribution;
+One provider adapter serves the single active model: Laya, OpenDecider-nano or a
+Clef System One model (the pinned upstream release, or a Hachidori-built variant of it).
+All of them score the request's closed choices and return a probability distribution;
 nothing generates free-form text. Provider-specific input construction and result
 shapes stay inside the adapters; the protocol below them is the same.
 
@@ -100,12 +101,14 @@ class Provider:
 
     name = ""
 
-    def __init__(self, model_dir, device, manifest, dtype=None):
+    def __init__(self, model_dir, device, manifest, dtype=None, variant_dir=None, variant=None):
         self.model_dir = model_dir
         self.requested = device
         self.dtype = dtype
         self.manifest = manifest
         self.digests = manifest["files"]
+        self.variant_dir = variant_dir
+        self.variant = variant
         self.torch = None
 
     # -- adapter hooks -------------------------------------------------------
@@ -219,6 +222,10 @@ class Provider:
             "hf_home": os.environ.get("HF_HOME", ""),
         }
         info.update(self.extra_info())
+        if self.variant:
+            # The semantic model stays model_id; the variant is what actually executes.
+            info["variant_id"] = self.variant["id"]
+            info["variant_dir"] = self.variant_dir
         if self.requested == "cuda":
             idx = device.index or 0
             info["device_name"] = torch.cuda.get_device_name(idx)
@@ -226,16 +233,24 @@ class Provider:
         return info
 
     def stats(self):
+        out = {}
+        # Host RAM of this worker process, only when it can actually be read.
+        try:
+            import psutil
+            out["host_rss_bytes"] = int(psutil.Process().memory_info().rss)
+        except Exception:  # noqa: BLE001 - absent or unreadable is simply not reported
+            pass
         if self.requested != "cuda":
-            return {}
+            return out
         torch = self.torch
         free, total = torch.cuda.mem_get_info()
-        return {
+        out.update({
             "memory_allocated": torch.cuda.memory_allocated(),
             "memory_reserved": torch.cuda.memory_reserved(),
             "memory_free": free,
             "memory_total": total,
-        }
+        })
+        return out
 
 
 class LayaProvider(Provider):
@@ -341,7 +356,175 @@ class OpenDeciderProvider(Provider):
         return {"opendecider_version": self.opendecider.__version__}
 
 
-PROVIDERS = {"laya": LayaProvider, "opendecider": OpenDeciderProvider}
+# Upper bound on the tokens of one System One record, the upstream default. A schema
+# that does not fit is a request error; the state alone is truncated by the upstream
+# encoder, which the adapter reports.
+CLEF_MAX_LENGTH = 16384
+
+# The precisions the Clef adapter can be asked for on the source model. bfloat16 is
+# what the release ships and stays the default; float32 is the explicit
+# high-precision reference. A variant executes at the precision it declares.
+CLEF_DTYPES = ("float32", "bfloat16")
+
+
+def packed_forward(self, x):
+    """Linear forward of a module that holds its weight as compressed-tensors
+    pack-quantized int4 (weight_packed, weight_scale): the weight is expanded for this
+    one call only, so the module stays at four bits in memory. This is exactly the
+    dequantization compressed-tensors itself applies (pack_quantized, symmetric, group
+    quantization), without ever materializing the dense model."""
+    out, inner, bits, group = self._hachidori_packed
+    q = self._unpack(self.weight_packed, bits, self.torch_Size((out, inner)))
+    w = (q.to(x.dtype).view(out, inner // group, group) * self.weight_scale.to(x.dtype).unsqueeze(-1)).view(out, inner)
+    return self.torch_linear(x, w, self.bias)
+
+
+class ClefProvider(Provider):
+    """Clef System One (a Qwen3.5 backbone with the joint schema head). The upstream
+    module joint_schema_model.py, imported from the digest-verified model directory,
+    encodes the state and the typed choice questions and returns one logit per allowed
+    option of every question in a single forward pass; this adapter only maps
+    Hachidori's choice questions onto it and the softmaxed logits back. Nothing is
+    generated, parsed or retried.
+
+    The model is either the pinned upstream release (model_dir) or a Hachidori variant
+    of it (variant_dir): a quantized backbone with the joint head and tokenizer carried
+    over unchanged. The variant is loaded from its own directory only; it never falls
+    back to the source."""
+
+    name = "clef"
+
+    def import_provider(self):
+        import safetensors.torch
+        import transformers
+        self.safetensors_torch = safetensors.torch
+        self.transformers = transformers
+
+    @property
+    def path(self):
+        return self.variant_dir or self.model_dir
+
+    def verify_files(self):
+        # Every pinned file is checked against its digest before any of it is loaded;
+        # in particular before joint_schema_model.py is imported and executed.
+        files = self.variant["files"] if self.variant else self.digests
+        for rel, want in sorted(files.items()):
+            got = file_sha256(os.path.join(self.path, *rel.split("/")))
+            if got != want:
+                raise RuntimeError("%s: sha256 %s, want %s" % (rel, got, want))
+
+    def load(self):
+        torch = self.torch
+        self.verify_files()
+        if self.variant:
+            declared = self.variant["weights"]["dtype"]
+            if self.dtype not in (None, declared):
+                raise RuntimeError("variant %s executes at %s; %s was requested"
+                                   % (self.variant["id"], declared, self.dtype))
+            want = declared
+        else:
+            want = self.dtype or "bfloat16"
+        self.want_dtype = want
+        sys.path.insert(0, self.path)
+        import joint_schema_model
+        self.jsm = joint_schema_model
+        dtype = getattr(torch, want)
+        # The same composition as upstream load_release_model, without the multimodal
+        # processor: typed decisions are text-only, and the tokenizer is all they use.
+        backbone = self.transformers.Qwen3_5ForConditionalGeneration.from_pretrained(
+            self.path, dtype=dtype, device_map={"": self.requested})
+        backbone.config.use_cache = False
+        self.quantized = 0
+        if self.variant:
+            self.install_packed_linears(backbone)
+        with open(os.path.join(self.path, "joint_head_config.json"), encoding="utf-8") as f:
+            head_config = json.load(f)
+        head = joint_schema_model.JointSchemaHead(**head_config)
+        head.load_state_dict(self.safetensors_torch.load_file(os.path.join(self.path, "joint_head.safetensors")), strict=True)
+        head = head.to(device=self.requested, dtype=dtype)
+        self.tokenizer = self.transformers.AutoTokenizer.from_pretrained(self.path)
+        self.model = joint_schema_model.ClefModel(backbone, head).eval()
+        self.backbone = backbone
+        # Nothing may sit on another device: no offload, no partial placement.
+        devices = {t.device.type for t in list(self.model.parameters()) + list(self.model.buffers())}
+        if devices != {self.requested}:
+            raise RuntimeError("model tensors on %s, requested only %s" % (sorted(devices), self.requested))
+        if self.variant and self.quantized == 0:
+            raise RuntimeError("variant %s loaded no quantized weights" % self.variant["id"])
+        if not self.variant and self.quantized:
+            raise RuntimeError("the source model loaded quantized weights")
+
+    def install_packed_linears(self, backbone):
+        """Run every packed Linear at four bits. transformers would expand the whole
+        model to the dense dtype on its first forward pass (a hook on the root model);
+        that is removed, and each packed module dequantizes its own weight per call."""
+        import types
+        from compressed_tensors.compressors.pack_quantized.helpers import unpack_from_int32
+        torch = self.torch
+        weights = self.variant["weights"]
+        if weights["bits"] != 4 or not weights["symmetric"] or weights["format"] != "compressed-tensors/pack-quantized":
+            raise RuntimeError("unsupported variant weights %s" % json.dumps(weights, sort_keys=True))
+        hook = getattr(backbone, "ct_decompress_hook", None)
+        if hook is not None:
+            hook.remove()
+            del backbone.ct_decompress_hook
+        for _, module in backbone.named_modules():
+            if not hasattr(module, "weight_packed"):
+                continue
+            out, inner = (int(v) for v in module.weight_shape.tolist())
+            if inner % weights["group_size"] != 0:
+                raise RuntimeError("packed module width %d is not a multiple of group size %d" % (inner, weights["group_size"]))
+            module._hachidori_packed = (out, inner, weights["bits"], weights["group_size"])
+            module._unpack = unpack_from_int32
+            module.torch_Size = torch.Size
+            module.torch_linear = torch.nn.functional.linear
+            module.forward = types.MethodType(packed_forward, module)
+            self.quantized += 1
+
+    def reference(self):
+        return self.model.head.hidden_norm.weight
+
+    def placed_device(self):
+        return self.reference().device
+
+    def placed_dtype(self):
+        return self.reference().dtype
+
+    def predict(self, states, questions):
+        torch = self.torch
+        out = []
+        for state in states:
+            record = {"state": state, "questions": questions}
+            encoded = self.jsm.encode_record(self.tokenizer, record, max_length=CLEF_MAX_LENGTH)
+            if len(encoded.input_ids) >= CLEF_MAX_LENGTH:
+                log("state truncated to the model's %d-token context" % CLEF_MAX_LENGTH)
+            batch = self.jsm.collate_records([encoded], self.tokenizer.pad_token_id, self.reference().device)
+            with torch.inference_mode():
+                logits = self.model(batch)[0]
+            answers = {}
+            for question, qlogits in zip(encoded.questions, logits):
+                probs = qlogits.float().softmax(-1).tolist()
+                by_option = dict(zip(question.option_ids, probs))
+                choice = max(question.option_ids, key=by_option.__getitem__)
+                answers[question.question_id] = {"choice": choice, "answer_confidence": by_option[choice],
+                                                 "probabilities": by_option}
+            out.append({"answers": answers})
+        return out
+
+    def version(self):
+        return "clef/" + self.transformers.__version__
+
+    def extra_info(self):
+        info = {"transformers_version": self.transformers.__version__, "weights_quantized_modules": self.quantized,
+                "execution": "variant" if self.variant else "source"}
+        if self.variant:
+            weights = self.variant["weights"]
+            info["quantization_scheme"] = weights["scheme"]
+            info["quantized_execution"] = "%s %s weights, %s compute" % (weights["format"], weights["scheme"], self.want_dtype)
+        return info
+
+
+PROVIDERS = {"laya": LayaProvider, "opendecider": OpenDeciderProvider, "clef": ClefProvider}
 
 
 def serve(provider):
@@ -387,14 +570,25 @@ def main():
     ap.add_argument("--device", required=True, choices=["cuda", "cpu"])
     ap.add_argument("--manifest", required=True, help="model manifest with pinned file digests")
     ap.add_argument("--provider", required=True, choices=sorted(PROVIDERS), help="provider that loads the model")
-    ap.add_argument("--dtype", choices=OPENDECIDER_DTYPES, help="opendecider only: inference dtype (default float32)")
+    ap.add_argument("--dtype", choices=sorted(set(OPENDECIDER_DTYPES + CLEF_DTYPES)),
+                    help="opendecider: inference dtype (default float32); clef: bfloat16 (default) or float32 on the source model")
+    ap.add_argument("--variant-dir", help="clef only: execute this Hachidori variant of the model instead of the source")
+    ap.add_argument("--variant-manifest", help="clef only: the variant manifest (hachidori.variant/1) of --variant-dir")
     args = ap.parse_args()
-    if args.dtype and args.provider != "opendecider":
-        ap.error("--dtype is only supported by the opendecider provider")
+    if args.dtype and args.provider not in ("opendecider", "clef"):
+        ap.error("--dtype is only supported by the opendecider and clef providers")
+    if bool(args.variant_dir) != bool(args.variant_manifest):
+        ap.error("--variant-dir and --variant-manifest go together")
+    if args.variant_dir and args.provider != "clef":
+        ap.error("variants are only supported by the clef provider")
     emit({"event": "hello", "protocol": PROTOCOL, "pid": os.getpid()})
     with open(args.manifest, encoding="utf-8") as f:
         manifest = json.load(f)
-    provider = PROVIDERS[args.provider](args.model_dir, args.device, manifest, args.dtype)
+    variant = None
+    if args.variant_manifest:
+        with open(args.variant_manifest, encoding="utf-8") as f:
+            variant = json.load(f)
+    provider = PROVIDERS[args.provider](args.model_dir, args.device, manifest, args.dtype, args.variant_dir, variant)
     provider.initialize()
     provider.warmup()
     emit({"event": "ready", "info": provider.info()})

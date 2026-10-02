@@ -339,7 +339,24 @@ func schemas() obj {
 			"model_id": str("Catalog model identity."),
 			"model":    str("Model directory: <repo>/<revision>."),
 			"device":   str("Requested device."),
+			"variant":  ref("Variant"),
 		}, "home", "runtime", "model_id", "model", "device"),
+
+		"Variant": object("The derived variant the resident executes instead of the upstream source artifact. model_id stays the semantic source model; this is execution provenance. Absent for the source artifact. The device and dtype actually in use are in worker.provider.", obj{
+			"id":              str("Variant identity."),
+			"recipe":          str("Canonical recipe name."),
+			"scheme":          str("Weight quantization scheme, for example W4A16."),
+			"bits":            obj{"type": "integer", "description": "Weight bits."},
+			"dtype":           str("Compute dtype of everything that is not quantized."),
+			"format":          str("Serialization format of the quantized weights."),
+			"engine":          str("Optimizer backend that built the variant."),
+			"engine_version":  str("Pinned version of that backend."),
+			"manifest_sha256": str("Digest of the variant manifest."),
+			"certification":   obj{"type": "string", "enum": []string{"accepted", "experimental/uncertified"}, "description": "Certification the activation was admitted under."},
+			"source": object("The immutable source model identity of the variant.", obj{
+				"id": str("Catalog model identity."), "provider": str("Provider kind."), "repo": str("Upstream repository."), "revision": str("Immutable upstream revision."),
+			}, "id", "provider", "repo", "revision"),
+		}, "id", "recipe", "scheme", "bits", "dtype", "format", "engine", "engine_version", "manifest_sha256", "certification", "source"),
 
 		"Worker": object("Supervised worker snapshot.", obj{
 			"state":              obj{"type": "string", "enum": workerStates(), "description": "Worker lifecycle state."},

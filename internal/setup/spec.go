@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/home"
+	optpy "github.com/yohn-jp/hachidori/internal/optimize/py"
 	"github.com/yohn-jp/hachidori/internal/worker/py"
 )
 
@@ -38,11 +39,103 @@ const (
 
 	layaVersion        = "0.3.21"
 	openDeciderVersion = "0.3.0"
+
+	// The Clef System One provider is carried by the model, not by a package:
+	// the upstream joint_schema_model.py of the digest-pinned release is
+	// imported from the model directory by the worker's clef adapter, on top
+	// of the runtime's transformers. Its pin is the adapter contract version;
+	// the adapter itself is part of the worker script, whose digest is part of
+	// the runtime identity, and the distributions it needs are verified
+	// explicitly (clefDistributions).
+	providerClef       = home.ProviderClef
+	clefAdapterVersion = "1"
 )
 
 // providerPins is RuntimeSpec.Provider: the pinned providers as
 // name==version, comma separated.
-const providerPins = providerLaya + "==" + layaVersion + "," + providerOpenDecider + "==" + openDeciderVersion
+const providerPins = providerLaya + "==" + layaVersion + "," + providerOpenDecider + "==" + openDeciderVersion + "," + providerClef + "==" + clefAdapterVersion
+
+// clefDistributions are the packages the clef adapter loads a release with,
+// besides torch. They are pinned in runtimespec/ and verified in every
+// materialized runtime that declares the clef provider.
+var clefDistributions = []string{"transformers==5.17.0", "safetensors==0.8.0", "tokenizers==0.23.2", "accelerate==1.15.0", "compressed-tensors==0.19.0"}
+
+// carriedProviders are the providers a runtime declares without a package of
+// their own.
+var carriedProviders = map[string]bool{providerClef: true}
+
+// The optimizer runtime: the bounded environment that builds System One
+// variants. It is separate from the serving runtime so that the compression
+// stack never enters it. Its packages are pinned in optimizerspec/.
+const (
+	optimizerEngine = "llmcompressor"
+
+	llmCompressorVersion   = "0.14.0"
+	compressedTensorsPin   = "0.19.0"
+	optimizerProviderPins  = optimizerEngine + "==" + llmCompressorVersion + ",compressed-tensors==" + compressedTensorsPin
+	optimizerDeviceFlavour = "cpu"
+)
+
+//go:embed optimizerspec/pyproject.toml optimizerspec/uv.lock
+var optimizerSpecFS embed.FS
+
+// runtimeKind selects the embedded uv project and private script a Runtime
+// Spec is materialized from: the serving runtime or the optimizer runtime.
+type runtimeKind struct {
+	file      func(name string) []byte
+	script    []byte
+	scriptRel string // slash separated, relative to the runtime directory
+}
+
+func kindOf(spec home.RuntimeSpec) runtimeKind {
+	if spec.Role == home.RoleOptimizer {
+		return runtimeKind{
+			file: func(name string) []byte {
+				b, err := optimizerSpecFS.ReadFile("optimizerspec/" + name)
+				if err != nil {
+					panic(err)
+				}
+				return b
+			},
+			script: optpy.Script, scriptRel: "worker/hachidori_optimizer.py",
+		}
+	}
+	return runtimeKind{file: specFile, script: py.Script, scriptRel: "worker/hachidori_worker.py"}
+}
+
+// DesiredOptimizer is the Runtime Spec of the optimizer runtime on the
+// current platform. The optimizer's first recipe transforms on the CPU, so
+// the runtime is always the CPU flavor.
+func DesiredOptimizer() (home.RuntimeSpec, error) { return desiredOptimizerFor(platform()) }
+
+func desiredOptimizerFor(plat string) (home.RuntimeSpec, error) {
+	uv, err := uvFor(plat)
+	if err != nil {
+		return home.RuntimeSpec{}, err
+	}
+	k := kindOf(home.RuntimeSpec{Role: home.RoleOptimizer})
+	return home.RuntimeSpec{
+		Schema:   SpecSchema,
+		Role:     home.RoleOptimizer,
+		Platform: plat,
+		Python:   pythonVersion,
+		Provider: optimizerProviderPins,
+		Torch:    torchVersion + "+" + optimizerDeviceFlavour,
+		Flavor:   optimizerDeviceFlavour,
+		UV:       uvVersion,
+		UVSHA256: uv.BinarySHA256,
+		Project:  digest(k.file("pyproject.toml")),
+		Lock:     digest(k.file("uv.lock")),
+		Worker:   digest(k.script),
+	}, nil
+}
+
+// OptimizerEngine is the optimizer backend and OptimizerEngineVersion its
+// pinned version: recorded in every variant it builds.
+const (
+	OptimizerEngine        = optimizerEngine
+	OptimizerEngineVersion = llmCompressorVersion
+)
 
 // flavors maps a device to the uv extra (and torch local version) that
 // selects the PyTorch build in runtimespec/pyproject.toml.
@@ -188,6 +281,10 @@ const ProviderOpenDecider = providerOpenDecider
 // OpenDeciderNano is the catalog ID of the OpenDecider-nano candidate model.
 const OpenDeciderNano = "opendecider-nano"
 
+// ClefFlash is the catalog ID of Clef-Flash, the first System One model with
+// derived execution variants.
+const ClefFlash = "clef-flash"
+
 // Models is the decision-model catalog: every checkpoint Hachidori can
 // materialize, each an immutable identity (upstream repository, revision and
 // the exact files with their pinned digests). A model is materialized
@@ -231,6 +328,39 @@ var Models = []home.ModelManifest{
 			"opendecider.json":      "ec0f4e9caa4cd95e2f30ab0e849cf62ce197ce0dcd3bf5fb1eb3eb12f7b480ba",
 			"tokenizer.json":        "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
 			"tokenizer_config.json": "5926e6ec4294f80294bd98d9176defa9fbae7f140525d06a1da987488e74a973",
+		},
+	},
+	{
+		// Clef-Flash (Apache-2.0): a 9B multimodal System One model, a Qwen3.5-9B
+		// post-train with a joint schema head that returns one logit per allowed
+		// option of every question in a single forward pass. Its typed-decision
+		// use is text-only and never generates text. The revision is the upstream
+		// commit these digests were taken from; the safetensors digests are the
+		// Hub's LFS digests for that revision, the others were computed from the
+		// files at it. joint_schema_model.py is upstream code that the clef
+		// adapter imports from the model directory, only after its digest has
+		// been verified. README.md is documentation and is not pinned.
+		ID:          ClefFlash,
+		Provider:    providerClef,
+		Repo:        "Cloudflare/clef-flash",
+		Revision:    "17f0b0ad64efb65d273590632833508766b2aae6",
+		Description: "Clef-Flash System One model (Qwen3.5-9B backbone + joint schema head, Apache-2.0)",
+		Files: map[string]string{
+			"LICENSE":                          "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+			"chat_template.jinja":              "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+			"config.json":                      "66f87f6fb2616b46604daf2a9c67ddc87938296d07156efa34d59b5be49e3238",
+			"generation_config.json":           "45707f8467bf4e54e112c6095a1b2d1f2d63651cf86816344cfff21f02dda0d4",
+			"joint_head.safetensors":           "19cdcec8c81dc9212be320fff47462ab342fbc1278be4368fb3da71241cf5ba0",
+			"joint_head_config.json":           "77efe959a38b5b17b241543e129e695f3c77465ece55a25985279bd8176279a0",
+			"joint_schema_model.py":            "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3",
+			"model-00001-of-00004.safetensors": "8b45a8e968141cdcc58fb71c9adfc258e2c77b5f062bc636c1fd5bc5d916b565",
+			"model-00002-of-00004.safetensors": "7590856c713eed844a2dcf48e6c43c4de165b788bc3f80e328311183cdbc7db8",
+			"model-00003-of-00004.safetensors": "e6eac2467952c33361ed7dcb3c7959d1086bbe57201cd3749c3d769fdc17fe63",
+			"model-00004-of-00004.safetensors": "9fcecc6556b39171238373a465f409794b7f821fb4cd1e6459e3a9c0fe317af7",
+			"model.safetensors.index.json":     "941305ff9f77551e145a6cea976ef456cd5cb208cbece99f168376c752fcf96c",
+			"processor_config.json":            "d89ef49ce9cd37fbf510158e13c1ef063d9286411c1ec9049932dbe0487143b1",
+			"tokenizer.json":                   "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+			"tokenizer_config.json":            "91a08f825d370d085d692e04cf117cdd7faad7bf18e996f1e6031b6dab03db72",
 		},
 	},
 }

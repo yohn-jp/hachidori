@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/worker"
@@ -24,6 +26,9 @@ const (
 	OpActivate    = "activate"
 	OpVerify      = "verify"
 	OpRemove      = "remove"
+	// The System One model forge: building a variant and certifying it.
+	OpOptimize = "optimize"
+	OpCertify  = "certify"
 )
 
 // Rejections of the maintenance actions.
@@ -76,6 +81,23 @@ type Maintenance struct {
 	Activate    func(root, device, model string, log io.Writer, obs *setup.Observer) (changed bool, err error)
 	Verify      func(root, kind, id string, obs *setup.Observer) error
 	Remove      func(root, kind, id string, obs *setup.Observer) error
+	// ActivateVariant is Activate for a source model plus one of its variants.
+	ActivateVariant func(root, device, model, variant string, experimental bool, log io.Writer, obs *setup.Observer) (changed bool, err error)
+	// Optimize builds a variant of a catalog model with a canonical recipe.
+	Optimize func(ctx context.Context, root, model, recipe string, log io.Writer, obs *setup.Observer) error
+	// Certify compares a reference run and a variant run and records the
+	// certification.
+	Certify func(root string, p CertifyParams, log io.Writer, obs *setup.Observer) error
+}
+
+// CertifyParams are the explicit inputs of a certification: the variant, the
+// two resident run files and, optionally, a policy file (the built-in profile
+// when empty). Paths are read, never written.
+type CertifyParams struct {
+	Variant   string
+	Reference string
+	Candidate string
+	Policy    string
 }
 
 func (m Maintenance) withDefaults() Maintenance {
@@ -106,6 +128,20 @@ func (m Maintenance) withDefaults() Maintenance {
 		m.Remove = func(root, kind, id string, obs *setup.Observer) error {
 			return setup.Remove(home.Home{Root: root}, kind, id, obs)
 		}
+	}
+	if m.ActivateVariant == nil {
+		m.ActivateVariant = func(root, device, model, variant string, experimental bool, log io.Writer, obs *setup.Observer) (bool, error) {
+			return setup.ActivateTarget(home.Home{Root: root}, device, model, setup.ActivateOptions{Variant: variant, AllowUncertified: experimental}, log, obs)
+		}
+	}
+	if m.Optimize == nil {
+		m.Optimize = func(ctx context.Context, root, model, recipe string, log io.Writer, obs *setup.Observer) error {
+			_, err := optimize.Build(ctx, home.Home{Root: root}, optimize.Request{Model: model, Recipe: recipe}, optimize.Deps{}, log, obs)
+			return err
+		}
+	}
+	if m.Certify == nil {
+		m.Certify = certify
 	}
 	return m
 }
@@ -586,12 +622,23 @@ func plan(kind, target string) []string {
 	case OpMaterialize, OpRepair:
 		return p(setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseModel, setup.PhasePublish)
 	case OpActivate:
+		if strings.HasPrefix(target, setup.KindVariant+" ") {
+			return p(setup.PhaseRuntime, setup.PhaseModel, setup.PhaseVariant, setup.PhaseActivation)
+		}
 		return p(setup.PhaseRuntime, setup.PhaseModel, setup.PhaseActivation)
 	case OpVerify, OpRemove:
-		if strings.HasPrefix(target, setup.KindRuntime+" ") {
+		switch {
+		case strings.HasPrefix(target, setup.KindRuntime+" "):
 			return p(setup.PhaseRuntime)
+		case strings.HasPrefix(target, setup.KindVariant+" "):
+			return p(setup.PhaseVariant)
 		}
 		return p(setup.PhaseModel)
+	case OpOptimize:
+		return p(setup.PhaseModel, setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseStarting, setup.PhaseLoadingSource,
+			setup.PhaseResolving, setup.PhaseQuantizing, setup.PhaseSerializing, setup.PhaseVerifying, setup.PhasePublish)
+	case OpCertify:
+		return p(setup.PhaseLoadingRuns, setup.PhaseComparing, setup.PhaseRecording)
 	}
 	return nil
 }
@@ -664,6 +711,95 @@ func (c *Controller) Activate(p SetupParams) error {
 		}})
 }
 
+// ActivateVariant explicitly makes the already materialized choice (device,
+// model) with one of its variants the active execution target. It is Activate
+// for a source plus a variant: it validates the variant's manifest, source
+// link, artifacts and certification before the activation record changes, never
+// falls back to the source, and never restarts the worker. experimental
+// requests the operator-only launch of a variant that has no certification
+// record; it is reported as experimental/uncertified and never implicit.
+func (c *Controller) ActivateVariant(p SetupParams, variant string, experimental bool) error {
+	if variant == "" {
+		return errors.New("activate variant: a variant ID is required")
+	}
+	changed := false
+	return c.async(p, action{kind: OpActivate, device: p.Device, model: p.Model, target: setup.KindVariant + " " + variant, needDevice: true,
+		run: func(root string, log io.Writer, obs *setup.Observer) (err error) {
+			changed, err = c.cfg.Maintenance.ActivateVariant(root, p.Device, p.Model, variant, experimental, log, obs)
+			return err
+		},
+		after: func(err error) {
+			if err != nil || !changed {
+				return
+			}
+			if c.rt != nil && c.rt.Running() {
+				c.pending = true
+				return
+			}
+			c.rt = nil
+		}})
+}
+
+// Optimize builds a variant of a catalog model with a canonical recipe in the
+// optimizer runtime. It reports the optimizer's real phases and never touches
+// the active runtime, the active model or the source: a failed or interrupted
+// build leaves nothing selectable. It may run beside a running worker.
+func (c *Controller) Optimize(model, recipe string) error {
+	return c.async(SetupParams{}, action{kind: OpOptimize, model: model, target: "recipe " + recipe,
+		run: func(root string, log io.Writer, obs *setup.Observer) error {
+			return c.cfg.Maintenance.Optimize(context.Background(), root, model, recipe, log, obs)
+		}})
+}
+
+// Certify compares a reference run and a candidate run of a variant and
+// records the certification, accepted or rejected, under the home. The
+// verdict is the policy's; a refusal (mismatched identities, unaligned
+// inputs) is a failed action.
+func (c *Controller) Certify(p CertifyParams) error {
+	return c.async(SetupParams{}, action{kind: OpCertify, target: setup.KindVariant + " " + p.Variant,
+		run: func(root string, log io.Writer, obs *setup.Observer) error {
+			return c.cfg.Maintenance.Certify(root, p, log, obs)
+		}})
+}
+
+// certify is the default Certify: the eval authority over the setup/home
+// authority's variant and source.
+func certify(root string, p CertifyParams, log io.Writer, obs *setup.Observer) error {
+	h := home.Home{Root: root}
+	obs.Phase(setup.PhaseLoadingRuns)
+	src, v, err := setup.FindVariant(h, p.Variant)
+	if err != nil {
+		return err
+	}
+	ref, err := eval.LoadResidentRun(p.Reference)
+	if err != nil {
+		return err
+	}
+	cand, err := eval.LoadResidentRun(p.Candidate)
+	if err != nil {
+		return err
+	}
+	policy := eval.DefaultPolicy()
+	if p.Policy != "" {
+		if policy, err = eval.LoadPolicy(p.Policy); err != nil {
+			return err
+		}
+	}
+	obs.Phase(setup.PhaseComparing)
+	cert, err := eval.Certify(eval.CertifyInput{Source: src, Variant: v, Reference: ref, Candidate: cand, Policy: policy})
+	if err != nil {
+		return err
+	}
+	obs.Phase(setup.PhaseRecording)
+	rec, err := eval.SaveCertification(h, cert)
+	if err != nil {
+		return err
+	}
+	eval.CertificationSummary(log, cert)
+	fmt.Fprintf(log, "certification recorded: %s verdict %s\n", rec.Report, rec.Verdict)
+	return nil
+}
+
 // Check is the outcome of the last explicit Verify of one artifact. It is
 // kept for as long as the controller lives, so it survives the binding of a
 // new runtime.
@@ -731,7 +867,7 @@ func (c *Controller) Inventory(verify bool) (setup.Inventory, error) {
 
 func isMaintenance(kind string) bool {
 	switch kind {
-	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove:
+	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify:
 		return true
 	}
 	return false
