@@ -420,7 +420,11 @@ const EnvClefDType = "HACHIDORI_CLEF_DTYPE"
 
 // providerDType resolves the dtype control of model's provider. An unsupported
 // value is a launch error, never silently replaced by another dtype.
-func providerDType(model home.ModelManifest, variant bool) (string, error) {
+//
+// override is an explicit dtype of an execution target (SourceConfig). It takes
+// the place of the environment control and is refused for a variant and for a
+// provider with no dtype control.
+func providerDType(model home.ModelManifest, variant bool, override string) (string, error) {
 	env := ""
 	switch model.Provider {
 	case setup.ProviderOpenDecider:
@@ -428,17 +432,23 @@ func providerDType(model home.ModelManifest, variant bool) (string, error) {
 	case home.ProviderClef:
 		env = EnvClefDType
 	default:
+		if override != "" {
+			return "", fmt.Errorf("dtype %q: provider %s has no dtype control", override, model.Provider)
+		}
 		return "", nil
 	}
-	v := os.Getenv(env)
+	v, name := os.Getenv(env), env
+	if override != "" {
+		v, name = override, "dtype"
+	}
 	if v == "" {
 		return "", nil
 	}
 	if v != "float32" && v != "bfloat16" {
-		return "", fmt.Errorf("%s=%q: want float32 or bfloat16", env, v)
+		return "", fmt.Errorf("%s=%q: want float32 or bfloat16", name, v)
 	}
 	if variant {
-		return "", fmt.Errorf("%s=%q: a variant executes at the dtype its manifest declares", env, v)
+		return "", fmt.Errorf("%s=%q: a variant executes at the dtype its manifest declares", name, v)
 	}
 	return v, nil
 }
@@ -446,7 +456,7 @@ func providerDType(model home.ModelManifest, variant bool) (string, error) {
 // workerConfig is the launch configuration of the model an activation-shaped
 // record names, on the runtime rm.
 func workerConfig(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.ModelManifest, log io.Writer) (worker.Config, Runtime, error) {
-	return workerConfigFor(h, a, rm, mm, log, false)
+	return workerConfigFor(h, a, rm, mm, log, false, "")
 }
 
 // ProbeConfig is the launch configuration of an isolated probe worker for one
@@ -461,25 +471,55 @@ func ProbeConfig(h home.Home, device, variantID string, log io.Writer) (worker.C
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
 	}
-	spec, err := setup.Desired(device)
+	a, rm, mm, err := targetRecord(h, device, model)
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
 	}
+	a.Variant = v.ID
+	return workerConfigFor(h, a, rm, mm, log, true, "")
+}
+
+// SourceConfig is ProbeConfig for the pinned source model modelID on an
+// explicit device: the exact-target launch of a source execution session. dtype
+// is the explicit reference dtype of a provider with a dtype control (empty
+// for the others). The activation record is neither read nor changed, the
+// environment dtype control is not consulted, and nothing falls back to
+// another model, dtype or device.
+func SourceConfig(h home.Home, device, modelID, dtype string, log io.Writer) (worker.Config, Runtime, error) {
+	model, err := setup.LookupModel(modelID)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	a, rm, mm, err := targetRecord(h, device, model)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	return workerConfigFor(h, a, rm, mm, log, false, dtype)
+}
+
+// targetRecord resolves the activation-shaped record of model on device from
+// the device's materialized runtime and the materialized source, without the
+// activation record.
+func targetRecord(h home.Home, device string, model home.ModelManifest) (home.Active, home.RuntimeManifest, home.ModelManifest, error) {
+	spec, err := setup.Desired(device)
+	if err != nil {
+		return home.Active{}, home.RuntimeManifest{}, home.ModelManifest{}, err
+	}
 	var rm home.RuntimeManifest
 	if err := home.ReadJSON(filepath.Join(h.Path("runtime", spec.ID()), "manifest.json"), &rm); err != nil || rm.Identity != spec.ID() || rm.Spec != spec {
-		return worker.Config{}, Runtime{}, fmt.Errorf("the %s runtime %s is not materialized for this build (run `hachidori setup --device %s`)", device, spec.ID(), device)
+		return home.Active{}, home.RuntimeManifest{}, home.ModelManifest{}, fmt.Errorf("the %s runtime %s is not materialized for this build (run `hachidori setup --device %s`)", device, spec.ID(), device)
 	}
-	a := home.Active{Runtime: spec.ID(), ModelID: model.ID, Model: setup.ModelDirName(model), Device: device, Variant: v.ID}
+	a := home.Active{Runtime: spec.ID(), ModelID: model.ID, Model: setup.ModelDirName(model), Device: device}
 	var mm home.ModelManifest
 	if err := home.ReadJSON(filepath.Join(h.ModelDir(a), "hachidori-model.json"), &mm); err != nil {
-		return worker.Config{}, Runtime{}, fmt.Errorf("source model %s is not materialized in this home: %w", model.ID, err)
+		return home.Active{}, home.RuntimeManifest{}, home.ModelManifest{}, fmt.Errorf("source model %s is not materialized in this home: %w", model.ID, err)
 	}
-	return workerConfigFor(h, a, rm, mm, log, true)
+	return a, rm, mm, nil
 }
 
 // workerConfigFor is workerConfig; probe launches a variant whatever its
 // certification state is (the state is still reported).
-func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.ModelManifest, log io.Writer, probe bool) (worker.Config, Runtime, error) {
+func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.ModelManifest, log io.Writer, probe bool, dtypeOverride string) (worker.Config, Runtime, error) {
 	model, err := setup.ActiveModel(a)
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
@@ -512,7 +552,7 @@ func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm hom
 		args = append(args, "--variant-dir", vdir, "--variant-manifest", filepath.Join(vdir, home.VariantManifestFile))
 		status.Variant = variant
 	}
-	dtype, err := providerDType(model, variant != nil)
+	dtype, err := providerDType(model, variant != nil, dtypeOverride)
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
 	}
