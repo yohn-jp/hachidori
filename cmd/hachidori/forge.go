@@ -25,7 +25,7 @@ import (
 // are the CLI face of the same setup, optimize and eval authorities the
 // desktop uses; none of them keeps state of its own.
 
-const forgeUsage = `usage: hachidori variant <list|show|verify|optimize|remove|recipes> [flags]
+const forgeUsage = `usage: hachidori variant <list|show|verify|optimize|apply|remove|recipes> [flags]
        hachidori certify <run|evaluate|show> [flags]
        hachidori forge <preflight|probe|execute|certify|diagnostics> [flags]
        hachidori activate [flags]
@@ -112,6 +112,8 @@ func cmdVariant(args []string) error {
 		return variantVerify(args[1:])
 	case "optimize":
 		return variantOptimize(args[1:])
+	case "apply":
+		return variantApply(args[1:])
 	case "remove":
 		return variantRemove(args[1:])
 	case "recipes":

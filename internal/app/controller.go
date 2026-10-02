@@ -76,8 +76,15 @@ type Config struct {
 	// explicit Start/Restart and never mutates running workers.
 	Residents func() []string
 	// RestoreTimeout bounds the wait for the serving residents to be READY
-	// again after an execution session; zero is 15 minutes.
+	// again after an execution session or a rolled-back apply; zero is 15
+	// minutes.
 	RestoreTimeout time.Duration
+	// ReadyTimeout bounds the wait of an apply for the rebound runtime to be
+	// READY; zero is 15 minutes (a Clef load is the slow case).
+	ReadyTimeout time.Duration
+	// SmokeTimeout bounds the one typed-decision smoke of an apply; zero is
+	// 3 minutes.
+	SmokeTimeout time.Duration
 }
 
 // Maintenance are the explicit model/runtime operations of the setup/home
@@ -626,22 +633,7 @@ func (c *Controller) async(p SetupParams, a action) error {
 	if log == nil {
 		log, closeLog = openSetupLog(root, a)
 	}
-	obs := &setup.Observer{
-		OnPhase: func(ph setup.Phase) {
-			c.mu.Lock()
-			op.Phase = string(ph)
-			op.Phases = append(op.Phases, string(ph))
-			op.Progress = nil // a step belongs to the phase it was reported in
-			c.notify()
-			c.mu.Unlock()
-		},
-		OnProgress: func(pr setup.Progress) {
-			c.mu.Lock()
-			op.Progress = &pr
-			c.notify()
-			c.mu.Unlock()
-		},
-	}
+	obs := c.observerFor(op)
 	go func() {
 		err := a.run(root, log, obs)
 		closeLog()
@@ -677,6 +669,27 @@ func (c *Controller) async(p SetupParams, a action) error {
 		c.finish(op, f)
 	}()
 	return nil
+}
+
+// observerFor reports the phases and progress an authority enters while it
+// serves op into op itself.
+func (c *Controller) observerFor(op *Operation) *setup.Observer {
+	return &setup.Observer{
+		OnPhase: func(ph setup.Phase) {
+			c.mu.Lock()
+			op.Phase = string(ph)
+			op.Phases = append(op.Phases, string(ph))
+			op.Progress = nil // a step belongs to the phase it was reported in
+			c.notify()
+			c.mu.Unlock()
+		},
+		OnProgress: func(pr setup.Progress) {
+			c.mu.Lock()
+			op.Progress = &pr
+			c.notify()
+			c.mu.Unlock()
+		},
+	}
 }
 
 // plan is the phases an action goes through, in order: what the operator can
@@ -715,6 +728,11 @@ func plan(kind, target string) []string {
 		return p(setup.PhaseLoadingRuns, setup.PhaseComparing, setup.PhaseRecording)
 	case OpForgeCertify:
 		return p(CertPhaseResolving, CertPhasePreflight, CertPhaseProbe, CertPhaseReference, CertPhaseCandidate, CertPhaseAligning, CertPhaseCertifying, CertPhasePersisting)
+	case OpApply:
+		// The setup phases are the activation authority's, entered between the
+		// snapshot and the rebind; a rollback adds PhaseApplyRollback.
+		return append(append([]string{PhaseApplyValidate, PhaseApplySnapshot}, p(setup.PhaseRuntime, setup.PhaseModel, setup.PhaseVariant, setup.PhaseActivation)...),
+			PhaseApplyRebind, PhaseApplyReady, PhaseApplyProve, PhaseApplySmoke, PhaseApplyFinal)
 	case OpPreflight:
 		return p(setup.PhasePreflight)
 	case OpProbe:
@@ -1031,7 +1049,7 @@ func (c *Controller) Inventory(verify bool) (setup.Inventory, error) {
 
 func isMaintenance(kind string) bool {
 	switch kind {
-	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpPreflight, OpProbe, OpExecute:
+	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpPreflight, OpProbe, OpExecute, OpApply:
 		return true
 	}
 	return false
@@ -1073,7 +1091,34 @@ func (c *Controller) run(kind string) error {
 		c.mu.Unlock()
 		return nil
 	}
-	var stale Runtime
+	rt, stale, err := c.planBinding(rt)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	op := c.begin(kind, "", "")
+	c.stopped = false
+	root := c.home
+	c.mu.Unlock()
+
+	rt, f := c.bindAndStart(kind, root, rt, stale)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if f == nil {
+		c.rt = rt
+		c.pending = false
+	}
+	c.finish(op, f)
+	if f != nil {
+		return f
+	}
+	return nil
+}
+
+// planBinding decides which binding a Start or Restart of rt acts on; c.mu must
+// be held. stale is a previous binding that must be stopped first, and a nil
+// rt means a new binding is opened from the activation record.
+func (c *Controller) planBinding(rt Runtime) (next, stale Runtime, err error) {
 	if rt != nil && (c.pending || c.residencyDrift(rt.Status().Runtime.ModelID, rt)) {
 		// An explicit Activate changed the activation under this binding,
 		// or the desired resident selection no longer matches its members:
@@ -1089,42 +1134,30 @@ func (c *Controller) run(kind string) error {
 		rt = nil
 	}
 	if rt == nil && !c.cfg.Installed(c.home) {
-		c.mu.Unlock()
-		return ErrNotInstalled
+		return nil, nil, ErrNotInstalled
 	}
-	op := c.begin(kind, "", "")
-	c.stopped = false
-	root := c.home
-	c.mu.Unlock()
+	return rt, stale, nil
+}
 
-	var f *Failure
+// bindAndStart stops a stale binding, opens a new one when rt is nil and starts
+// or restarts it. It holds no lock and records no operation: its callers have
+// admitted the action.
+func (c *Controller) bindAndStart(kind, root string, rt, stale Runtime) (Runtime, *Failure) {
 	if stale != nil && stale.Running() {
 		stale.Stop()
 	}
 	if rt == nil {
 		var err error
 		if rt, err = c.cfg.Open(root); err != nil {
-			f = &Failure{Source: SourceRuntime, Phase: PhasePreflight, Message: err.Error()}
+			return nil, &Failure{Source: SourceRuntime, Phase: PhasePreflight, Message: err.Error()}
 		}
 	}
-	if f == nil {
-		if kind == OpRestart {
-			rt.Restart()
-		} else {
-			rt.Start()
-		}
+	if kind == OpRestart {
+		rt.Restart()
+	} else {
+		rt.Start()
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if f == nil {
-		c.rt = rt
-		c.pending = false
-	}
-	c.finish(op, f)
-	if f != nil {
-		return f
-	}
-	return nil
+	return rt, nil
 }
 
 // Stop stops the resident worker and waits for it. It is a no-op when the

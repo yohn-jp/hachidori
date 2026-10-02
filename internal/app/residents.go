@@ -501,6 +501,9 @@ func aggregateResidents(base server.Status, rs []ResidentStatus) (server.Status,
 	}
 	var worst *ResidentStatus
 	for i := range rs {
+		if !rs[i].Running && rs[i].Status.Worker.State == worker.StateStarting {
+			continue // never started (a set that was started member by member): not part of the aggregate
+		}
 		if rank(rs[i].Status.Worker.State) > 0 && (worst == nil || rank(rs[i].Status.Worker.State) > rank(worst.Status.Worker.State)) {
 			worst = &rs[i]
 		}

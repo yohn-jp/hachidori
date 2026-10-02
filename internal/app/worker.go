@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/worker"
@@ -25,6 +26,17 @@ type WorkerBinding struct {
 func (b *WorkerBinding) Status() server.Status {
 	return server.StatusBody(b.Supervisor, b.Info, b.Started)
 }
+
+var _ server.Decider = (*WorkerBinding)(nil)
+
+// Decide, Ready, State and Snapshot are the supervisor's: the binding serves
+// typed decisions through the same path as the HTTP handler built over it.
+func (b *WorkerBinding) Decide(items []worker.Item) ([][]api.Result, float64, error) {
+	return b.Supervisor.Decide(items)
+}
+func (b *WorkerBinding) Ready() bool               { return b.Supervisor.Ready() }
+func (b *WorkerBinding) State() string             { return b.Supervisor.State() }
+func (b *WorkerBinding) Snapshot() worker.Snapshot { return b.Supervisor.Snapshot() }
 
 // WorkerRuntime returns an OpenFunc that builds a WorkerBinding from the
 // active runtime (server.WorkerConfig). Every worker it starts ends when

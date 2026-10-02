@@ -21,7 +21,7 @@ client CLI / any HTTP caller
 |---|---|---|
 | `hachidori setup [--home H] [--device cuda\|cpu] [--model ID]` | host | reconcile `HACHIDORI_HOME` with the Runtime Spec: private uv materializes the locked Python environment, the selected catalog model (default `laya-base`) is materialized separately, then activate |
 | `hachidori activate [--home H] [--device cuda\|cpu] [--model ID] [--variant ID [--experimental]]` | host, offline | make an already materialized catalog model, or for a System One model one of its variants, active; the same operation as Settings, Activate (see System One variants) |
-| `hachidori variant list\|show\|verify\|optimize\|remove\|recipes …` | host | derived System One variants: `optimize` builds one with a canonical recipe in the separate optimizer runtime; the rest inspect, verify and remove (see System One variants) |
+| `hachidori variant list\|show\|verify\|optimize\|apply\|remove\|recipes …` | host | derived System One variants: `optimize` builds one with a canonical recipe in the separate optimizer runtime; `apply` activates an accepted variant, rebinds the runtime and proves it is the artifact serving (see Certified variant apply); the rest inspect, verify and remove (see System One variants) |
 | `hachidori certify run\|evaluate\|show …` | client / host | the low-level, run-file surface: record a resident run, certify a variant against two run files, inspect the certification (certification.md); `forge certify` is the normal path |
 | `hachidori forge preflight\|probe\|execute\|certify\|diagnostics …` | host | System One Forge readiness: `preflight` checks identity, runtime, recipe, disk, RAM and the requested device before expensive work, `probe` loads a persisted variant in an isolated worker and asks one typed decision (not a certification), `execute` runs an exact source or variant over a dataset as temporary maintenance work and records the resident run as internal evidence, `certify` certifies a persisted variant from a dataset alone (it produces and binds both runs itself and never activates; see Forge certification), `diagnostics` lists, shows and exports the bounded redacted failure diagnostics (see Forge readiness and Forge execution sessions) |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843] [--resident ID]…` | host | run HTTP + one resident worker (plus one more worker process per `--resident` catalog model ID; see Multi-resident serving); non-loopback binds are refused |
@@ -1327,6 +1327,76 @@ rejected verdict both leave the activation record, the desired residents, the
 routing policy and the default model untouched, and nothing is restarted;
 applying an accepted variant stays the separate, explicit `activate`. The CLI
 form, like `forge execute`, does not know the residents of a running Hachidori.
+
+**Certified variant apply** (`Controller.ApplyCertifiedVariant`, `hachidori variant
+apply --device D [--model M] [--materialize] <variant-id>`). Changing the
+activation record does not make a variant the serving artifact: a running worker
+keeps the artifact it started with. `ApplyCertifiedVariant` is the one explicit,
+recoverable operation that does, as a single controller action (`op: apply`; one
+action at a time; phases `validating`, `snapshotting`, the setup authority's own
+`runtime`, `model`, `variant`, `activation`, then `rebinding`, `awaiting_ready`,
+`proving`, `smoke`, `finalizing`, and `rolling_back` when something failed):
+
+1. **Validate**, before the activation record is touched: the variant exists, its
+   manifest and its link to the pinned source verify (`setup.FindVariant`), the
+   device is explicit (`cuda` or `cpu`, no default, no fallback), the device's
+   runtime carries its provider, the serving runtime and source are materialized
+   (or, only with `Materialize`, materialized through `Maintenance.Materialize`),
+   and the variant's latest certification record is **accepted** and bound to
+   this exact manifest (`setup.RequireAccepted`). Uncertified, rejected,
+   ambiguous, untrusted or stale is refused (`setup.ErrVariantNotCertified`) and
+   nothing changes. A running worker that no longer serves the activation record
+   (restart required) is refused with `ErrRestartRequired`: no record could
+   restore what is running. The artifacts' digests are verified by the
+   activation authority before it writes; a refusal there leaves the record
+   untouched and is a refusal here.
+2. **Snapshot**: the exact activation record bytes (`home.ReadActiveRecord`), the
+   previous binding and which residents were running, the desired residents and
+   the bound routing policy. No second rollback store exists.
+3. **Activate** through the existing activation authority
+   (`Maintenance.ActivateVariant`, never experimental), then read the record back
+   and require that it names the requested source, variant and device.
+4. **Rebind**: the previous binding is stopped and the runtime is opened from the
+   activation record through the controller's own `Open` and started. No
+   alternate worker is spawned.
+5. **READY**: one observation of every member of the binding per poll
+   (`ResidentStatuses`, each member's state, PID and provenance from one
+   supervisor snapshot), with no sleep standing in for a state; a failed or
+   stopped worker ends the wait with its cause, otherwise `ReadyTimeout` (default
+   15 minutes) does.
+6. **Prove**, from the observation that said READY: the status document names the
+   source model, the requested device, the device's runtime, the variant ID,
+   manifest digest, scheme and dtype, the source revision and certification
+   `accepted`; and the worker reports the source model and pinned revision, the
+   requested device, `execution: variant`, the variant ID, the manifest's scheme,
+   quantized modules and a `quantized_execution` description, at the manifest's
+   dtype (the same check as an execution session). The source, another variant,
+   cpu for cuda or an unquantized execution fails.
+7. **Smoke**: one fixed typed decision (`doctor.SmokeRequest`) posted to the
+   public `/v1/decide` handler built over the bound runtime, validated against
+   the typed-decision contract, within `SmokeTimeout` (default 3 minutes). One
+   attempt, no retry, no generation.
+8. **Finalize**: the same worker (PID and start) still serves, the record still
+   names the variant, and the desired residents and routing policy are what they
+   were. Only then is the apply a success (`ApplyResult`).
+
+A failure in 3-8 restores the previous target: the stopped binding is replaced by
+one opened from the exact previous record bytes, written back atomically
+(`home.RestoreActiveRecord`); only the residents that were running are started (a
+runtime that was stopped stays stopped and is not started to prove the rollback);
+the restored default resident is waited for and, when it was running, its
+execution is verified against the previous record (the variant it named, or the
+source artifact); the record bytes, desired residents and routing policy are
+compared. The error is an `ApplyError`: `Primary` is why the apply failed and is
+never replaced; `RolledBack` says the restored state was verified; `Rollback`,
+when restoring failed, is kept beside the primary failure and both are in the
+error chain and text. A cancelled apply rolls back too. A failed apply records a
+Forge diagnostic (kind `apply`). The command composes a controller of its own for
+the process, so the worker it proved stops when it exits; the activation record
+it leaves is the verified one and is what `serve` or the desktop serves next.
+Starting or restarting a separate process is the operator's, as for `activate`.
+Status needed no additions: `runtime.variant` and `worker.provider` already carry
+the variant, scheme, device and dtype the apply checks.
 
 **Diagnostics** (`internal/diagnostics/forge.go`, `app.RecordForgeFailure`). A
 failed materialization, optimization, probe or certification (from the CLI or the

@@ -95,6 +95,18 @@ const gib = 1 << 30
 // serving runtimes materialized.
 func forgeHome(t *testing.T) (home.Home, home.VariantManifest) {
 	t.Helper()
+	h := forgeSource(t)
+	res, err := optimize.Build(context.Background(), h, optimize.Request{Model: setup.ClefFlash, Recipe: optimize.RecipeClefFlashW4A16},
+		optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test"}, io.Discard, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, res.Variant
+}
+
+// forgeSource is forgeHome before any variant is built.
+func forgeSource(t *testing.T) home.Home {
+	t.Helper()
 	h := home.Home{Root: t.TempDir()}
 	if err := h.Ensure(); err != nil {
 		t.Fatal(err)
@@ -138,12 +150,7 @@ func forgeHome(t *testing.T) (home.Home, home.VariantManifest) {
 		home.WriteJSON(filepath.Join(rdir, "manifest.json"), home.RuntimeManifest{Identity: spec.ID(), Spec: spec, PythonVersion: spec.Python, PythonRelPath: "env/bin/python",
 			Installed: []string{"torch==" + spec.Torch, "transformers==5.17.0", "compressed-tensors==0.19.0"}})
 	}
-	res, err := optimize.Build(context.Background(), h, optimize.Request{Model: setup.ClefFlash, Recipe: optimize.RecipeClefFlashW4A16},
-		optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test"}, io.Discard, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return h, res.Variant
+	return h
 }
 
 func ram(total, avail uint64) setup.Memory {

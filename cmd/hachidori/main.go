@@ -56,9 +56,13 @@ runtime (inference host):
              executable a verified update was prepared for. Not run by hand.
 
 System One model forge (inference host, offline except where noted):
-  variant    list|show|verify|optimize|remove|recipes: derived, source-linked
+  variant    list|show|verify|optimize|apply|remove|recipes: derived, source-linked
              quantized variants of a System One model; optimize builds one with
-             a canonical recipe in the separate optimizer runtime
+             a canonical recipe in the separate optimizer runtime; apply
+             activates an accepted variant, rebinds the runtime, waits for
+             READY, proves the exact variant executes on the requested device
+             and answers one typed decision, restoring the previous activation
+             if any step fails (an uncertified variant is refused)
   certify    run|evaluate|show: compare a high-precision reference run and a
              variant run on identical inputs (decision fidelity), record the
              certification a variant needs before it can be activated (run

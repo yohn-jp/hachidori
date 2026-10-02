@@ -290,6 +290,19 @@ hachidori certify show <variant-id>          # add -json for the full report
 hachidori activate --device cuda --model clef-flash --variant <variant-id>
 ```
 
+An accepted variant is applied with one explicit operation instead of
+activate, restart, inspect and smoke by hand: `hachidori variant apply --device
+cuda <variant-id>` (`Controller.ApplyCertifiedVariant`). It refuses an
+uncertified, rejected, ambiguous or stale variant before anything changes, then
+activates, rebinds the runtime, waits for READY, proves from the worker and the
+status that the exact quantized variant executes on the requested device, and
+answers one typed decision through the serving path; any failure restores the
+previous activation and running configuration and verifies it (see runtime.md,
+Certified variant apply). An accepted certification is necessary, never
+sufficient: certification does not apply a variant, and the serving proof is the
+final gate. Physical Windows/CUDA/Clef behavior remains NOT_CHECKED until the
+operator runs it.
+
 `hachidori forge execute` produces the same `ResidentRun` without a resident:
 it starts the exact source or the exact persisted variant on an explicit device
 as temporary maintenance work (no experimental activation, no certification
