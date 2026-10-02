@@ -376,7 +376,8 @@ func ActivateTarget(h home.Home, device, modelID string, opt ActivateOptions, lo
 // checkCertified is the certification gate of a variant: activation needs an
 // accepted record. experimental reports that the variant is being launched
 // without one, which is allowed only on an explicit request and only for a
-// variant nothing has judged; a variant with a rejecting record is refused.
+// variant nothing has judged; a variant with a rejecting record, or with
+// records whose latest cannot be determined, is refused.
 func checkCertified(h home.Home, v home.VariantManifest, allowUncertified bool) (experimental bool, err error) {
 	st := eval.ResolveCertification(h, v)
 	switch {
@@ -385,6 +386,9 @@ func checkCertified(h home.Home, v home.VariantManifest, allowUncertified bool) 
 	case st.State == eval.StateRejected:
 		return false, fmt.Errorf("%w: variant %s has a rejecting certification record (%s); its evidence is kept, but it is not activated",
 			ErrVariantNotCertified, v.ID, st.Record.Policy.ID)
+	case st.State == eval.StateAmbiguous:
+		return false, fmt.Errorf("%w: variant %s has certification records whose order cannot be determined (%s); certify it again before activating it",
+			ErrVariantNotCertified, v.ID, strings.Join(st.Problems, "; "))
 	case allowUncertified:
 		return true, nil
 	}

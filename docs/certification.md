@@ -337,6 +337,17 @@ the same identities, the report's policy digests to the recorded one, and the
 verdict recomputed from that policy and the report's evidence is the recorded
 verdict, so a hand-edited verdict or report never certifies a variant. The latest
 valid record decides; a later rejecting record withdraws an earlier acceptance.
+"Latest" is a persisted total order, not a clock: each record
+(`hachidori.certification-record/2`) carries the variant's next `sequence`,
+claimed exclusively on disk (`<sequence>.order`) before the record is written,
+so a certification written in the same second as an earlier one still
+supersedes it, and neither the report digest, the record's file name nor the
+order a directory is listed in ever decides. Records written before sequences
+existed (`hachidori.certification-record/1`) stay readable and are older than
+every sequenced record; among themselves only a strictly later `created_at`
+orders them, and two of them created within the same second resolve to
+`ambiguous`: neither accepted nor uncertified, refused for activation (even
+experimental) until the variant is certified again.
 
 Historical evidence is unchanged: `hachidori.evidence.v1`,
 `hachidori.resident-comparison.v1` and `hachidori.precision-comparison.v1` keep

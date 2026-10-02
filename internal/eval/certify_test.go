@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -709,5 +710,218 @@ func TestPolicyDecodeIsStrict(t *testing.T) {
 	p.MaxFlipRate = 0.04
 	if p.SHA256() == DefaultPolicy().SHA256() {
 		t.Fatal("a threshold change kept the policy digest")
+	}
+}
+
+// certPair returns one rejecting and one accepting certification of the same
+// variant created at the same instant: their CreatedAt is identical to the
+// second.
+func certPair(t *testing.T, v home.VariantManifest, at time.Time) (rejected, accepted Certification) {
+	t.Helper()
+	cases := certCases(100, true)
+	ref := runRole(t, "reference", v, cases, true, refScript, nil)
+	good := runRole(t, "candidate", v, cases, true, refScript, nil)
+	bad := runRole(t, "candidate", v, cases, true, driftScript(30), nil)
+	var err error
+	if rejected, err = Certify(CertifyInput{Source: certSource(), Variant: v, Reference: ref, Candidate: bad, Policy: DefaultPolicy(), Now: at}); err != nil {
+		t.Fatal(err)
+	}
+	if accepted, err = Certify(CertifyInput{Source: certSource(), Variant: v, Reference: ref, Candidate: good, Policy: DefaultPolicy(), Now: at}); err != nil {
+		t.Fatal(err)
+	}
+	if rejected.CreatedAt != accepted.CreatedAt || rejected.Verdict.Status != VerdictRejected || accepted.Verdict.Status != VerdictAccepted {
+		t.Fatalf("fixture: %s %s / %s %s", rejected.CreatedAt, rejected.Verdict.Status, accepted.CreatedAt, accepted.Verdict.Status)
+	}
+	return rejected, accepted
+}
+
+// Two certifications written within the same second are ordered by their
+// persisted sequence: the later one decides in either order, whatever their
+// report digests, after a restart (a fresh read of the home) and whatever
+// order the directory lists their records in.
+func TestCertificationSameSecondOrderIsTheWriteOrder(t *testing.T) {
+	v := certVariant()
+	at := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	rejected, accepted := certPair(t, v, at)
+	for name, order := range map[string][]Certification{
+		"rejected then accepted": {rejected, accepted},
+		"accepted then rejected": {accepted, rejected},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			var recs []CertificationRecord
+			for _, c := range order {
+				rec, err := SaveCertification(home.Home{Root: root}, c)
+				if err != nil {
+					t.Fatal(err)
+				}
+				recs = append(recs, rec)
+			}
+			if recs[0].Sequence != 1 || recs[1].Sequence != 2 || recs[0].CreatedAt != recs[1].CreatedAt {
+				t.Fatalf("sequences %d %d", recs[0].Sequence, recs[1].Sequence)
+			}
+			want := recs[1]
+			check := func(what string) {
+				t.Helper()
+				// A fresh Home value: nothing is cached between reads.
+				st := ResolveCertification(home.Home{Root: root}, v)
+				if st.State != want.Verdict || st.Record == nil || st.Record.ReportSHA256 != want.ReportSHA256 || len(st.Problems) != 0 {
+					t.Fatalf("%s: %+v, want the later %s record", what, st, want.Verdict)
+				}
+			}
+			check("first read")
+			check("after restart")
+			// Reverse the listing order of the two records: the record file
+			// names carry no order.
+			dir := certDir(home.Home{Root: root}, v.ID)
+			a, b := filepath.Join(dir, recs[0].ReportSHA256[:16]+".record.json"), filepath.Join(dir, recs[1].ReportSHA256[:16]+".record.json")
+			for _, mv := range [][2]string{{a, filepath.Join(dir, "zzzz.record.json")}, {b, filepath.Join(dir, "0000.record.json")}} {
+				if err := os.Rename(mv[0], mv[1]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			check("reversed listing")
+		})
+	}
+	// The two report digests are ordered one way only, so in one of the two
+	// runs above the later record has the lexically smaller digest: the
+	// digest is not what decided.
+}
+
+// A sequence is claimed exclusively and never reused: a claim whose record was
+// never written still advances the order, and a new process continues it.
+func TestCertificationSequenceSurvivesRestartAndLostRecords(t *testing.T) {
+	v := certVariant()
+	rejected, accepted := certPair(t, v, time.Now())
+	h := home.Home{Root: t.TempDir()}
+	r1, err := SaveCertification(h, rejected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := certDir(h, v.ID)
+	// An interrupted save claimed sequence 2 and never wrote its record.
+	if n, err := claimSequence(dir); err != nil || n != 2 {
+		t.Fatalf("claim %d %v", n, err)
+	}
+	r2, err := SaveCertification(home.Home{Root: h.Root}, accepted)
+	if err != nil || r1.Sequence != 1 || r2.Sequence != 3 {
+		t.Fatalf("sequences %d %d %v", r1.Sequence, r2.Sequence, err)
+	}
+	if st := ResolveCertification(h, v); st.State != StateAccepted || st.Record.Sequence != 3 {
+		t.Fatalf("%+v", st)
+	}
+	// Records whose claims were removed still count toward the next sequence.
+	files, _ := filepath.Glob(filepath.Join(dir, "*"+orderSuffix))
+	for _, f := range files {
+		os.Remove(f)
+	}
+	if n, err := claimSequence(dir); err != nil || n != 4 {
+		t.Fatalf("claim after the claims were removed: %d %v", n, err)
+	}
+}
+
+// toLegacy rewrites a record as the schema-1 record main wrote before
+// sequences existed.
+func toLegacy(t *testing.T, path string) {
+	t.Helper()
+	var m map[string]any
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	delete(m, "sequence")
+	m["schema"] = LegacyRecordSchema
+	out, _ := json.MarshalIndent(m, "", "  ")
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Legacy records stay readable. Among them only a strictly later creation time
+// orders; records created within the same second are ambiguous, which is
+// neither accepted nor uncertified. Any sequenced record supersedes them all.
+func TestLegacyCertificationRecords(t *testing.T) {
+	v := certVariant()
+	at := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	rejected, accepted := certPair(t, v, at)
+	save := func(h home.Home, c Certification) string {
+		t.Helper()
+		rec, err := SaveCertification(h, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(certDir(h, v.ID), rec.ReportSHA256[:16]+".record.json")
+	}
+	clearClaims := func(h home.Home) {
+		files, _ := filepath.Glob(filepath.Join(certDir(h, v.ID), "*"+orderSuffix))
+		for _, f := range files {
+			os.Remove(f)
+		}
+	}
+
+	// One legacy record: its verdict is the state.
+	h := home.Home{Root: t.TempDir()}
+	toLegacy(t, save(h, accepted))
+	clearClaims(h)
+	if st := ResolveCertification(h, v); st.State != StateAccepted || st.Record == nil || st.Record.Schema != LegacyRecordSchema || st.Record.Sequence != 0 {
+		t.Fatalf("single legacy record: %+v", st)
+	}
+
+	// Two legacy records of the same second: ambiguous, whatever their verdicts
+	// and digests; never accepted.
+	toLegacy(t, save(h, rejected))
+	clearClaims(h)
+	st := ResolveCertification(h, v)
+	if st.State != StateAmbiguous || st.Record != nil || len(st.Problems) != 1 || !strings.Contains(st.Problems[0], "same second") {
+		t.Fatalf("same-second legacy records: %+v", st)
+	}
+
+	// A legacy record of a later second orders after them.
+	later := rejected
+	later.CreatedAt = at.Add(time.Second).Format(time.RFC3339)
+	toLegacy(t, save(h, later))
+	clearClaims(h)
+	if st := ResolveCertification(h, v); st.State != StateRejected || st.Record.CreatedAt != later.CreatedAt {
+		t.Fatalf("later legacy record: %+v", st)
+	}
+
+	// A sequenced record supersedes every legacy record, even one that claims
+	// a later time.
+	future := rejected
+	future.CreatedAt = at.Add(time.Hour).Format(time.RFC3339)
+	toLegacy(t, save(h, future))
+	clearClaims(h)
+	acc := accepted
+	acc.CreatedAt = at.Add(-time.Hour).Format(time.RFC3339)
+	save(h, acc)
+	if st := ResolveCertification(h, v); st.State != StateAccepted || st.Record.Sequence != 1 || st.Record.CreatedAt != acc.CreatedAt {
+		t.Fatalf("sequenced over legacy: %+v", st)
+	}
+
+	// A legacy record cannot claim a sequence and a current one must carry one.
+	path := save(h, rejected)
+	b, _ := os.ReadFile(path)
+	os.WriteFile(path, []byte(strings.Replace(string(b), RecordSchema, LegacyRecordSchema, 1)), 0o644)
+	if st := ResolveCertification(h, v); st.State != StateAccepted || !strings.Contains(strings.Join(st.Problems, ";"), "legacy record claims a sequence") {
+		t.Fatalf("legacy record with a sequence: %+v", st)
+	}
+}
+
+// Two records that claim the same sequence (a hand-copied record) have no
+// order: the state is ambiguous, not the verdict of either.
+func TestDuplicateCertificationSequenceIsAmbiguous(t *testing.T) {
+	v := certVariant()
+	rejected, accepted := certPair(t, v, time.Now())
+	h := home.Home{Root: t.TempDir()}
+	r1, _ := SaveCertification(h, rejected)
+	r2, _ := SaveCertification(h, accepted)
+	path := filepath.Join(certDir(h, v.ID), r2.ReportSHA256[:16]+".record.json")
+	b, _ := os.ReadFile(path)
+	os.WriteFile(path, []byte(strings.Replace(string(b), `"sequence": 2`, fmt.Sprintf(`"sequence": %d`, r1.Sequence), 1)), 0o644)
+	if st := ResolveCertification(h, v); st.State != StateAmbiguous || st.Record != nil || !strings.Contains(strings.Join(st.Problems, ";"), "same sequence 1") {
+		t.Fatalf("%+v", st)
 	}
 }
