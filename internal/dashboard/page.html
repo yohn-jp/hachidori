@@ -40,6 +40,21 @@ html, body { height: 100%; }
 .statusbar span { overflow: hidden; text-overflow: ellipsis; }
 .statusbar .endpoint { margin-left: auto; }
 
+/* Shared intent-first primitives: the existing visual-system tokens remain authoritative. */
+.instrument-section { display: grid; gap: var(--sp-3); padding-block: var(--sp-4); border-top: 1px solid var(--line); min-width: 0; }
+.instrument-heading { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr); gap: var(--sp-3) var(--sp-5); align-items: baseline; }
+.operator-row { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr); gap: var(--sp-2) var(--sp-5); padding-block: var(--sp-2); border-bottom: 1px solid var(--line); min-width: 0; }
+.operator-label { color: var(--text-2); }
+.operator-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); min-width: 0; overflow-wrap: anywhere; }
+.operator-reason { flex-basis: 100%; }
+.semantic-state { color: var(--tone, var(--text-3)); font: 650 var(--fs-label)/1.5 var(--mono); letter-spacing: .05em; white-space: nowrap; }
+.operator-disclosure { border-top: 1px solid var(--line); padding-block: var(--sp-3); min-width: 0; }
+.operator-disclosure > summary { cursor: pointer; font-weight: 600; color: var(--text-2); }
+.operator-disclosure-body { display: grid; gap: var(--sp-3); padding-top: var(--sp-3); min-width: 0; }
+@media (max-width: 42rem) {
+  .instrument-heading, .operator-row { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* ---- workspace primitives --------------------------------------------- */
 .ws-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: .6rem var(--sp-5); padding: var(--sp-5) 0 var(--sp-2); }
 .ws-head .lede { margin-top: var(--sp-1); }
@@ -387,7 +402,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{define "op-busy"}}
 <div class="last op" role="status" aria-live="polite" id="models-busy">
   <div class="op-head"><strong>{{t "RUNNING"}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}</span>{{with since .Started}}<time>{{t "running for"}} {{.}}</time>{{end}}</div>
-  <ol class="stages">{{range opStages .}}<li class="{{.Status}}"{{if eq .Status "current"}} aria-current="step"{{end}}>{{t .Label}}</li>{{end}}</ol>
+  {{template "operation-phases" .}}
   {{if .Step}}
   <p class="op-line">{{with phasePosition .}}{{t "phase"}} {{.}} · {{end}}{{t (stepLabel .Step)}} <span class="mono">{{.Detail}}</span>{{if .Items}} ({{.Item}} {{t "of"}} {{.Items}}){{end}}{{if .Determinate}} · {{bytesIn .Done}} {{t "of"}} {{bytesIn .Total}} ({{printf "%.0f" .Percent}}%){{else if and (eq .Step "downloading") .Done}} · {{bytesIn .Done}} {{t "received (the server did not state a total size)"}}{{end}}{{if .Resumed}} · <strong class="resumed">{{t "resuming"}}</strong>: {{bytesIn .Resumed}} {{t "were already held; the whole file is verified against its pinned digest once it is complete"}}{{end}}</p>
   {{if .Determinate}}<div class="bar progress" role="progressbar" aria-label="{{t (stepLabel .Step)}}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{printf "%.0f" .Percent}}"><span style="width:{{printf "%.1f" .Percent}}%"></span></div>
@@ -402,7 +417,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{define "op-last"}}
 <div class="last op {{if .Failure}}tone-bad failure{{else}}tone-ok{{end}}" role="status" id="models-last">
   <div class="op-head"><strong>{{if .Failure}}{{t "FAILED"}}{{else}}{{t "DONE"}}{{end}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}</span>{{with took .}}<time>{{t "took"}} {{.}}</time>{{end}}</div>
-  <ol class="stages">{{range opStages .}}<li class="{{.Status}}">{{t .Label}}</li>{{end}}</ol>
+  {{template "operation-phases" .}}
   {{with .Failure}}
   <p class="op-line"><span class="bad-t">{{t "Failed in phase"}} {{with $.FailurePhase}}<strong>{{t (opPhase $.Kind .)}}</strong>{{end}}{{with $.FailureStep}} · {{t (stepLabel .)}}{{end}}</span>: <span class="mono">{{.}}</span></p>
   {{if eq $.Kind "update"}}<p class="note">{{t "The installed executable was not changed."}}</p>
@@ -858,3 +873,22 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{end}}</pre></details>{{end}}
 {{with .Argv}}<details class="inline" data-keep="tunnel-argv"><summary>ssh argv</summary><pre>{{range .}}{{.}} {{end}}</pre></details>{{end}}
 </div>{{end}}{{end}}
+
+{{/* Shared producer templates. Disclosure and section pairs let callers compose
+     native controls/facts without unsafe HTML data or a frontend authority. */}}
+{{define "semantic-state"}}<span class="semantic-state tone-{{.Tone}}" data-state="{{.}}">{{t (print .)}}</span>{{end}}
+
+{{define "operator-row"}}<div class="operator-row" data-control="{{.Mode}}">
+  <span class="operator-label">{{t .Label}}</span>
+  <div class="operator-value">{{template "semantic-state" .Mode}}{{if eq (print .Mode) "AUTO"}}<span aria-hidden="true">→</span>{{end}}<span>{{.Value}}</span>{{with .Reason}}<span class="operator-reason note">{{.}}</span>{{end}}</div>
+</div>{{end}}
+
+{{define "operation-phases"}}<ol class="stages" aria-label="{{t "Operation phases"}}">{{range opStages .}}<li class="{{.Status}}"{{if eq .Status "current"}} aria-current="step"{{end}}>{{t .Label}}</li>{{end}}</ol>{{end}}
+
+{{define "operator-advanced-open"}}<details class="operator-disclosure" data-disclosure="advanced"{{with .ID}} id="{{.}}"{{end}}><summary>{{t "Advanced"}}{{with .Label}} · {{t .}}{{end}}</summary><div class="operator-disclosure-body">{{end}}
+{{define "operator-details-open"}}<details class="operator-disclosure" data-disclosure="details"{{with .ID}} id="{{.}}"{{end}}><summary>{{t "Details"}}{{with .Label}} · {{t .}}{{end}}</summary><div class="operator-disclosure-body">{{end}}
+{{define "operator-evidence-open"}}<details class="operator-disclosure" data-disclosure="evidence"{{with .ID}} id="{{.}}"{{end}}><summary>{{t "Evidence"}}{{with .Label}} · {{t .}}{{end}}</summary><div class="operator-disclosure-body">{{end}}
+{{define "operator-disclosure-close"}}</div></details>{{end}}
+
+{{define "instrument-section-open"}}<section class="instrument-section" aria-labelledby="{{.ID}}-heading"><div class="instrument-heading"><h2 id="{{.ID}}-heading">{{t .Label}}</h2>{{with .Description}}<p class="note">{{t .}}</p>{{end}}</div>{{end}}
+{{define "instrument-section-close"}}</section>{{end}}

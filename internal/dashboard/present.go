@@ -14,6 +14,55 @@ import (
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
+// SemanticState is the shared presentation vocabulary. It describes the
+// provenance of a displayed value; it does not resolve or change that value.
+type SemanticState string
+
+const (
+	Intent     SemanticState = "INTENT"
+	Auto       SemanticState = "AUTO"
+	Overridden SemanticState = "OVERRIDDEN"
+	Measured   SemanticState = "MEASURED"
+	Estimated  SemanticState = "ESTIMATED"
+	Preserved  SemanticState = "PRESERVED"
+	NotChecked SemanticState = "NOT_CHECKED"
+)
+
+func (s SemanticState) Tone() string {
+	switch s {
+	case Intent, Auto, Overridden:
+		return "active"
+	case Measured, Preserved:
+		return "ok"
+	case Estimated:
+		return "warn"
+	default:
+		return "idle"
+	}
+}
+
+// ControlProjection projects a backend-supplied intent, resolved Auto value,
+// or explicit pinned value. Mode is Intent, Auto or Overridden. Value and
+// Reason are literal facts, never translated or computed by the browser.
+type ControlProjection struct {
+	Label         string
+	Mode          SemanticState
+	Value, Reason string
+}
+
+// DisclosureProjection identifies a native disclosure. Callers compose their
+// own controls inside operator-advanced-open and facts inside operator-details-open or
+// operator-evidence-open, followed by operator-disclosure-close. No raw HTML is passed as data.
+type DisclosureProjection struct {
+	ID, Label string
+}
+
+// SectionProjection supplies the heading of a document/instrument section.
+// Callers compose content between instrument-section-open and its close.
+type SectionProjection struct {
+	ID, Label, Description string
+}
+
 // alert is one item of the "needs attention" list.
 type alert struct {
 	Level  string // "bad" or "warn"
