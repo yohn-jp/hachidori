@@ -73,8 +73,8 @@ func TestResidentSelectionControl(t *testing.T) {
 	e := newEnv(t)
 	fm := &fakeModels{state: ModelsState{Inventory: pairInventory()}}
 	withResidency(e, fm, &fakeResidency{})
-	body := e.get(t, "/settings").Body.String()
-	if !strings.Contains(body, `id="resident-selection"`) || !strings.Contains(body, `action="/settings/residents"`) {
+	body := e.get(t, "/models").Body.String()
+	if !strings.Contains(body, `id="resident-selection"`) || !strings.Contains(body, `action="/models/residents"`) {
 		t.Fatal("no resident-selection form in Models & runtimes")
 	}
 	def := selectionRow(t, body, "laya-base")
@@ -104,17 +104,17 @@ func TestResidentSelectionControl(t *testing.T) {
 // Without the authority there is no route.
 func TestResidentSelectionSaveOnlyStores(t *testing.T) {
 	e := newEnv(t)
-	if rec := e.post(t, "/settings/residents", url.Values{"resident": {"opendecider-nano"}}); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+	if rec := e.post(t, "/models/residents", url.Values{"resident": {"opendecider-nano"}}); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("route without the authority: %d", rec.Code)
 	}
 	fm, fr := &fakeModels{state: ModelsState{Inventory: pairInventory()}}, &fakeResidency{}
 	withResidency(e, fm, fr)
 
-	if rec := e.post(t, "/settings/residents", url.Values{"token": {"forged"}, "resident": {"opendecider-nano"}}); rec.Code != http.StatusForbidden || len(fr.saves) != 0 {
+	if rec := e.post(t, "/models/residents", url.Values{"token": {"forged"}, "resident": {"opendecider-nano"}}); rec.Code != http.StatusForbidden || len(fr.saves) != 0 {
 		t.Fatalf("forged token: %d saves %v", rec.Code, fr.saves)
 	}
-	rec := e.post(t, "/settings/residents", url.Values{"return": {"settings"}, "resident": {" opendecider-nano ", "laya-base"}})
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings" {
+	rec := e.post(t, "/models/residents", url.Values{"return": {"models"}, "resident": {" opendecider-nano ", "laya-base"}})
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/models" {
 		t.Fatalf("save: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 	if len(fr.saves) != 1 || !slices.Equal(fr.saves[0], []string{"opendecider-nano", "laya-base"}) {
@@ -132,7 +132,7 @@ func TestResidentSelectionSaveOnlyStores(t *testing.T) {
 
 	// A refusal by the authority is shown and nothing else happens.
 	fr.err = errBad
-	e.post(t, "/settings/residents", url.Values{"resident": {"someone/else"}})
+	e.post(t, "/models/residents", url.Values{"resident": {"someone/else"}})
 	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "refused") {
 		t.Fatalf("refusal not reported: %+v", a)
 	}
@@ -152,7 +152,7 @@ func TestResidentSelectionIsNextStartIntentNotRunningState(t *testing.T) {
 	inv := pairInventory()
 	fm := &fakeModels{state: ModelsState{Inventory: inv, RestartRequired: true, ResidencyChanged: true}}
 	withResidency(e, fm, &fakeResidency{ids: []string{"opendecider-nano", "laya-absent"}})
-	body := e.get(t, "/settings").Body.String()
+	body := e.get(t, "/models").Body.String()
 
 	if !strings.Contains(body, `id="restart-required"`) || !strings.Contains(body, "The resident selection changed") {
 		t.Error("a pending selection does not require a restart")
@@ -181,7 +181,7 @@ func TestResidentSelectionIsNextStartIntentNotRunningState(t *testing.T) {
 	cfg.Status = func() server.Status { return st }
 	e.d = New(cfg)
 	fm.state.RestartRequired, fm.state.ResidencyChanged = false, false
-	body = e.get(t, "/settings").Body.String()
+	body = e.get(t, "/models").Body.String()
 	if strings.Contains(body, `id="restart-required"`) || !strings.Contains(selectionRow(t, body, "opendecider-nano"), `badge tone-ok">resident<`) {
 		t.Error("a bound selection is still pending")
 	}
@@ -189,7 +189,7 @@ func TestResidentSelectionIsNextStartIntentNotRunningState(t *testing.T) {
 	fr.mu.Lock()
 	fr.ids = nil
 	fr.mu.Unlock()
-	body = e.get(t, "/settings").Body.String()
+	body = e.get(t, "/models").Body.String()
 	if row := selectionRow(t, body, "opendecider-nano"); !strings.Contains(row, "resident · removed on restart") || strings.Contains(row, " checked") {
 		t.Errorf("a deselected running resident: %s", row)
 	}
@@ -203,7 +203,7 @@ func TestResidentControlKeepsActivationRestartMessage(t *testing.T) {
 	inv.Active = &home.Active{Runtime: "cu128-aaaa", ModelID: "opendecider-nano", Device: "cuda"}
 	inv.Models[0].Active, inv.Models[1].Active = false, true
 	withResidency(e, &fakeModels{state: ModelsState{Inventory: inv, RestartRequired: true}}, &fakeResidency{})
-	body := e.get(t, "/settings").Body.String()
+	body := e.get(t, "/models").Body.String()
 	if !strings.Contains(body, "The active runtime/model changed.") || strings.Contains(body, "The resident selection changed") {
 		t.Error("the activation restart message was replaced")
 	}

@@ -173,32 +173,60 @@ func (c *Controller) restoreTimeout() time.Duration {
 // verifies the restored state. The primary failure is always the one reported;
 // a failed rollback is returned beside it.
 func (c *Controller) ApplyCertifiedVariant(ctx context.Context, p ApplyParams) (ApplyResult, error) {
+	tx, err := c.beginApply(p)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	return c.runApply(ctx, tx)
+}
+
+// StartApply accepts one apply and runs the same transaction as
+// ApplyCertifiedVariant in the background, for a caller that must not block
+// for the whole transaction (the dashboard). A refusal at admission (bad
+// parameters, a busy controller, a restart required) is returned here; the
+// transaction's own progress, its outcome and a rollback are read from the
+// controller's operation state (Snapshot), exactly as for every other action.
+func (c *Controller) StartApply(p ApplyParams) error {
+	tx, err := c.beginApply(p)
+	if err != nil {
+		return err
+	}
+	go func() { _, _ = c.runApply(context.Background(), tx) }()
+	return nil
+}
+
+// beginApply validates the explicit inputs, admits the apply as the one
+// controller action and returns its transaction.
+func (c *Controller) beginApply(p ApplyParams) (*applyTx, error) {
 	if p.Variant == "" {
-		return ApplyResult{}, errors.New("apply: a variant ID is required")
+		return nil, errors.New("apply: a variant ID is required")
 	}
 	if p.Device != "cpu" && p.Device != "cuda" {
-		return ApplyResult{}, fmt.Errorf("apply: the serving device must be cpu or cuda, got %q (there is no default and no fallback)", p.Device)
+		return nil, fmt.Errorf("apply: the serving device must be cpu or cuda, got %q (there is no default and no fallback)", p.Device)
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if err := c.admit(); err != nil {
-		c.mu.Unlock()
-		return ApplyResult{}, err
+		return nil, err
 	}
 	prev := c.rt
 	if prev != nil && prev.Running() && (c.pending || c.residencyDrift(prev.Status().Runtime.ModelID, prev)) {
 		// The running worker no longer serves the activation record, so no
 		// record could restore what is running: the operator restarts first.
-		c.mu.Unlock()
-		return ApplyResult{}, ErrRestartRequired
+		return nil, ErrRestartRequired
 	}
 	// No model on the operation: an action naming a model is projected as an
 	// action on one resident, and an apply acts on the whole runtime.
 	op := c.begin(OpApply, p.Device, "")
 	op.Target = setup.KindVariant + " " + p.Variant
 	op.Plan = plan(OpApply, op.Target)
-	tx := &applyTx{c: c, op: op, p: p, root: c.home, prevRT: prev, stoppedBefore: c.stopped}
-	c.mu.Unlock()
+	return &applyTx{c: c, op: op, p: p, root: c.home, prevRT: prev, stoppedBefore: c.stopped}, nil
+}
 
+// runApply runs an admitted apply to its end, records a Forge diagnostic for a
+// failure and finishes the controller operation.
+func (c *Controller) runApply(ctx context.Context, tx *applyTx) (ApplyResult, error) {
+	p, op := tx.p, tx.op
 	log, closeLog := OpenSetupLog(tx.root, OpApply, p.Device, p.Model, op.Target)
 	defer closeLog()
 	tx.log, tx.obs, tx.scrub = log, c.observerFor(op), redact.New(tx.root)

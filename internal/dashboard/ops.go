@@ -51,6 +51,23 @@ var phaseLabels = map[string]string{
 	// Forge readiness: the preflight and the probe of a persisted variant
 	"preflight": "Preflight",
 	"probing":   "Probing variant",
+	// self-contained certification (forge_certify)
+	"materializing": "Materializing runtime",
+	"probe":         "Probing variant",
+	"reference_run": "Reference run",
+	"candidate_run": "Variant run",
+	"aligning":      "Aligning runs",
+	"certifying":    "Certifying",
+	"persisting":    "Recording evidence",
+	// certified variant apply (apply)
+	"validating":     "Validating",
+	"snapshotting":   "Snapshotting",
+	"rebinding":      "Rebinding runtime",
+	"awaiting_ready": "Waiting for READY",
+	"proving":        "Proving provenance",
+	"smoke":          "Typed decision",
+	"finalizing":     "Finalizing",
+	"rolling_back":   "Rolling back",
 	// update check and download (internal/update)
 	"releases": "Release list",
 	"checksum": "Checksum file",
@@ -76,6 +93,21 @@ func phaseLabel(p string) string {
 	return p
 }
 
+// kindPhaseLabels name a phase that means something else in one operation than
+// in the others (the optimizer resolves modules; a certification resolves its
+// exact inputs).
+var kindPhaseLabels = map[string]map[string]string{
+	"forge_certify": {"resolving": "Resolving inputs"},
+}
+
+// opPhaseLabel is the label of phase p of an operation of the given kind.
+func opPhaseLabel(kind, p string) string {
+	if l, ok := kindPhaseLabels[kind][p]; ok {
+		return l
+	}
+	return phaseLabel(p)
+}
+
 func stepLabel(s string) string {
 	if l, ok := stepLabels[s]; ok {
 		return l
@@ -95,7 +127,7 @@ func opStages(o ModelOp) []stage {
 	running := o.Finished.IsZero()
 	out := make([]stage, 0, len(plan))
 	for _, p := range plan {
-		st := stage{Name: p, Label: phaseLabel(p), Status: stagePending}
+		st := stage{Name: p, Label: opPhaseLabel(o.Kind, p), Status: stagePending}
 		switch i := slices.Index(o.Phases, p); {
 		case i < 0 && !running && o.Failure == "":
 			st.Status = stageSkipped
@@ -218,13 +250,13 @@ type failureView struct {
 // failureHints are the actionable meaning of each failure class.
 var failureHints = map[string]string{
 	worker.ClassPreflight: "The active runtime was refused before any process was started. The message names why and how to recover: " +
-		"materialize the current runtime, activate it in Settings and choose Restart.",
+		"materialize the current runtime, activate it in Models and choose Restart.",
 	worker.ClassStartup: "The worker process ended before it reported its first message. The last lines of its output below name why " +
-		"(an interpreter, argument or environment error). If the runtime was materialized by an older Hachidori, materialize and activate the current one in Settings.",
-	worker.ClassProviderInit: "The provider packages could not be imported by the private Python. Verify the runtime in Settings; Repair rebuilds one that fails verification.",
+		"(an interpreter, argument or environment error). If the runtime was materialized by an older Hachidori, materialize and activate the current one in Models.",
+	worker.ClassProviderInit: "The provider packages could not be imported by the private Python. Verify the runtime in Models; Repair rebuilds one that fails verification.",
 	worker.ClassDevice: "The requested device is not available. Hachidori never falls back to another device: fix the driver or the device, " +
-		"or deliberately materialize and activate the cpu runtime in Settings.",
-	worker.ClassModelLoad:     "The model could not be loaded. Verify the model in Settings; Repair rebuilds an artifact that fails verification.",
+		"or deliberately materialize and activate the cpu runtime in Models.",
+	worker.ClassModelLoad:     "The model could not be loaded. Verify the model in Models; Repair rebuilds an artifact that fails verification.",
 	worker.ClassWarmup:        "The model loaded on the requested device but its warm-up inference failed. The worker output below has the error.",
 	worker.ClassStartTimeout:  "The worker did not become ready within its startup limit. Check the phase it stopped in and the worker output below.",
 	worker.ClassCrash:         "The worker process exited. The last lines of its output below name why.",

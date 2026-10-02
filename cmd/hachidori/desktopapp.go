@@ -544,8 +544,20 @@ func (m modelManager) ActivateVariant(device, model, variant string, experimenta
 	return m.ctl().ActivateVariant(app.SetupParams{Device: device, Model: model}, variant, experimental)
 }
 func (m modelManager) Optimize(model, recipe string) error { return m.ctl().Optimize(model, recipe) }
-func (m modelManager) Certify(variant, reference, candidate, policy string) error {
-	return m.ctl().Certify(app.CertifyParams{Variant: variant, Reference: reference, Candidate: candidate, Policy: policy})
+
+// CertifyVariant is the self-contained Forge certification: the controller
+// produces and binds both runs itself from the semantic inputs.
+func (m modelManager) CertifyVariant(r dashboard.CertifyRequest) error {
+	return m.ctl().CertifyVariant(app.ForgeCertifyParams{Variant: r.Variant, Device: r.Device, ReferenceDevice: r.ReferenceDevice,
+		ReferenceDType: r.ReferenceDType, Dataset: r.Dataset, Questions: r.Questions, Policy: r.Policy, Materialize: r.Materialize})
+}
+
+// Apply is the controller's certified-variant apply transaction
+// (ApplyCertifiedVariant) on this persistent desktop controller, accepted
+// as one background action: the dashboard calls it once and never chains
+// activation, restart or verification itself.
+func (m modelManager) Apply(device, model, variant string, materialize bool) error {
+	return m.ctl().StartApply(app.ApplyParams{Variant: variant, Device: device, Model: model, Materialize: materialize})
 }
 func (m modelManager) Preflight(kind, model, recipe, variant, device string) error {
 	return m.ctl().Preflight(app.PreflightParams{Kind: kind, Model: model, Recipe: recipe, Variant: variant, Device: device})

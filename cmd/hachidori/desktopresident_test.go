@@ -154,9 +154,9 @@ func page(t *testing.T, origin, path string) string {
 
 func post(t *testing.T, origin, path string, form url.Values) {
 	t.Helper()
-	m := tokenRe.FindStringSubmatch(page(t, origin, "/settings"))
+	m := tokenRe.FindStringSubmatch(page(t, origin, "/"))
 	if m == nil {
-		t.Fatal("no dashboard token on Settings")
+		t.Fatal("no dashboard token on the dashboard")
 	}
 	form.Set("token", m[1])
 	req, _ := http.NewRequest("POST", origin+path, strings.NewReader(form.Encode()))
@@ -201,7 +201,7 @@ func TestDesktopResidentSelectionPersistsAndIsRestoredOnLaunch(t *testing.T) {
 		if len(reads) != 1 || len(reads[0]) != 0 || !slices.Equal(rts[0].models, []string{layaBase}) {
 			t.Errorf("default launch: reads %v members %v", reads, rts[0].models)
 		}
-		post(t, origin, "/settings/residents", url.Values{"resident": {nanoID}})
+		post(t, origin, "/models/residents", url.Values{"resident": {nanoID}})
 	})
 	if got, err := settingsStore(prefs, nil).Residents(); err != nil || !slices.Equal(got, []string{nanoID}) {
 		t.Fatalf("saved selection: %v %v", got, err)
@@ -220,7 +220,7 @@ func TestDesktopResidentSelectionPersistsAndIsRestoredOnLaunch(t *testing.T) {
 		if starts, _ := rts[0].counts(); starts != 1 {
 			t.Errorf("the restored set was started %d times", starts)
 		}
-		body := page(t, origin, "/settings")
+		body := page(t, origin, "/models")
 		if strings.Contains(body, `id="restart-required"`) || !strings.Contains(rowOf(t, body, nanoID), "resident") || !strings.Contains(rowOf(t, body, nanoID), " checked") {
 			t.Errorf("restored selection is shown as pending or unselected:\n%s", rowOf(t, body, nanoID))
 		}
@@ -243,8 +243,8 @@ func TestDesktopResidencyChangeRequiresExplicitRestart(t *testing.T) {
 		_, rts := d.opens()
 		old := rts[0]
 
-		post(t, origin, "/settings/residents", url.Values{}) // deselect everything
-		body := page(t, origin, "/settings")
+		post(t, origin, "/models/residents", url.Values{}) // deselect everything
+		body := page(t, origin, "/models")
 		if !strings.Contains(body, `id="restart-required"`) || !strings.Contains(body, "The resident selection changed") ||
 			!strings.Contains(rowOf(t, body, nanoID), "resident · removed on restart") {
 			t.Errorf("a selection change is not shown as restart-required:\n%s", body)
@@ -256,7 +256,7 @@ func TestDesktopResidencyChangeRequiresExplicitRestart(t *testing.T) {
 			t.Errorf("the change touched the running runtime: starts %d stops %d", starts, stops)
 		}
 
-		post(t, origin, "/settings/models/restart", url.Values{})
+		post(t, origin, "/models/restart", url.Values{})
 		reads, rts := d.opens()
 		if len(reads) != 2 || len(reads[1]) != 0 || !slices.Equal(rts[1].models, []string{layaBase}) {
 			t.Fatalf("restart did not apply the selection: reads %v", reads)
@@ -267,7 +267,7 @@ func TestDesktopResidencyChangeRequiresExplicitRestart(t *testing.T) {
 		if starts, _ := rts[1].counts(); starts != 1 || !rts[1].Running() {
 			t.Errorf("the new set was not started once: %d", starts)
 		}
-		if body := page(t, origin, "/settings"); strings.Contains(body, `id="restart-required"`) {
+		if body := page(t, origin, "/models"); strings.Contains(body, `id="restart-required"`) {
 			t.Error("restart-required remains after the restart applied the selection")
 		}
 	})
@@ -307,13 +307,13 @@ func TestDesktopFormTokenSurvivesARuntimeRebind(t *testing.T) {
 			t.Fatal("no dashboard token on Settings")
 		}
 		loaded := m[1]
-		post(t, origin, "/settings/residents", url.Values{})
-		post(t, origin, "/settings/models/restart", url.Values{})
+		post(t, origin, "/models/residents", url.Values{})
+		post(t, origin, "/models/restart", url.Values{})
 		if reads, _ := d.opens(); len(reads) != 2 {
 			t.Fatalf("the restart did not rebind the runtime: %v", reads)
 		}
 		form := url.Values{"token": {loaded}, "model": {nanoID}}
-		req, _ := http.NewRequest("POST", origin+"/settings/residents", strings.NewReader(form.Encode()))
+		req, _ := http.NewRequest("POST", origin+"/models/residents", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Origin", origin)
 		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -325,6 +325,44 @@ func TestDesktopFormTokenSurvivesARuntimeRebind(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusSeeOther {
 			t.Fatalf("a post with the token of the page loaded before the rebind: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+	})
+}
+
+// Forge's Apply reaches the persistent desktop controller as one action
+// (ApplyCertifiedVariant): a refusal is the backend's validation, shown in the
+// Forge workspace beside its diagnostic, and nothing else (activation, stop,
+// restart) is called from the browser side.
+func TestDesktopForgeApplyIsOneControllerAction(t *testing.T) {
+	d := newResidentDesktop(t, filepath.Join(t.TempDir(), "desktop.json"))
+	d.run(t, func(origin string) {
+		_, rts := d.opens()
+		rt := rts[0]
+		post(t, origin, "/forge/apply", url.Values{"variant": {"clef-flash--none--000000000000"}, "model": {setup.ClefFlash}, "device": {"cpu"}, "return": {"forge"}})
+		deadline := time.Now().Add(10 * time.Second)
+		var body string
+		for time.Now().Before(deadline) {
+			body = page(t, origin, "/forge")
+			if strings.Contains(body, `id="models-last"`) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		for _, want := range []string{`id="models-last"`, "apply", "Failed in phase", "<strong>Validating</strong>", "clef-flash--none--000000000000", `id="forge-diagnostic-last"`} {
+			if !strings.Contains(body, want) {
+				t.Errorf("the failed apply is not shown in Forge: lacks %q", want)
+			}
+		}
+		if starts, stops := rt.counts(); starts != 1 || stops != 0 || !rt.Running() {
+			t.Errorf("a refused apply touched the runtime: starts %d stops %d", starts, stops)
+		}
+		if reads, _ := d.opens(); len(reads) != 1 {
+			t.Errorf("a refused apply rebound the runtime: %d opens", len(reads))
+		}
+		// An invalid request is refused at admission, before any operation exists.
+		post(t, origin, "/forge/apply", url.Values{"variant": {"clef-flash--none--000000000000"}, "device": {"sideways"}})
+		if body := page(t, origin, "/forge"); !strings.Contains(body, "the serving device must be cpu or cuda") {
+			t.Errorf("the admission refusal is not shown:\n%s", body)
 		}
 	})
 }

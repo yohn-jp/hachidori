@@ -1,7 +1,10 @@
 // Package dashboard serves the host-local Semantic Experiment Workstation:
 // Runtime (status and worker lifecycle actions), the Question Workbench, the
-// Experiment Runner, Evidence (the Error Explorer) and Diagnostics (doctor,
-// worker failures, the SSH reverse-tunnel launcher, desktop preferences).
+// Experiment Runner, Evidence (the Error Explorer), Models (runtime, model and
+// residency administration), Forge (the System One variant lifecycle: build,
+// preflight/probe, self-contained certification, explicit apply), Diagnostics
+// (doctor, worker failures, the SSH reverse-tunnel launcher) and Settings
+// (desktop preferences, language, updates, development connections).
 //
 // It keeps no runtime state of its own. Status is the /v1/status document
 // (server.StatusBody), lifecycle actions go through worker.Lifecycle, doctor is
@@ -84,13 +87,13 @@ type Config struct {
 	// defaults (the typed settings authority, internal/settings). Saving
 	// them never touches the running runtime.
 	Settings Settings
-	// Models, when set, adds the Settings workspace's Models & Runtimes
-	// manager. It is the application's typed maintenance authority
-	// (app.Controller over internal/setup); the dashboard never inspects or
-	// deletes directories itself. It is nil for serve/dashboard.
+	// Models, when set, adds the Models and Forge workspaces. It is the
+	// application's typed maintenance authority (app.Controller over
+	// internal/setup); the dashboard never inspects or deletes directories
+	// itself. It is nil for serve/dashboard.
 	Models Models
 	// Residency, when set (with Models), adds the resident-model selection
-	// to Models & Runtimes. It is the settings authority's desired
+	// to the Models workspace. It is the settings authority's desired
 	// additional-resident set; saving it only stores it.
 	Residency Residency
 	// Connections, when set, adds the Development Connections profiles to
@@ -108,11 +111,12 @@ type Config struct {
 	WebView2 string
 	// PathPicker is present only in the native desktop composition.
 	PathPicker PathPicker
-	// Variants, when set, adds the System One variant actions (activate a
-	// variant, optimize, certify) to Settings > Models & runtimes. The
-	// variants themselves, their certification state and the operations'
-	// progress are projections of the same inventory and operation state
-	// Models reports; Variants only forwards the operator's actions.
+	// Variants, when set, adds the System One Forge actions (optimize,
+	// preflight, probe, certify, apply, and the advanced experimental
+	// activation) to the Forge workspace. The variants themselves, their
+	// lifecycle, certification state and the operations' progress are
+	// projections of the same inventory and operation state Models reports;
+	// Variants only forwards the operator's actions.
 	Variants VariantActions
 	// Token is the per-process form token. A composition that replaces its
 	// dashboard during the process (the desktop, on every runtime rebind)
@@ -135,12 +139,22 @@ func NewToken() string {
 // the background; its phases, progress and outcome are read from
 // Models.State.
 type VariantActions interface {
-	// ActivateVariant activates the variant of the model. experimental
-	// requests the operator-only launch of a variant without a certification
-	// record.
+	// ActivateVariant activates the variant of the model and nothing else:
+	// the low-level activation, never part of the normal workflow.
+	// experimental requests the operator-only launch of a variant without a
+	// certification record.
 	ActivateVariant(device, model, variant string, experimental bool) error
 	Optimize(model, recipe string) error
-	Certify(variant, reference, candidate, policy string) error
+	// CertifyVariant starts the self-contained certification of one persisted
+	// variant from semantic inputs alone (app.Controller.CertifyVariant): the
+	// backend produces and binds both runs itself, and a verdict never
+	// activates anything.
+	CertifyVariant(CertifyRequest) error
+	// Apply is the one backend transaction that makes an accepted variant the
+	// serving artifact on an explicit device and proves it
+	// (app.Controller.ApplyCertifiedVariant): activation, rebind, READY,
+	// provenance, one typed decision, and rollback on failure.
+	Apply(device, model, variant string, materialize bool) error
 	// Preflight inspects what can be known before the expensive operation
 	// kind (materialize, optimize, probe, certify) and records the report. It
 	// changes nothing. Probe loads one persisted variant on an explicit device
@@ -150,6 +164,21 @@ type VariantActions interface {
 	Preflight(kind, model, recipe, variant, device string) error
 	Probe(variant, device string) error
 	Diagnostic(id string) ([]byte, error)
+}
+
+// CertifyRequest is the semantic input of a Forge certification: the variant,
+// the evaluation corpus, the Question Definitions, an optional policy and the
+// execution choices. It has no reference or candidate run: the backend
+// produces both.
+type CertifyRequest struct {
+	Variant         string
+	Device          string // the candidate's device
+	ReferenceDevice string // empty: the backend's canonical default
+	ReferenceDType  string // empty: the backend's canonical default
+	Dataset         string
+	Questions       []string
+	Policy          string
+	Materialize     bool
 }
 
 // Models is the explicit model/runtime maintenance authority, and the
@@ -411,7 +440,7 @@ type Prefs struct {
 	Tunnel tunnel.Spec `json:"tunnel"`
 }
 
-//go:embed page.html workbench.html experiments.html errors.html updates.html
+//go:embed page.html workbench.html experiments.html errors.html updates.html models.html forge.html
 var pageFS embed.FS
 
 // pageBase parses the workstation templates once; "t" is the catalog lookup,
@@ -443,6 +472,7 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"opStages":        opStages,
 	"phasePosition":   phasePosition,
 	"phaseLabel":      phaseLabel,
+	"opPhase":         opPhaseLabel,
 	"stepLabel":       stepLabel,
 	"workerStages":    workerStages,
 	"workerPhaseWord": workerPhaseWord,
@@ -450,7 +480,7 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"since":           since,
 	"took":            took,
 	"failureOf":       failureOf,
-}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html", "updates.html"))
+}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html", "updates.html", "models.html", "forge.html"))
 
 // pages are the workstation templates for each supported locale. Rendering
 // goes through the catalog, never through rewriting rendered HTML.
@@ -467,16 +497,17 @@ var pages = func() map[i18n.Locale]*template.Template {
 // runtime status restated from the /v1/status document.
 type Chrome struct {
 	Title       string
-	Nav         string // runtime | workbench | experiments | evidence | diagnostics | settings
+	Nav         string // runtime | models | forge | workbench | experiments | evidence | diagnostics | settings
 	Lang        i18n.Locale
 	APIAddr     string
 	Live        bool // the workspace shows the live-refresh indicator
 	HasSettings bool // the Settings workspace is available
+	HasModels   bool // the Models and Forge workspaces are available
 	Rt          shellStatus
 }
 
 func (c Config) hasSettings() bool {
-	return c.Settings != nil || c.Desktop != nil || c.Connections != nil || c.Models != nil || c.Updates != nil
+	return c.Settings != nil || c.Desktop != nil || c.Connections != nil || c.Updates != nil
 }
 
 // ErrPickCancelled is a PathPicker's answer when the operator dismisses the
@@ -531,11 +562,21 @@ func New(cfg Config) *Dashboard {
 		d.mux.HandleFunc("GET /settings", d.settingsPage)
 	}
 	if cfg.Models != nil {
+		// The Models and Forge workspaces own their pages and forms. The
+		// /settings/... POST and diagnostic routes predate them and stay as
+		// compatibility aliases of the same handlers; their outcome is shown
+		// in the workspace that now holds the action.
+		d.mux.HandleFunc("GET /models", d.modelsPage)
+		d.mux.HandleFunc("GET /forge", d.forgePage)
+		d.mux.HandleFunc("POST /models/{op}", d.modelsOp)
+		d.mux.HandleFunc("POST /forge/{op}", d.variantsOp)
+		d.mux.HandleFunc("GET /forge/diagnostics/{id}", d.forgeDiagnostic)
 		d.mux.HandleFunc("POST /settings/models/{op}", d.modelsOp)
 		d.mux.HandleFunc("POST /settings/variants/{op}", d.variantsOp)
 		d.mux.HandleFunc("GET /settings/forge/diagnostics/{id}", d.forgeDiagnostic)
 	}
 	if cfg.Models != nil && cfg.Residency != nil {
+		d.mux.HandleFunc("POST /models/residents", d.settingsResidents)
 		d.mux.HandleFunc("POST /settings/residents", d.settingsResidents)
 	}
 	if cfg.Updates != nil {
@@ -624,6 +665,8 @@ type view struct {
 	Desktop *DesktopView     // nil unless the desktop shell is hosting the dashboard
 	Set     *SettingsView    // nil unless the settings authority is configured
 	Models  *ModelsView      // nil unless the model/runtime manager is configured
+	Forge   *ForgeView       // the Forge workspace only
+	Art     *ArtifactsView   // the Models and Forge workspaces only
 	Next    *nextStart       // nil unless the model/runtime manager is configured
 	Conns   *ConnectionsView // nil unless Development Connections are configured
 	Upd     *UpdatesView     // nil unless the update subsystem is configured
@@ -639,7 +682,7 @@ func (d *Dashboard) statusView(title, nav string) view {
 	d.mu.Lock()
 	last, doc := d.last, d.doctor
 	d.mu.Unlock()
-	v := view{Chrome: Chrome{Title: title, Nav: nav, Lang: d.locale(), APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings()},
+	v := view{Chrome: Chrome{Title: title, Nav: nav, Lang: d.locale(), APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings(), HasModels: d.cfg.Models != nil},
 		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
 	v.Rt = shellOf(v)
 	return v
@@ -743,17 +786,28 @@ func (d *Dashboard) done(w http.ResponseWriter, r *http.Request, name string, er
 	d.last = a
 	d.mu.Unlock()
 	dest := returnTo(r.URL.Path)
-	if r.PostFormValue("return") == "settings" {
+	switch r.PostFormValue("return") {
+	case "settings":
 		dest = "/settings"
+	case "models":
+		dest = "/models"
+	case "forge":
+		dest = "/forge"
 	}
 	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 // returnTo is the workspace an action's outcome is shown in: lifecycle
-// actions return to Runtime, doctor, tunnel and desktop setup to Diagnostics.
+// actions return to Runtime, model/runtime administration to Models, the
+// System One variant actions to Forge, doctor and tunnel setup to Diagnostics.
 func returnTo(path string) string {
-	if strings.HasPrefix(path, "/runtime/") {
+	switch {
+	case strings.HasPrefix(path, "/runtime/"):
 		return "/"
+	case strings.HasPrefix(path, "/models/") || strings.HasPrefix(path, "/settings/models/") || path == "/settings/residents":
+		return "/models"
+	case strings.HasPrefix(path, "/forge/") || strings.HasPrefix(path, "/settings/variants/"):
+		return "/forge"
 	}
 	if strings.HasPrefix(path, "/settings/updates/") {
 		return "/settings/updates"
@@ -821,9 +875,6 @@ func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
 		sv.Locale, _ = d.cfg.Settings.Locale()
 		sv.Device, sv.Model = def.Device, def.Model
 		v.Set = sv
-	}
-	if d.cfg.Models != nil {
-		v.Models = d.modelsView(v)
 	}
 	if d.cfg.Connections != nil {
 		v.Conns = d.connectionsView(v.Tunnel)
@@ -894,8 +945,10 @@ func (d *Dashboard) modelsView(v view) *ModelsView {
 
 // variantsOp forwards one explicit System One variant action to the
 // maintenance authority. The form names only catalog and variant identities
-// and, for certification, local run files; the authority refuses anything
-// else.
+// and, for certification, the evaluation inputs (corpus, Question Definitions,
+// policy) and the execution devices; the authority refuses anything else. The
+// lifecycle (build, preflight/probe, certification, apply) is the backend's:
+// each action here is one call, and the dashboard chains none of them.
 func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 	va := d.cfg.Variants
 	if va == nil {
@@ -911,8 +964,15 @@ func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 		d.done(w, r, "optimize "+f("model"), va.Optimize(f("model"), f("recipe")),
 			"started; the source and the active runtime are not touched, and nothing is selectable until the build is verified and published")
 	case "certify":
-		d.done(w, r, "certify "+f("variant"), va.Certify(f("variant"), f("reference"), f("candidate"), f("policy")),
-			"started; the evidence is recorded whatever the verdict")
+		req, err := certifyRequest(r)
+		if err == nil {
+			err = va.CertifyVariant(req)
+		}
+		d.done(w, r, "certify "+f("variant"), err,
+			"started; the backend runs the reference and the variant itself, and the evidence is recorded whatever the verdict. Nothing is activated")
+	case "apply":
+		d.done(w, r, "apply "+f("variant"), va.Apply(f("device"), f("model"), f("variant"), f("materialize") == "1"),
+			"started; one transaction activates the certified variant, rebinds the runtime and proves it serves, and restores the previous target if anything fails")
 	case "preflight":
 		d.done(w, r, "preflight "+f("kind"), va.Preflight(f("kind"), f("model"), f("recipe"), f("variant"), f("device")),
 			"started; it only inspects and records a report, and starts, downloads and changes nothing")
@@ -922,6 +982,43 @@ func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// certifyRequest reads the certification form. Like the Experiments runner, the
+// dashboard forwards only explicit absolute local paths (absPath): it never
+// resolves one against its own working directory.
+func certifyRequest(r *http.Request) (CertifyRequest, error) {
+	f := func(k string) string { return strings.TrimSpace(r.PostFormValue(k)) }
+	req := CertifyRequest{Variant: f("variant"), Device: f("device"), ReferenceDevice: f("reference_device"), ReferenceDType: f("reference_dtype"),
+		Materialize: f("materialize") == "1"}
+	var err error
+	if req.Dataset, err = absPath(f("dataset"), "evaluation dataset"); err != nil {
+		return req, err
+	}
+	for _, q := range lines(r.PostFormValue("questions")) {
+		p, err := absPath(q, "Question Definition")
+		if err != nil {
+			return req, err
+		}
+		req.Questions = append(req.Questions, p)
+	}
+	if pol := f("policy"); pol != "" {
+		if req.Policy, err = absPath(pol, "policy"); err != nil {
+			return req, err
+		}
+	}
+	return req, nil
+}
+
+// lines splits a textarea into its non-empty trimmed lines.
+func lines(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // residencyView restates the desired selection beside the inventory and the

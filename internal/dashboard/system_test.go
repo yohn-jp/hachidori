@@ -20,8 +20,10 @@ import (
 func TestWorkspacesUseTheOneVisualSystem(t *testing.T) {
 	e := newEnv(t)
 	withSettings(e, &fakeSettings{}, nil)
+	withModels(e, &fakeModels{state: ModelsState{Inventory: variantInventory()}})
+	withVariants(e, &fakeVariants{})
 	sys := string(ui.CSS())
-	for _, p := range []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings"} {
+	for _, p := range []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings", "/models", "/forge"} {
 		body := e.get(t, p).Body.String()
 		if strings.Count(body, sys) != 1 {
 			t.Errorf("%s does not inline the visual system exactly once", p)
@@ -50,7 +52,9 @@ func cssRule(t *testing.T, body, selector string) string {
 func TestWorkspacesComposeWithoutCardChrome(t *testing.T) {
 	e := newEnv(t)
 	withSettings(e, &fakeSettings{}, nil)
-	for _, p := range []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings"} {
+	withModels(e, &fakeModels{state: ModelsState{Inventory: variantInventory()}})
+	withVariants(e, &fakeVariants{})
+	for _, p := range []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings", "/models", "/forge"} {
 		body := e.get(t, p).Body.String()
 		for _, banned := range []string{"box-shadow: inset", "inset 3px", "border-left: 3px", "word-break: break-all", "var(--r-lg)"} {
 			if strings.Contains(body, banned) {
@@ -135,13 +139,14 @@ func TestIrreversibleActionsConfirm(t *testing.T) {
 	withConnections(e, filepath.Join(t.TempDir(), "settings.json"))
 	e.post(t, "/settings/connections/save", profileForm("dev", "dev@host", "7843", "7843"))
 	set := e.get(t, "/settings").Body.String()
-	if n := strings.Count(set, `action="/settings/models/remove" class="inline" data-confirm=`); n == 0 {
+	mod := e.get(t, "/models").Body.String()
+	if n := strings.Count(mod, `action="/models/remove" class="inline" data-confirm=`); n == 0 {
 		t.Error("model/runtime removal is not confirmed")
 	}
 	if !strings.Contains(set, `action="/settings/connections/remove" class="inline" data-confirm=`) {
 		t.Error("connection removal is not confirmed")
 	}
-	if strings.Contains(set+exp, "onsubmit=") {
+	if strings.Contains(set+mod+exp, "onsubmit=") {
 		t.Error("a form confirms through its own inline handler")
 	}
 	if !strings.Contains(set, `var ask = (b && b.dataset.confirm) || f.dataset.confirm;`) {
