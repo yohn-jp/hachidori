@@ -75,6 +75,9 @@ type Config struct {
 	// the members of the bound runtime, so a change applies on the next
 	// explicit Start/Restart and never mutates running workers.
 	Residents func() []string
+	// RestoreTimeout bounds the wait for the serving residents to be READY
+	// again after an execution session; zero is 15 minutes.
+	RestoreTimeout time.Duration
 }
 
 // Maintenance are the explicit model/runtime operations of the setup/home
@@ -99,6 +102,9 @@ type Maintenance struct {
 	// Probe loads a persisted variant in an isolated worker and asks one typed
 	// decision.
 	Probe func(ctx context.Context, root string, p ProbeParams, log io.Writer, obs *setup.Observer) (ProbeRecord, error)
+	// Execute runs one exact-target execution session and records its
+	// evidence (RunExecution).
+	Execute func(ctx context.Context, root string, p ExecuteParams, log io.Writer) (ExecutionResult, error)
 }
 
 // PreflightParams are the explicit inputs of a preflight: the operation it
@@ -172,6 +178,11 @@ func (m Maintenance) withDefaults() Maintenance {
 	if m.Probe == nil {
 		m.Probe = func(ctx context.Context, root string, p ProbeParams, log io.Writer, obs *setup.Observer) (ProbeRecord, error) {
 			return Probe(ctx, home.Home{Root: root}, p, ProbeDeps{}, log, obs)
+		}
+	}
+	if m.Execute == nil {
+		m.Execute = func(ctx context.Context, root string, p ExecuteParams, log io.Writer) (ExecutionResult, error) {
+			return RunExecution(ctx, home.Home{Root: root}, p, ExecutionDeps{}, log)
 		}
 	}
 	return m
@@ -1013,7 +1024,7 @@ func (c *Controller) Inventory(verify bool) (setup.Inventory, error) {
 
 func isMaintenance(kind string) bool {
 	switch kind {
-	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpPreflight, OpProbe:
+	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpPreflight, OpProbe, OpExecute:
 		return true
 	}
 	return false

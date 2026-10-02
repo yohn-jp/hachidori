@@ -290,6 +290,15 @@ hachidori certify show <variant-id>          # add -json for the full report
 hachidori activate --device cuda --model clef-flash --variant <variant-id>
 ```
 
+`hachidori forge execute` produces the same `ResidentRun` without a resident:
+it starts the exact source or the exact persisted variant on an explicit device
+as temporary maintenance work (no experimental activation, no certification
+needed), proves from the READY worker what executed, runs the dataset and keeps
+the run under the home as `hachidori.forge-run.v1`, bound to the source and
+variant identities, runtime, device, dtype, dataset and Question Definitions,
+returning an evidence ID instead of a path (see runtime.md, Forge execution
+sessions). It decides nothing: certification stays the comparison below.
+
 `certify run` records one resident's pass as `hachidori.resident-run.v1` (the
 same per-model evidence a resident comparison records: identity from the
 resident's own status, startup load and warmup, accelerator and host memory

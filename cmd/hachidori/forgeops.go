@@ -14,8 +14,10 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/app"
 	"github.com/yohn-jp/hachidori/internal/diagnostics"
+	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/optimize"
+	"github.com/yohn-jp/hachidori/internal/question"
 	"github.com/yohn-jp/hachidori/internal/setup"
 )
 
@@ -25,6 +27,7 @@ import (
 
 const forgeCmdUsage = `usage: hachidori forge preflight <materialize|optimize|probe|certify> [flags]
        hachidori forge probe [flags] <variant-id>
+       hachidori forge execute [flags] <dataset.jsonl>
        hachidori forge diagnostics <list|show|export> [flags]
 `
 
@@ -38,6 +41,8 @@ func cmdForge(args []string) error {
 		return forgePreflight(args[1:])
 	case "probe":
 		return forgeProbe(args[1:])
+	case "execute":
+		return forgeExecute(args[1:])
 	case "diagnostics":
 		return forgeDiagnostics(args[1:])
 	}
@@ -216,6 +221,68 @@ func forgeProbe(args []string) error {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "probe passed: this variant loaded and answered one valid typed decision. It is not a certification; nothing was activated or changed")
+	return nil
+}
+
+// forgeExecute runs a Forge execution session (app.RunExecution) on an exact
+// source or variant and prints the stable reference of the resident run it
+// recorded under the home. It is not a certification and activates nothing.
+// It does not know the residents of a running Hachidori: the desktop's
+// Controller owns quiescing those.
+func forgeExecute(args []string) error {
+	fs := flag.NewFlagSet("forge execute", flag.ExitOnError)
+	homeFlag := fs.String("home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
+	device := fs.String("device", "", "device the execution worker runs on: cuda or cpu (required; never substituted)")
+	variant := fs.String("variant", "", "execute this persisted variant (default: the pinned source model)")
+	model := fs.String("model", setup.ClefFlash, "catalog model ID of the source to execute")
+	dtype := fs.String("dtype", "", "source reference dtype: float32 or bfloat16 (required for a source whose provider has a dtype control)")
+	var defPaths pathList
+	fs.Var(&defPaths, "questions", "Question Definition file or directory resolving question_refs (repeatable)")
+	warmup := fs.Int("warmup", 1, "warmup requests excluded from latency")
+	passes := fs.Int("passes", 1, "passes over the dataset for latency (the decisions of pass 1 are recorded)")
+	high := fs.Float64("high-confidence", eval.DefaultHighConfidence, "confidence threshold for high-confidence errors")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: hachidori forge execute [flags] <dataset.jsonl>")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return errors.New("usage: hachidori forge execute [flags] <dataset.jsonl>")
+	}
+	h, err := home.Resolve(*homeFlag)
+	if err != nil {
+		return err
+	}
+	var defs *question.Set
+	if len(defPaths) > 0 {
+		if defs, err = question.Load(defPaths...); err != nil {
+			return err
+		}
+	}
+	cases, sum, labelled, err := eval.LoadAny(fs.Arg(0), defs)
+	if err != nil {
+		return err
+	}
+	t := app.ExecutionTarget{Kind: eval.ForgeTargetSource, Model: *model, Device: *device, DType: *dtype}
+	if *variant != "" {
+		t = app.ExecutionTarget{Kind: eval.ForgeTargetVariant, Variant: *variant, Device: *device}
+	}
+	ctx, stop := signalContext()
+	defer stop()
+	log, closeLog := app.OpenSetupLog(h.Root, app.OpExecute, t.Device, t.Model, t.String())
+	defer closeLog()
+	res, err := app.RunExecution(ctx, h, app.ExecuteParams{Target: t, Input: app.ExecutionInput{Dataset: fs.Arg(0), DatasetSHA256: sum, Cases: cases,
+		Labelled: labelled, Warmup: *warmup, Passes: *passes, HighConfidence: *high}}, app.ExecutionDeps{}, io.MultiWriter(os.Stderr, log))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("evidence %s\n", res.EvidenceID)
+	tg := res.Target
+	fmt.Printf("recorded %s %s: %d observations (labelled=%v), %d request errors, device %s dtype %s\n", tg.Kind, tg.Model, res.Observations, labelled, res.ErrorCount, tg.Device, tg.DType)
+	if res.ErrorCount > 0 {
+		return fmt.Errorf("%d request errors; the run is recorded, and certification will refuse it unless the policy allows them", res.ErrorCount)
+	}
 	return nil
 }
 
