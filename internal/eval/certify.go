@@ -440,8 +440,8 @@ func fidelityOf(a, b ModelRun, highConf float64, labelled bool) (Fidelity, []Fli
 		}
 		q.pairs = append(q.pairs, [2]string{p.Choice, o.Choice})
 		sum, worst := 0.0, 0.0
-		for opt, pr := range p.Probabilities {
-			d := math.Abs(o.Probabilities[opt] - pr)
+		for _, opt := range optionOrder(p.Probabilities) {
+			d := math.Abs(o.Probabilities[opt] - p.Probabilities[opt])
 			sum += d
 			worst = math.Max(worst, d)
 		}
@@ -546,8 +546,8 @@ func fidelityOf(a, b ModelRun, highConf float64, labelled bool) (Fidelity, []Fli
 // bits, bounded by [0, 1].
 func jsBits(p, q map[string]float64) float64 {
 	var d float64
-	for k, pv := range p {
-		qv := q[k]
+	for _, k := range optionOrder(p) {
+		pv, qv := p[k], q[k]
 		m := (pv + qv) / 2
 		if pv > 0 && m > 0 {
 			d += 0.5 * pv * math.Log2(pv/m)
@@ -557,6 +557,17 @@ func jsBits(p, q map[string]float64) float64 {
 		}
 	}
 	return math.Min(1, math.Max(0, d))
+}
+
+// optionOrder is the options of a distribution in a fixed order: floating
+// point sums over them are then reproducible, which an audited artifact needs.
+func optionOrder(p map[string]float64) []string {
+	r := make([]string, 0, len(p))
+	for k := range p {
+		r = append(r, k)
+	}
+	sort.Strings(r)
+	return r
 }
 
 func ranking(p map[string]float64) []string {
