@@ -127,6 +127,15 @@ type VariantActions interface {
 	ActivateVariant(device, model, variant string, experimental bool) error
 	Optimize(model, recipe string) error
 	Certify(variant, reference, candidate, policy string) error
+	// Preflight inspects what can be known before the expensive operation
+	// kind (materialize, optimize, probe, certify) and records the report. It
+	// changes nothing. Probe loads one persisted variant on an explicit device
+	// in an isolated worker and asks one typed decision; it is not a
+	// certification and touches no resident or activation. Diagnostic returns
+	// one stored failure diagnostic by its identity.
+	Preflight(kind, model, recipe, variant, device string) error
+	Probe(variant, device string) error
+	Diagnostic(id string) ([]byte, error)
 }
 
 // Models is the explicit model/runtime maintenance authority, and the
@@ -161,6 +170,8 @@ type ModelsState struct {
 	// ResidencyChanged: the desired resident selection differs from the
 	// residents the running runtime was started with.
 	ResidencyChanged bool
+	// Forge is the recorded Forge readiness: preflights, probes, diagnostics.
+	Forge ForgeState
 }
 
 // Residency reads and stores the desired additional resident models (catalog
@@ -208,7 +219,12 @@ type ModelOp struct {
 	Started, Finished           time.Time
 	Failure                     string // empty when it succeeded
 	FailurePhase, FailureStep   string
-	Log                         string // the setup log holding the action's output
+	// Resumed is how many of Done a download already held when it began
+	// (an interrupted partial being continued); Diagnostic is the identity of
+	// the failure diagnostic recorded for a failed Forge operation.
+	Resumed    int64
+	Diagnostic string
+	Log        string // the setup log holding the action's output
 }
 
 // Determinate reports whether the step has a measurable total.
@@ -259,6 +275,11 @@ type VariantRow struct {
 	// CanExperiment: no record exists, so the explicit operator-only
 	// experimental/uncertified launch is offered (never for a rejected one).
 	CanExperiment bool
+	// Probe is the latest probe of this variant, nil if it was never probed.
+	// ProbeStale: it was recorded for another manifest of this ID, so it says
+	// nothing about the variant as it is now.
+	Probe      *ProbeRow
+	ProbeStale bool
 }
 
 // OptimizeTarget is a materialized catalog model that can be optimized.
@@ -498,6 +519,7 @@ func New(cfg Config) *Dashboard {
 	if cfg.Models != nil {
 		d.mux.HandleFunc("POST /settings/models/{op}", d.modelsOp)
 		d.mux.HandleFunc("POST /settings/variants/{op}", d.variantsOp)
+		d.mux.HandleFunc("GET /settings/forge/diagnostics/{id}", d.forgeDiagnostic)
 	}
 	if cfg.Models != nil && cfg.Residency != nil {
 		d.mux.HandleFunc("POST /settings/residents", d.settingsResidents)
@@ -835,6 +857,12 @@ func (d *Dashboard) modelsView(v view) *ModelsView {
 		row.Pending = e.Active && st.RestartRequired && !row.Running
 		row.CanActivate = e.Problem == "" && e.SourceMaterialized && e.Certification == eval.StateAccepted
 		row.CanExperiment = e.Problem == "" && e.SourceMaterialized && e.Certification == eval.StateUncertified
+		for i := range st.Forge.Probes {
+			if p := &st.Forge.Probes[i]; p.Variant == e.ID {
+				row.Probe, row.ProbeStale = p, p.ManifestSHA256 != e.ManifestSHA256
+				break // newest first
+			}
+		}
 		mv.Variants = append(mv.Variants, row)
 	}
 	if mv.VariantControls {
@@ -871,6 +899,12 @@ func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 	case "certify":
 		d.done(w, r, "certify "+f("variant"), va.Certify(f("variant"), f("reference"), f("candidate"), f("policy")),
 			"started; the evidence is recorded whatever the verdict")
+	case "preflight":
+		d.done(w, r, "preflight "+f("kind"), va.Preflight(f("kind"), f("model"), f("recipe"), f("variant"), f("device")),
+			"started; it only inspects and records a report, and starts, downloads and changes nothing")
+	case "probe":
+		d.done(w, r, "probe "+f("variant"), va.Probe(f("variant"), f("device")),
+			"started; the variant loads in its own worker and is stopped afterwards. It is not a certification and no resident, activation or route changes")
 	default:
 		http.NotFound(w, r)
 	}

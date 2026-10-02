@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,7 +50,13 @@ const (
 // RunObserved is Run with an optional Observer of its phases and progress. It
 // preserves the same materialization/verification/activation semantics as Run.
 func RunObserved(h home.Home, device, modelID string, log io.Writer, obs *Observer) error {
-	a, err := reconcile(h, device, modelID, log, obs, PhaseActivation)
+	return RunContext(context.Background(), h, device, modelID, log, obs)
+}
+
+// RunContext is RunObserved that ctx can cancel. A cancelled model download
+// keeps its resumable partial; nothing is activated.
+func RunContext(ctx context.Context, h home.Home, device, modelID string, log io.Writer, obs *Observer) error {
+	a, err := reconcile(ctx, h, device, modelID, log, obs, PhaseActivation)
 	if err != nil {
 		return err
 	}
@@ -67,7 +73,14 @@ const PhasePublish Phase = "publish"
 // and verified path, publishes them, and leaves state/active-runtime.json
 // untouched. Activation is the separate, explicit Activate.
 func Materialize(h home.Home, device, modelID string, log io.Writer, obs *Observer) error {
-	_, err := reconcile(h, device, modelID, log, obs, PhasePublish)
+	return MaterializeContext(context.Background(), h, device, modelID, log, obs)
+}
+
+// MaterializeContext is Materialize that ctx can cancel. A cancelled model
+// download keeps its resumable partial (see fetchResumable); nothing else is
+// left behind and nothing is published.
+func MaterializeContext(ctx context.Context, h home.Home, device, modelID string, log io.Writer, obs *Observer) error {
+	_, err := reconcile(ctx, h, device, modelID, log, obs, PhasePublish)
 	return err
 }
 
@@ -75,7 +88,7 @@ func Materialize(h home.Home, device, modelID string, log io.Writer, obs *Observ
 // publishes the runtime, entering publishPhase before the publish. It never
 // writes the activation record; it returns the record that would activate
 // exactly what it materialized.
-func reconcile(h home.Home, device, modelID string, log io.Writer, obs *Observer, publishPhase Phase) (home.Active, error) {
+func reconcile(ctx context.Context, h home.Home, device, modelID string, log io.Writer, obs *Observer, publishPhase Phase) (home.Active, error) {
 	enter := obs.phase
 	enter(PhasePreparing)
 	spec, model, err := choose(device, modelID)
@@ -105,7 +118,7 @@ func reconcile(h home.Home, device, modelID string, log io.Writer, obs *Observer
 		return home.Active{}, fmt.Errorf("runtime %s: %w", id, err)
 	}
 	enter(PhaseModel)
-	if err := materializeModel(h, model, log, obs); err != nil {
+	if err := materializeModel(ctx, h, model, log, obs); err != nil {
 		return home.Active{}, fmt.Errorf("model %s: %w", model.ID, err)
 	}
 	enter(publishPhase)
@@ -309,7 +322,7 @@ func normalizeDist(d string) string {
 // materializeModel materializes the catalog model m independently of the
 // Python runtime. A present model is reused only if every file still matches
 // its pinned digest.
-func materializeModel(h home.Home, m home.ModelManifest, log io.Writer, obs *Observer) error {
+func materializeModel(ctx context.Context, h home.Home, m home.ModelManifest, log io.Writer, obs *Observer) error {
 	final := h.Path("models", filepath.FromSlash(ModelDirName(m)))
 	if _, err := os.Stat(filepath.Join(final, "hachidori-model.json")); err == nil {
 		if err := verifyModel(final, m, obs); err != nil {
@@ -318,15 +331,20 @@ func materializeModel(h home.Home, m home.ModelManifest, log io.Writer, obs *Obs
 		fmt.Fprintf(log, "model %s (%s@%s) verified, reusing\n", m.ID, m.Repo, m.Revision[:12])
 		return nil
 	}
+	// The staging directory is the resumable partial of this model: files
+	// already complete and verified, and an interrupted file's partial. It is
+	// never a materialized model (it has no manifest, and only the atomic
+	// rename below publishes anything). Whatever is not part of this model's
+	// pinned file set is removed.
 	stage := final + ".staging"
-	if err := os.RemoveAll(stage); err != nil {
+	rels := sortedFiles(m.Files)
+	if err := pruneStage(stage, rels); err != nil {
 		return err
 	}
-	rels := sortedFiles(m.Files)
 	for i, rel := range rels {
-		url := modelBaseURL + m.Repo + "/resolve/" + m.Revision + "/" + rel
+		url := ModelFileURL(m, rel)
 		at := Progress{Step: StepDownload, Detail: rel, Item: i + 1, Items: len(rels)}
-		if err := fetch(url, filepath.Join(stage, filepath.FromSlash(rel)), m.Files[rel], log, obs, at); err != nil {
+		if err := fetchResumable(ctx, url, filepath.Join(stage, filepath.FromSlash(rel)), m.Files[rel], log, obs, at); err != nil {
 			return err
 		}
 	}
@@ -335,6 +353,64 @@ func materializeModel(h home.Home, m home.ModelManifest, log io.Writer, obs *Obs
 		return err
 	}
 	return os.Rename(stage, final)
+}
+
+// pruneStage keeps in a model's staging directory only what may be continued:
+// the pinned files (complete or not) and their partial records. Anything else,
+// including a manifest, is removed, so a published model holds exactly its
+// pinned files.
+func pruneStage(stage string, rels []string) error {
+	keep := map[string]bool{}
+	for _, rel := range rels {
+		keep[filepath.ToSlash(rel)] = true
+		keep[filepath.ToSlash(rel)+".part"] = true
+		keep[filepath.ToSlash(rel)+".part.json"] = true
+	}
+	if err := os.MkdirAll(stage, 0o755); err != nil {
+		return err
+	}
+	var drop []string
+	err := filepath.WalkDir(stage, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(stage, p)
+		if rerr != nil || rel == "." {
+			return rerr
+		}
+		slash := filepath.ToSlash(rel)
+		if d.IsDir() {
+			for k := range keep {
+				if strings.HasPrefix(k, slash+"/") {
+					return nil // holds a pinned file
+				}
+			}
+			drop = append(drop, p)
+			return filepath.SkipDir
+		}
+		if !keep[slash] || !d.Type().IsRegular() {
+			drop = append(drop, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, p := range drop {
+		if err := os.RemoveAll(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PresentModel checks that dir holds the catalog model m's manifest and every
+// pinned file, without hashing them.
+func PresentModel(dir string, m home.ModelManifest) error { return presentModel(dir, m) }
+
+// ModelFileURL is the pinned download URL of one file of the catalog model m.
+func ModelFileURL(m home.ModelManifest, rel string) string {
+	return modelBaseURL + m.Repo + "/resolve/" + m.Revision + "/" + rel
 }
 
 // sortedFiles lists a model's files in a fixed order, so progress is
@@ -387,68 +463,6 @@ func verifyModel(dir string, m home.ModelManifest, obs *Observer) error {
 // cut off. Connecting and the TLS handshake are already bounded by
 // http.DefaultTransport.
 var downloadStall = 2 * time.Minute
-
-// fetch downloads url to dst and verifies its SHA-256. A present file with
-// the right digest is reused. The digest stays the only authority over what
-// is accepted; a download that stalls or fails leaves nothing behind.
-func fetch(url, dst, want string, log io.Writer, obs *Observer, at Progress) error {
-	if got, err := fileSHA256Observed(dst, obs, Progress{Step: StepVerify, Detail: at.Detail, Item: at.Item, Items: at.Items}); err == nil && got == want {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	fmt.Fprintf(log, "downloading %s\n", url)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	watchdog := time.AfterFunc(downloadStall, cancel)
-	defer watchdog.Stop()
-	stalled := func(err error) error {
-		if ctx.Err() != nil {
-			return fmt.Errorf("GET %s: stalled, no data received for %s", url, downloadStall)
-		}
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return stalled(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", url, resp.Status)
-	}
-	tmp := dst + ".part"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return err
-	}
-	hash := sha256.New()
-	// The total is the response's Content-Length when the server states one;
-	// otherwise the download is indeterminate rather than given a made-up size.
-	at.Total = max(resp.ContentLength, 0)
-	counter := newByteCounter(obs, at)
-	counter.flush()
-	_, err = io.Copy(io.MultiWriter(f, hash, counter), progressReader{resp.Body, watchdog})
-	if err == nil {
-		counter.flush()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		os.Remove(tmp)
-		return stalled(err)
-	}
-	if got := hex.EncodeToString(hash.Sum(nil)); got != want {
-		os.Remove(tmp)
-		return fmt.Errorf("%s: sha256 mismatch: got %s want %s", url, got, want)
-	}
-	return os.Rename(tmp, dst)
-}
 
 // progressReader restarts the stall watchdog whenever data arrives.
 type progressReader struct {

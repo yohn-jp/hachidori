@@ -71,6 +71,10 @@ var secretPatterns = []struct {
 	// token=..., api_key=..., HF_TOKEN=... in a query string or an environment
 	// dump; the name must end in the secret word, so num_tokens=5 is kept.
 	{regexp.MustCompile(`(?i)\b([\w.-]*(?:token|secret|passw(?:or)?d|credential|signature|api[_-]?key)=)[^&\s'"<>]+`), "${1}" + secret},
+	// Well-known credential shapes that carry no key=value around them: Hugging
+	// Face user tokens (hf_...) and GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_ and
+	// github_pat_...).
+	{regexp.MustCompile(`\b(?:hf_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})`), secret},
 	// "Bearer abc...", "Basic abc..."
 	{regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`), "${1} " + secret},
 	// Authorization: <scheme> <value> and Cookie: <value>

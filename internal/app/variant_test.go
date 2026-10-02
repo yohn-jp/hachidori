@@ -199,7 +199,7 @@ func TestActivateVariantOperation(t *testing.T) {
 // operations really enter.
 func TestVariantPlans(t *testing.T) {
 	want := map[string][]string{
-		OpOptimize: {"model", "preparing", "runtime", "starting", "loading_source", "resolving", "quantizing", "serializing", "verifying", "publish"},
+		OpOptimize: {"model", "preflight", "preparing", "runtime", "starting", "loading_source", "resolving", "quantizing", "serializing", "verifying", "publish"},
 		OpCertify:  {"loading_runs", "comparing", "recording"},
 	}
 	for kind, w := range want {

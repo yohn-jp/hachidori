@@ -168,7 +168,7 @@ func TestBuildPublishesVerifiedVariant(t *testing.T) {
 	if names := variantDirs(t, h); len(names) != 1 || names[0] != v.ID {
 		t.Fatalf("variant directory holds %v (staging must be gone)", names)
 	}
-	want := []setup.Phase{setup.PhaseModel, setup.PhaseStarting, setup.PhaseLoadingSource, setup.PhaseResolving, setup.PhaseQuantizing,
+	want := []setup.Phase{setup.PhaseModel, setup.PhasePreflight, setup.PhaseStarting, setup.PhaseLoadingSource, setup.PhaseResolving, setup.PhaseQuantizing,
 		setup.PhaseSerializing, setup.PhaseVerifying, setup.PhasePublish}
 	if !reflect.DeepEqual(p.seen, want) {
 		t.Fatalf("phases %v, want %v", p.seen, want)

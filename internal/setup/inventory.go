@@ -71,6 +71,11 @@ type ModelEntry struct {
 	Verified     bool   `json:"verified"`     // every file matches its pinned digest (only when requested)
 	Active       bool   `json:"active"`
 	Problem      string `json:"problem,omitempty"`
+	// PartialBytes is the size of an interrupted download of this model that
+	// is kept for resume (the pinned files already held in its staging
+	// directory). A partial is never a materialized model: Materialized stays
+	// false and nothing serves from it.
+	PartialBytes int64 `json:"partial_bytes,omitempty"`
 }
 
 // Inspect reports the inventory of h. It only reads: it never creates or
@@ -143,6 +148,9 @@ func Inspect(h home.Home, verify bool) Inventory {
 					}
 				}
 			}
+		}
+		if !e.Materialized {
+			e.PartialBytes = stagedBytes(dir+".staging", m)
 		}
 		inv.Models = append(inv.Models, e)
 	}
@@ -572,4 +580,20 @@ func removeConfined(h home.Home, base, target string) error {
 		return fmt.Errorf("refusing to remove %s: resolves outside %s", target, realRoot)
 	}
 	return os.RemoveAll(target)
+}
+
+// stagedBytes is the number of bytes of m's pinned files held in its staging
+// directory: complete files and the partial of an interrupted one. It reads
+// sizes only.
+func stagedBytes(stage string, m home.ModelManifest) int64 {
+	var n int64
+	for rel := range m.Files {
+		p := filepath.Join(stage, filepath.FromSlash(rel))
+		for _, f := range []string{p, p + ".part"} {
+			if fi, err := os.Stat(f); err == nil && fi.Mode().IsRegular() {
+				n += fi.Size()
+			}
+		}
+	}
+	return n
 }

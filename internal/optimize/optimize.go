@@ -98,6 +98,9 @@ type Deps struct {
 	Now func() time.Time
 	// OptimizerRuntime is the runtime identity recorded when Runner is set.
 	OptimizerRuntime string
+	// Preflight overrides the observations of the preflight Build runs before
+	// any expensive work (host disk and RAM, tests).
+	Preflight PreflightDeps
 }
 
 // Build builds the variant of req from the materialized, verified catalog
@@ -134,6 +137,12 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	// against its digest.
 	if err := setup.Verify(h, setup.KindModel, model.ID, obs); err != nil {
 		return Result{}, fmt.Errorf("source model %s: %w (materialize it first with `hachidori setup --model %s`)", model.ID, err, model.ID)
+	}
+	// Refuse an obviously impossible build before the optimizer runtime is
+	// materialized or the multi-GB source is loaded. The source was just
+	// verified, so its digests are not hashed again.
+	if _, err := RequirePreflight(ctx, h, PreflightRequest{Kind: setup.PreflightOptimize, Model: model.ID, Recipe: recipe.Name, Verified: true}, deps.Preflight, obs); err != nil {
+		return Result{}, err
 	}
 	runner := deps.Runner
 	runtimeID := deps.OptimizerRuntime

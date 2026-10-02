@@ -17,11 +17,13 @@ import (
 	"github.com/yohn-jp/hachidori/internal/app"
 	"github.com/yohn-jp/hachidori/internal/dashboard"
 	"github.com/yohn-jp/hachidori/internal/desktop"
+	"github.com/yohn-jp/hachidori/internal/diagnostics"
 	"github.com/yohn-jp/hachidori/internal/doctor"
 	"github.com/yohn-jp/hachidori/internal/firstrun"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
+	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -453,7 +455,37 @@ func (m modelManager) State() dashboard.ModelsState {
 		st.Err = err.Error()
 	}
 	st.Inventory = inv
+	st.Forge = forgeState(c.Forge())
 	return st
+}
+
+// forgeState restates the controller's Forge records (preflights, probes,
+// diagnostics) for the dashboard. Nothing is added or derived.
+func forgeState(f app.ForgeState) dashboard.ForgeState {
+	var out dashboard.ForgeState
+	for _, r := range f.Preflights {
+		row := dashboard.PreflightRow{Kind: r.Kind, Model: r.Model, Variant: r.Variant, Recipe: r.Recipe, Device: r.Device, At: r.CreatedAt, Outcome: r.Outcome,
+			Pass: r.Counts.Pass, Warning: r.Counts.Warning, Blocker: r.Counts.Blocker, Unknown: r.Counts.Unknown, NotMeasured: r.NotMeasured}
+		for _, fd := range setup.SortedFindings(r.Findings) {
+			if fd.Status != setup.FindingPass {
+				row.Findings = append(row.Findings, dashboard.FindingRow{ID: fd.ID, Status: string(fd.Status), Summary: fd.Summary})
+			}
+		}
+		out.Preflights = append(out.Preflights, row)
+	}
+	for _, p := range f.Probes {
+		row := dashboard.ProbeRow{Variant: p.Variant, Device: p.Device, Result: p.Result, Phase: p.Phase, Error: p.Error, StartedAt: p.StartedAt,
+			ManifestSHA256: p.VariantManifestSHA256, Provider: p.Provider, DType: p.Execution.DType, DeviceName: p.Execution.DeviceName,
+			StartupMS: p.Timing.StartupMS, LoadMS: p.Timing.LoadMS, WarmupMS: p.Timing.WarmupMS, RequestMS: p.Timing.RequestMS}
+		if d := p.Decision; d != nil {
+			row.Choice, row.Confidence = d.Choice, d.Confidence
+		}
+		out.Probes = append(out.Probes, row)
+	}
+	for _, d := range f.Diagnostics {
+		out.Diagnostics = append(out.Diagnostics, dashboard.DiagnosticRow{ID: d.ID, Kind: d.Kind, Phase: d.Phase, Model: d.Model, Variant: d.Variant, Created: d.Created, Error: d.Error})
+	}
+	return out
 }
 
 // modelOp is the dashboard's view of one application action. It restates the
@@ -465,10 +497,10 @@ func modelOp(o *app.Operation, root string) *dashboard.ModelOp {
 	op := &dashboard.ModelOp{Kind: o.Kind, Device: o.Device, Model: o.Model, Target: o.Target, Phase: o.Phase,
 		Plan: o.Plan, Phases: o.Phases, Started: o.Started, Finished: o.Finished}
 	if p := o.Progress; p != nil {
-		op.Step, op.Detail, op.Done, op.Total, op.Item, op.Items = string(p.Step), p.Detail, p.Done, p.Total, p.Item, p.Items
+		op.Step, op.Detail, op.Done, op.Total, op.Item, op.Items, op.Resumed = string(p.Step), p.Detail, p.Done, p.Total, p.Item, p.Items, p.Resumed
 	}
 	if o.Failure != nil {
-		op.Failure, op.FailurePhase, op.FailureStep = o.Failure.Message, o.Failure.Phase, o.Failure.Step
+		op.Failure, op.FailurePhase, op.FailureStep, op.Diagnostic = o.Failure.Message, o.Failure.Phase, o.Failure.Step, o.Failure.Diagnostic
 	}
 	if root != "" {
 		op.Log = app.SetupLogPath(root)
@@ -495,6 +527,26 @@ func (m modelManager) ActivateVariant(device, model, variant string, experimenta
 func (m modelManager) Optimize(model, recipe string) error { return m.ctl().Optimize(model, recipe) }
 func (m modelManager) Certify(variant, reference, candidate, policy string) error {
 	return m.ctl().Certify(app.CertifyParams{Variant: variant, Reference: reference, Candidate: candidate, Policy: policy})
+}
+func (m modelManager) Preflight(kind, model, recipe, variant, device string) error {
+	return m.ctl().Preflight(app.PreflightParams{Kind: kind, Model: model, Recipe: recipe, Variant: variant, Device: device})
+}
+func (m modelManager) Probe(variant, device string) error {
+	return m.ctl().Probe(app.ProbeParams{Variant: variant, Device: device})
+}
+
+// Diagnostic is one stored Forge failure diagnostic, as the document that was
+// written (bounded and redacted when it was recorded).
+func (m modelManager) Diagnostic(id string) ([]byte, error) {
+	snap := m.ctl().Snapshot()
+	if snap.Home == "" {
+		return nil, errors.New("no home is selected")
+	}
+	d, err := diagnostics.LoadForge(snap.Home, id)
+	if err != nil {
+		return nil, err
+	}
+	return diagnostics.FormatForge(d)
 }
 func (m modelManager) Start() error   { return m.ctl().Start() }
 func (m modelManager) Stop() error    { return m.ctl().Stop() }

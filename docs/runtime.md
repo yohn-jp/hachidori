@@ -23,6 +23,7 @@ client CLI / any HTTP caller
 | `hachidori activate [--home H] [--device cuda\|cpu] [--model ID] [--variant ID [--experimental]]` | host, offline | make an already materialized catalog model, or for a System One model one of its variants, active; the same operation as Settings, Activate (see System One variants) |
 | `hachidori variant list\|show\|verify\|optimize\|remove\|recipes …` | host | derived System One variants: `optimize` builds one with a canonical recipe in the separate optimizer runtime; the rest inspect, verify and remove (see System One variants) |
 | `hachidori certify run\|evaluate\|show …` | client / host | record a resident run, certify a variant against its high-precision reference, inspect the certification (certification.md) |
+| `hachidori forge preflight\|probe\|diagnostics …` | host | System One Forge readiness: `preflight` checks identity, runtime, recipe, disk, RAM and the requested device before expensive work, `probe` loads a persisted variant in an isolated worker and asks one typed decision (not a certification), `diagnostics` lists, shows and exports the bounded redacted failure diagnostics (see Forge readiness) |
 | `hachidori serve [--home H] [--listen 127.0.0.1:7843] [--resident ID]…` | host | run HTTP + one resident worker (plus one more worker process per `--resident` catalog model ID; see Multi-resident serving); non-loopback binds are refused |
 | `hachidori dashboard [--home H] [--listen 127.0.0.1:7843] [--addr 127.0.0.1:7844] [--ssh ssh] [--resident ID]…` | host | `serve` plus the host-local dashboard (see below) |
 | `hachidori desktop [--home H] [--listen …] [--addr …] [--ssh ssh] [--background]` | host (Windows) | the same desktop composition as a no-argument `hachidori.exe`: first run/recovery or normal start in a resident WebView2 window with a tray icon (see below); fails with a clear error on other systems |
@@ -1107,10 +1108,15 @@ Operator workflow (physical evidence is collected with it; certification.md has
 the full procedure and the NOT_CHECKED record):
 
 ```powershell
-hachidori setup --device cpu --model clef-flash          # materialize the pinned source (about 19 GB); network only here
+hachidori forge preflight materialize --device cpu       # disk, runtime, partial download state; nothing is downloaded
+hachidori setup --device cpu --model clef-flash          # materialize the pinned source (about 19 GB); network only here;
+                                                         # interrupted? run the same command again: it resumes (see Resumable acquisition)
+hachidori forge preflight optimize                       # source digests, recipe against the source's modules, disk, RAM
 hachidori variant optimize --model clef-flash            # build the W4A16 variant (materializes the optimizer runtime first)
 hachidori variant list                                   # id, recipe, precision, certification
 hachidori variant verify <variant-id>                    # offline integrity + preserved-module check
+hachidori forge preflight probe --variant <variant-id> --device cuda   # needs the cuda runtime (setup --device cuda) first
+hachidori forge probe --device cuda <variant-id>         # load the persisted variant, one typed decision, tear down
 # certification: certification.md "System One variant certification"
 hachidori certify show <variant-id>
 hachidori setup --device cuda --model clef-flash         # CUDA runtime beside the CPU one, same source
@@ -1119,6 +1125,101 @@ hachidori serve                                          # restart applies the a
 hachidori status                                         # runtime.variant, provider.device/dtype/quantized_execution
 hachidori decide request.json
 ```
+
+### System One Forge readiness
+
+Four mechanisms harden the Forge before a physical Clef-Flash run. None of them
+adds a lifecycle: they extend the setup, optimize, app, worker and diagnostics
+authorities, and the CLI and the desktop project the same Go results.
+
+**Resumable acquisition** (`internal/setup/resume.go`). A multi-GB model file that
+is interrupted (network loss, stall, cancellation) keeps a *partial*:
+`models/<dir>.staging/<file>.part` and its record `<file>.part.json` (the URL, the
+pinned SHA-256, the remote object's strong `ETag` or `Last-Modified`, and its total
+length). A partial is never a materialized model: the model's manifest is written
+last and only the atomic rename of the staging directory publishes anything, and
+`Inspect` reports the held bytes as `partial_bytes`, not as `materialized`.
+A later run continues it only after proving the remote object is the same: the
+request carries `Range: bytes=<held>-` and `If-Range: <validator>`, and the `206`
+answer must start at the held length, state the recorded total length and carry the
+recorded validator. A server that ignores `Range` and returns `200`, a changed
+validator or length, a partial longer than the object, a missing or foreign record,
+or a record without a validator all restart that file from byte 0, explicitly and
+without appending. The pinned SHA-256 is still verified over the whole object
+before it is renamed into place; a resumed object that fails it is discarded and
+fetched once more from the start, so a damaged partial can never be published.
+Progress counts the bytes already held (`resumed`) plus the new ones, and carries a
+`total` only when the server stated one. Cancellation (Ctrl-C of `hachidori setup`)
+keeps the partial only when the object's identity was recorded, otherwise nothing
+ambiguous is left. Small artifacts (the private uv) keep the whole-object
+download. Normal CI uses local HTTP servers only.
+
+**Preflight** (`optimize.Preflight`, `setup.PreflightReport`). `hachidori forge
+preflight <materialize|optimize|probe|certify> [-json]` returns typed findings
+(`pass`, `warning`, `blocker`, `unknown`) with stable IDs and measured facts, and
+an outcome: `blocked`, `attention` (a warning or an unknown) or `ready` (everything
+passed). It checks the source manifest, revision and file digests, the variant
+manifest, its lineage to the pinned source and its artifact digests, the runtime
+for the requested device (provider, Runtime Spec, worker script, versions from the
+runtime manifest), the optimizer runtime and engine pin, the recipe against the
+source (its preserved selectors are resolved against the module names of the
+source's pinned `model.safetensors.index.json`, the way the optimizer will, and a
+selector that matches nothing is a blocker), writable target and free disk against
+lower and upper bounds from the known artifact sizes, host RAM, and, for `cuda`,
+what torch in the private runtime reports (device, capability, VRAM). It never
+claims capacity it did not measure: installed RAM is not a fit, an unobservable
+device is `unknown`, a requested `cuda` with no CUDA device is a blocker and never
+a cpu run, and VRAM/RAM are only compared with the known weight bytes as a lower
+bound (below it is a blocker or a warning; above it is still `unknown`). A report
+says what it does not measure. `variant optimize` runs the same checks before it
+loads anything and refuses with the blockers. Reports are kept as the latest of
+their target under `state/forge/preflight/`.
+
+**Probe** (`app.Probe`, `server.ProbeConfig`). `hachidori forge probe --device D
+<variant-id>` verifies the source and the variant (the preflight), starts an
+isolated worker for the variant's *published, persisted* directory through the
+normal worker script and provider path, waits for READY, asks one small fixed
+typed decision, validates it against the typed-decision contract (`api.Result.
+Validate`: the question's own choice, a probability per choice, finite, summing to
+1, confidence = max p), records provenance, load/warmup/startup/request timings,
+RAM/VRAM observations and the worker's stderr tail, and shuts the worker down. It
+fails when the worker reports another variant (no source fallback) or another
+device (no cpu fallback). The record (`state/forge/probe/`) says
+`certification_effect: none`: a probe writes no certification record, never
+changes the activation record or the default route, never binds or replaces a
+resident and runs beside a running runtime without touching it.
+
+**Diagnostics** (`internal/diagnostics/forge.go`, `app.RecordForgeFailure`). A
+failed materialization, optimization, probe or certification (from the CLI or the
+desktop) records one bounded, redacted diagnostic under
+`state/forge/diagnostics/<kind>-<time>-<hash>.json` (the newest 20 are kept): the
+operation ID, kind and failing phase; the source model, revision and
+source-manifest digest, the variant and its manifest digest, the runtime and
+provider; the recipe ID and digest, optimizer backend and version, scheme and the
+preserved selectors; the certification policy and the digests (never the content)
+of the datasets and runs; device, dtype, quantization, Python, Torch, Transformers
+and compression-backend versions; RAM, VRAM, disk, load/warmup timing and the
+worker identity; the latest preflight's non-pass findings; the error chain, the
+worker's stderr tail and the tail of that operation's section of the setup log
+(each line and the whole document are bounded). Every string goes through the
+shared redaction policy (secrets, tokens, authorization headers and cookies are
+replaced, the home and profile paths are placeholders); weights, calibration or
+dataset payloads, question/state bodies and the environment are never read. A
+problem collecting or writing the diagnostic is attached to it as secondary
+evidence and never replaces the operation's own error. `hachidori forge
+diagnostics list|show|export` reads them (the latest, or one by its identity), and
+the desktop's failure state links the same document.
+
+**Operations and desktop.** Preflight and probe are `app.Controller` operations
+(`preflight`, `probe`) with the same admission rules as the others: one action at
+a time, a repeated one is refused. Their phases are real (`preflight`, `probing`)
+and their steps indeterminate. The failure of an operation carries the recorded
+diagnostic's identity. Settings, Models & runtimes shows the kept partial of an
+unfinished download, "resuming" with the bytes already held and the bytes
+received (a percentage only when the server stated a total), the latest
+preflights with their blockers, warnings and unknowns (an unknown is never
+shown as ready), each variant's latest probe (stale when it was recorded for
+another manifest), the failure phase and the diagnostic with how to inspect it.
 
 ### Models and runtimes manager
 
@@ -1298,6 +1399,9 @@ HACHIDORI_HOME/
   logs/worker.log, logs/doctor-worker.log
   state/active-runtime.json    runtime, model_id, model, device and, optionally, variant (+ experimental)
   state/certifications/<variant ID>/   certification reports and the records that bind them to the variant
+  state/forge/preflight/       the latest preflight report of each target
+  state/forge/probe/           the latest probe record of each variant and device
+  state/forge/diagnostics/     bounded, redacted failure diagnostics of Forge operations (newest 20)
   state/dashboard.json         last tunnel form values (non-secret), dashboard only
   state/updates/               explicit update downloads only: <tag>/ staged executable, ready.json,
                                result.json, helper/ (Windows desktop; see Updates)

@@ -62,6 +62,11 @@ System One model forge (inference host, offline except where noted):
   certify    run|evaluate|show: compare a high-precision reference run and a
              variant run on identical inputs (decision fidelity), record the
              certification a variant needs before it can be activated
+  forge      preflight|probe|diagnostics: check readiness before expensive
+             work (disk, RAM, runtime, recipe, device; unknown fit stays
+             unknown), smoke-test a persisted variant through the normal worker
+             (not a certification), inspect or export the bounded redacted
+             diagnostic a failed materialize/optimize/probe/certify leaves
 
 client (caller side, uses HACHIDORI_ENDPOINT):
   status     print /v1/status
@@ -82,7 +87,7 @@ Run 'hachidori <command> -h' for flags.
 // commands is the command dispatch table; every command in usage must be here.
 func commands() map[string]func([]string) error {
 	return map[string]func([]string) error{
-		"setup": cmdSetup, "activate": cmdActivate, "variant": cmdVariant, "certify": cmdCertify, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
+		"setup": cmdSetup, "activate": cmdActivate, "variant": cmdVariant, "certify": cmdCertify, "forge": cmdForge, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
 		"dashboard": func(a []string) error { return runHost("dashboard", a) },
 		"desktop":   func(a []string) error { return cmdDesktop(desktop.Native(), a) },
 		"decide":    cmdDecide, "eval": func(a []string) error { return cmdEval("eval", a) },
@@ -158,7 +163,22 @@ func cmdSetup(args []string) error {
 	if err != nil {
 		return err
 	}
-	return setup.Run(h, f.device, f.model, os.Stderr)
+	// An interrupted model download keeps a safe partial: run the same command
+	// again to resume it. A failed System One materialization leaves a
+	// bounded, redacted diagnostic (hachidori forge diagnostics).
+	ctx, stop := signalContext()
+	defer stop()
+	if !app.IsForgeOperation(app.OpSetup, f.model) {
+		return setup.RunContext(ctx, h, f.device, f.model, os.Stderr, cliObserver(os.Stderr))
+	}
+	run := newForgeRun(h, app.OpSetup, f.model, "", "", f.device)
+	log, closeLog := run.log()
+	defer closeLog()
+	err = setup.RunContext(ctx, h, f.device, f.model, log, run.observer())
+	if ctx.Err() != nil && err != nil {
+		fmt.Fprintln(os.Stderr, "interrupted: a partial download is kept; run the same command again to resume it")
+	}
+	return run.fail(err)
 }
 
 func cmdServe(args []string) error { return runHost("serve", args) }

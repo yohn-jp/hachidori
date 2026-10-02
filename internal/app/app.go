@@ -99,6 +99,10 @@ type Failure struct {
 	Step     string   `json:"step,omitempty"`
 	Message  string   `json:"message"`
 	Stderr   []string `json:"stderr_tail,omitempty"`
+	// Diagnostic is the identity of the Forge diagnostic recorded for a failed
+	// materialization, optimization, probe or certification ("" when none was
+	// written). Inspect or export it with `hachidori forge diagnostics`.
+	Diagnostic string `json:"diagnostic,omitempty"`
 }
 
 func (f *Failure) Error() string {

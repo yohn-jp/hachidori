@@ -29,6 +29,10 @@ const (
 	// The System One model forge: building a variant and certifying it.
 	OpOptimize = "optimize"
 	OpCertify  = "certify"
+	// Forge readiness: the preflight before expensive work and the probe of a
+	// persisted variant. Neither certifies, activates or changes a resident.
+	OpPreflight = "preflight"
+	OpProbe     = "probe"
 )
 
 // Rejections of the maintenance actions.
@@ -88,6 +92,24 @@ type Maintenance struct {
 	// Certify compares a reference run and a variant run and records the
 	// certification.
 	Certify func(root string, p CertifyParams, log io.Writer, obs *setup.Observer) error
+	// Preflight inspects what Hachidori can know before an expensive Forge
+	// operation and records the report.
+	Preflight func(ctx context.Context, root string, p PreflightParams, obs *setup.Observer) (setup.PreflightReport, error)
+	// Probe loads a persisted variant in an isolated worker and asks one typed
+	// decision.
+	Probe func(ctx context.Context, root string, p ProbeParams, log io.Writer, obs *setup.Observer) (ProbeRecord, error)
+}
+
+// PreflightParams are the explicit inputs of a preflight: the operation it
+// gates and its catalog identities.
+type PreflightParams struct {
+	Kind           string // setup.PreflightMaterialize | Optimize | Probe | Certify
+	Model          string
+	Recipe         string
+	Variant        string
+	Device         string
+	Quick          bool
+	ReferenceDType string
 }
 
 // CertifyParams are the explicit inputs of a certification: the variant, the
@@ -143,6 +165,14 @@ func (m Maintenance) withDefaults() Maintenance {
 	if m.Certify == nil {
 		m.Certify = certify
 	}
+	if m.Preflight == nil {
+		m.Preflight = RunPreflight
+	}
+	if m.Probe == nil {
+		m.Probe = func(ctx context.Context, root string, p ProbeParams, log io.Writer, obs *setup.Observer) (ProbeRecord, error) {
+			return Probe(ctx, home.Home{Root: root}, p, ProbeDeps{}, log, obs)
+		}
+	}
 	return m
 }
 
@@ -159,6 +189,8 @@ type SetupParams struct {
 // one (a download with a known size, a file being hashed); otherwise it names
 // the step and is indeterminate, and no percentage is ever derived.
 type Operation struct {
+	// ID identifies this operation: it names it in its diagnostic.
+	ID       string          `json:"id,omitempty"`
 	Kind     string          `json:"kind"`
 	Device   string          `json:"device,omitempty"`
 	Model    string          `json:"model,omitempty"`
@@ -298,6 +330,7 @@ type Controller struct {
 	stopped bool
 	subs    map[int]chan struct{}
 	nextID  int
+	seq     int // operations begun; part of an operation's ID
 }
 
 // New creates a controller. It starts nothing.
@@ -464,7 +497,8 @@ func (c *Controller) notify() {
 
 // begin records a new in-flight action; c.mu must be held.
 func (c *Controller) begin(kind, device, model string) *Operation {
-	op := &Operation{Kind: kind, Device: device, Model: model, Started: time.Now()}
+	c.seq++
+	op := &Operation{ID: fmt.Sprintf("op-%d-%d", time.Now().UnixMilli(), c.seq), Kind: kind, Device: device, Model: model, Started: time.Now()}
 	c.op, c.opDone = op, make(chan struct{})
 	c.notify()
 	return op
@@ -515,6 +549,11 @@ type action struct {
 	run         func(root string, log io.Writer, obs *setup.Observer) error
 	// after runs with c.mu held once run returned, with its outcome.
 	after func(err error)
+	// forge, when set, makes a failure of this action leave a Forge
+	// diagnostic. enrich completes it with what only the run knows (the
+	// probe's record) when the failure is known.
+	forge  *ForgeFailure
+	enrich func(*ForgeFailure)
 }
 
 // Setup starts setup/materialization asynchronously with explicit params. It
@@ -522,6 +561,7 @@ type action struct {
 // Snapshot/Subscribe.
 func (c *Controller) Setup(p SetupParams) error {
 	return c.async(p, action{kind: OpSetup, device: p.Device, model: p.Model, needDevice: true, needStopped: true,
+		forge: forgeOf(OpSetup, p),
 		run: func(root string, log io.Writer, obs *setup.Observer) error {
 			return c.cfg.Setup(root, p.Device, p.Model, log, obs)
 		},
@@ -588,11 +628,28 @@ func (c *Controller) async(p SetupParams, a action) error {
 	go func() {
 		err := a.run(root, log, obs)
 		closeLog()
+		// A failed expensive Forge operation leaves a bounded, redacted
+		// diagnostic. Recording it can fail in any way without changing the
+		// outcome: the operation's own error is what is reported.
+		diag := ""
+		if err != nil && a.forge != nil {
+			ff := *a.forge
+			c.mu.Lock()
+			ff.OperationID, ff.Started, ff.Finished, ff.Phase = op.ID, op.Started, time.Now(), op.Phase
+			if op.Progress != nil {
+				ff.Step = string(op.Progress.Step)
+			}
+			c.mu.Unlock()
+			if a.enrich != nil {
+				a.enrich(&ff)
+			}
+			diag = DiagnosticID(WithForgeDiagnostic(root, ff, err))
+		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		var f *Failure
 		if err != nil {
-			f = &Failure{Source: SourceSetup, Phase: op.Phase, Message: err.Error()}
+			f = &Failure{Source: SourceSetup, Phase: op.Phase, Message: err.Error(), Diagnostic: diag}
 			if op.Progress != nil {
 				f.Step = string(op.Progress.Step)
 			}
@@ -635,10 +692,14 @@ func plan(kind, target string) []string {
 		}
 		return p(setup.PhaseModel)
 	case OpOptimize:
-		return p(setup.PhaseModel, setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseStarting, setup.PhaseLoadingSource,
+		return p(setup.PhaseModel, setup.PhasePreflight, setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseStarting, setup.PhaseLoadingSource,
 			setup.PhaseResolving, setup.PhaseQuantizing, setup.PhaseSerializing, setup.PhaseVerifying, setup.PhasePublish)
 	case OpCertify:
 		return p(setup.PhaseLoadingRuns, setup.PhaseComparing, setup.PhaseRecording)
+	case OpPreflight:
+		return p(setup.PhasePreflight)
+	case OpProbe:
+		return p(setup.PhasePreflight, setup.PhaseProbing)
 	}
 	return nil
 }
@@ -650,6 +711,13 @@ func SetupLogPath(root string) string { return filepath.Join(root, "logs", "setu
 // action. When the log cannot be opened the output is discarded: logging never
 // fails an action.
 func openSetupLog(root string, a action) (io.Writer, func()) {
+	return OpenSetupLog(root, a.kind, a.device, a.model, a.target)
+}
+
+// OpenSetupLog appends to the home's setup log, heading the entry with the
+// operation. The CLI's Forge commands write the same section a controller
+// action would, so a failure's diagnostic can quote its tail either way.
+func OpenSetupLog(root, kind, device, model, target string) (io.Writer, func()) {
 	if root == "" || os.MkdirAll(filepath.Join(root, "logs"), 0o755) != nil {
 		return io.Discard, func() {}
 	}
@@ -657,7 +725,7 @@ func openSetupLog(root string, a action) (io.Writer, func()) {
 	if err != nil {
 		return io.Discard, func() {}
 	}
-	fmt.Fprintf(f, "== %s %s %s %s %s\n", time.Now().Format(time.RFC3339), a.kind, a.device, a.model, a.target)
+	fmt.Fprintf(f, "== %s %s %s %s %s\n", time.Now().Format(time.RFC3339), kind, device, model, target)
 	return f, func() { f.Close() }
 }
 
@@ -666,6 +734,7 @@ func openSetupLog(root string, a action) (io.Writer, func()) {
 // beside a running worker: it never changes the activation record.
 func (c *Controller) Materialize(p SetupParams) error {
 	return c.async(p, action{kind: OpMaterialize, device: p.Device, model: p.Model, needDevice: true,
+		forge: forgeOf(OpMaterialize, p),
 		run: func(root string, log io.Writer, obs *setup.Observer) error {
 			return c.cfg.Maintenance.Materialize(root, p.Device, p.Model, log, obs)
 		}})
@@ -675,6 +744,7 @@ func (c *Controller) Materialize(p SetupParams) error {
 // It is refused while the worker runs, since the artifact may be in use.
 func (c *Controller) Repair(p SetupParams) error {
 	return c.async(p, action{kind: OpRepair, device: p.Device, model: p.Model, needDevice: true, needStopped: true,
+		forge: forgeOf(OpRepair, p),
 		run: func(root string, log io.Writer, obs *setup.Observer) error {
 			return c.cfg.Maintenance.Repair(root, p.Device, p.Model, log, obs)
 		},
@@ -746,6 +816,7 @@ func (c *Controller) ActivateVariant(p SetupParams, variant string, experimental
 // build leaves nothing selectable. It may run beside a running worker.
 func (c *Controller) Optimize(model, recipe string) error {
 	return c.async(SetupParams{}, action{kind: OpOptimize, model: model, target: "recipe " + recipe,
+		forge: &ForgeFailure{Kind: OpOptimize, Model: model, Recipe: recipe},
 		run: func(root string, log io.Writer, obs *setup.Observer) error {
 			return c.cfg.Maintenance.Optimize(context.Background(), root, model, recipe, log, obs)
 		}})
@@ -757,9 +828,76 @@ func (c *Controller) Optimize(model, recipe string) error {
 // inputs) is a failed action.
 func (c *Controller) Certify(p CertifyParams) error {
 	return c.async(SetupParams{}, action{kind: OpCertify, target: setup.KindVariant + " " + p.Variant,
+		forge: &ForgeFailure{Kind: OpCertify, Variant: p.Variant, Certify: &p},
 		run: func(root string, log io.Writer, obs *setup.Observer) error {
 			return c.cfg.Maintenance.Certify(root, p, log, obs)
 		}})
+}
+
+// forgeOf is the diagnostic context of a materialization-shaped action, or nil
+// when the model is not a System One model: only Forge sources leave a
+// diagnostic.
+func forgeOf(kind string, p SetupParams) *ForgeFailure {
+	model := p.Model
+	if model == "" {
+		model = setup.DefaultModel
+	}
+	if !IsForgeOperation(kind, model) {
+		return nil
+	}
+	return &ForgeFailure{Kind: kind, Model: model, Device: p.Device}
+}
+
+// Preflight inspects what Hachidori can know before the expensive Forge
+// operation p.Kind and records the report (LatestPreflight, Forge). A blocked
+// report is the preflight's result, not its failure. It changes nothing: no
+// download, no activation, no resident.
+func (c *Controller) Preflight(p PreflightParams) error {
+	target := p.Kind
+	switch {
+	case p.Variant != "":
+		target += " " + setup.KindVariant + " " + p.Variant
+	case p.Recipe != "":
+		target += " recipe " + p.Recipe
+	}
+	return c.async(SetupParams{}, action{kind: OpPreflight, model: p.Model, device: p.Device, target: target,
+		run: func(root string, log io.Writer, obs *setup.Observer) error {
+			_, err := c.cfg.Maintenance.Preflight(context.Background(), root, p, obs)
+			return err
+		}})
+}
+
+// Probe loads the persisted variant p.Variant on p.Device in an isolated worker
+// and asks one typed decision (see Probe). It is not a certification and not
+// an activation: it never touches the bound runtime, the resident set, the
+// activation record or a certification record, and it may run beside a running
+// worker. Its record is Forge().Probes; a failure leaves a diagnostic.
+func (c *Controller) Probe(p ProbeParams) error {
+	var rec ProbeRecord
+	return c.async(SetupParams{Device: p.Device}, action{kind: OpProbe, device: p.Device, target: setup.KindVariant + " " + p.Variant, needDevice: true,
+		forge:  &ForgeFailure{Kind: OpProbe, Variant: p.Variant, Device: p.Device},
+		enrich: func(f *ForgeFailure) { f.Probe = &rec },
+		run: func(root string, log io.Writer, obs *setup.Observer) (err error) {
+			rec, err = c.cfg.Maintenance.Probe(context.Background(), root, p, log, obs)
+			return err
+		}})
+}
+
+// RunPreflight is the default Preflight: the optimize authority's checks over
+// the home, recorded as the latest report of the target. The CLI runs the very
+// same function the controller does.
+func RunPreflight(ctx context.Context, root string, p PreflightParams, obs *setup.Observer) (setup.PreflightReport, error) {
+	h := home.Home{Root: root}
+	dtype := p.ReferenceDType
+	if dtype == "" && p.Kind == setup.PreflightCertify {
+		dtype = os.Getenv(server.EnvClefDType)
+	}
+	rep := optimize.Preflight(ctx, h, optimize.PreflightRequest{Kind: p.Kind, Model: p.Model, Recipe: p.Recipe, Variant: p.Variant, Device: p.Device,
+		Quick: p.Quick, ReferenceDType: dtype}, optimize.PreflightDeps{}, obs)
+	if err := SavePreflight(h, rep); err != nil {
+		return rep, fmt.Errorf("the preflight ran but its report could not be saved: %w", err)
+	}
+	return rep, nil
 }
 
 // certify is the default Certify: the eval authority over the setup/home
@@ -867,7 +1005,7 @@ func (c *Controller) Inventory(verify bool) (setup.Inventory, error) {
 
 func isMaintenance(kind string) bool {
 	switch kind {
-	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify:
+	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpPreflight, OpProbe:
 		return true
 	}
 	return false

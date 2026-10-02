@@ -17,6 +17,7 @@ const (
 	StepPublish     Step = "publishing"    // atomically publishing a verified artifact
 	StepActivate    Step = "activating"    // replacing the activation record
 	StepRemove      Step = "removing"      // deleting an unused artifact
+	StepProbe       Step = "probing"       // a probe worker starting or answering (no measurable total)
 )
 
 // Phases of the optimization and certification operations. Like the setup
@@ -32,6 +33,10 @@ const (
 	PhaseLoadingRuns   Phase = "loading_runs"   // reference and candidate runs are being read
 	PhaseComparing     Phase = "comparing"      // the runs are being compared
 	PhaseRecording     Phase = "recording"      // the certification is being written
+	// Forge readiness: the preflight before expensive work, and the probe of a
+	// persisted variant (not a certification).
+	PhasePreflight Phase = "preflight" // readiness is being checked before expensive work
+	PhaseProbing   Phase = "probing"   // a worker is loading the persisted variant and answering one typed decision
 )
 
 // Progress is a real report of work inside the current phase. Total is zero
@@ -42,6 +47,11 @@ type Progress struct {
 	Detail string `json:"detail,omitempty"` // what is being worked on: a file, a uv subcommand
 	Done   int64  `json:"done,omitempty"`
 	Total  int64  `json:"total,omitempty"`
+	// Resumed is how many of Done were already held when the transfer started:
+	// a download continuing an interrupted partial reports them as acquired
+	// (they are in Done) but not as transferred now. Zero for a transfer from
+	// byte 0.
+	Resumed int64 `json:"resumed,omitempty"`
 	// Item and Items place Detail among a known number of files (1-based);
 	// both are zero when the step is not part of a sequence.
 	Item  int `json:"item,omitempty"`
