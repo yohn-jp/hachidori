@@ -1154,7 +1154,11 @@ unmanifested regular files named `<module>.cpython-<NN>[.opt-N].pyc` with a
 bytecode header directly inside a `__pycache__` directory, then those
 directories once empty. Any other unmanifested entry, any symbolic link or
 irregular file, or a manifested file that resembles a candidate refuses the
-whole repair before anything is deleted. It then runs the normal verification
+whole repair before anything is deleted. Deletion goes through a handle opened on the
+artifact root that cannot leave it, and each parent directory is re-checked (a real
+directory, no link or reparse point, the one that was checked) immediately before it
+is entered, so a directory swapped for a link after the inventory is refused, never
+followed. It then runs the normal verification
 and reports success only if that passes. It prints a JSON record (`kind`, `id`,
 `found`, `removed` as artifact-relative paths, `verified`); on an already clean
 artifact it removes nothing and rewrites nothing. Stop the runtime first, as for

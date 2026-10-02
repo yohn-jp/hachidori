@@ -103,20 +103,10 @@ func RepairArtifactCache(h home.Home, kind, id string, obs *Observer) (CacheRepa
 		return rep, err
 	}
 	rep.Found = len(files)+len(dirs) > 0
-	for _, rel := range files {
-		if err := removeCacheEntry(root, rel, false); err != nil {
+	if rep.Found {
+		afterCacheInventory()
+		if err := removeInventoried(root, files, dirs, &rep); err != nil {
 			return rep, err
-		}
-		rep.Removed = append(rep.Removed, rel)
-	}
-	// Deepest first; a directory that still holds anything is left alone.
-	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
-	for _, rel := range dirs {
-		if err := removeCacheEntry(root, rel, true); err != nil {
-			return rep, err
-		}
-		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); errors.Is(err, fs.ErrNotExist) {
-			rep.Removed = append(rep.Removed, rel+"/")
 		}
 	}
 	if err := Verify(h, kind, id, obs); err != nil {
@@ -222,30 +212,132 @@ func isBytecodeCacheFile(abs, rel string) bool {
 	return bytes.Equal(hdr[2:4], []byte("\r\n"))
 }
 
-// removeCacheEntry deletes one inventoried entry after re-checking, at the
-// moment of deletion, that its path is clean, stays inside root and is still
-// a real file (or, for a directory, a real directory). A directory is removed
-// only while empty: a non-empty one is left in place.
-func removeCacheEntry(root, rel string, dir bool) error {
-	if !cleanRel(rel) {
-		return refusal("%q is not a relative path inside the artifact", rel)
-	}
-	full := filepath.Join(root, filepath.FromSlash(rel))
-	if !within(root, full) {
-		return refusal("%s resolves outside the artifact", rel)
-	}
-	fi, err := os.Lstat(full)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
+// afterCacheInventory is a test seam between the inventory and the deletion,
+// where an attacker or another process could change the tree.
+var afterCacheInventory = func() {}
+
+// removeInventoried deletes the inventoried files, then the inventoried
+// directories deepest first, through one os.Root opened on the artifact: the
+// deletions cannot be steered outside it by a link swapped in after the
+// inventory.
+func removeInventoried(rootPath string, files, dirs []string, rep *CacheRepair) error {
+	root, err := openArtifactRoot(rootPath)
 	if err != nil {
 		return err
 	}
-	if fi.Mode()&fs.ModeSymlink != 0 || (dir && !fi.IsDir()) || (!dir && !fi.Mode().IsRegular()) {
-		return refusal("%s changed while it was being repaired", rel)
+	defer root.Close()
+	for _, rel := range files {
+		if _, err := removeCacheEntry(root, rel, false); err != nil {
+			return err
+		}
+		rep.Removed = append(rep.Removed, rel)
 	}
-	if err := os.Remove(full); err != nil && !dir {
-		return err
+	// A directory that still holds anything is left alone.
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, rel := range dirs {
+		gone, err := removeCacheEntry(root, rel, true)
+		if err != nil {
+			return err
+		}
+		if gone {
+			rep.Removed = append(rep.Removed, rel+"/")
+		}
 	}
 	return nil
+}
+
+// openArtifactRoot opens the artifact root for deletion and proves that what
+// was opened is the real directory the path names now: not a link, not a
+// reparse point, and the same directory the open reached.
+func openArtifactRoot(path string) (*os.Root, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !realDir(fi) {
+		return nil, refusal("the artifact root is no longer a real directory")
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	if st, err := root.Stat("."); err != nil || !os.SameFile(fi, st) {
+		root.Close()
+		return nil, refusal("the artifact root changed while it was being repaired")
+	}
+	return root, nil
+}
+
+// realDir reports whether fi describes a directory that is neither a symbolic
+// link nor any other reparse point (Go reports a Windows junction or mount
+// point as an irregular, not a directory, entry).
+func realDir(fi fs.FileInfo) bool {
+	return fi.IsDir() && fi.Mode()&(fs.ModeSymlink|fs.ModeIrregular) == 0
+}
+
+// removeCacheEntry deletes one inventoried entry, an empty directory when dir,
+// and reports whether it is gone. Every step goes through root, which refuses
+// any path that would leave the artifact, and the walk to the entry holds each
+// parent directory to the same standard immediately before descending: it must
+// be a real directory (no link, no reparse point), and the directory opened
+// must be the very one that was checked, so a parent swapped for a link between
+// the check and the open is refused instead of followed. The entry itself must
+// still be a real file (or directory); a link swapped in at the last moment is
+// only ever unlinked, never followed.
+func removeCacheEntry(root *os.Root, rel string, dir bool) (bool, error) {
+	if !cleanRel(rel) {
+		return false, refusal("%q is not a relative path inside the artifact", rel)
+	}
+	parts := strings.Split(rel, "/")
+	cur := root
+	for _, name := range parts[:len(parts)-1] {
+		fi, err := cur.Lstat(name)
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, closeUnless(cur, root, nil)
+		}
+		if err != nil {
+			return false, closeUnless(cur, root, err)
+		}
+		if !realDir(fi) {
+			return false, closeUnless(cur, root, refusal("%s changed while it was being repaired", rel))
+		}
+		next, err := cur.OpenRoot(name)
+		if err != nil {
+			return false, closeUnless(cur, root, refusal("%s cannot be opened inside the artifact: %v", rel, err))
+		}
+		if st, err := next.Stat("."); err != nil || !os.SameFile(fi, st) {
+			next.Close()
+			return false, closeUnless(cur, root, refusal("%s changed while it was being repaired", rel))
+		}
+		closeUnless(cur, root, nil)
+		cur = next
+	}
+	defer closeUnless(cur, root, nil)
+
+	name := parts[len(parts)-1]
+	fi, err := cur.Lstat(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if (dir && !realDir(fi)) || (!dir && !fi.Mode().IsRegular()) {
+		return false, refusal("%s changed while it was being repaired", rel)
+	}
+	if err := cur.Remove(name); err != nil {
+		if dir {
+			return false, nil // not empty: left in place
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// closeUnless closes r unless it is the artifact root, and returns err.
+func closeUnless(r, root *os.Root, err error) error {
+	if r != root {
+		r.Close()
+	}
+	return err
 }
