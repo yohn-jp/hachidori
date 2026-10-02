@@ -17,7 +17,7 @@ import (
 // Subdirectories of HACHIDORI_HOME (architecture §6.2).
 // tools/ holds Hachidori-managed materializer tooling (the pinned private uv
 // and the CPython installations it manages).
-var Dirs = []string{"runtime", "tools", "packages", "models", "cache", "logs", "state"}
+var Dirs = []string{"runtime", "tools", "packages", "models", "variants", "cache", "logs", "state"}
 
 // Home is a resolved HACHIDORI_HOME.
 type Home struct{ Root string }
@@ -62,12 +62,21 @@ func (h Home) Ensure() error {
 	return os.Remove(probe)
 }
 
-// Active is state/active-runtime.json: the activation record.
+// Active is state/active-runtime.json: the activation record. The execution
+// target is the source model plus, optionally, one immutable variant of it.
 type Active struct {
 	Runtime string `json:"runtime"`            // directory name under runtime/
 	ModelID string `json:"model_id,omitempty"` // catalog model identity (absent in records from before model selection)
 	Model   string `json:"model"`              // directory under models/, slash separated
 	Device  string `json:"device"`             // cuda | cpu
+	// Variant is the ID of the variant of ModelID that executes instead of
+	// the source artifact. Absent in every record written before variants
+	// existed, where it means the upstream source artifact.
+	Variant string `json:"variant,omitempty"`
+	// Experimental marks a variant activated without an accepted
+	// certification record, by an explicit operator request. It is never set
+	// implicitly and is reported as experimental/uncertified in status.
+	Experimental bool `json:"experimental,omitempty"`
 }
 
 // RuntimeSpec is the declarative desired state of a private runtime. Its
@@ -77,17 +86,22 @@ type Active struct {
 // project files it was materialized from.
 type RuntimeSpec struct {
 	Schema   string `json:"schema"`
+	Role     string `json:"role,omitempty"` // "" serving runtime | optimizer runtime
 	Platform string `json:"platform"`       // GOOS/GOARCH
 	Python   string `json:"python"`         // exact CPython version
-	Provider string `json:"provider"`       // name==version of every model provider, comma separated
+	Provider string `json:"provider"`       // name==version of every model provider (optimizer: engine) comma separated
 	Torch    string `json:"torch"`          // exact torch version including local flavor
 	Flavor   string `json:"flavor"`         // uv extra selecting the torch build: cu128 | cpu
 	UV       string `json:"uv"`             // pinned private uv version
 	UVSHA256 string `json:"uv_sha256"`      // pinned uv executable digest for Platform
 	Project  string `json:"project_sha256"` // runtimespec/pyproject.toml
 	Lock     string `json:"lock_sha256"`    // runtimespec/uv.lock
-	Worker   string `json:"worker_sha256"`  // worker/hachidori_worker.py
+	Worker   string `json:"worker_sha256"`  // the embedded private script: hachidori_worker.py (optimizer: hachidori_optimizer.py)
 }
+
+// RoleOptimizer is the Role of the optimizer runtime: the separate, bounded
+// environment that builds variants. It never serves.
+const RoleOptimizer = "optimizer"
 
 // ProviderPins lists the pinned model providers (name==version) the runtime
 // carries.
@@ -111,7 +125,11 @@ func (s RuntimeSpec) ID() string {
 		panic(err)
 	}
 	sum := sha256.Sum256(b)
-	return s.Flavor + "-" + hex.EncodeToString(sum[:8])
+	prefix := s.Flavor
+	if s.Role != "" {
+		prefix = s.Role + "-" + s.Flavor
+	}
+	return prefix + "-" + hex.EncodeToString(sum[:8])
 }
 
 // RuntimeManifest is runtime/<identity>/manifest.json, written once when the
