@@ -86,7 +86,7 @@ a time (activate, **Restart runtime**, confirm `runtime.model_id` and
 `provider.provider`/`provider.dtype`/`provider.device` in `hachidori status`):
 
 ```powershell
-.\hachidori.exe setup --device cuda --model laya-base          # or Materialize + Activate in Settings
+.\hachidori.exe setup --device cuda --model laya-base          # or Materialize + Activate in Models
 .\hachidori.exe serve                                          # another shell:
 hachidori status                                               # model_id, provider, device, dtype, load_ms, warmup_ms
 hachidori benchmark --questions <defs> --warmup 5 --passes 5 --out laya-base.json <corpus.jsonl>
@@ -335,6 +335,15 @@ leaves a diagnostic naming its phase (`resolving`, `preflight`, `materializing`,
 `persisting`) and the evidence of any run that did complete, and never a
 certification. The reference remains the authority for fidelity only. The rest of
 this section describes the run-file level, which stays as the low-level surface.
+
+The desktop's Forge workspace is the same path as a form: it asks for the
+dataset, the Question Definitions, the optional policy and the devices, calls
+`Controller.CertifyVariant`, and has no reference or candidate run input.
+Accepted does not apply: the explicit Apply of the same workspace calls the
+controller's apply transaction (`StartApply`, the same transaction as
+`ApplyCertifiedVariant`). Experimental activation is a separate, collapsed
+Advanced action and is never part of this path (runtime.md, Models and Forge
+workspaces).
 
 `certify run` records one resident's pass as `hachidori.resident-run.v1` (the
 same per-model evidence a resident comparison records: identity from the

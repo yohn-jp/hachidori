@@ -366,6 +366,62 @@ func TestApplyCertifiedVariantProvesTheExactVariantAndAnswersATypedDecision(t *t
 	}
 }
 
+// StartApply is the same transaction as ApplyCertifiedVariant behind an
+// acceptance: a refusal at admission is returned at once and changes nothing,
+// and an accepted apply is observed through the controller's operation state.
+func TestStartApplyAcceptsOneTransactionAndReportsThroughTheSnapshot(t *testing.T) {
+	e := newApplyEnv(t, "accepted")
+	e.start()
+	before := e.record()
+	if err := e.c.StartApply(ApplyParams{Variant: e.v.ID}); err == nil || !strings.Contains(err.Error(), "device") {
+		t.Fatalf("an apply without a device was accepted: %v", err)
+	}
+	if err := e.c.StartApply(ApplyParams{Device: "cuda"}); err == nil || !strings.Contains(err.Error(), "variant") {
+		t.Fatalf("an apply without a variant was accepted: %v", err)
+	}
+	if e.record() != before || len(e.activateCalls()) != 0 {
+		t.Fatal("a refused StartApply changed the activation")
+	}
+	if err := e.c.StartApply(ApplyParams{Variant: e.v.ID, Device: "cuda"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.StartApply(ApplyParams{Variant: e.v.ID, Device: "cuda"}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a second apply while one runs = %v, want ErrBusy", err)
+	}
+	waitFor(t, "the apply to finish", func() bool {
+		s := e.c.Snapshot()
+		return s.Operation == nil && s.Maintenance != nil && s.Maintenance.Kind == OpApply
+	})
+	if m := e.c.Snapshot().Maintenance; m.Failure != nil || m.Target != "variant "+e.v.ID {
+		t.Fatalf("maintenance %+v", m)
+	}
+	e.requireServingVariant(e.v.ID)
+	if got := e.activateCalls(); !slices.Equal(got, []string{"cuda " + setup.ClefFlash + " " + e.v.ID}) {
+		t.Fatalf("activation calls %v", got)
+	}
+}
+
+// A failed background apply is the same recoverable failure: rolled back, with
+// the failure and its diagnostic on the operation.
+func TestStartApplyFailureRollsBackAndIsReadFromTheSnapshot(t *testing.T) {
+	e := newApplyEnv(t, "accepted")
+	e.setMode("source", "ok")
+	e.setMode(e.v.ID, "fatal")
+	e.start()
+	if err := e.c.StartApply(ApplyParams{Variant: e.v.ID, Device: "cuda"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the apply to finish", func() bool {
+		s := e.c.Snapshot()
+		return s.Operation == nil && s.Maintenance != nil && s.Maintenance.Kind == OpApply
+	})
+	m := e.c.Snapshot().Maintenance
+	if m.Failure == nil || !strings.Contains(m.Failure.Message, "the previous serving target was restored and verified") || m.Failure.Diagnostic == "" {
+		t.Fatalf("maintenance failure %+v", m.Failure)
+	}
+	e.requireServingSource()
+}
+
 func TestApplyStartsAStoppedRuntimeAndLeavesUnrelatedStateAlone(t *testing.T) {
 	e := newApplyEnv(t, "accepted", func(e *applyEnv) { e.extra, e.routing = true, true })
 	e.start()

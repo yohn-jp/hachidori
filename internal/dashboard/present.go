@@ -82,6 +82,9 @@ type shellStatus struct {
 	GPU       string // accelerator name
 	Memory    string // GPU memory in use, when the device reports it
 	Attention int    // items in the needs-attention list
+	// Artifact is the execution artifact the running worker serves: SOURCE or
+	// VARIANT <exact id>; empty while no worker runs.
+	Artifact string
 }
 
 func shellOf(v view) shellStatus {
@@ -91,6 +94,13 @@ func shellOf(v view) shellStatus {
 		Device:   join(opt(w.Info, "device"), opt(w.Info, "dtype")), GPU: opt(w.Info, "device_name")}
 	if w.Ready {
 		s.Word = "READY"
+	}
+	switch {
+	case !v.Running:
+	case v.S.Runtime.Variant != nil:
+		s.Artifact = "VARIANT " + v.S.Runtime.Variant.ID
+	case v.S.Runtime.ModelID != "":
+		s.Artifact = "SOURCE"
 	}
 	if m := gpuMem(w.Accelerator); m != nil {
 		s.Memory = fmt.Sprintf("%.0f%% GPU memory used", m.Used)

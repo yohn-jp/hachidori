@@ -200,7 +200,7 @@ func TestRuntimePageExplainsAFailedStartAndTheNextStart(t *testing.T) {
 	body := e.get(t, "/").Body.String()
 	for _, want := range []string{
 		`id="worker-failure"`, "Worker failed while: Starting worker process", "worker_startup: worker exited: exit status 2",
-		"unrecognized arguments: --provider laya", "Materialized models are unaffected.", "materialize and activate the current one in Settings", `href="/diagnostics#worker-failure"`,
+		"unrecognized arguments: --provider laya", "Materialized models are unaffected.", "materialize and activate the current one in Models", `href="/diagnostics#worker-failure"`,
 		`id="worker-stages"`, `<li class="failed">Starting worker process</li>`,
 		`<span class="sub">configured for this runtime, not serving</span>`,
 		`id="next-start"`, "opendecider-nano · cuda", "cannot start", `id="active-problem"`, "materialized by an older Hachidori",
@@ -238,7 +238,7 @@ func TestOperationProgressRendering(t *testing.T) {
 		Done: 200 << 20, Total: 800 << 20, Started: time.Now().Add(-3 * time.Minute)}
 	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory(), Busy: busy}}
 	withModels(e, fm)
-	body := e.get(t, "/settings").Body.String()
+	body := e.get(t, "/models").Body.String()
 	for _, want := range []string{"RUNNING", "running for 3m", `<li class="done">Preparing</li>`, `<li class="done">Runtime</li>`, `<li class="current" aria-current="step">Model</li>`,
 		`<li class="pending">Publishing</li>`, "Downloading", "(2 of 7)", "200.0 MiB of 800.0 MiB (25%)",
 		`role="progressbar" aria-label="Downloading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="25"><span style="width:25.0%">`} {
@@ -249,7 +249,7 @@ func TestOperationProgressRendering(t *testing.T) {
 
 	busy.Phase, busy.Phases, busy.Step, busy.Detail, busy.Done, busy.Total, busy.Item, busy.Items =
 		"runtime", []string{"preparing", "runtime"}, "materializing", "installing the locked packages (cu128)", 0, 0, 0, 0
-	body = e.get(t, "/settings").Body.String()
+	body = e.get(t, "/models").Body.String()
 	if !strings.Contains(body, "Materializing") || !strings.Contains(body, "installing the locked packages (cu128)") ||
 		!strings.Contains(body, `class="bar progress indeterminate" role="progressbar" aria-label="Materializing"`) {
 		t.Error("indeterminate step not shown as such")
@@ -260,7 +260,7 @@ func TestOperationProgressRendering(t *testing.T) {
 
 	// Between the phase's start and its first report there is no step yet.
 	busy.Step, busy.Detail = "", ""
-	body = e.get(t, "/settings").Body.String()
+	body = e.get(t, "/models").Body.String()
 	if !strings.Contains(body, "phase 2 of 4 · Working") || !strings.Contains(body, `class="bar progress indeterminate" role="progressbar" aria-label="Working"`) {
 		t.Error("a phase without a step yet is not shown as working")
 	}
@@ -280,7 +280,7 @@ func TestFinishedOperationOutcomeRendering(t *testing.T) {
 		Last: &ModelOp{Kind: "activate", Device: "cuda", Model: "opendecider-nano", Plan: []string{"runtime", "model", "activation"},
 			Phases: []string{"runtime", "model", "activation"}, Phase: "activation", Started: now.Add(-12 * time.Second), Finished: now}}}
 	withModels(e, fm)
-	body := e.get(t, "/settings").Body.String()
+	body := e.get(t, "/models").Body.String()
 	for _, want := range []string{`id="models-last"`, "DONE", "took 12s", `<li class="done">Activation</li>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("success lacks %q", want)
@@ -292,7 +292,7 @@ func TestFinishedOperationOutcomeRendering(t *testing.T) {
 	fm.state.Last = &ModelOp{Kind: "materialize", Device: "cuda", Model: "opendecider-nano", Plan: []string{"preparing", "runtime", "model", "publish"},
 		Phases: []string{"preparing", "runtime"}, Phase: "runtime", Failure: "uv sync: exit status 1", FailurePhase: "runtime", FailureStep: "materializing",
 		Log: "C:\\Hachidori\\logs\\setup.log", Started: now.Add(-time.Minute), Finished: now}
-	body = e.get(t, "/settings").Body.String()
+	body = e.get(t, "/models").Body.String()
 	for _, want := range []string{"FAILED", `<li class="failed">Runtime</li>`, "Failed in phase <strong>Runtime</strong> · Materializing", "uv sync: exit status 1",
 		"The active runtime and model were not changed.", `href="/diagnostics"`, `C:\Hachidori\logs\setup.log`} {
 		if !strings.Contains(body, want) {
@@ -301,14 +301,14 @@ func TestFinishedOperationOutcomeRendering(t *testing.T) {
 	}
 }
 
-// The Settings manager names an active pair that this build cannot start.
-func TestSettingsShowsAnActivePairThatCannotStart(t *testing.T) {
+// The Models workspace names an active pair that this build cannot start.
+func TestModelsShowsAnActivePairThatCannotStart(t *testing.T) {
 	e := newEnv(t)
 	inv := modelsInventory()
 	inv.ActiveProblem = "runtime cu128-old was materialized by an older Hachidori (worker aaaa, this build bbbb)"
 	withModels(e, &fakeModels{state: ModelsState{Inventory: inv}})
-	body := e.get(t, "/settings").Body.String()
+	body := e.get(t, "/models").Body.String()
 	if !strings.Contains(body, `id="active-problem"`) || !strings.Contains(body, "CANNOT START") || !strings.Contains(body, "materialized by an older Hachidori") {
-		t.Error("Settings does not name the active pair that cannot start")
+		t.Error("Models does not name the active pair that cannot start")
 	}
 }

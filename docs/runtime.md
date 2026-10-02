@@ -275,8 +275,8 @@ policy in the desktop is not part of this contract.
 
 #### Desktop resident models
 
-The Windows desktop needs no `--resident` argument. Settings > Models &
-runtimes lists the catalog models with a resident selection: the active model is
+The Windows desktop needs no `--resident` argument. The Models workspace
+lists the catalog models with a resident selection: the active model is
 always the default resident (not selectable off), and any other materialized
 catalog model can be selected as an additional resident (only stable catalog
 IDs; no repository or revision input). The selection is stored in
@@ -289,10 +289,10 @@ one worker exactly as before. `serve --resident` and `dashboard --resident` are
 unchanged.
 
 A selection that differs from the running residents sets `restart_required`
-(and `residency_changed`) in the application snapshot, the Models & runtimes
-page shows the restart-required banner and each model's row reads "selected ·
+(and `residency_changed`) in the application snapshot, the Models
+workspace shows the restart-required banner and each model's row reads "selected ·
 applies on next start" or "resident · removed on restart", and nothing running
-is mutated. An explicit Restart (Settings, Runtime or the tray) stops the old
+is mutated. An explicit Restart (Models, Runtime or the tray) stops the old
 binding and opens the saved set; a Start of a stopped runtime does the same.
 The selection is read at every open, and an unreadable `settings.json` fails the
 open with its cause instead of starting fewer residents. A selected model that is
@@ -840,9 +840,9 @@ launch; a runtime that fails it is not started: the supervisor is `failed` with
 class `preflight`, phase `preflight` and the cause and the recovery as the
 message (Materialize the current runtime and Activate it, or
 `hachidori setup --device <device>`; installed models are reused). The binding
-and the dashboard still come up, so Settings is available for that recovery.
+and the dashboard still come up, so Models is available for that recovery.
 `doctor` fails its runtime check the same way, and `Inventory.ActiveProblem`
-reports it for the Settings manager and the Runtime page.
+reports it for the Models workspace and the Runtime page.
 
 The controller serializes setup/start/stop/restart actions so UI retries cannot
 create duplicate runtime ownership. Setup accepts the same device and catalog
@@ -1071,18 +1071,18 @@ facts from the worker: `provider.device`, `provider.dtype`,
 scheme, bits, engine and version, manifest digest, source identity, and the
 certification the activation was admitted under).
 
-**Activation.** `ActivateTarget` (Settings, Activate, and `hachidori activate`)
+**Activation.** `ActivateTarget` (Models, Activate, and `hachidori activate`)
 validates, before the activation record changes: the variant manifest and its
 derived identity, its link to exactly this catalog model, the digest of every
 artifact (and that nothing else is in the directory), the preserved-module
 metadata, that the runtime carries the provider, and the certification state.
 Default policy: a variant is activated only with an **accepted** certification
 record tied to its exact manifest, source and run identities, which is
-re-verified, not trusted (certification.md). `--experimental` (Settings: *Activate
-as experimental*) is the only exception: opt-in, never default, only for a
+re-verified, not trusted (certification.md). `--experimental` (Forge, Advanced:
+*Activate as experimental*) is the only exception: opt-in, never default, only for a
 variant with no record at all (a rejecting record is never activated), written to
 the activation record as `experimental` and reported as `experimental/uncertified`
-in status and Settings; activating anything again without it clears the mark.
+in status, Models and Forge; activating anything again without it clears the mark.
 A failed activation leaves the record as it was. At every launch the same
 manifest, source, provider and certification checks run again; a variant that
 cannot be launched fails the launch and the source is never started in its place
@@ -1095,14 +1095,9 @@ model does today, and Hachidori does not hot-swap one resident. Direct selection
 (`model` in a decide request) is unchanged and strict, and never starts,
 restarts or reloads any resident.
 
-**Desktop.** Settings, Models & runtimes lists the variants beside the models:
-recipe, precision, number of preserved modules, certification state, source
-materialized or not, selected/pending/running, the optimizer runtime, and the
-actions Verify, Activate, Activate as experimental, Remove, Optimize and Certify,
-all projections of the setup inventory and the application controller; operation
-progress (optimize, certify, variant activate) uses the same panel, plan and
-failure evidence as the other maintenance actions. The Runtime page states the
-variant that executes.
+**Desktop.** The Forge workspace (`/forge`) is the variant lifecycle (see
+*Models and Forge workspaces* below); the Models workspace (`/models`) names the
+execution artifact. The Runtime page states the variant that executes.
 
 Operator workflow (physical evidence is collected with it; certification.md has
 the full procedure and the NOT_CHECKED record):
@@ -1435,19 +1430,20 @@ truncation.
 (`preflight`, `probe`) with the same admission rules as the others: one action at
 a time, a repeated one is refused. Their phases are real (`preflight`, `probing`)
 and their steps indeterminate. The failure of an operation carries the recorded
-diagnostic's identity. Settings, Models & runtimes shows the kept partial of an
+diagnostic's identity. The Models workspace shows the kept partial of an
 unfinished download, "resuming" with the bytes already held and the bytes
-received (a percentage only when the server stated a total), the latest
-preflights with their blockers, warnings and unknowns (an unknown is never
-shown as ready), each variant's latest probe (stale when it was recorded for
-another manifest), the failure phase and the diagnostic with how to inspect it.
+received (a percentage only when the server stated a total); the Forge workspace
+shows the latest preflights with their blockers, warnings and unknowns (an
+unknown is never shown as ready), each variant's latest probe (stale when it was
+recorded for another manifest), the failure phase and the diagnostic with how to
+inspect it.
 
 ### Models and runtimes manager
 
-The Windows desktop's Settings workspace has a Models & runtimes section over
-the model catalog (Laya and OpenDecider-nano). It is the one place a model is
-chosen, materialized and activated, and a view over typed operations
-of `internal/setup` (`Inspect`, `Materialize`, `Verify`, `Repair`, `Activate`,
+The Windows desktop's Models workspace (`/models`; it was a Settings section
+before the workspaces were split) manages the model catalog (Laya and
+OpenDecider-nano). It is the one place a model is chosen, materialized and
+activated, and a view over typed operations of `internal/setup` (`Inspect`, `Materialize`, `Verify`, `Repair`, `Activate`,
 `Remove`), reached through `app.Controller`; the dashboard never inspects or
 deletes directories. `serve` and the browser `dashboard` do not offer it, and
 `hachidori setup` is unchanged.
@@ -1496,6 +1492,84 @@ deletes directories. `serve` and the browser `dashboard` do not offer it, and
   `HACHIDORI_HOME` are refused.
 - Serving performs no network resolution; only Materialize and Repair use the
   network.
+
+### Models and Forge workspaces
+
+The dashboard has two first-class workspaces beside Runtime, Workbench,
+Experiments and Evidence, present exactly where the maintenance authority
+(`app.Controller`) is hosted (the desktop): **Models** (`/models`) and
+**Forge** (`/forge`). Settings keeps the general preferences: desktop
+preferences, language, saved runtime defaults, Updates and Development
+Connections; it only points to the two workspaces. Both workspaces are server
+rendered projections of the same typed authorities (the setup inventory, the
+controller's operation state, the Forge records and the `/v1/status` document)
+and keep no state of their own: a stage, a label or an action is derived on every
+render, and a replaced dashboard over the same authorities renders the same
+page. No framework or browser-side logic was added; the only scripts are the
+shared shell refresh and the read-only refresh of the workspace while an
+operation runs.
+
+Forms post to `/models/{op}` (`verify`, `materialize`, `repair`, `activate`,
+`remove`, `restart`), `/models/residents` and `/forge/{op}` (`optimize`,
+`preflight`, `probe`, `certify`, `apply`, `activate`);
+`/forge/diagnostics/{id}` serves a stored diagnostic. The earlier
+`/settings/models/{op}`, `/settings/variants/{op}`, `/settings/residents` and
+`/settings/forge/diagnostics/{id}` routes are kept as compatibility aliases of
+the same handlers (a bookmarked `/settings` stays valid); their outcome is shown
+in the workspace that now holds the action. Every POST keeps the loopback,
+same-origin and form-token checks.
+
+**Execution artifact.** Models, Forge and Runtime always state which artifact
+executes, never leaving it implicit: `SOURCE` (the upstream model artifact) or
+`VARIANT` with its exact ID, scheme and bits, compute dtype, certification
+(`accepted` or `experimental/uncertified`), the requested device and the device
+and dtype the worker reported. Models shows it for the running worker (from
+status) and for the next start (from the activation record) side by side, and
+says when they differ and a restart is needed; the status bar carries the same
+fact.
+
+**Forge** shows the lifecycle in order: build (source, recipes, optimizer
+runtime, Optimize), preflight and probe, certification, apply. Each variant
+shows its immutable provenance and four stages projected from backend records:
+BUILT (the inventory: published, verifies), PROBED (the latest probe, stale when
+recorded for another manifest), CERTIFIED (the resolved certification state:
+accepted, rejected or not yet) and ACTIVE (running, active and applying on
+restart, active, or not applied). A stage with no record is "not yet", never a
+failure, and a probe is optional because a certification runs its own. A
+rejected certification is evidence and offers no apply. The variant's preflight
+reports and failure diagnostics are listed on its card, with the CLI command for
+its certification evidence.
+
+**Certification** asks only for semantic inputs: the evaluation dataset, the
+Question Definition files or directories, an optional policy file, the variant
+device, the reference device and precision (canonical defaults when left empty)
+and whether a missing serving runtime may be materialized first. It calls
+`Controller.CertifyVariant` (the self-contained Forge certification) and never
+accepts a reference or candidate run path; the low-level run-file surface is the
+`hachidori certify run|evaluate|show` CLI. An accepted verdict does not apply
+the variant.
+
+**Apply** is one explicit operation on the persistent desktop controller. The
+form names the variant, an explicit serving device and whether to materialize a
+missing runtime or source; the dashboard calls `Controller.StartApply`, which
+admits the same transaction as `ApplyCertifiedVariant` (validate, snapshot,
+activate, rebind, READY, provenance, one typed decision, rollback on failure)
+and runs it in the background, because the transaction can outlast an HTTP
+request and the desktop replaces its dashboard when the runtime rebinds. A
+refusal at admission (invalid input, another action running, a restart required)
+is returned at once; progress, the outcome, a rollback and the diagnostic are the
+controller's operation state, shown like any other action. The browser never
+chains activate, restart, materialize or verify. Apply is not offered while a
+restart is required, as the transaction refuses it.
+
+**Experimental activation** and the low-level *Activate without applying* are
+in a collapsed Advanced section of Forge, outside the lifecycle: they only
+change the activation record and prove nothing about serving, and a variant with
+a problem or a rejecting record is offered neither.
+
+Physical Windows visual and interaction acceptance (WebView2, the real RTX host,
+real Clef weights) is NOT_CHECKED; the portable dashboard, controller and cross
+build tests cover the projections, forms and routes.
 
 ### Updates (Windows executable)
 

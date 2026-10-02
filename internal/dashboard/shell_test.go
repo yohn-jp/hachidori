@@ -680,7 +680,9 @@ func TestOperatorLocaleRendering(t *testing.T) {
 	fs := &fakeSettings{}
 	withSettings(e, fs, nil)
 	withPathPicker(e, &fakePathPicker{path: "/data/chosen"})
-	pages := []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings", "/live"}
+	withModels(e, &fakeModels{state: ModelsState{Inventory: variantInventory()}})
+	withVariants(e, &fakeVariants{})
+	pages := []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings", "/models", "/forge", "/live"}
 	render := func() map[string]string {
 		m := map[string]string{}
 		for _, p := range pages {
@@ -722,6 +724,8 @@ func TestOperatorLocaleRendering(t *testing.T) {
 		"/errors":      `エビデンスレポートファイル（絶対パス）`,
 		"/diagnostics": `<summary>ランタイムのエビデンス`,
 		"/settings":    `<option value="ja" selected lang="ja">日本語</option>`,
+		"/models":      `<h1>モデル</h1>`,
+		"/forge":       `<strong>認証済み</strong>`,
 		"/live":        `ワーカー障害から復旧: worker_crash`,
 	} {
 		if !strings.Contains(ja[p], want) {
@@ -761,7 +765,7 @@ var catalogRefRe = regexp.MustCompile(`\{\{t "((?:[^"\\]|\\.)*)"`)
 // entry; English needs none because it is the message ID.
 func TestWorkstationTemplatesAreCatalogued(t *testing.T) {
 	n := 0
-	for _, f := range []string{"page.html", "workbench.html", "experiments.html", "errors.html", "updates.html"} {
+	for _, f := range []string{"page.html", "workbench.html", "experiments.html", "errors.html", "updates.html", "models.html", "forge.html"} {
 		b, err := pageFS.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)

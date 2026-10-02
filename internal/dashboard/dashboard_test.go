@@ -601,6 +601,20 @@ func TestGPUMemoryBreakdown(t *testing.T) {
 	}
 }
 
+// section is the part of body from the first occurrence of from up to the
+// next occurrence of to after it ("" when from is absent; the rest of body
+// when to is).
+func section(body, from, to string) string {
+	i := strings.Index(body, from)
+	if i < 0 {
+		return ""
+	}
+	if j := strings.Index(body[i+len(from):], to); j >= 0 {
+		return body[i : i+len(from)+j]
+	}
+	return body[i:]
+}
+
 type fakeModels struct {
 	mu      sync.Mutex
 	state   ModelsState
@@ -658,7 +672,7 @@ func withModels(e *env, m Models) {
 // when the maintenance authority is hosted.
 func TestModelsManagerView(t *testing.T) {
 	e := newEnv(t)
-	if rec := e.post(t, "/settings/models/activate", url.Values{"device": {"cpu"}}); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+	if rec := e.post(t, "/models/activate", url.Values{"device": {"cpu"}}); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("models route without authority: %d", rec.Code)
 	}
 	fm := &fakeModels{state: ModelsState{Inventory: modelsInventory(), RestartRequired: true,
@@ -668,21 +682,21 @@ func TestModelsManagerView(t *testing.T) {
 		Last: &ModelOp{Kind: "verify", Target: "model laya-base", Plan: []string{"model"}, Phases: []string{"model"}, Failure: "sha256 mismatch",
 			FailurePhase: "model", FailureStep: "verifying", Log: "/home/x/logs/setup.log", Started: time.Now().Add(-5 * time.Second), Finished: time.Now()}}}
 	withModels(e, fm)
-	body := e.get(t, "/settings").Body.String()
-	for _, want := range []string{`id="settings-models"`, "cu128-aaaa", "windows/amd64 · python 3.12.11 · laya",
+	body := e.get(t, "/models").Body.String()
+	for _, want := range []string{`id="models-runtimes"`, "cu128-aaaa", "windows/amd64 · python 3.12.11 · laya",
 		"convaiinnovations/laya@55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851", "5 pinned file(s)", `<span class="badge tone-ok">active</span>`,
-		`<span class="badge">not materialized</span>`, `id="restart-required"`, `action="/settings/models/restart"`,
+		`<span class="badge">not materialized</span>`, `id="restart-required"`, `action="/models/restart"`,
 		`id="models-busy"`, "phase 3 of 4 · Downloading", `(3 of 7)`, "412.0 MiB of 800.0 MiB (52%)", `aria-valuenow="52"`,
 		`id="models-last"`, "sha256 mismatch", "Failed in phase <strong>Model</strong> · Verifying", "The active runtime and model were not changed.",
 		`href="/diagnostics"`, "/home/x/logs/setup.log",
-		`formaction="/settings/models/materialize"`, `formaction="/settings/models/repair"`, `formaction="/settings/models/activate"`,
+		`formaction="/models/materialize"`, `formaction="/models/repair"`, `formaction="/models/activate"`,
 		`<option value="cuda">`, `<option value="laya-absent">`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("manager lacks %q", want)
 		}
 	}
 	// Active artifacts have no Remove action; unused materialized ones do.
-	if n := strings.Count(body, `action="/settings/models/remove"`); n != 2 {
+	if n := strings.Count(body, `action="/models/remove"`); n != 2 {
 		t.Errorf("%d remove forms, want 2 (unused runtime, unused model)", n)
 	}
 	for _, bad := range []string{`name="id" value="cu128-aaaa"><button type="submit" class="btn danger"`, `name="id" value="laya-base"><button type="submit" class="btn danger"`, `name="id" value="laya-absent"><button type="submit" class="btn danger"`} {
@@ -690,7 +704,7 @@ func TestModelsManagerView(t *testing.T) {
 			t.Errorf("Remove offered for %q", bad)
 		}
 	}
-	if strings.Count(body, `id="settings-models"`) != 1 || !strings.Contains(navRe.FindString(body), "/settings") {
+	if strings.Count(body, `id="models-runtimes"`) != 1 || !strings.Contains(navRe.FindString(body), "/models") || !strings.Contains(navRe.FindString(body), "/forge") {
 		t.Error("navigation/section mismatch")
 	}
 }
@@ -713,9 +727,9 @@ func TestModelsActionsForwarded(t *testing.T) {
 		{"remove", url.Values{"kind": {"runtime"}, "id": {"cpu-bbbb"}}, "remove runtime cpu-bbbb"},
 		{"restart", url.Values{}, "restart"},
 	} {
-		c.form.Set("return", "settings")
-		rec := e.post(t, "/settings/models/"+c.op, c.form)
-		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings" {
+		c.form.Set("return", "models")
+		rec := e.post(t, "/models/"+c.op, c.form)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/models" {
 			t.Fatalf("%s: %d %s", c.op, rec.Code, rec.Header().Get("Location"))
 		}
 		if a := e.lastAction(t); !a.OK {
@@ -725,15 +739,15 @@ func TestModelsActionsForwarded(t *testing.T) {
 			t.Fatalf("%s forwarded %q, want %q", c.op, got, c.want)
 		}
 	}
-	if rec := e.post(t, "/settings/models/format-disk", nil); rec.Code != http.StatusNotFound {
+	if rec := e.post(t, "/models/format-disk", nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown op: %d", rec.Code)
 	}
-	if rec := e.post(t, "/settings/models/remove", url.Values{"token": {"forged"}, "kind": {"model"}, "id": {"laya-other"}}); rec.Code != http.StatusForbidden {
+	if rec := e.post(t, "/models/remove", url.Values{"token": {"forged"}, "kind": {"model"}, "id": {"laya-other"}}); rec.Code != http.StatusForbidden {
 		t.Fatalf("forged token: %d", rec.Code)
 	}
 	n := len(fm.calls)
 	fm.err = errors.New("the active runtime/model cannot be removed")
-	e.post(t, "/settings/models/remove", url.Values{"kind": {"model"}, "id": {"laya-base"}})
+	e.post(t, "/models/remove", url.Values{"kind": {"model"}, "id": {"laya-base"}})
 	if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "cannot be removed") || len(fm.calls) != n+1 {
 		t.Fatalf("refusal not shown: %+v", a)
 	}
@@ -755,12 +769,12 @@ func TestModelsVerifyResultShown(t *testing.T) {
 		"model laya-base":  {OK: true, Time: time.Now()},
 	}}}
 	withModels(e, fm)
-	body := e.get(t, "/settings").Body.String()
+	body := e.get(t, "/models").Body.String()
 	if !strings.Contains(body, "failed 20") || !strings.Contains(body, "config.json: sha256 bad") || !strings.Contains(body, "verified 20") {
 		t.Error("verification results not shown")
 	}
 	// Starting a verification only forwards it: the page decides nothing.
-	if rec := e.post(t, "/settings/models/verify", url.Values{"kind": {"model"}, "id": {"laya-other"}}); rec.Code != http.StatusSeeOther {
+	if rec := e.post(t, "/models/verify", url.Values{"kind": {"model"}, "id": {"laya-other"}}); rec.Code != http.StatusSeeOther {
 		t.Fatal(rec.Code)
 	}
 	if a := e.lastAction(t); !a.OK || !strings.Contains(a.Message, "started") {
@@ -1009,10 +1023,9 @@ func TestModelsManagerSeparatesSelectionActivationAndRunning(t *testing.T) {
 	fm := &fakeModels{state: ModelsState{Inventory: inv, RestartRequired: true}}
 	withModels(e, fm)
 
-	body := e.get(t, "/settings?model=opendecider-nano").Body.String()
+	body := e.get(t, "/models?model=opendecider-nano").Body.String()
 	for _, want := range []string{
-		`id="models-serving"`, `<dt>Serving now</dt><dd class="mono">laya-base · cuda</dd>`,
-		`<dt>Active (next start)</dt><dd class="mono">opendecider-nano · cuda</dd>`,
+		`id="models-serving"`, `id="artifact-running" data-artifact="SOURCE"`, `id="artifact-next" data-artifact="SOURCE"`,
 		`<span class="badge tone-ok">running</span>`, `<span class="badge tone-ok">active · applies on restart</span>`,
 		`<option value="opendecider-nano" selected>`, `<option value="cuda" selected>`,
 		`id="restart-required"`, "changes nothing by itself", "opendecider · manjunathshiva/opendecider-nano@7e42a1508d2beef44717d044831e87f2fc4db9f2",
@@ -1023,6 +1036,10 @@ func TestModelsManagerSeparatesSelectionActivationAndRunning(t *testing.T) {
 	}
 	if strings.Count(body, `<option value="laya-base" selected>`) != 0 {
 		t.Error("the form pre-selects a model that is not the active one")
+	}
+	run, next := section(body, `id="artifact-running"`, `id="artifact-next"`), section(body, `id="artifact-next"`, `id="artifact-differs"`)
+	if !strings.Contains(run, `<dd class="mono">laya-base</dd>`) || !strings.Contains(next, `<dd class="mono">opendecider-nano</dd>`) || !strings.Contains(body, `id="artifact-differs"`) {
+		t.Errorf("running and next-start artifacts are not told apart:\nrunning:%s\nnext:%s", run, next)
 	}
 	e.rt.mu.Lock()
 	lc := append([]string(nil), e.rt.calls...)
@@ -1040,8 +1057,8 @@ func TestModelsManagerSeparatesSelectionActivationAndRunning(t *testing.T) {
 		return st
 	}
 	e.d = New(cfg)
-	body = e.get(t, "/settings").Body.String()
-	if !strings.Contains(body, `<dt>Serving now</dt><dd class="mono">opendecider-nano · cuda</dd>`) || strings.Contains(body, "applies on restart") || strings.Contains(body, `id="restart-required"`) {
+	body = e.get(t, "/models").Body.String()
+	if run := section(body, `id="artifact-running"`, `id="artifact-next"`); !strings.Contains(run, `<dd class="mono">opendecider-nano</dd>`) || strings.Contains(body, "applies on restart") || strings.Contains(body, `id="restart-required"`) || strings.Contains(body, `id="artifact-differs"`) {
 		t.Error("after restart the manager still reports a pending change")
 	}
 }

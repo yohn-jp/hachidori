@@ -1,0 +1,163 @@
+{{/* Models: runtime, model and residency administration, and the explicit execution artifact. Everything renders from the maintenance authority's state and the status document. */}}
+{{define "models"}}{{template "open" .Chrome}}
+<header class="ws-head">
+  <div><h1>{{t "Models"}}</h1><p class="lede">{{t "Runtimes, models and resident selection under HACHIDORI_HOME, and exactly which execution artifact serves. System One variants are built, certified and applied in Forge. Nothing here restarts the running runtime unless you choose Restart."}}</p></div>
+</header>
+{{template "last" .Last}}
+{{with .Models}}
+<div id="models-workspace">
+  {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+  {{if .RestartRequired}}
+  <div class="last tone-bad" role="status" id="restart-required">
+    <strong>{{t "RESTART REQUIRED"}}</strong><span class="msg-text">{{if .ResidencyChanged}}{{t "The resident selection changed (the active runtime/model may have changed too). The running workers still serve what they started with; nothing restarts automatically."}}{{else}}{{t "The active runtime/model changed. The running worker still serves what it started with; nothing restarts automatically."}}{{end}}</span>
+    <form method="post" action="/models/restart" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><button type="submit" class="btn primary">{{t "Restart runtime"}}</button></form>
+  </div>
+  {{end}}
+  {{with .Inventory.ActiveProblem}}<div class="last tone-bad" role="alert" id="active-problem"><strong>{{t "CANNOT START"}}</strong><span class="msg-text">{{t "The active runtime cannot be started by this version of Hachidori."}} {{.}}</span></div>{{end}}
+  {{with .Busy}}
+  {{template "op-busy" .}}
+  {{template "op-refresh" "models-workspace"}}
+  {{end}}
+  {{with .Last}}{{template "op-last" .}}{{end}}
+  {{with .Inventory.ActiveErr}}<p class="msg bad" role="alert">{{t "Activation record:"}} {{.}}</p>{{end}}
+
+  <section class="region section" id="execution-artifact" aria-labelledby="ea-h">
+    <div class="region-h"><h2 id="ea-h">{{t "Execution artifact"}}</h2><span class="sub">{{t "what serves now and what the next start serves"}}</span></div>
+    {{template "artifacts" $.Art}}
+    <p class="note">{{t "SOURCE is the upstream model artifact. A VARIANT is a derived, quantized artifact of one source with its own exact identity; it is never substituted for the source or for another variant."}} <a href="/forge">{{t "Open Forge"}}</a></p>
+  </section>
+
+  <section class="region section" id="models-runtimes" aria-labelledby="sm-h">
+  <div class="region-h"><h2 id="sm-h">{{t "Models & runtimes"}}</h2><span class="sub">{{t "catalog-pinned identities under HACHIDORI_HOME"}}</span></div>
+  <h3>{{t "Runtimes"}}</h3>
+  <div class="table-wrap"><table class="data" id="runtime-inventory">
+    <thead><tr><th scope="col">{{t "Device"}}</th><th scope="col">{{t "Identity"}}</th><th scope="col">{{t "Immutable facts"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
+    <tbody>{{range .Runtimes}}
+      <tr{{if .Active}} aria-current="true"{{end}}>
+        <td class="strong">{{.Device}}</td>
+        <td class="mono">{{.ID}}</td>
+        <td class="mono">{{.Platform}} · python {{.Python}} · {{.Provider}} · torch {{.Torch}}</td>
+        <td>{{if not .Supported}}<span class="badge tone-bad">{{t "unsupported"}}</span>{{else if .Active}}<span class="badge tone-ok">{{t "active"}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
+          {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
+          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
+          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="nowrap">{{if .Materialized}}
+          <form method="post" action="/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
+          {{if not .Active}}<form method="post" action="/models/remove" class="inline" data-confirm="{{t "Remove this runtime from HACHIDORI_HOME?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
+        {{end}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table></div>
+
+  <h3>{{t "Models"}}</h3>
+  <div class="table-wrap"><table class="data" id="model-inventory">
+    <thead><tr><th scope="col">{{t "Model"}}</th><th scope="col">{{t "Immutable facts"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
+    <tbody>{{range .Models}}
+      <tr{{if .Active}} aria-current="true"{{end}}>
+        <td class="strong">{{.ID}}{{with .Description}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="mono">{{.Provider}} · {{.Repo}}@{{.Revision}} · {{.Files}} {{t "pinned file(s)"}}</td>
+        <td>{{if .Running}}<span class="badge tone-ok">{{t "running"}}</span>{{end}}{{if .Active}}<span class="badge tone-ok">{{if and $.Models.RestartRequired (not .Running)}}{{t "active · applies on restart"}}{{else}}{{t "active"}}{{end}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
+          {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
+          {{if .PartialBytes}}<div class="muted partial-download">{{t "interrupted download kept for resume (not a materialized model):"}} {{bytesIn .PartialBytes}} · {{t "Materialize again to resume it"}}</div>{{end}}
+          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
+          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="nowrap">{{if .Materialized}}
+          <form method="post" action="/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
+          {{if not .Active}}<form method="post" action="/models/remove" class="inline" data-confirm="{{t "Remove this model from HACHIDORI_HOME?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
+        {{end}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table></div>
+  {{with .Variants}}<p class="note" id="models-variants-note">{{len .}} {{t "System One variant(s) are derived from these models; they are built, certified and applied in Forge."}} <a href="/forge">{{t "Open Forge"}}</a></p>{{end}}
+
+  {{with .Residency}}
+  <h3 id="resident-selection-h">{{t "Resident models"}}</h3>
+  {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+  <form method="post" action="/models/residents" id="resident-selection">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <input type="hidden" name="return" value="models">
+    <div class="table-wrap"><table class="data" aria-labelledby="resident-selection-h">
+      <thead><tr><th scope="col">{{t "Resident"}}</th><th scope="col">{{t "Model"}}</th><th scope="col">{{t "Status"}}</th></tr></thead>
+      <tbody>{{range .Rows}}
+        <tr data-model="{{.ID}}">
+          <td><input type="checkbox" name="resident" value="{{.ID}}" aria-label="{{.ID}}"{{if or .Default .Selected}} checked{{end}}{{if or .Default (and (not .Selected) (not .Materialized))}} disabled{{end}}></td>
+          <td class="strong">{{.ID}}</td>
+          <td>{{if .Default}}<span class="badge tone-ok">{{t "default resident"}}</span>{{if not .Bound}}<span class="sub">{{t "starts with the runtime"}}</span>{{end}}
+            {{else if and .Selected .Bound}}<span class="badge tone-ok">{{t "resident"}}</span>
+            {{else if .Selected}}<span class="badge">{{t "selected · applies on next start"}}</span>
+            {{else if .Bound}}<span class="badge">{{t "resident · removed on restart"}}</span>
+            {{else if not .Materialized}}<span class="sub">{{t "not materialized"}}</span>{{end}}
+            {{if and .Selected (not .Materialized)}}<div class="bad-t">{{t "Not materialized: this resident will fail to start and is never replaced by another model. Materialize it first."}}</div>{{end}}</td>
+        </tr>{{end}}
+      </tbody>
+    </table></div>
+    <div class="btn-row"><button type="submit" class="btn primary">{{t "Save resident models"}}</button></div>
+  </form>
+  <p class="note">{{t "The active model is always the default resident. A selection is stored for the next start only: saving it downloads, activates, starts, stops and restarts nothing, and the running workers keep what they started with until you restart the runtime. Each resident is its own worker process, and a failed one never stops the others."}}</p>
+  {{end}}
+
+  <form method="post" class="region" id="models-choice">
+    <input type="hidden" name="token" value="{{$.Token}}">
+    <input type="hidden" name="return" value="models">
+    <div class="fields">
+      <label class="field">{{t "Device"}}
+        <select name="device">{{$ad := .ActiveDevice}}{{range .Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+      <label class="field">{{t "Model"}}
+        <select name="model">{{$am := .ActiveModel}}{{range .ModelIDs}}<option value="{{.}}"{{if eq . $am}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+    </div>
+    <div class="btn-row">
+      {{if .VariantControls}}<button type="submit" class="btn" formaction="/forge/preflight" name="kind" value="materialize">{{t "Preflight"}}</button>{{end}}
+      <button type="submit" class="btn" formaction="/models/materialize">{{t "Materialize"}}</button>
+      <button type="submit" class="btn" formaction="/models/repair">{{t "Repair"}}</button>
+      <button type="submit" class="btn primary" formaction="/models/activate">{{t "Activate"}}</button>
+    </div>
+  </form>
+  <p class="note">{{t "Only the catalog's pinned runtime and model identities are listed. Choosing a model in the form changes nothing by itself. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker, so a running worker keeps serving its model until you restart it. A requested device is never replaced by another. The active runtime and model cannot be removed."}}</p>
+  </section>
+</div>
+{{end}}
+{{template "close" .Chrome}}{{end}}
+
+{{/* The execution artifact of the running worker and of the next start: always SOURCE or an exact VARIANT. */}}
+{{define "artifacts"}}{{with .}}
+<div class="artifacts" id="models-serving">
+  <div class="artifact" id="artifact-running" data-artifact="{{if .Running.Present}}{{.Running.Kind}}{{else}}none{{end}}">
+    <h3>{{t "Serving now"}}</h3>
+    {{if .Running.Present}}{{template "artifact" .Running}}{{else}}<p class="muted">{{t "no worker running"}}</p>{{end}}
+  </div>
+  <div class="artifact" id="artifact-next" data-artifact="{{if .Next.Present}}{{.Next.Kind}}{{else}}none{{end}}">
+    <h3>{{t "Active (next start)"}}</h3>
+    {{if .Next.Present}}{{template "artifact" .Next}}{{else}}<p class="muted">-</p>{{end}}
+  </div>
+</div>
+{{if .Differs}}<p class="note warn-t" id="artifact-differs">{{t "The next start serves another model, device or artifact than the running worker. Choose Restart to apply it."}}</p>{{end}}
+{{end}}{{end}}
+
+{{define "artifact"}}
+<p class="artifact-kind"><span class="badge{{if eq .Kind "VARIANT"}} tone-ok{{end}}">{{.Kind}}</span>{{if .Experimental}} <span class="badge tone-bad">{{t "experimental/uncertified"}}</span>{{end}}</p>
+<dl class="kv">
+  <dt>{{t "Model"}}</dt><dd class="mono">{{.Model}}</dd>
+  {{if eq .Kind "VARIANT"}}<dt>{{t "Variant"}}</dt><dd class="mono">{{.Variant}}</dd>
+  {{with .Scheme}}<dt>{{t "Precision"}}</dt><dd class="mono">{{.}}{{if $.Bits}} · {{$.Bits}}-bit{{end}}{{with $.DType}} · {{t "compute"}} {{.}}{{end}}</dd>{{end}}
+  {{with .Certification}}<dt>{{t "Certification"}}</dt><dd>{{.}}</dd>{{end}}
+  {{else}}<dt>{{t "Artifact"}}</dt><dd>{{t "the upstream source artifact (no variant)"}}</dd>{{end}}
+  <dt>{{t "Requested device"}}</dt><dd class="mono">{{.Device}}</dd>
+  {{with .ReportedDevice}}<dt>{{t "Loaded on"}}</dt><dd class="mono">{{.}}{{with $.ReportedDType}} · {{t "dtype"}} {{.}}{{end}}</dd>{{end}}
+</dl>
+{{end}}
+
+{{/* Refreshes only the workspace region while an operation runs, so focus and the rest of the page stay where they are. */}}
+{{define "op-refresh"}}<script>
+(function () {
+  var id = {{.}};
+  var t = setInterval(function () {
+    if (document.hidden) return;
+    fetch(location.pathname, {cache: "no-store"}).then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); }).then(function (h) {
+      var src = new DOMParser().parseFromString(h, "text/html").getElementById(id), dst = document.getElementById(id);
+      if (!src || !dst) { clearInterval(t); return; }
+      if (!src.querySelector("#models-busy")) clearInterval(t);
+      if (src.innerHTML !== dst.innerHTML) dst.innerHTML = src.innerHTML;
+    }).catch(function () {});
+  }, 1500);
+})();
+</script>{{end}}

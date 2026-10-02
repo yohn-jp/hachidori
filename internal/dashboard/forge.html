@@ -1,0 +1,178 @@
+{{/* Forge: the System One variant lifecycle. build -> preflight/probe -> self-contained certification -> explicit apply. Every stage and label is derived from backend records on each render; nothing here is remembered. */}}
+{{define "forge"}}{{template "open" .Chrome}}
+<header class="ws-head">
+  <div><h1>{{t "Forge"}}</h1><p class="lede">{{t "Build a quantized System One variant, check it, certify it from an evaluation dataset and apply it explicitly. Each step is one backend operation; a verdict never applies a variant by itself."}}</p></div>
+</header>
+{{template "last" .Last}}
+{{with .Forge}}
+<div id="forge-workspace">
+  {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+  {{if .RestartRequired}}
+  <div class="last tone-bad" role="status" id="restart-required">
+    <strong>{{t "RESTART REQUIRED"}}</strong><span class="msg-text">{{t "The running worker no longer serves the activation record, so a variant cannot be applied safely. Restart the runtime in Models first."}}</span>
+    <a class="btn primary" href="/models">{{t "Open Models"}}</a>
+  </div>
+  {{end}}
+  {{with .Inventory.ActiveProblem}}<div class="last tone-bad" role="alert" id="active-problem"><strong>{{t "CANNOT START"}}</strong><span class="msg-text">{{t "The active runtime cannot be started by this version of Hachidori."}} {{.}}</span></div>{{end}}
+  {{with .Busy}}
+  {{template "op-busy" .}}
+  {{template "op-refresh" "forge-workspace"}}
+  {{end}}
+  {{with .Last}}{{template "op-last" .}}{{end}}
+
+  <section class="region section" id="forge-artifact" aria-labelledby="fa-h">
+    <div class="region-h"><h2 id="fa-h">{{t "Execution artifact"}}</h2><span class="sub">{{t "what serves now and what the next start serves"}}</span></div>
+    {{template "artifacts" $.Art}}
+  </section>
+
+  <section class="region section" id="forge-flow" aria-labelledby="ff-h">
+    <div class="region-h"><h2 id="ff-h">{{t "Lifecycle"}}</h2><span class="sub">{{t "the normal path, in order"}}</span></div>
+    <ol class="forge-flow">
+      <li><strong>{{t "Build"}}</strong> {{t "a variant from a source model with a canonical recipe."}}</li>
+      <li><strong>{{t "Preflight and probe"}}</strong> {{t "check readiness, then load the variant once on a device."}}</li>
+      <li><strong>{{t "Certify"}}</strong> {{t "from an evaluation dataset, Question Definitions and a policy; Hachidori produces the reference and the variant runs itself."}}</li>
+      <li><strong>{{t "Apply"}}</strong> {{t "the accepted variant: one explicit operation that activates it, rebinds the runtime and proves it serves."}}</li>
+    </ol>
+  </section>
+
+  <section class="region section" id="forge-build" aria-labelledby="fb-h">
+    <div class="region-h"><h2 id="fb-h">{{t "Source and recipes"}}</h2><span class="sub">{{t "1 · Build"}}</span></div>
+    <p class="note">{{t "A variant is a derived, quantized execution artifact of one source model. The source stays intact and keeps its identity; a variant is applied only with an accepted certification record, and never falls back to the source if it cannot start."}}</p>
+    {{with .Inventory.Optimizer}}<dl class="kv" id="optimizer-runtime"><dt>{{t "Optimizer runtime"}}</dt><dd class="mono">{{.ID}} · {{if .Materialized}}{{t "materialized"}}{{else}}{{t "not materialized (the first optimization materializes it)"}}{{end}}{{if .Verified}} · {{t "verified"}}{{end}}{{with .Problem}} <span class="bad-t">{{.}}</span>{{end}}</dd></dl>{{end}}
+    <div class="table-wrap"><table class="data" id="forge-sources">
+      <thead><tr><th scope="col">{{t "Source"}}</th><th scope="col">{{t "Revision"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Recipes"}}</th><th scope="col">{{t "Variants"}}</th></tr></thead>
+      <tbody>{{range .Sources}}
+        <tr data-source="{{.ID}}"><td class="strong mono">{{.ID}}</td><td class="mono">{{.Revision}}</td>
+          <td>{{if .Materialized}}<span class="badge tone-ok">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}</td>
+          <td class="mono">{{range .Recipes}}{{.}} {{else}}-{{end}}</td><td>{{.Variants}}</td></tr>{{else}}
+        <tr><td colspan="5" class="muted">{{t "No source model supports variants."}}</td></tr>{{end}}
+      </tbody>
+    </table></div>
+    {{if .Controls}}{{range $.Models.OptimizeModels}}
+    <form method="post" action="/forge/optimize" class="region" id="optimize-{{.ID}}">
+      <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="model" value="{{.ID}}">
+      <div class="fields"><label class="field">{{t "Recipe"}} ({{.ID}})
+        <select name="recipe">{{range .Recipes}}<option value="{{.}}">{{.}}</option>{{end}}</select></label></div>
+      <div class="btn-row"><button type="submit" class="btn" formaction="/forge/preflight" name="kind" value="optimize">{{t "Preflight"}}</button><button type="submit" class="btn primary">{{t "Build variant"}}</button></div>
+    </form>
+    {{end}}{{end}}
+  </section>
+
+  <section class="region section" id="forge-variants" aria-labelledby="fv-h">
+    <div class="region-h"><h2 id="fv-h">{{t "System One variants"}}</h2><span class="sub">{{t "immutable provenance and lifecycle, from the records"}}</span></div>
+    {{range .Items}}
+    <article class="region variant-card" data-variant="{{.ID}}" id="variant-{{.ID}}"{{if .Active}} aria-current="true"{{end}} aria-labelledby="vh-{{.ID}}">
+      <div class="region-h"><h3 class="mono" id="vh-{{.ID}}">{{.ID}}</h3>
+        <span>{{if .Running}}<span class="badge tone-ok">{{t "running"}}</span>{{end}}{{if .Active}}<span class="badge tone-ok">{{if .Pending}}{{t "active · applies on restart"}}{{else}}{{t "active"}}{{end}}</span>{{if .Experimental}}<span class="badge tone-bad">{{t "experimental/uncertified"}}</span>{{end}}{{end}}</span></div>
+      <dl class="kv">
+        <dt>{{t "Source"}}</dt><dd class="mono">{{.SourceID}}@{{.SourceRevision}}{{if not .SourceMaterialized}} <span class="bad-t">{{t "source not materialized"}}</span>{{end}}</dd>
+        <dt>{{t "Recipe"}}</dt><dd class="mono">{{.Recipe}} · {{.Engine}} {{.EngineVersion}}</dd>
+        <dt>{{t "Precision"}}</dt><dd class="mono">{{.Scheme}} · {{.Bits}}-bit g{{.GroupSize}} · {{t "compute"}} {{.DType}} · {{t "preserved at higher precision"}}: {{len .Preserved}}</dd>
+        <dt>{{t "Manifest"}}</dt><dd class="mono" title="{{.ManifestSHA256}}">{{short .ManifestSHA256}}</dd>
+        <dt>{{t "Certification"}}</dt><dd>{{if eq .Certification "accepted"}}<span class="badge tone-ok">{{t "accepted"}}</span>{{else if eq .Certification "rejected"}}<span class="badge tone-bad">{{t "rejected"}}</span>{{else}}<span class="badge">{{t "uncertified"}}</span>{{end}}{{with .CertificationNote}} <span class="bad-t">{{.}}</span>{{end}}</dd>
+      </dl>
+      <ol class="stages lifecycle" aria-label="{{t "Lifecycle"}}">{{range .Stages}}
+        <li class="{{.Class}}" data-stage="{{.Name}}" data-state="{{.State}}"{{if eq .State "current"}} aria-current="step"{{end}}><strong>{{t .Label}}</strong> <span class="stage-detail">{{t .Detail}}</span>{{with .Fact}} <span class="mono">{{.}}</span>{{end}}</li>{{end}}
+      </ol>
+      {{with .NextStep}}<p class="note next-step" data-next-step>{{t .}}</p>{{end}}
+      {{with .Check}}<p class="muted">{{.}}</p>{{end}}
+      <div class="btn-row">
+        <form method="post" action="/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="kind" value="variant"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
+        {{if not .Active}}<form method="post" action="/models/remove" class="inline" data-confirm="{{t "Remove this variant from HACHIDORI_HOME? Its source model is not touched."}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="kind" value="variant"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
+      </div>
+
+      {{if $.Forge.Controls}}{{if and (not .Problem) .SourceMaterialized}}
+      {{$vid := .ID}}{{$src := .SourceID}}
+      <form method="post" action="/forge/probe" class="region step" id="probe-{{$vid}}" aria-labelledby="sp-{{$vid}}">
+        <h4 id="sp-{{$vid}}">{{t "2 · Preflight and probe"}}</h4>
+        <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="variant" value="{{$vid}}"><input type="hidden" name="model" value="{{$src}}">
+        <div class="fields"><label class="field">{{t "Device"}}<select name="device">{{$ad := $.Forge.ActiveDevice}}{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label></div>
+        <div class="btn-row"><button type="submit" class="btn" formaction="/forge/preflight" name="kind" value="probe">{{t "Preflight"}}</button><button type="submit" class="btn">{{t "Probe"}}</button></div>
+        <p class="note">{{t "A probe loads the variant in its own worker, asks one typed decision and stops it. It is not a certification and changes no resident, activation or route."}}</p>
+      </form>
+
+      <form method="post" action="/forge/certify" class="region step" id="certify-{{$vid}}" aria-labelledby="sc-{{$vid}}">
+        <h4 id="sc-{{$vid}}">{{t "3 · Certify"}}</h4>
+        <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="variant" value="{{$vid}}">
+        <div class="fields">
+          <label class="field wide">{{t "Evaluation dataset (JSONL, absolute path)"}}<input type="text" name="dataset" required autocomplete="off" spellcheck="false" placeholder="/path/to/dataset.jsonl"></label>
+          <label class="field wide">{{t "Question Definition files or directories (absolute paths, one per line)"}}<textarea name="questions" rows="2" spellcheck="false"></textarea></label>
+          <label class="field wide">{{t "Policy file (optional; default is the built-in profile)"}}<input type="text" name="policy" autocomplete="off" spellcheck="false"></label>
+          <label class="field">{{t "Variant device"}}<select name="device">{{$ad := $.Forge.ActiveDevice}}{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+          <label class="field">{{t "Reference device"}}<select name="reference_device"><option value="">{{t "default (cpu)"}}</option>{{range $.Forge.Devices}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+          <label class="field">{{t "Reference precision"}}<select name="reference_dtype"><option value="">{{t "default"}}</option><option value="bfloat16">bfloat16</option><option value="float32">float32</option></select></label>
+        </div>
+        <label class="check"><input type="checkbox" name="materialize" value="1"> {{t "Materialize a missing serving runtime first (never activates)"}}</label>
+        <div class="btn-row"><button type="submit" class="btn primary" data-pending="{{t "Certifying…"}}">{{t "Certify variant"}}</button></div>
+        <p class="note">{{t "One operation: Hachidori checks readiness, probes the variant, runs the source reference and the variant on the same dataset, compares them under the policy and records the evidence and the verdict. It never activates anything, and an accepted verdict does not apply the variant."}}</p>
+      </form>
+
+      <div class="region step" id="apply-{{$vid}}" role="group" aria-labelledby="sa-{{$vid}}">
+        <h4 id="sa-{{$vid}}">{{t "4 · Apply"}}</h4>
+        {{if $.Forge.RestartRequired}}<p class="muted">{{t "Restart the runtime in Models before applying a variant."}}</p>
+        {{else if .CanApply}}
+        <form method="post" action="/forge/apply" data-confirm="{{t "Apply this certified variant? The runtime is rebound to it and verified; if anything fails, the previous serving target is restored."}}">
+          <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="variant" value="{{$vid}}"><input type="hidden" name="model" value="{{$src}}">
+          <div class="fields"><label class="field">{{t "Serving device"}}<select name="device">{{$ad := $.Forge.ActiveDevice}}{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label></div>
+          <label class="check"><input type="checkbox" name="materialize" value="1"> {{t "Materialize a missing runtime or source model first"}}</label>
+          <div class="btn-row"><button type="submit" class="btn primary" data-pending="{{t "Applying…"}}">{{t "Apply certified variant"}}</button></div>
+        </form>
+        <p class="note">{{t "One backend transaction: it activates the variant, rebinds and starts the runtime, waits until this exact variant is READY on the requested device with its quantized execution, answers one typed decision, and otherwise restores the previous serving target. There is no fallback to the source, another variant or another device."}}</p>
+        {{else if .Running}}<p class="muted">{{t "This variant is serving now."}}</p>
+        {{else}}<p class="muted">{{t "Apply is available once the variant is certified (accepted) and verifies."}}</p>{{end}}
+      </div>
+      {{end}}{{end}}
+
+      {{range .Preflights}}{{template "forge-preflight" .}}{{end}}
+      {{with .Diagnostics}}
+      <h4>{{t "Failure diagnostics"}}</h4>
+      <ul class="diagnostics-list">{{range .}}<li><a class="mono" href="/forge/diagnostics/{{.ID}}" download>{{.ID}}</a> · {{.Kind}}{{with .Phase}} · {{t "phase"}} {{.}}{{end}} · {{.Created}}<div class="muted">{{.Error}}</div></li>{{end}}</ul>
+      {{end}}
+      <p class="note">{{t "Certification evidence:"}} <span class="mono">hachidori certify show {{.ID}}</span></p>
+    </article>
+    {{else}}<p class="muted">{{t "No variants yet."}}</p>{{end}}
+  </section>
+
+  {{if and .Controls .Items}}
+  <section class="region section advanced" id="forge-advanced" aria-labelledby="fx-h">
+    <div class="region-h"><h2 id="fx-h">{{t "Advanced"}}</h2><span class="sub">{{t "outside the certified workflow"}}</span></div>
+    <details data-keep="forge-advanced">
+      <summary>{{t "Low-level and experimental activation"}}</summary>
+      <p class="note warn-t">{{t "These actions are not steps of the lifecycle above. They only change the activation record: a running worker keeps what it started with until you restart it, and nothing proves the variant serves. Use Apply for a certified variant."}}</p>
+      <div class="table-wrap"><table class="data" id="advanced-activation">
+        <thead><tr><th scope="col">{{t "Variant"}}</th><th scope="col">{{t "Certification"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
+        <tbody>{{range .Items}}{{if and (not .Problem) .SourceMaterialized}}
+          <tr data-variant="{{.ID}}"><td class="mono">{{.ID}}</td><td>{{.Certification}}</td>
+          <td class="nowrap">{{if .CanActivate}}<form method="post" action="/forge/activate" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="device" value="{{$.Forge.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><button type="submit" class="btn">{{t "Activate without applying"}}</button></form>
+          {{else if .CanExperiment}}<form method="post" action="/forge/activate" class="inline" data-confirm="{{t "Activate this variant as experimental/uncertified? It has no certification record. It is marked as such in status and is never promoted automatically."}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="device" value="{{$.Forge.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><input type="hidden" name="experimental" value="1"><button type="submit" class="btn danger">{{t "Activate as experimental"}}</button></form>{{else}}<span class="muted">-</span>{{end}}</td></tr>
+        {{end}}{{end}}</tbody>
+      </table></div>
+    </details>
+  </section>
+  {{end}}
+
+  <section class="region section" id="forge-readiness-region" aria-labelledby="fr-h">
+    <div class="region-h"><h2 id="fr-h">{{t "Forge readiness"}}</h2><span class="sub">{{t "reports that belong to no variant"}}</span></div>
+    <p class="note">{{t "A preflight reports what Hachidori can know before an expensive operation: integrity, runtime, recipe, disk, RAM and the requested device. It never claims that a model fits: an unknown stays unknown. A probe loads one persisted variant in its own worker and asks one typed decision; it is not a certification and changes no resident, activation or route."}}</p>
+    <div id="forge-readiness">
+    {{range .Preflights}}{{template "forge-preflight" .}}{{else}}<p class="muted">{{t "No preflight recorded yet."}}</p>{{end}}
+    {{if .Diagnostics}}
+    <h3>{{t "Failure diagnostics"}}</h3>
+    <ul class="diagnostics-list" id="forge-diagnostics">{{range .Diagnostics}}<li><a class="mono" href="/forge/diagnostics/{{.ID}}" download>{{.ID}}</a> · {{.Kind}}{{with .Phase}} · {{t "phase"}} {{.}}{{end}} · {{.Created}}<div class="muted">{{.Error}}</div></li>{{end}}</ul>
+    <p class="note">{{t "A diagnostic holds identities, versions, resource observations and a bounded, redacted error and log tail. It never holds weights, datasets or credentials. CLI:"}} <span class="mono">hachidori forge diagnostics list|show|export</span></p>
+    {{end}}
+    </div>
+  </section>
+</div>
+{{end}}
+{{template "close" .Chrome}}{{end}}
+
+{{define "forge-preflight"}}
+<div class="forge-preflight" data-outcome="{{.Outcome}}">
+  <p class="op-line"><span class="badge{{if eq .Outcome "blocked"}} tone-bad{{else if eq .Outcome "ready"}} tone-ok{{end}}">{{if eq .Outcome "blocked"}}{{t "BLOCKED"}}{{else if eq .Outcome "ready"}}{{t "READY"}}{{else}}{{t "ATTENTION"}}{{end}}</span>
+    <strong>{{t "preflight"}} {{.Kind}}</strong> <span class="mono">{{.Model}}{{with .Variant}} {{.}}{{end}}{{with .Recipe}} {{.}}{{end}}{{with .Device}} · {{.}}{{end}}</span> · {{.At}}
+    · {{.Pass}} {{t "pass"}}, {{.Warning}} {{t "warning"}}, {{.Blocker}} {{t "blocker"}}, {{.Unknown}} {{t "unknown"}}</p>
+  {{if .Findings}}<ul class="findings">{{range .Findings}}<li class="finding-{{.Status}}"><span class="badge{{if eq .Status "blocker"}} tone-bad{{end}}">{{.Status}}</span> <span class="mono">{{.ID}}</span> {{.Summary}}</li>{{end}}</ul>{{end}}
+  {{if ne .Outcome "ready"}}<p class="note">{{t "Not READY: this is not a promise that the operation fits or succeeds."}}</p>{{end}}
+</div>
+{{end}}
