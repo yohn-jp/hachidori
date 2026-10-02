@@ -322,3 +322,71 @@ func TestActiveModelResolution(t *testing.T) {
 		}
 	}
 }
+
+// Clef-Flash is a pinned, immutable System One identity: the upstream
+// repository at one commit with the digest of every file the typed-decision
+// path loads. A caller cannot substitute a repository or revision.
+func TestCatalogClefFlash(t *testing.T) {
+	m, err := LookupModel(ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ID != "clef-flash" || m.Provider != "clef" || m.Repo != "Cloudflare/clef-flash" || m.Revision != "17f0b0ad64efb65d273590632833508766b2aae6" {
+		t.Fatalf("clef-flash %+v", m)
+	}
+	if ModelDirName(m) != "Cloudflare--clef-flash/17f0b0ad64efb65d273590632833508766b2aae6" {
+		t.Fatalf("dir %s", ModelDirName(m))
+	}
+	for _, rel := range []string{"config.json", "model.safetensors.index.json", "model-00001-of-00004.safetensors", "model-00002-of-00004.safetensors",
+		"model-00003-of-00004.safetensors", "model-00004-of-00004.safetensors", "joint_head.safetensors", "joint_head_config.json",
+		"joint_schema_model.py", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "processor_config.json", "generation_config.json", "LICENSE"} {
+		if !hex64.MatchString(m.Files[rel]) {
+			t.Errorf("clef-flash does not pin %s", rel)
+		}
+	}
+	if _, ok := m.Files["README.md"]; ok || len(m.Files) != 15 {
+		t.Errorf("clef-flash pins %d files (documentation is not pinned)", len(m.Files))
+	}
+	// Digests as published by the upstream release (LFS digests of the shards and
+	// the joint head): a changed pin is a changed identity, not a typo fix.
+	for rel, want := range map[string]string{
+		"model-00001-of-00004.safetensors": "8b45a8e968141cdcc58fb71c9adfc258e2c77b5f062bc636c1fd5bc5d916b565",
+		"joint_head.safetensors":           "19cdcec8c81dc9212be320fff47462ab342fbc1278be4368fb3da71241cf5ba0",
+		"joint_schema_model.py":            "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3",
+	} {
+		if m.Files[rel] != want {
+			t.Errorf("%s pin %s, want %s", rel, m.Files[rel], want)
+		}
+	}
+	for _, bad := range []string{"Cloudflare/clef-flash", "Cloudflare/clef", "clef-flash@main", "clef-flash@17f0b0ad64efb65d273590632833508766b2aae6", "clef"} {
+		if _, err := LookupModel(bad); err == nil {
+			t.Errorf("%q resolved: only catalog IDs may select a model", bad)
+		}
+	}
+	if !SupportsVariants(m) {
+		t.Error("clef-flash does not support variants")
+	}
+	for _, other := range []string{DefaultModel, OpenDeciderNano} {
+		o, _ := LookupModel(other)
+		if SupportsVariants(o) {
+			t.Errorf("%s claims variant support", other)
+		}
+	}
+	// The default is unchanged, and the runtime declares the provider.
+	if DefaultModel != "laya-base" {
+		t.Errorf("default model %s", DefaultModel)
+	}
+	spec, _ := Desired("cuda")
+	if !spec.Provides("clef") || !strings.Contains(spec.Provider, "laya==0.3.21,opendecider==0.3.0,clef==") {
+		t.Errorf("runtime providers %s", spec.Provider)
+	}
+}
+
+// Normal verification never reaches the network: materialization only ever
+// requests the catalog base URL, which every test replaces with a local
+// fixture server, and the default is the pinned upstream host.
+func TestModelBaseURLIsTheOnlyDownloadSource(t *testing.T) {
+	if modelBaseURL != "https://huggingface.co/" {
+		t.Fatalf("modelBaseURL %s", modelBaseURL)
+	}
+}

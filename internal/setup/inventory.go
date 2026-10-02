@@ -513,7 +513,7 @@ func Remove(h home.Home, kind, id string, obs *Observer) error {
 // findVariantDir resolves a variant ID to its directory without validating
 // the manifest, so that a corrupt variant can still be removed.
 func findVariantDir(h home.Home, variantID string) (home.ModelManifest, string, error) {
-	if variantID == "" || strings.ContainsAny(variantID, `/\`) || variantID == "." || variantID == ".." {
+	if !variantIDRe.MatchString(variantID) {
 		return home.ModelManifest{}, "", fmt.Errorf("%q is not a variant ID", variantID)
 	}
 	for _, m := range Models {

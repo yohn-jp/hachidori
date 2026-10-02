@@ -421,8 +421,11 @@ parsed or retried.
   `HACHIDORI_CLEF_DTYPE=float32`, in `float32` as the high-precision reference. The
   device is explicit: CUDA is never silently replaced by the CPU. A 9B model in
   `bfloat16` does not fit an RTX 3060; the reference path is the CPU and may be
-  slow, and the CUDA path is for a variant (below). Nothing is generated,
-  parsed or retried.
+  slow, and the CUDA path is for a variant (below). Without the optional
+  `flash-linear-attention` and `causal-conv1d` kernels (not installed by
+  Hachidori) transformers runs the gated delta rule and the causal convolution
+  of the Qwen3.5 backbone through its reference PyTorch implementation: correct,
+  and slower. Nothing is generated, parsed or retried.
 
 Which model is the default is decided by recorded evidence, not by size or
 upstream claims; see "Decision-model comparison" in `certification.md`.
@@ -1086,7 +1089,10 @@ cannot be launched fails the launch and the source is never started in its place
 requested resident is never answered by another. A variant applies to the
 active model; additional residents run their source artifacts. Changing the
 active variant is an activation change, applied by an explicit restart like any
-other.
+other: the restart rebinds the resident set exactly as a change of the active
+model does today, and Hachidori does not hot-swap one resident. Direct selection
+(`model` in a decide request) is unchanged and strict, and never starts,
+restarts or reloads any resident.
 
 **Desktop.** Settings, Models & runtimes lists the variants beside the models:
 recipe, precision, number of preserved modules, certification state, source

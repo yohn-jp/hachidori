@@ -194,10 +194,10 @@ type SliceDelta struct {
 // reference and are descriptive; the reference is not the truth here either,
 // the labels are.
 type LabelledEvidence struct {
-	HighConfidence float64 `json:"high_confidence_threshold"`
-	Reference      Quality `json:"reference"`
-	Candidate      Quality `json:"candidate"`
-	Delta          QualityDelta
+	HighConfidence float64      `json:"high_confidence_threshold"`
+	Reference      Quality      `json:"reference"`
+	Candidate      Quality      `json:"candidate"`
+	Delta          QualityDelta `json:"delta"`
 	// HighConfidenceErrorRate is the change of high-confidence errors over all
 	// observations.
 	HighConfidenceErrorRate *float64         `json:"high_confidence_error_rate_delta"`

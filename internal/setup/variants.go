@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -78,6 +79,9 @@ func variantDirs(h home.Home, sourceID string) []string {
 // against the catalog. It reads only manifests: artifact bytes are not
 // touched.
 func FindVariant(h home.Home, variantID string) (home.ModelManifest, home.VariantManifest, error) {
+	if !variantIDRe.MatchString(variantID) {
+		return home.ModelManifest{}, home.VariantManifest{}, fmt.Errorf("%q is not a variant ID", variantID)
+	}
 	for _, m := range Models {
 		if !SupportsVariants(m) {
 			continue
@@ -91,7 +95,14 @@ func FindVariant(h home.Home, variantID string) (home.ModelManifest, home.Varian
 	return home.ModelManifest{}, home.VariantManifest{}, fmt.Errorf("variant %q is not in this home (see `hachidori variant list`)", variantID)
 }
 
+// variantIDRe is the shape of every variant ID (<model>--<recipe>--<12 hex>):
+// plain, with no separator or dot segment, so an ID can never name a path.
+var variantIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*--[a-z0-9][a-z0-9.-]*--[0-9a-f]{12}$`)
+
 func loadVariant(h home.Home, m home.ModelManifest, variantID string) (home.ModelManifest, home.VariantManifest, error) {
+	if !variantIDRe.MatchString(variantID) {
+		return m, home.VariantManifest{}, fmt.Errorf("%q is not a variant ID", variantID)
+	}
 	v, err := home.ReadVariant(h.VariantDir(m.ID, variantID))
 	if err != nil {
 		return m, v, fmt.Errorf("variant %s: %w", variantID, err)
