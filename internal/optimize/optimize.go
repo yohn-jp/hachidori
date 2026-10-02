@@ -81,6 +81,14 @@ func (p processRunner) Run(ctx context.Context, args []string, events, log io.Wr
 	return cmd.Run()
 }
 
+// NewProcessRunner is the Runner that starts the optimizer script with the
+// given private interpreter, isolated, in env and dir. Build uses it for the
+// optimizer runtime; it is exported so that the end-to-end test can run the
+// real optimizer from any prepared environment.
+func NewProcessRunner(python, script string, env []string, dir string) Runner {
+	return processRunner{python: python, script: script, env: env, dir: dir}
+}
+
 // Deps are the replaceable parts of Build.
 type Deps struct {
 	// Runner overrides the optimizer process; nil starts the real one in the

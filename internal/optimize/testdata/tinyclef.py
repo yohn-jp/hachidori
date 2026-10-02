@@ -98,6 +98,11 @@ def main():
     with open(os.path.join(args.out, "tokenizer_config.json"), "w") as f:
         json.dump({"tokenizer_class": "PreTrainedTokenizerFast", "pad_token": "<|endoftext|>", "eos_token": "<|im_end|>"}, f)
 
+    # The remaining files of the release layout, as placeholders.
+    for name, body in (("LICENSE", "fixture license\n"), ("chat_template.jinja", "{{ messages }}\n"), ("processor_config.json", "{}\n")):
+        with open(os.path.join(args.out, name), "w") as f:
+            f.write(body)
+
     files = {}
     for root, _, names in os.walk(args.out):
         for n in names:
