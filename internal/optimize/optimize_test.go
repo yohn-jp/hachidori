@@ -354,3 +354,42 @@ func TestBuildAcceptsOnlyPinnedSources(t *testing.T) {
 		t.Fatal("a model without variants was optimized")
 	}
 }
+
+// A reproduction publishes nothing, also when there is nothing to reproduce:
+// it is refused before the optimizer runs instead of publishing a first build.
+func TestReproductionWithoutAPublishedVariantPublishesNothing(t *testing.T) {
+	h, _ := source(t)
+	r := &optimizetest.Runner{}
+	res, err := build(t, h, r, optimize.Request{Reproduce: true}, nil)
+	if err == nil || !strings.Contains(err.Error(), "no published variant to reproduce") {
+		t.Fatalf("a reproduction with no published variant: %+v %v", res, err)
+	}
+	if res.Existing || res.Reproduced || r.Calls != 0 {
+		t.Fatalf("the refused reproduction reported %+v after %d optimizer runs", res, r.Calls)
+	}
+	if names := variantDirs(t, h); len(names) != 0 {
+		t.Fatalf("a reproduction published %v", names)
+	}
+}
+
+// A variant exists only once its manifest is published: a directory of the
+// same identity without one (an interrupted remove, a damaged manifest) is
+// never reported as an existing variant.
+func TestRebuildOverADirectoryWithoutManifestIsNotExisting(t *testing.T) {
+	h, _ := source(t)
+	r := &optimizetest.Runner{}
+	first, err := build(t, h, r, optimize.Request{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(first.Dir, home.VariantManifestFile)); err != nil {
+		t.Fatal(err)
+	}
+	again, err := build(t, h, r, optimize.Request{}, nil)
+	if err == nil || again.Existing || !strings.Contains(err.Error(), "is not a published variant") || !strings.Contains(err.Error(), "variant remove "+first.Variant.ID) {
+		t.Fatalf("a rebuild over a manifest-less variant directory: %+v %v", again, err)
+	}
+	if names := variantDirs(t, h); len(names) != 1 || names[0] != first.Variant.ID {
+		t.Fatalf("the rebuild left %v", names)
+	}
+}

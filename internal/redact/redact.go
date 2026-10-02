@@ -70,15 +70,18 @@ var secretPatterns = []struct {
 	{regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s'"<>@]*@`), "${1}" + secret + "@"},
 	// token=..., api_key=..., HF_TOKEN=... in a query string or an environment
 	// dump; the name must end in the secret word, so num_tokens=5 is kept.
-	{regexp.MustCompile(`(?i)\b([\w.-]*(?:token|secret|passw(?:or)?d|credential|signature|api[_-]?key)=)[^&\s'"<>]+`), "${1}" + secret},
+	// A quoted value is replaced up to its closing quote.
+	{regexp.MustCompile(`(?i)\b([\w.-]*(?:token|secret|passw(?:or)?d|credential|signature|api[_-]?key)=)(?:'[^']*'|"[^"]*"|[^&\s'"<>]+)`), "${1}" + secret},
 	// Well-known credential shapes that carry no key=value around them: Hugging
 	// Face user tokens (hf_...) and GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_ and
 	// github_pat_...).
 	{regexp.MustCompile(`\b(?:hf_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})`), secret},
 	// "Bearer abc...", "Basic abc..."
 	{regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`), "${1} " + secret},
-	// Authorization: <scheme> <value> and Cookie: <value>
-	{regexp.MustCompile(`(?i)\b(authorization|cookie)(\s*[:=]\s*)(?:\w+\s+)?[^\s,;]+`), "${1}${2}" + secret},
+	// Authorization: <scheme> <value>
+	{regexp.MustCompile(`(?i)\b(authorization)(\s*[:=]\s*)(?:\w+\s+)?[^\s,;]+`), "${1}${2}" + secret},
+	// Cookie: <name=value>; <name=value>... is every cookie, to the end of the line.
+	{regexp.MustCompile(`(?i)\b(cookie)(\s*[:=]\s*)[^\r\n]+`), "${1}${2}" + secret},
 }
 
 // Line returns v as one line of at most max bytes (plus a truncation marker):

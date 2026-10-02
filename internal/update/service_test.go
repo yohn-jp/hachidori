@@ -643,3 +643,35 @@ func TestStalledOrSlowChecksAreBoundedByContext(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+// "Any failure removes the partial file and writes no ready record, and an
+// earlier ready update is kept": a verified download whose final placement
+// fails leaves the earlier ready update, its staged file and no partial file.
+func TestFailedStagingKeepsTheEarlierReadyUpdate(t *testing.T) {
+	e := newEnv(t)
+	e.svc.SetChannel(Development)
+	e.catalog("0.2.6-dev", "0.2.5-dev")
+	e.check()
+	if op := e.download("0.2.5-dev"); op.Failure != nil {
+		t.Fatal(op.Failure)
+	}
+	// The final name of 0.2.6-dev is occupied (as a file a scanner holds on
+	// Windows would be), so putting the verified file in place fails.
+	final := StagedPath(e.root, mustVersion("0.2.6-dev"))
+	if err := os.MkdirAll(filepath.Join(final, "held"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	op := e.download("0.2.6-dev")
+	if op.Failure == nil || !strings.Contains(op.Failure.Message, "could not be put in place") {
+		t.Fatalf("the failed placement: %+v", op)
+	}
+	if r, _, err := LoadReady(e.root); err != nil || r.Tag != "0.2.5-dev" {
+		t.Fatalf("the earlier ready update was lost: %+v %v", r, err)
+	}
+	if _, err := os.Stat(StagedPath(e.root, mustVersion("0.2.5-dev"))); err != nil {
+		t.Fatalf("the earlier staged executable was deleted: %v", err)
+	}
+	if _, err := os.Stat(final + ".part"); !os.IsNotExist(err) {
+		t.Fatalf("the partial file was left behind: %v", err)
+	}
+}

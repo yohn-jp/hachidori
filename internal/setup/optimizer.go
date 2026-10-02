@@ -37,7 +37,7 @@ func FindOptimizer(h home.Home) (OptimizerRuntime, error) {
 	var m home.RuntimeManifest
 	if err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &m); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return OptimizerRuntime{}, fmt.Errorf("the optimizer runtime %s is not materialized (run `hachidori variant optimize`, which materializes it, or `hachidori variant prepare`)", spec.ID())
+			return OptimizerRuntime{}, fmt.Errorf("the optimizer runtime %s is not materialized (run `hachidori variant optimize`, which materializes it)", spec.ID())
 		}
 		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: %w", spec.ID(), err)
 	}

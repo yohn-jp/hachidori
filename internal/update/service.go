@@ -664,11 +664,26 @@ func (s *Service) runDownload(op *Operation, root string, c Candidate) error {
 	return s.stageReady(root, c, sum, size)
 }
 
-// stageReady publishes the verified file: the previous ready record and other
-// staged versions go first, then the file takes its final name and the ready
-// record is written last. Only the ready record makes an update installable.
+// stageReady publishes the verified file: it takes its final name, the ready
+// record is written last, and only then do the previous ready record's file
+// and other staged versions go. Only the ready record makes an update
+// installable; a failure here removes what it staged and keeps an earlier
+// ready update as it was.
 func (s *Service) stageReady(root string, c Candidate, sum string, size int64) error {
-	_ = os.Remove(readyPath(root))
+	final := StagedPath(root, c.Version)
+	if err := os.Rename(final+".part", final); err != nil {
+		_ = os.Remove(final + ".part")
+		return fail(ClassDownload, err, "the verified file could not be put in place")
+	}
+	rec := Ready{Schema: readySchema, Tag: c.Tag, Prerelease: c.Prerelease, Asset: ExeAsset, SHA256: sum, Size: size, Target: s.Exe, Created: s.now()}
+	if err := home.WriteJSON(readyPath(root), rec); err != nil {
+		// The earlier ready record is unchanged (the write is atomic); its
+		// file is kept even when it is this version's (same verified bytes).
+		if _, v, rerr := LoadReady(root); rerr != nil || v.String() != c.Version.String() {
+			_ = os.Remove(final)
+		}
+		return fail(ClassDownload, err, "the ready record could not be written")
+	}
 	clearHelpers(root) // copies left by an earlier install; a running one stays
 	if ents, err := os.ReadDir(Dir(root)); err == nil {
 		for _, e := range ents {
@@ -676,15 +691,6 @@ func (s *Service) stageReady(root string, c Candidate, sum string, size int64) e
 				_ = os.RemoveAll(filepath.Join(Dir(root), e.Name()))
 			}
 		}
-	}
-	final := StagedPath(root, c.Version)
-	if err := os.Rename(final+".part", final); err != nil {
-		return fail(ClassDownload, err, "the verified file could not be put in place")
-	}
-	rec := Ready{Schema: readySchema, Tag: c.Tag, Prerelease: c.Prerelease, Asset: ExeAsset, SHA256: sum, Size: size, Target: s.Exe, Created: s.now()}
-	if err := home.WriteJSON(readyPath(root), rec); err != nil {
-		_ = os.Remove(final)
-		return fail(ClassDownload, err, "the ready record could not be written")
 	}
 	return nil
 }

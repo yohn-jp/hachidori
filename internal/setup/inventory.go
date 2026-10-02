@@ -423,15 +423,17 @@ func checkCertified(h home.Home, v home.VariantManifest, allowUncertified bool) 
 	case st.State == eval.StateAmbiguous:
 		return false, fmt.Errorf("%w: variant %s has certification records whose order cannot be determined (%s); certify it again before activating it",
 			ErrVariantNotCertified, v.ID, strings.Join(st.Problems, "; "))
+	case len(st.Problems) > 0:
+		// Records exist but none verifies (or the records cannot be read):
+		// the variant is not one with no record at all, so experimental
+		// activation, which exists only for that case, is refused too.
+		return false, fmt.Errorf("%w: variant %s has certification records that are not trusted (%s); certify it again (`hachidori certify run` against the source and the variant, then `hachidori certify evaluate`)",
+			ErrVariantNotCertified, v.ID, strings.Join(st.Problems, "; "))
 	case allowUncertified:
 		return true, nil
 	}
-	problems := ""
-	if len(st.Problems) > 0 {
-		problems = " (records not trusted: " + strings.Join(st.Problems, "; ") + ")"
-	}
 	return false, fmt.Errorf("%w: variant %s has no accepted certification record; certify it (`hachidori certify run` against the source and the variant, then `hachidori certify evaluate`), "+
-		"or launch it explicitly as experimental/uncertified%s", ErrVariantNotCertified, v.ID, problems)
+		"or launch it explicitly as experimental/uncertified", ErrVariantNotCertified, v.ID)
 }
 
 // Repair re-establishes the catalog choice (device, modelID) after a failed

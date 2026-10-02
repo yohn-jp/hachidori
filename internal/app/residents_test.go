@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -654,5 +655,51 @@ func TestPrefixWriterTagsEachResidentLine(t *testing.T) {
 		if !strings.HasPrefix(l, "[a] line ") && !strings.HasPrefix(l, "[b] line ") {
 			t.Fatalf("interleaved line %q", l)
 		}
+	}
+}
+
+// Remove deletes only an unused artifact: the model of an additional resident
+// of the running set is in use (the setup authority knows only the active
+// model), so it is refused until the runtime is stopped. Other models stay
+// removable while it runs.
+func TestRemoveRefusesTheModelOfARunningResident(t *testing.T) {
+	s := newResidentSet(t, worker.Policy{MaxRestarts: 1, Window: time.Minute, QueueDepth: 8},
+		residentMember(t, modelA, "ok"), residentMember(t, modelB, "ok"))
+	var mu sync.Mutex
+	var removed []string
+	c := New(Config{Home: "/h", Installed: func(string) bool { return true },
+		Open: func(string) (Runtime, error) { return s, nil },
+		Maintenance: Maintenance{Remove: func(root, kind, id string, obs *setup.Observer) error {
+			mu.Lock()
+			removed = append(removed, kind+" "+id)
+			mu.Unlock()
+			return nil
+		}}})
+	defer c.Close(context.Background())
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	bothReady(t, s)
+	waitIdle(t, c)
+
+	if err := c.Remove(setup.KindModel, modelB); !errors.Is(err, ErrRuntimeBusy) {
+		t.Fatalf("Remove of a running resident's model: %v", err)
+	}
+	if err := c.Remove(setup.KindModel, setup.ClefFlash); err != nil {
+		t.Fatalf("Remove of a model no resident serves: %v", err)
+	}
+	waitIdle(t, c)
+	if err := c.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, c)
+	if err := c.Remove(setup.KindModel, modelB); err != nil {
+		t.Fatalf("Remove after the runtime stopped: %v", err)
+	}
+	waitIdle(t, c)
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"model " + setup.ClefFlash, "model " + modelB}; !slices.Equal(removed, want) {
+		t.Fatalf("removed %v, want %v", removed, want)
 	}
 }

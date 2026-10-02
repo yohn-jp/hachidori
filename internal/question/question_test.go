@@ -161,6 +161,8 @@ func TestParseRejects(t *testing.T) {
 		"string ver":    `{"schema":"hachidori.question.v1","id":"q","version":"1","type":"choice","instructions":"i","choices":["a","b"]}`,
 		"no version":    `{"schema":"hachidori.question.v1","id":"q","type":"choice","instructions":"i","choices":["a","b"]}`,
 		"trailing":      `{"schema":"hachidori.question.v1","id":"q","version":1,"type":"choice","instructions":"i","choices":["a","b"]} {}`,
+		"stray brace":   `{"schema":"hachidori.question.v1","id":"q","version":1,"type":"choice","instructions":"i","choices":["a","b"]}}`,
+		"stray bracket": `{"schema":"hachidori.question.v1","id":"q","version":1,"type":"choice","instructions":"i","choices":["a","b"]}]]]}`,
 		"bad schema":    `{"schema":"hachidori.v1","id":"q","version":1,"type":"choice","instructions":"i","choices":["a","b"]}`,
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
@@ -214,5 +216,27 @@ func TestRepositoryDefinitions(t *testing.T) {
 	s, err := Load("../../testdata/questions")
 	if err != nil || s.Len() == 0 {
 		t.Fatal(s, err)
+	}
+}
+
+// A directory is listed, not matched as a glob pattern: a name with [, * or ?
+// loads its own definitions and never a sibling's.
+func TestLoadDirectoryNamesAreNotPatterns(t *testing.T) {
+	root := t.TempDir()
+	doc := func(id string) []byte {
+		return []byte(`{"schema":"hachidori.question.v1","id":"` + id + `","version":1,"type":"choice","instructions":"i","choices":["a","b"]}`)
+	}
+	named, sibling := filepath.Join(root, "questions[v2]"), filepath.Join(root, "questionsv")
+	os.MkdirAll(named, 0o755)
+	os.MkdirAll(sibling, 0o755)
+	os.WriteFile(filepath.Join(named, "own.json"), doc("own"), 0o644)
+	os.WriteFile(filepath.Join(sibling, "other.json"), doc("other"), 0o644)
+	os.WriteFile(filepath.Join(named, "notes.txt"), []byte("not a definition"), 0o644)
+	s, err := Load(named)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defs := s.Definitions(); len(defs) != 1 || defs[0].ID != "own" {
+		t.Fatalf("loaded %+v from %s", defs, named)
 	}
 }
