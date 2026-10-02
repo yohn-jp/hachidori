@@ -276,13 +276,27 @@ func TestRestartBudgetIsPerResident(t *testing.T) {
 	s.Start()
 	bothReady(t, s)
 	apid := residentState(s, modelA).PID
-	for range 3 { // two automatic restarts, then the budget is spent
-		waitFor(t, "B ready", func() bool { return residentState(s, modelB).State == worker.StateReady })
+	for crash := range 3 { // two automatic restarts, then the third distinct worker lifetime spends the budget
+		before := residentState(s, modelB)
+		if before.State != worker.StateReady {
+			t.Fatalf("B before crash %d: state %s, starts %d", crash+1, before.State, before.Starts)
+		}
 		if _, _, err := s.DecideOn(modelB, item("crash")); err == nil {
 			t.Fatal("crash request succeeded")
 		}
+		if crash < 2 {
+			wantStarts := before.Starts + 1
+			waitFor(t, fmt.Sprintf("B restarted after crash %d", crash+1), func() bool {
+				st := residentState(s, modelB)
+				return st.State == worker.StateReady && st.Starts == wantStarts
+			})
+		} else {
+			waitFor(t, "B gave up after third distinct crash", func() bool {
+				st := residentState(s, modelB)
+				return st.State == worker.StateFailed && st.Starts == before.Starts
+			})
+		}
 	}
-	waitFor(t, "B gave up", func() bool { return residentState(s, modelB).State == worker.StateFailed })
 	b, a := residentState(s, modelB), residentState(s, modelA)
 	if b.Starts != 3 || b.Restarts != 2 {
 		t.Fatalf("B starts %d restarts %d", b.Starts, b.Restarts)
