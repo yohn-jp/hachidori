@@ -4,6 +4,24 @@ Status: target architecture
 Scope: initial product architecture and implementation authority  
 Product: Hachidori
 
+## Detailed operator and tuning authority
+
+This file remains the top-level product and system-boundary authority.
+
+For desktop/operator abstraction, automatic parameter resolution and override,
+desired-state Models behavior, intent-driven Forge behavior, the first-class
+Tuning workspace, semantic preservation profiles, Evidence-to-Tuning feedback,
+resource selection, Development Connections interaction, and the workstation
+visual hierarchy, see
+[Operator Abstraction and Model Tuning Architecture](operator-abstraction-and-model-tuning.md).
+
+That document is the detailed authority established by #169. If older
+documentation conflicts on operator-facing control placement or requires a
+human to execute a mechanical lifecycle sequence that the detailed authority
+classifies as orchestrated, the detailed authority controls that desktop/operator
+responsibility. This file continues to control product boundaries, runtime
+ownership, process/materialization architecture, and public semantic contracts.
+
 ## 1. Purpose
 
 Hachidori is a local semantic inference runtime for small, frequent, typed decisions.

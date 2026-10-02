@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hachidori — Intent-first Workstation Mock</title>
+<style>
+:root{
+  color-scheme:light;
+  --bg:#f4f5f7;--paper:#fff;--ink:#15171a;--muted:#6e737b;--faint:#979da6;
+  --line:#e3e5e8;--line-strong:#cfd3d8;--accent:#1f5eff;--accent-soft:#edf2ff;
+  --good:#147a48;--warn:#9c6b11;--bad:#b42318;--shadow:0 18px 60px rgba(27,31,38,.09);
+  --sans:"Segoe UI",Inter,system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
+  --mono:"Cascadia Mono","SFMono-Regular",Consolas,monospace;
+}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans)}
+button,input,select,textarea{font:inherit;color:inherit}button{cursor:pointer}
+.shell{min-height:100vh;display:grid;grid-template-columns:224px minmax(0,1fr)}
+.sidebar{position:sticky;top:0;height:100vh;padding:26px 17px 18px;border-right:1px solid var(--line);background:#fafbfc;display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:10px;padding:0 10px 24px}.mark{width:28px;height:28px;border:1px solid var(--line-strong);border-radius:50%;display:grid;place-items:center;font:600 12px var(--mono);background:#fff}.brand strong{font-size:15px;letter-spacing:.01em}
+.nav-group{margin:9px 0 17px}.nav-label{padding:0 10px 7px;font:600 10px var(--mono);letter-spacing:.12em;color:var(--faint)}
+.nav{display:grid;gap:2px}.nav button{width:100%;border:0;background:transparent;padding:8px 10px;text-align:left;border-radius:6px;color:#555b64;font-size:13px;display:flex;justify-content:space-between;align-items:center}.nav button:hover{background:#f0f2f5;color:var(--ink)}.nav button.active{background:#eceff4;color:var(--ink);font-weight:600}.nav button.active:before{content:"";width:2px;height:16px;background:var(--accent);border-radius:2px;margin-right:8px}.nav button:not(.active):before{content:"";width:2px;margin-right:8px}.nav .tiny{font:10px var(--mono);color:var(--faint)}
+.side-foot{margin-top:auto;border-top:1px solid var(--line);padding:14px 10px 0}.ready{display:flex;gap:8px;align-items:center;font-size:12px}.dot{width:7px;height:7px;border-radius:50%;background:var(--good)}.side-meta{font:10px/1.55 var(--mono);color:var(--faint);margin-top:7px}
+.main{min-width:0}.topbar{height:58px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.82);backdrop-filter:blur(10px);display:flex;align-items:center;justify-content:space-between;padding:0 38px;position:sticky;top:0;z-index:4}.crumb{font-size:12px;color:var(--muted)}.topstate{display:flex;gap:18px;align-items:center;font:11px var(--mono);color:var(--muted)}.topstate b{color:var(--ink);font-weight:600}
+.viewport{max-width:1120px;margin:0 auto;padding:52px 56px 100px}.page{display:none}.page.active{display:block}
+.eyebrow{font:600 10px var(--mono);letter-spacing:.13em;color:var(--faint);margin-bottom:12px}.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:30px;align-items:end;padding-bottom:31px}.hero h1{margin:0;font-size:34px;font-weight:590;letter-spacing:-.035em}.hero p{margin:9px 0 0;max-width:650px;font-size:14px;line-height:1.65;color:var(--muted)}
+.statusword{font:600 11px var(--mono);letter-spacing:.07em;color:var(--good)}.section{border-top:1px solid var(--line);padding:27px 0 31px}.section-head{display:grid;grid-template-columns:180px minmax(0,1fr);gap:28px;margin-bottom:20px}.section-title{font:600 10px var(--mono);letter-spacing:.13em;color:var(--faint);text-transform:uppercase}.section-note{font-size:13px;line-height:1.6;color:var(--muted);max-width:690px}
+.rows{display:grid}.row{display:grid;grid-template-columns:180px minmax(0,1fr) auto;gap:28px;align-items:center;min-height:49px;border-top:1px solid #f0f1f2}.row:first-child{border-top:0}.label{font-size:12px;color:var(--muted)}.value{font-size:13px;min-width:0}.value.mono{font-family:var(--mono);font-size:11px}.sub{font-size:11px;color:var(--faint);margin-top:4px}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);border-radius:999px;padding:4px 7px;font:600 9px var(--mono);letter-spacing:.06em;background:#fff;color:#666}.pill.auto{color:#3d5fbb;background:#f4f7ff;border-color:#d9e3ff}.pill.measure{color:var(--good);background:#f2faf6;border-color:#d3eadf}.pill.estimate{color:var(--warn);background:#fff9ed;border-color:#efe1bd}.pill.preserve{color:#744eaf;background:#faf6ff;border-color:#e6d8fa}.pill.bad{color:var(--bad);background:#fff6f5;border-color:#f2d1cd}
+.actionbar{display:flex;gap:10px;justify-content:flex-end;align-items:center;padding-top:23px}.btn{border:1px solid var(--line-strong);background:#fff;border-radius:7px;padding:9px 13px;font-size:12px;font-weight:600}.btn:hover{background:#f7f8fa}.btn.primary{background:var(--ink);border-color:var(--ink);color:#fff}.btn.link{border-color:transparent;background:transparent;color:var(--muted)}.btn.danger{color:var(--bad)}
+.control{display:flex;align-items:center;gap:8px;justify-content:flex-end}.select{border:1px solid var(--line-strong);background:#fff;border-radius:6px;padding:7px 9px;font-size:12px;min-width:116px}.input{border:1px solid var(--line-strong);background:#fff;border-radius:6px;padding:8px 10px;font:12px var(--mono);width:min(100%,380px)}
+.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.metric{padding:19px 18px 18px;border-left:1px solid var(--line)}.metric:first-child{border-left:0}.metric .k{font:600 9px var(--mono);letter-spacing:.1em;color:var(--faint)}.metric .n{font-size:24px;letter-spacing:-.03em;margin-top:8px}.metric .d{font-size:10px;color:var(--muted);margin-top:4px}
+.track-wrap{padding:16px 0 5px}.track-labels{display:flex;justify-content:space-between;color:var(--muted);font-size:11px}.track{height:2px;background:var(--line-strong);margin:25px 8px 10px;position:relative}.track:after{content:"";position:absolute;left:34%;top:50%;width:10px;height:10px;border:3px solid var(--paper);background:var(--ink);border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 1px var(--line-strong)}.track-mark{position:absolute;top:-31px;left:34%;transform:translateX(-50%);font:600 9px var(--mono);color:var(--ink);white-space:nowrap}
+.preserve-map{border-top:1px solid var(--line)}.p-row{display:grid;grid-template-columns:minmax(220px,1.2fr) 1.7fr 102px;gap:26px;align-items:center;border-bottom:1px solid var(--line);padding:14px 0}.p-name{font-size:12px}.p-name span{display:block;color:var(--faint);font-size:10px;margin-top:3px}.levels{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:7px;overflow:hidden}.levels button{border:0;border-left:1px solid var(--line);background:#fff;padding:8px 4px;font:10px var(--mono);color:var(--muted)}.levels button:first-child{border-left:0}.levels button.on{background:#edf1f7;color:var(--ink);font-weight:700}.p-state{text-align:right}
+.evidence-box{border-left:2px solid var(--ink);padding:3px 0 3px 20px;margin-top:5px}.evidence-box h3{font-size:13px;margin:0 0 8px}.evidence-box p{font-size:12px;line-height:1.65;color:var(--muted);margin:0 0 12px}.evidence-line{display:grid;grid-template-columns:1fr auto auto;gap:18px;padding:8px 0;border-top:1px solid var(--line);font-size:11px}.evidence-line:first-of-type{border-top:0}.delta.bad{color:var(--bad);font-family:var(--mono)}.delta.good{color:var(--good);font-family:var(--mono)}
+.plan{display:grid;gap:0;border-top:1px solid var(--line)}.plan-step{display:grid;grid-template-columns:24px 180px 1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:11px}.stepdot{width:15px;height:15px;border-radius:50%;border:1px solid var(--line-strong);display:grid;place-items:center;font:8px var(--mono)}.stepdot.done{background:#eef8f2;color:var(--good);border-color:#c9e1d3}.stepdot.now{background:var(--ink);color:#fff;border-color:var(--ink)}.plan-step .desc{color:var(--muted)}
+.compare{display:grid;grid-template-columns:1fr 32px 1fr;gap:18px;align-items:center}.candidate{border:1px solid var(--line);border-radius:8px;padding:17px;background:#fff}.candidate h3{margin:0;font-size:13px}.candidate .mini{font:10px/1.6 var(--mono);color:var(--muted);margin-top:8px}.arrow{text-align:center;color:var(--faint)}
+.details{border-top:1px solid var(--line);padding:14px 0}.details summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;font:600 11px var(--mono);letter-spacing:.08em;color:var(--muted)}.details summary:after{content:"+"}.details[open] summary:after{content:"−"}.detail-body{padding:17px 0 3px;font:11px/1.7 var(--mono);color:var(--muted)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px}.textarea{min-height:110px;width:100%;border:1px solid var(--line-strong);border-radius:7px;padding:10px;font:12px/1.55 var(--mono);resize:vertical;background:#fff}
+.table{width:100%;border-collapse:collapse;font-size:11px}.table th{text-align:left;font:600 9px var(--mono);letter-spacing:.08em;color:var(--faint);padding:9px 8px;border-bottom:1px solid var(--line-strong)}.table td{padding:10px 8px;border-bottom:1px solid var(--line)}.mono{font-family:var(--mono)}
+.callout{background:#fafafa;border:1px solid var(--line);border-radius:8px;padding:15px 17px;font-size:12px;line-height:1.65;color:var(--muted)}
+@media(max-width:900px){.shell{grid-template-columns:72px minmax(0,1fr)}.sidebar{padding:20px 9px}.brand strong,.nav-label,.nav button span:not(.tiny),.side-meta{display:none}.brand{padding:0 8px 20px}.nav button{padding:9px 8px;justify-content:center}.nav button:before{display:none}.nav button .tiny{display:block;font-size:9px}.viewport{padding:40px 30px 80px}.topbar{padding:0 25px}.section-head,.row{grid-template-columns:140px minmax(0,1fr)}.row>*:last-child{grid-column:2}.metric-grid{grid-template-columns:1fr 1fr}.metric:nth-child(3){border-left:0;border-top:1px solid var(--line)}.metric:nth-child(4){border-top:1px solid var(--line)}.p-row{grid-template-columns:1fr}.p-state{text-align:left}.two{grid-template-columns:1fr}}
+@media(max-width:600px){.shell{display:block}.sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);display:block;padding:10px 12px}.brand,.nav-label,.side-foot{display:none}.nav-group{margin:0}.nav{display:flex;overflow:auto}.nav button{white-space:nowrap;width:auto}.nav button span{display:block!important}.nav button .tiny{display:none!important}.topbar{position:static;height:48px;padding:0 18px}.topstate{display:none}.viewport{padding:32px 19px 70px}.hero{grid-template-columns:1fr}.hero h1{font-size:29px}.section-head,.row{grid-template-columns:1fr;gap:7px}.row{padding:12px 0}.row>*:last-child{grid-column:auto}.control{justify-content:flex-start}.metric-grid{grid-template-columns:1fr 1fr}.compare{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}.plan-step{grid-template-columns:20px 1fr auto}.plan-step .desc{grid-column:2/-1}}
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="sidebar">
+  <div class="brand"><div class="mark">H</div><strong>Hachidori</strong></div>
+  <div class="nav-group">
+    <div class="nav-label">Operate</div>
+    <nav class="nav">
+      <button data-page="runtime"><span>Runtime</span><span class="tiny">R</span></button>
+      <button data-page="models"><span>Models</span><span class="tiny">M</span></button>
+      <button data-page="forge"><span>Forge</span><span class="tiny">F</span></button>
+      <button class="active" data-page="tuning"><span>Tuning</span><span class="tiny">T</span></button>
+    </nav>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Measure</div>
+    <nav class="nav">
+      <button data-page="workbench"><span>Workbench</span><span class="tiny">W</span></button>
+      <button data-page="experiments"><span>Experiments</span><span class="tiny">X</span></button>
+      <button data-page="evidence"><span>Evidence</span><span class="tiny">E</span></button>
+    </nav>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">System</div>
+    <nav class="nav">
+      <button data-page="settings"><span>Settings</span><span class="tiny">S</span></button>
+      <button data-page="diagnostics"><span>Diagnostics</span><span class="tiny">D</span></button>
+    </nav>
+  </div>
+  <div class="side-foot"><div class="ready"><span class="dot"></span> Ready</div><div class="side-meta">SOURCE · Clef Flash<br>cuda · bfloat16</div></div>
+</aside>
+
+<main class="main">
+<header class="topbar"><div class="crumb">Local model-engineering workstation</div><div class="topstate"><span>Runtime <b>READY</b></span><span>Device <b>RTX 3060</b></span></div></header>
+<div class="viewport">
+
+<section class="page" id="runtime">
+  <div class="hero"><div><div class="eyebrow">RUNTIME</div><h1>Ready to decide.</h1><p>Runtime is observational. It answers what is serving and whether it is usable; normal model changes belong in Models.</p></div><div class="statusword">READY</div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Serving</div><div class="section-note">Exact execution identity is always explicit.</div></div>
+    <div class="rows">
+      <div class="row"><div class="label">Artifact</div><div class="value"><strong>SOURCE</strong> · Clef Flash</div><span class="pill measure">MEASURED</span></div>
+      <div class="row"><div class="label">Device</div><div class="value">RTX 3060 / cuda<div class="sub">requested cuda · actual cuda</div></div><span class="pill auto">AUTO</span></div>
+      <div class="row"><div class="label">Precision</div><div class="value mono">bfloat16</div><span class="pill measure">MEASURED</span></div>
+    </div>
+  </div>
+  <div class="metric-grid"><div class="metric"><div class="k">P50 LATENCY</div><div class="n">31 ms</div><div class="d">MEASURED</div></div><div class="metric"><div class="k">VRAM</div><div class="n">7.8 GB</div><div class="d">MEASURED</div></div><div class="metric"><div class="k">REQUESTS</div><div class="n">2,418</div><div class="d">this process</div></div><div class="metric"><div class="k">ERRORS</div><div class="n">0</div><div class="d">this process</div></div></div>
+  <details class="details"><summary>Runtime details</summary><div class="detail-body">PID 18424 · runtime rt_example_01 · provider Clef · exact digests and process evidence remain available here and in Diagnostics.</div></details>
+</section>
+
+<section class="page" id="models">
+  <div class="hero"><div><div class="eyebrow">MODELS</div><h1>Choose the state you want.</h1><p>Models expresses desired execution and residency. Hachidori resolves provisioning, verification, restart/rebind, and exact-serving verification.</p></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Desired state</div><div class="section-note">The operator chooses the model; the backend owns the transition.</div></div>
+    <div class="rows">
+      <div class="row"><div class="label">Execution target</div><div class="value"><select class="select"><option>Clef Flash · SOURCE</option><option>Candidate q4-balanced-03</option></select></div><span class="pill">INTENT</span></div>
+      <div class="row"><div class="label">Device</div><div class="value">Auto -> RTX 3060 / cuda</div><div class="control"><span class="pill auto">AUTO</span><button class="btn link">Override</button></div></div>
+      <div class="row"><div class="label">Resident models</div><div class="value">Clef Flash · OpenDecider-nano</div><span class="pill">INTENT</span></div>
+    </div>
+    <div class="actionbar"><button class="btn primary">Use desired state</button></div>
+  </div>
+  <div class="section"><div class="section-head"><div class="section-title">Plan</div><div class="section-note">These are backend phases, not a sequence of required operator buttons.</div></div>
+    <div class="plan"><div class="plan-step"><span class="stepdot done">✓</span><b>Resolve</b><span class="desc">exact model, runtime and device</span><span class="pill measure">READY</span></div><div class="plan-step"><span class="stepdot">2</span><b>Provision</b><span class="desc">only if managed artifacts are missing</span><span class="pill auto">AUTO</span></div><div class="plan-step"><span class="stepdot">3</span><b>Rebind</b><span class="desc">stop/start only when required</span><span class="pill auto">AUTO</span></div><div class="plan-step"><span class="stepdot">4</span><b>Verify serving</b><span class="desc">exact identity + typed-decision smoke</span><span class="pill auto">AUTO</span></div></div>
+  </div>
+</section>
+
+<section class="page" id="forge">
+  <div class="hero"><div><div class="eyebrow">FORGE</div><h1>Build evidence, not steps.</h1><p>Forge owns artifact lifecycle. Source, profile, and evaluation are intent; preflight, probe, reference execution, candidate execution, and certification are orchestrated phases.</p></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Source</div><div class="section-note">Immutable source identity and selected optimization profile.</div></div>
+    <div class="rows"><div class="row"><div class="label">Model</div><div class="value">Clef Flash · pinned source</div><span class="pill measure">VERIFIED</span></div><div class="row"><div class="label">Optimization</div><div class="value">Balanced fidelity · profile/tuning-balanced-03</div><button class="btn link" data-goto="tuning">Edit in Tuning</button></div><div class="row"><div class="label">Evaluation suite</div><div class="value">Semantic regression suite · 352 cases</div><button class="btn">Choose…</button></div></div>
+  </div>
+  <div class="section"><div class="section-head"><div class="section-title">Execution</div><div class="section-note">Resolved automatically; all values remain overridable under Advanced.</div></div>
+    <div class="rows"><div class="row"><div class="label">Candidate device</div><div class="value">Auto -> RTX 3060 / cuda</div><span class="pill auto">AUTO</span></div><div class="row"><div class="label">Reference device</div><div class="value">Auto -> CPU</div><span class="pill auto">AUTO</span></div><div class="row"><div class="label">Reference precision</div><div class="value">Auto -> bfloat16</div><span class="pill auto">AUTO</span></div></div>
+    <div class="actionbar"><button class="btn primary">Build &amp; evaluate</button></div>
+  </div>
+  <div class="section"><div class="section-head"><div class="section-title">Candidate</div><div class="section-note">Certification never auto-applies.</div></div>
+    <div class="rows"><div class="row"><div class="label">q4-balanced-02</div><div class="value">Accepted · fidelity 98.7% · 4.21 GB</div><span class="pill measure">CERTIFIED</span></div></div>
+    <div class="actionbar"><button class="btn">Open evidence</button><button class="btn primary">Apply candidate</button></div>
+  </div>
+  <details class="details"><summary>Advanced execution overrides</summary><div class="detail-body">Candidate device: Auto · Reference device: Auto · Reference precision: Auto · Provisioning: Auto. Experimental activation remains a separate expert escape hatch.</div></details>
+</section>
+
+<section class="page active" id="tuning">
+  <div class="hero"><div><div class="eyebrow">MODEL TUNING</div><h1>Preserve what matters.</h1><p>Clef Flash · source -> candidate. Tune model-engineering intent; Hachidori compiles it into an exact canonical recipe and immutable variant identity.</p></div><span class="pill auto">AUTO BASELINE</span></div>
+
+  <div class="section">
+    <div class="section-head"><div class="section-title">Objective</div><div class="section-note">Choose the quality/resource trade-off. The exact optimizer recipe remains reproducible evidence.</div></div>
+    <div class="track-wrap"><div class="track-labels"><span>More fidelity</span><span>Smaller / faster</span></div><div class="track"><div class="track-mark">BALANCED</div></div></div>
+    <div class="metric-grid"><div class="metric"><div class="k">MODEL SIZE</div><div class="n">4.21 GB</div><div class="d">ESTIMATED · −46%</div></div><div class="metric"><div class="k">VRAM</div><div class="n">5.08 GB</div><div class="d">ESTIMATED · −39%</div></div><div class="metric"><div class="k">FIDELITY</div><div class="n">98.7%</div><div class="d">MEASURED</div></div><div class="metric"><div class="k">P50 LATENCY</div><div class="n">31 ms</div><div class="d">MEASURED · −22%</div></div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-head"><div class="section-title">Preservation</div><div class="section-note">Semantic regions are derived from the exact model architecture. Raw module patterns stay in Details.</div></div>
+    <div class="preserve-map">
+      <div class="p-row"><div class="p-name">Embedding<span>input representation</span></div><div class="levels"><button class="on">AUTO</button><button>+1</button><button>+2</button><button>MAX</button></div><div class="p-state"><span class="pill auto">AUTO</span></div></div>
+      <div class="p-row"><div class="p-name">Attention · early<span>layers 0–7 · context intake</span></div><div class="levels"><button class="on">AUTO</button><button>+1</button><button>+2</button><button>MAX</button></div><div class="p-state"><span class="pill auto">AUTO</span></div></div>
+      <div class="p-row"><div class="p-name">Attention · middle<span>layers 8–15 · semantic integration</span></div><div class="levels"><button class="on">AUTO</button><button>+1</button><button>+2</button><button>MAX</button></div><div class="p-state"><span class="pill auto">AUTO</span></div></div>
+      <div class="p-row"><div class="p-name">Attention · late<span>layers 16–23 · decision formation</span></div><div class="levels"><button>AUTO</button><button class="on">+1</button><button>+2</button><button>MAX</button></div><div class="p-state"><span class="pill preserve">PRESERVE +</span></div></div>
+      <div class="p-row" id="late-attention"><div class="p-name">Attention · output<span>layers 24–31 · output reasoning</span></div><div class="levels"><button>AUTO</button><button>+1</button><button class="on">+2</button><button>MAX</button></div><div class="p-state"><span class="pill preserve">PRESERVE ++</span></div></div>
+      <div class="p-row"><div class="p-name">Feed forward · early<span>layers 0–15</span></div><div class="levels"><button class="on">AUTO</button><button>+1</button><button>+2</button><button>MAX</button></div><div class="p-state"><span class="pill auto">AUTO</span></div></div>
+      <div class="p-row"><div class="p-name">Feed forward · late<span>layers 16–31</span></div><div class="levels"><button>AUTO</button><button class="on">+1</button><button>+2</button><button>MAX</button></div><div class="p-state"><span class="pill preserve">PRESERVE +</span></div></div>
+      <div class="p-row"><div class="p-name">Output head<span>decision projection</span></div><div></div><div class="p-state"><span class="pill preserve">PRESERVED</span></div></div>
+      <div class="p-row"><div class="p-name">Vision tower<span>multimodal representation</span></div><div></div><div class="p-state"><span class="pill preserve">PRESERVED</span></div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head"><div class="section-title">Evidence</div><div class="section-note">Measurement is projected beside the decision it can inform.</div></div>
+    <div class="evidence-box">
+      <h3>Why preserve late attention more?</h3>
+      <p>The last candidate is broadly stable, but long-context discrimination regressed. The evidence mapping for this model family supports a conservative late-attention recommendation.</p>
+      <div class="evidence-line"><span>Semantic classification</span><span class="delta good">−0.2%</span><span class="pill measure">MEASURED</span></div>
+      <div class="evidence-line"><span>Long-context discrimination</span><span class="delta bad">−3.8%</span><span class="pill measure">MEASURED</span></div>
+      <div class="evidence-line"><span>Confidence calibration</span><span class="delta bad">−0.4%</span><span class="pill measure">MEASURED</span></div>
+      <div class="actionbar"><button class="btn" id="recommend">Apply recommendation</button><button class="btn link" data-goto="evidence">Open exact evidence</button></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head"><div class="section-title">Impact</div><div class="section-note">The next candidate is a new immutable variant when recipe semantics change.</div></div>
+    <div class="compare"><div class="candidate"><h3>Current candidate</h3><div class="mini">q4-balanced-02<br>Recipe 7d1a…<br>4.21 GB · 98.7%</div></div><div class="arrow">→</div><div class="candidate"><h3>Next candidate</h3><div class="mini">new BuildID after compile<br>~4.34 GB · quality NOT_CHECKED<br>late attention preserved more</div></div></div>
+    <div class="actionbar"><button class="btn primary" data-goto="forge">Build candidate in Forge</button></div>
+  </div>
+
+  <details class="details"><summary>Advanced optimizer details</summary><div class="detail-body">Scheme W4A16 · algorithm RTN · group size 128 · target Linear · compute bfloat16 · compressed-tensors serialization. Exact generated PreservedModule mappings and canonical Recipe JSON are evidence, not the primary tuning language.</div></details>
+</section>
+
+<section class="page" id="workbench">
+  <div class="hero"><div><div class="eyebrow">WORKBENCH</div><h1>Ask one bounded question.</h1><p>Question semantics stay primary. File paths and API mechanics do not compete with the task.</p></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">State</div><div class="section-note">Interactive typed-decision input.</div></div><textarea class="textarea">The implementation passes focused tests but the physical GPU validation has not been executed.</textarea></div>
+  <div class="section"><div class="section-head"><div class="section-title">Question</div><div class="section-note">Stable semantic definition selected from the workstation resource picker.</div></div><div class="rows"><div class="row"><div class="label">Definition</div><div class="value">Ready to finalize · v3</div><button class="btn">Choose…</button></div></div><div class="actionbar"><button class="btn primary">Run</button></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Result</div><div class="section-note">Typed result and probability distribution.</div></div><div class="metric-grid"><div class="metric"><div class="k">CHOICE</div><div class="n">No</div></div><div class="metric"><div class="k">CONFIDENCE</div><div class="n">0.92</div></div><div class="metric"><div class="k">LATENCY</div><div class="n">29 ms</div></div><div class="metric"><div class="k">SERVED BY</div><div class="n" style="font-size:16px">Clef</div></div></div></div>
+</section>
+
+<section class="page" id="experiments">
+  <div class="hero"><div><div class="eyebrow">EXPERIMENTS</div><h1>Measure before deciding.</h1><p>Datasets are selected as resources. Quality, calibration, and latency remain the primary result hierarchy.</p></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Experiment</div><div class="section-note">Exact resource paths remain available in Details.</div></div><div class="rows"><div class="row"><div class="label">Dataset</div><div class="value">Semantic regression suite · 352 cases</div><button class="btn">Choose…</button></div><div class="row"><div class="label">Comparison</div><div class="value">SOURCE vs q4-balanced-02</div><span class="pill">A/B</span></div></div><div class="actionbar"><button class="btn primary">Run experiment</button></div></div>
+  <div class="metric-grid"><div class="metric"><div class="k">ACCURACY</div><div class="n">98.7%</div><div class="d">candidate</div></div><div class="metric"><div class="k">ECE</div><div class="n">0.031</div></div><div class="metric"><div class="k">P95 LATENCY</div><div class="n">42 ms</div></div><div class="metric"><div class="k">FLIPS</div><div class="n">9</div></div></div>
+</section>
+
+<section class="page" id="evidence">
+  <div class="hero"><div><div class="eyebrow">EVIDENCE</div><h1>Find the regression that matters.</h1><p>Evidence is an investigation workspace. Exact records stay canonical; useful findings can be carried into Tuning.</p></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Signal</div><div class="section-note">High-confidence regressions deserve attention before aggregate counts.</div></div><div class="evidence-box"><h3>Long-context discrimination is concentrated in 3 questions.</h3><p>9 choice flips in 352 cases; 6 are concentrated in the late-context family. Exact candidate/source/profile identities are bound to this evidence.</p><div class="actionbar"><button class="btn primary" data-goto="tuning">Open in Tuning</button></div></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Observations</div><div class="section-note">Full table remains available for audit.</div></div><table class="table"><thead><tr><th>QUESTION</th><th>EXPECTED</th><th>CANDIDATE</th><th>CONF.</th><th>DELTA</th></tr></thead><tbody><tr><td>context_boundary</td><td>blocked</td><td>continue</td><td>0.91</td><td class="delta bad">regression</td></tr><tr><td>scope_expansion</td><td>yes</td><td>yes</td><td>0.94</td><td>stable</td></tr><tr><td>ready_finalize</td><td>no</td><td>no</td><td>0.88</td><td>stable</td></tr></tbody></table></div>
+</section>
+
+<section class="page" id="settings">
+  <div class="hero"><div><div class="eyebrow">SETTINGS</div><h1>Preferences, not machinery.</h1><p>Settings owns durable application preferences and connection intent. Runtime lifecycle belongs elsewhere.</p></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Application</div><div class="section-note">Durable workstation preferences.</div></div><div class="rows"><div class="row"><div class="label">Start at sign-in</div><div class="value">Enabled</div><button class="btn">Change</button></div><div class="row"><div class="label">Locale</div><div class="value">English</div><button class="btn">Change</button></div></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Development connection</div><div class="section-note">Destination is intent. Bind and ports resolve automatically but remain overridable.</div></div><div class="rows"><div class="row"><div class="label">Name</div><div class="value">Development host</div><span class="pill">INTENT</span></div><div class="row"><div class="label">Destination</div><div class="value mono">user@development-host</div><span class="pill">INTENT</span></div><div class="row"><div class="label">Remote bind</div><div class="value mono">Auto -> 127.0.0.1</div><span class="pill auto">AUTO</span></div><div class="row"><div class="label">Remote port</div><div class="value mono">Auto -> 7843</div><span class="pill auto">AUTO</span></div><div class="row"><div class="label">Local port</div><div class="value mono">Auto -> 7843</div><span class="pill auto">AUTO</span></div></div><div class="actionbar"><button class="btn primary">Connect</button></div></div>
+  <details class="details"><summary>Advanced connection overrides</summary><div class="detail-body">Remote bind, remote port and local port can be pinned. SSH authentication, keys, agent and known_hosts remain owned by the host SSH client.</div></details>
+</section>
+
+<section class="page" id="diagnostics">
+  <div class="hero"><div><div class="eyebrow">DIAGNOSTICS</div><h1>Exact internals, when you need them.</h1><p>Low-level facts are not removed. They live here as evidence and recovery material instead of defining normal workflows.</p></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Runtime evidence</div><div class="section-note">Bounded technical facts for support and reproduction.</div></div><div class="rows"><div class="row"><div class="label">Worker PID</div><div class="value mono">18424</div><span class="pill measure">MEASURED</span></div><div class="row"><div class="label">Runtime ID</div><div class="value mono">rt_example_01</div><span class="pill">EVIDENCE</span></div><div class="row"><div class="label">Recipe SHA-256</div><div class="value mono">7d1a…example…98c4</div><span class="pill">EVIDENCE</span></div><div class="row"><div class="label">Artifact path</div><div class="value mono">D:\Hachidori\variants\example</div><span class="pill">EVIDENCE</span></div></div></div>
+  <div class="section"><div class="section-head"><div class="section-title">Connection evidence</div><div class="section-note">Exact command is useful for diagnosis, not normal configuration.</div></div><div class="callout mono">ssh -N -R 127.0.0.1:7843:127.0.0.1:7843 user@development-host</div></div>
+  <div class="actionbar"><button class="btn">Export diagnostic bundle</button><button class="btn danger">Restart runtime</button></div>
+</section>
+
+</div>
+</main>
+</div>
+<script>
+(function(){
+  var pages=[].slice.call(document.querySelectorAll('.page'));
+  var nav=[].slice.call(document.querySelectorAll('[data-page]'));
+  function show(id){
+    pages.forEach(function(p){p.classList.toggle('active',p.id===id);});
+    nav.forEach(function(b){b.classList.toggle('active',b.getAttribute('data-page')===id);});
+    window.scrollTo(0,0);
+  }
+  nav.forEach(function(b){b.addEventListener('click',function(){show(b.getAttribute('data-page'));});});
+  [].slice.call(document.querySelectorAll('[data-goto]')).forEach(function(b){b.addEventListener('click',function(){show(b.getAttribute('data-goto'));});});
+  [].slice.call(document.querySelectorAll('.levels')).forEach(function(group){
+    group.addEventListener('click',function(e){
+      if(e.target.tagName!=='BUTTON')return;
+      [].slice.call(group.querySelectorAll('button')).forEach(function(b){b.classList.remove('on');});
+      e.target.classList.add('on');
+    });
+  });
+  var rec=document.getElementById('recommend');
+  if(rec)rec.addEventListener('click',function(){
+    var row=document.getElementById('late-attention');
+    var buttons=row.querySelectorAll('.levels button');
+    for(var i=0;i<buttons.length;i++)buttons[i].classList.remove('on');
+    buttons[3].classList.add('on');
+    row.querySelector('.p-state').innerHTML='<span class="pill preserve">MAX · OVERRIDDEN</span>';
+    rec.textContent='Recommendation applied';
+    rec.disabled=true;
+  });
+})();
+</script>
+</body>
+</html>
