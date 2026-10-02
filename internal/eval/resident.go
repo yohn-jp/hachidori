@@ -101,6 +101,9 @@ type MemorySample struct {
 	Free      *int64 `json:"free"`
 	Total     *int64 `json:"total"`
 	Stale     bool   `json:"stale,omitempty"`
+	// HostRSS is the resident set size of the resident's own worker process
+	// (host RAM), when the worker reports it. Null otherwise: never estimated.
+	HostRSS *int64 `json:"host_rss_bytes,omitempty"`
 }
 
 // Memory is the accelerator memory evidence of one resident. Resident is the
@@ -116,6 +119,10 @@ type Memory struct {
 	ResidentRsrv  *int64         `json:"resident_reserved_bytes"`
 	PeakAlloc     *int64         `json:"peak_allocated_bytes"`
 	PeakRsrv      *int64         `json:"peak_reserved_bytes"`
+	// HostRSS is the worker process RAM at the resident reading and
+	// PeakHostRSS the highest sampled value; null when never reported.
+	HostRSS     *int64 `json:"host_rss_bytes,omitempty"`
+	PeakHostRSS *int64 `json:"peak_host_rss_bytes,omitempty"`
 }
 
 const memoryMethod = "accelerator statistics of this resident's own worker from /v1/status, sampled before the run, " +
@@ -256,7 +263,7 @@ type ResidentOptions struct {
 // UnassignedFamily groups the questions that declare no family.
 const UnassignedFamily = "unassigned"
 
-func (o ResidentOptions) declared() (Declared, error) {
+func (o ResidentOptions) declared(minModels int) (Declared, error) {
 	d := Declared{Models: append([]string{}, o.Models...), Warmup: o.Warmup, Passes: max(o.Passes, 1),
 		HighConfidence: o.HighConfidence, Thresholds: o.Thresholds, LengthEdges: o.LengthEdges, Families: o.Families}
 	if d.HighConfidence == 0 {
@@ -268,7 +275,10 @@ func (o ResidentOptions) declared() (Declared, error) {
 	if d.LengthEdges == nil {
 		d.LengthEdges = append([]int{}, DefaultLengthEdges...)
 	}
-	if len(d.Models) < 2 {
+	if len(d.Models) < minModels {
+		if minModels == 1 {
+			return d, errors.New("a resident run needs a model")
+		}
 		return d, errors.New("a resident comparison needs at least two models")
 	}
 	seen := map[string]bool{}
@@ -450,7 +460,7 @@ func (s residentState) memorySample(phase string) MemorySample {
 		return nil
 	}
 	return MemorySample{Phase: phase, Allocated: i("memory_allocated"), Reserved: i("memory_reserved"),
-		Free: i("memory_free"), Total: i("memory_total"), Stale: s.Stale}
+		Free: i("memory_free"), Total: i("memory_total"), Stale: s.Stale, HostRSS: i("host_rss_bytes")}
 }
 
 func buildMemory(samples []MemorySample) Memory {
@@ -468,6 +478,7 @@ func buildMemory(samples []MemorySample) Memory {
 			m.Available = true
 		}
 		m.PeakAlloc, m.PeakRsrv = peak(m.PeakAlloc, s.Allocated), peak(m.PeakRsrv, s.Reserved)
+		m.PeakHostRSS = peak(m.PeakHostRSS, s.HostRSS)
 		switch {
 		case s.Phase == "after_warmup":
 			resident = &samples[i]
@@ -477,6 +488,7 @@ func buildMemory(samples []MemorySample) Memory {
 	}
 	if resident != nil {
 		m.ResidentAlloc, m.ResidentRsrv = resident.Allocated, resident.Reserved
+		m.HostRSS = resident.HostRSS
 	}
 	return m
 }
@@ -493,7 +505,14 @@ func buildMemory(samples []MemorySample) Memory {
 // is returned together with ErrMisaligned when the runs turn out not to be
 // aligned; the caller decides how to present it. No verdict is produced.
 func RunResidents(e Endpoint, cases []Case, datasetSHA256 string, opt ResidentOptions) (ComparisonReport, error) {
-	dec, err := opt.declared()
+	return runResidents(e, cases, datasetSHA256, opt, 2)
+}
+
+// runResidents is RunResidents for at least minModels models. A single-model
+// run (minModels 1, see RunResident) is not an alignment: it has no second run
+// to align with and reports no alignment status.
+func runResidents(e Endpoint, cases []Case, datasetSHA256 string, opt ResidentOptions, minModels int) (ComparisonReport, error) {
+	dec, err := opt.declared(minModels)
 	if err != nil {
 		return ComparisonReport{}, err
 	}
@@ -592,6 +611,9 @@ func RunResidents(e Endpoint, cases []Case, datasetSHA256 string, opt ResidentOp
 		}
 		cmp.ResidentsStable = cmp.ResidentsStable && run.ResidentStable
 		cmp.Runs = append(cmp.Runs, *run)
+	}
+	if len(cmp.Runs) < 2 {
+		return cmp, nil
 	}
 	cmp.Alignment = Align(cmp.Runs)
 	if cmp.Alignment.Status != AlignAligned {

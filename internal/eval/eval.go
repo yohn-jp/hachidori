@@ -46,9 +46,22 @@ type Case struct {
 // question id must always mean the same thing: one definition version, or
 // inline questions only.
 func Load(path string, defs *question.Set) ([]Case, string, error) {
+	cases, sum, _, err := load(path, defs, true)
+	return cases, sum, err
+}
+
+// LoadAny is Load for a dataset that may carry no expected labels (ground-truth
+// free runs, such as reference-versus-variant fidelity). It reports whether the
+// dataset is labelled. A dataset is either labelled for every question of every
+// case or for none: a partly labelled dataset is rejected, never guessed at.
+func LoadAny(path string, defs *question.Set) (cases []Case, sha256 string, labelled bool, err error) {
+	return load(path, defs, false)
+}
+
+func load(path string, defs *question.Set, requireLabels bool) ([]Case, string, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	defer f.Close()
 	h := sha256.New()
@@ -57,43 +70,52 @@ func Load(path string, defs *question.Set) ([]Case, string, error) {
 	var cases []Case
 	ids := map[string]bool{}
 	bound := map[string]string{} // question id -> "inline" or definition id@version
+	labelled, unlabelled := 0, 0
 	for n := 1; sc.Scan(); n++ {
 		if len(sc.Bytes()) == 0 {
 			continue
 		}
 		var c Case
 		if err := json.Unmarshal(sc.Bytes(), &c); err != nil {
-			return nil, "", fmt.Errorf("%s:%d: %w", path, n, err)
+			return nil, "", false, fmt.Errorf("%s:%d: %w", path, n, err)
 		}
 		if c.ID == "" || ids[c.ID] {
-			return nil, "", fmt.Errorf("%s:%d: case id must be present and unique", path, n)
+			return nil, "", false, fmt.Errorf("%s:%d: case id must be present and unique", path, n)
 		}
 		ids[c.ID] = true
 		if err := resolve(&c, defs, bound); err != nil {
-			return nil, "", fmt.Errorf("%s:%d (%s): %w", path, n, c.ID, err)
+			return nil, "", false, fmt.Errorf("%s:%d (%s): %w", path, n, c.ID, err)
 		}
 		req := c.Request()
 		if err := req.Validate(); err != nil {
-			return nil, "", fmt.Errorf("%s:%d (%s): %w", path, n, c.ID, err)
+			return nil, "", false, fmt.Errorf("%s:%d (%s): %w", path, n, c.ID, err)
 		}
 		for _, q := range c.Questions {
 			exp, ok := c.Expected[q.ID]
 			if !ok {
-				return nil, "", fmt.Errorf("%s:%d (%s): no expected label for question %q", path, n, c.ID, q.ID)
+				if requireLabels {
+					return nil, "", false, fmt.Errorf("%s:%d (%s): no expected label for question %q", path, n, c.ID, q.ID)
+				}
+				unlabelled++
+				continue
 			}
+			labelled++
 			if !contains(q.Choices, exp) {
-				return nil, "", fmt.Errorf("%s:%d (%s): expected %q is not a choice of %q", path, n, c.ID, exp, q.ID)
+				return nil, "", false, fmt.Errorf("%s:%d (%s): expected %q is not a choice of %q", path, n, c.ID, exp, q.ID)
 			}
 		}
 		cases = append(cases, c)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	if len(cases) == 0 {
-		return nil, "", fmt.Errorf("%s: no cases", path)
+		return nil, "", false, fmt.Errorf("%s: no cases", path)
 	}
-	return cases, hex.EncodeToString(h.Sum(nil)), nil
+	if labelled > 0 && unlabelled > 0 {
+		return nil, "", false, fmt.Errorf("%s: %d questions have an expected label and %d do not; a dataset is labelled for every question or for none", path, labelled, unlabelled)
+	}
+	return cases, hex.EncodeToString(h.Sum(nil)), labelled > 0, nil
 }
 
 // resolve compiles c.QuestionRefs into c.Questions and checks that every
