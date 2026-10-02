@@ -540,8 +540,8 @@ func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm hom
 		return worker.Config{}, Runtime{}, fmt.Errorf("worker script %s does not match runtime manifest", script)
 	}
 	modelDir := h.ModelDir(a)
-	args := []string{"-I", "-X", "utf8", script, "--model-dir", modelDir, "--device", a.Device,
-		"--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", model.Provider}
+	args := setup.PythonArgs(script, "--model-dir", modelDir, "--device", a.Device,
+		"--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", model.Provider)
 	status := Runtime{Home: h.Root, Runtime: a.Runtime, ModelID: model.ID, Model: a.Model, Device: a.Device}
 	variant, err := launchVariant(h, a, rm, model, probe)
 	if err != nil {

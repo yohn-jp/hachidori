@@ -193,6 +193,33 @@ func variantRemove(args []string) error {
 	return setup.Remove(h, setup.KindVariant, fs.Arg(0), cliObserver(os.Stderr))
 }
 
+// cmdRepairCache is the explicit repair of an artifact that a Python import
+// polluted with bytecode caches. The artifact is named by its Hachidori
+// identity, never by a directory; verification itself stays read-only.
+func cmdRepairCache(args []string) error {
+	fs := flag.NewFlagSet("repair-cache", flag.ExitOnError)
+	homeFlag := fs.String("home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
+	model := fs.String("model", "", "catalog model ID of the materialized source to repair ("+strings.Join(modelIDs(), ", ")+")")
+	variant := fs.String("variant", "", "ID of the variant to repair (see `hachidori variant list`)")
+	fs.Parse(args)
+	if fs.NArg() != 0 || (*model == "") == (*variant == "") {
+		return errors.New("usage: hachidori repair-cache [-home DIR] (-model <model-id> | -variant <variant-id>)")
+	}
+	h, err := home.Resolve(*homeFlag)
+	if err != nil {
+		return err
+	}
+	kind, id := setup.KindModel, *model
+	if *variant != "" {
+		kind, id = setup.KindVariant, *variant
+	}
+	rep, err := setup.RepairArtifactCache(h, kind, id, cliObserver(os.Stderr))
+	if perr := printJSON(rep); err == nil {
+		err = perr
+	}
+	return err
+}
+
 // variantOptimize builds a variant of a materialized catalog model with a
 // canonical recipe. It is the one command that may materialize the optimizer
 // runtime (the only network access of the optimization lifecycle); the

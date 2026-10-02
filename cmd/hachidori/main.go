@@ -64,6 +64,9 @@ System One model forge (inference host, offline except where noted):
              certification a variant needs before it can be activated (run
              and evaluate are the advanced, run-file level; forge certify is
              the normal path)
+  repair-cache  remove Python bytecode-cache pollution (__pycache__/*.pyc) from
+             one materialized model (-model) or variant (-variant), then run the
+             strict verification again; removes nothing else
   forge      preflight|probe|execute|certify|diagnostics: check readiness
              before expensive work (disk, RAM, runtime, recipe, device; unknown
              fit stays unknown), smoke-test a persisted variant through the
@@ -92,7 +95,7 @@ Run 'hachidori <command> -h' for flags.
 // commands is the command dispatch table; every command in usage must be here.
 func commands() map[string]func([]string) error {
 	return map[string]func([]string) error{
-		"setup": cmdSetup, "activate": cmdActivate, "variant": cmdVariant, "certify": cmdCertify, "forge": cmdForge, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
+		"setup": cmdSetup, "activate": cmdActivate, "variant": cmdVariant, "certify": cmdCertify, "forge": cmdForge, "repair-cache": cmdRepairCache, "serve": cmdServe, "doctor": cmdDoctor, "status": cmdStatus,
 		"dashboard": func(a []string) error { return runHost("dashboard", a) },
 		"desktop":   func(a []string) error { return cmdDesktop(desktop.Native(), a) },
 		"decide":    cmdDecide, "eval": func(a []string) error { return cmdEval("eval", a) },

@@ -96,8 +96,8 @@ func TestTinyClefEndToEnd(t *testing.T) {
 			Descriptions: map[string]string{"paid": "Invoice is paid."}},
 		{ID: "urgent", Type: "choice", Instructions: "Is it urgent?", Choices: []string{"yes", "no"}}}}}
 	start := func(extra ...string) (*worker.Process, error) {
-		args := append([]string{"-I", "-X", "utf8", workerScript, "--model-dir", srcDir, "--device", "cpu",
-			"--manifest", filepath.Join(srcDir, "hachidori-model.json"), "--provider", "clef"}, extra...)
+		args := setup.PythonArgs(append([]string{workerScript, "--model-dir", srcDir, "--device", "cpu",
+			"--manifest", filepath.Join(srcDir, "hachidori-model.json"), "--provider", "clef"}, extra...)...)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		t.Cleanup(cancel)
 		return worker.Start(ctx, worker.Config{Python: python, Args: args, Env: h.Env(filepath.Dir(python), true), Dir: h.Path("state"),
@@ -157,8 +157,8 @@ func TestTinyClefEndToEnd(t *testing.T) {
 
 	// 4. No fallbacks. CUDA is not available here: it fails, it does not run on the CPU.
 	for name, extra := range map[string][]string{"source": nil, "variant": variantArgs} {
-		args := append([]string{"-I", "-X", "utf8", workerScript, "--model-dir", srcDir, "--device", "cuda",
-			"--manifest", filepath.Join(srcDir, "hachidori-model.json"), "--provider", "clef"}, extra...)
+		args := setup.PythonArgs(append([]string{workerScript, "--model-dir", srcDir, "--device", "cuda",
+			"--manifest", filepath.Join(srcDir, "hachidori-model.json"), "--provider", "clef"}, extra...)...)
 		_, err := worker.Start(context.Background(), worker.Config{Python: python, Args: args, Env: h.Env(filepath.Dir(python), true), Dir: h.Path("state"),
 			Log: io.Discard, StartTimeout: time.Minute, RequestTimeout: time.Minute}, nil)
 		var f *worker.Failure
