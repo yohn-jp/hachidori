@@ -577,49 +577,58 @@ func findVariantDir(h home.Home, variantID string) (home.ModelManifest, string, 
 
 func dirExists(p string) bool { fi, err := os.Lstat(p); return err == nil && fi.IsDir() }
 
-// removeConfined deletes target only if, after resolving symbolic links, both
-// base and target lie beneath HACHIDORI_HOME, target is a real directory
-// strictly inside base, and h is a plausible home (an absolute, non-root
-// directory holding the layout).
+// removeConfined deletes target only if confinedDir accepts it.
 func removeConfined(h home.Home, base, target string) error {
+	if _, err := confinedDir(h, base, target, "remove"); err != nil {
+		return err
+	}
+	return os.RemoveAll(target)
+}
+
+// confinedDir resolves target, an artifact directory a destructive operation
+// (verb) is about to act on, and returns its symlink-free path. It accepts
+// target only if, after resolving symbolic links, both base and target lie
+// beneath HACHIDORI_HOME, target is a real directory strictly inside base, and
+// h is a plausible home (an absolute, non-root directory holding the layout).
+func confinedDir(h home.Home, base, target, verb string) (string, error) {
 	root := h.Root
 	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root || filepath.Dir(root) == root {
-		return fmt.Errorf("refusing to remove under %q: not a Hachidori home", root)
+		return "", fmt.Errorf("refusing to %s under %q: not a Hachidori home", verb, root)
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return fmt.Errorf("home %s: %w", root, err)
+		return "", fmt.Errorf("home %s: %w", root, err)
 	}
 	for _, d := range []string{"runtime", "models", "state"} {
 		if fi, err := os.Lstat(filepath.Join(root, d)); err != nil || !fi.IsDir() {
-			return fmt.Errorf("refusing to remove under %s: not a Hachidori home (no %s/)", root, d)
+			return "", fmt.Errorf("refusing to %s under %s: not a Hachidori home (no %s/)", verb, root, d)
 		}
 	}
 	if !within(root, base) || !within(base, target) || filepath.Clean(base) == filepath.Clean(target) {
-		return fmt.Errorf("refusing to remove %s: not beneath %s", target, base)
+		return "", fmt.Errorf("refusing to %s %s: not beneath %s", verb, target, base)
 	}
 	fi, err := os.Lstat(target)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%s is not materialized", target)
+			return "", fmt.Errorf("%s is not materialized", target)
 		}
-		return err
+		return "", err
 	}
 	if !fi.IsDir() || fi.Mode()&fs.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to remove %s: not a real directory", target)
+		return "", fmt.Errorf("refusing to %s %s: not a real directory", verb, target)
 	}
 	realBase, err := filepath.EvalSymlinks(base)
 	if err != nil {
-		return err
+		return "", err
 	}
 	realTarget, err := filepath.EvalSymlinks(target)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !within(realRoot, realBase) || !within(realBase, realTarget) || realBase == realTarget {
-		return fmt.Errorf("refusing to remove %s: resolves outside %s", target, realRoot)
+		return "", fmt.Errorf("refusing to %s %s: resolves outside %s", verb, target, realRoot)
 	}
-	return os.RemoveAll(target)
+	return realTarget, nil
 }
 
 // stagedBytes is the number of bytes of m's pinned files held in its staging

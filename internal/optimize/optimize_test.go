@@ -15,6 +15,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/optimize/optimizetest"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/setup/bytecodetest"
 )
 
 var carried = []string{"LICENSE", "chat_template.jinja", "joint_head.safetensors", "joint_head_config.json", "joint_schema_model.py",
@@ -392,4 +393,19 @@ func TestRebuildOverADirectoryWithoutManifestIsNotExisting(t *testing.T) {
 	if names := variantDirs(t, h); len(names) != 1 || names[0] != first.Variant.ID {
 		t.Fatalf("the rebuild left %v", names)
 	}
+}
+
+// The optimizer process loads the digest-verified source tree; it must not
+// write Python bytecode into it. The real process runner starts a real
+// interpreter that imports artifact-local modules and the tree stays as it was.
+func TestOptimizerLaunchLeavesArtifactTreeUnchanged(t *testing.T) {
+	python := bytecodetest.HostPython(t)
+	dir := bytecodetest.ArtifactFixture(t)
+	before := bytecodetest.TreeState(t, dir)
+	h := home.Home{Root: t.TempDir()}
+	runner := optimize.NewProcessRunner(python, bytecodetest.LoadScript(t), bytecodetest.Env(h.Env(filepath.Dir(python), true)), t.TempDir())
+	if err := runner.Run(context.Background(), []string{dir}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	bytecodetest.RequireUnchanged(t, dir, before)
 }

@@ -1115,6 +1115,7 @@ hachidori forge preflight optimize                       # source digests, recip
 hachidori variant optimize --model clef-flash            # build the W4A16 variant (materializes the optimizer runtime first)
 hachidori variant list                                   # id, recipe, precision, certification
 hachidori variant verify <variant-id>                    # offline integrity + preserved-module check
+hachidori repair-cache -variant <variant-id>             # only if verify reports a __pycache__/*.pyc the manifest does not list
 hachidori forge preflight probe --variant <variant-id> --device cuda   # needs the cuda runtime (setup --device cuda) first
 hachidori forge probe --device cuda <variant-id>         # load the persisted variant, one typed decision, tear down
 # certification: certification.md "System One variant certification"
@@ -1125,6 +1126,43 @@ hachidori serve                                          # restart applies the a
 hachidori status                                         # runtime.variant, provider.device/dtype/quantized_execution
 hachidori decide request.json
 ```
+
+**Immutable artifacts and Python bytecode.** A materialized source and a built
+variant are immutable. Every private Python process that can import from one of
+them (the serving worker, the resident set, the persisted-variant probe, the
+exact source and variant execution sessions and the optimizer) is started by one
+launch authority, `setup.PythonArgs`, with `-I -B -X utf8`: `-B` disables
+bytecode writes in the process itself. The `PYTHONDONTWRITEBYTECODE=1` in the
+private environment is not enough on its own, because isolated mode (`-I`) makes
+the interpreter ignore every `PYTHON*` variable. So an imported
+`joint_schema_model.py` can no longer leave `__pycache__/*.pyc` beside the
+artifact's files. Verification is unchanged and strict: any file the manifest
+does not list, a bytecode cache included, fails `variant verify` and every
+launch.
+
+An artifact polluted by an earlier build is repaired by one explicit operation,
+never by verification:
+
+```powershell
+hachidori repair-cache -variant <variant-id>     # or: -model <catalog-model-id>
+```
+
+The artifact is named by its Hachidori identity; no directory is accepted. The
+repair resolves the artifact inside `HACHIDORI_HOME` (a linked root is refused),
+inventories every entry that is not in the manifest, and deletes only
+unmanifested regular files named `<module>.cpython-<NN>[.opt-N].pyc` with a
+bytecode header directly inside a `__pycache__` directory, then those
+directories once empty. Any other unmanifested entry, any symbolic link or
+irregular file, or a manifested file that resembles a candidate refuses the
+whole repair before anything is deleted. Deletion goes through a handle opened on the
+artifact root that cannot leave it, and each parent directory is re-checked (a real
+directory, no link or reparse point, the one that was checked) immediately before it
+is entered, so a directory swapped for a link after the inventory is refused, never
+followed. It then runs the normal verification
+and reports success only if that passes. It prints a JSON record (`kind`, `id`,
+`found`, `removed` as artifact-relative paths, `verified`); on an already clean
+artifact it removes nothing and rewrites nothing. Stop the runtime first, as for
+`setup` repair and `variant remove`.
 
 ### System One Forge readiness
 

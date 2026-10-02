@@ -46,7 +46,7 @@ func TestServeIndependentOfUV(t *testing.T) {
 	if _, err := os.Stat(cfg.Python); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Args[0] != "-I" || cfg.Args[3] != filepath.Join(h.Root, "runtime", id, "worker", "hachidori_worker.py") {
+	if !slices.Equal(cfg.Args[:4], []string{"-I", "-B", "-X", "utf8"}) || cfg.Args[4] != filepath.Join(h.Root, "runtime", id, "worker", "hachidori_worker.py") {
 		t.Fatalf("args %v", cfg.Args)
 	}
 	for _, kv := range cfg.Env {
@@ -223,7 +223,7 @@ func TestServeResolvesActivatedModel(t *testing.T) {
 	if rt.ModelID != setup.TunedModel || rt.Model != setup.ModelDirName(model) || a.ModelID != setup.TunedModel {
 		t.Fatalf("runtime %+v, active %+v", rt, a)
 	}
-	if !slices.Equal(cfg.Args[4:], []string{"--model-dir", modelDir, "--device", "cpu", "--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", "opendecider"}) {
+	if !slices.Equal(cfg.Args[5:], []string{"--model-dir", modelDir, "--device", "cpu", "--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", "opendecider"}) {
 		t.Fatalf("worker args %v", cfg.Args)
 	}
 	b, _ := json.Marshal(server.StatusBody(idle{}, rt, time.Now()))

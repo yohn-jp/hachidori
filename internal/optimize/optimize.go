@@ -74,7 +74,7 @@ type processRunner struct {
 }
 
 func (p processRunner) Run(ctx context.Context, args []string, events, log io.Writer) error {
-	cmd := exec.CommandContext(ctx, p.python, append([]string{"-I", "-X", "utf8", p.script}, args...)...)
+	cmd := exec.CommandContext(ctx, p.python, setup.PythonArgs(append([]string{p.script}, args...)...)...)
 	subprocess.Configure(cmd)
 	cmd.Env, cmd.Dir = p.env, p.dir
 	cmd.Stdout, cmd.Stderr = events, log
