@@ -1541,8 +1541,9 @@ reports and failure diagnostics are listed on its card, with the CLI command for
 its certification evidence.
 
 **Certification** asks only for semantic inputs: the evaluation dataset, the
-Question Definition files or directories, an optional policy file, the variant
-device, the reference device and precision (canonical defaults when left empty)
+Question Definition files or directories, an optional policy file (explicit
+absolute local paths only, forwarded in cleaned form, like the Experiments
+runner), the variant device, the reference device and precision (canonical defaults when left empty)
 and whether a missing serving runtime may be materialized first. It calls
 `Controller.CertifyVariant` (the self-contained Forge certification) and never
 accepts a reference or candidate run path; the low-level run-file surface is the

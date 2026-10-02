@@ -543,6 +543,29 @@ func TestForgeActionsForwarded(t *testing.T) {
 			t.Fatalf("%s forwarded %q, want %q", c.op, got, c.want)
 		}
 	}
+	// Only explicit absolute local paths are forwarded: a relative or ".."
+	// path, or a missing dataset, is refused before the authority is called.
+	n0 := len(fv.calls)
+	for name, form := range map[string]url.Values{
+		"relative dataset":  {"variant": {"v1"}, "device": {"cuda"}, "dataset": {"eval.jsonl"}},
+		"missing dataset":   {"variant": {"v1"}, "device": {"cuda"}},
+		"relative question": {"variant": {"v1"}, "device": {"cuda"}, "dataset": {"/d.jsonl"}, "questions": {"/q/a.json\nq/b.json"}},
+		"relative policy":   {"variant": {"v1"}, "device": {"cuda"}, "dataset": {"/d.jsonl"}, "policy": {"p.json"}},
+	} {
+		e.post(t, "/forge/certify", form)
+		if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "path") {
+			t.Errorf("%s: not refused: %+v", name, a)
+		}
+	}
+	if len(fv.calls) != n0 {
+		t.Fatalf("an unchecked path reached the authority: %v", fv.calls[n0:])
+	}
+	// A path is forwarded in its cleaned form, so it names exactly the
+	// location that is shown.
+	e.post(t, "/forge/certify", url.Values{"variant": {"v1"}, "device": {"cuda"}, "dataset": {"/data/../etc/eval.jsonl"}})
+	if got := fv.calls[len(fv.calls)-1]; !strings.Contains(got, "dataset=/etc/eval.jsonl ") {
+		t.Fatalf("path not cleaned: %q", got)
+	}
 	// A run-file certification is no longer a dashboard input: the old
 	// fields are ignored, never forwarded.
 	e.post(t, "/forge/certify", url.Values{"variant": {"v1"}, "device": {"cuda"}, "dataset": {"/d.jsonl"}, "reference": {"C:\\runs\\ref.json"}, "candidate": {"C:\\runs\\cand.json"}})

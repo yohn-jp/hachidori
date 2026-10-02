@@ -964,9 +964,11 @@ func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 		d.done(w, r, "optimize "+f("model"), va.Optimize(f("model"), f("recipe")),
 			"started; the source and the active runtime are not touched, and nothing is selectable until the build is verified and published")
 	case "certify":
-		req := CertifyRequest{Variant: f("variant"), Device: f("device"), ReferenceDevice: f("reference_device"), ReferenceDType: f("reference_dtype"),
-			Dataset: f("dataset"), Questions: lines(r.PostFormValue("questions")), Policy: f("policy"), Materialize: f("materialize") == "1"}
-		d.done(w, r, "certify "+req.Variant, va.CertifyVariant(req),
+		req, err := certifyRequest(r)
+		if err == nil {
+			err = va.CertifyVariant(req)
+		}
+		d.done(w, r, "certify "+f("variant"), err,
 			"started; the backend runs the reference and the variant itself, and the evidence is recorded whatever the verdict. Nothing is activated")
 	case "apply":
 		d.done(w, r, "apply "+f("variant"), va.Apply(f("device"), f("model"), f("variant"), f("materialize") == "1"),
@@ -980,6 +982,32 @@ func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// certifyRequest reads the certification form. Like the Experiments runner, the
+// dashboard forwards only explicit absolute local paths (absPath): it never
+// resolves one against its own working directory.
+func certifyRequest(r *http.Request) (CertifyRequest, error) {
+	f := func(k string) string { return strings.TrimSpace(r.PostFormValue(k)) }
+	req := CertifyRequest{Variant: f("variant"), Device: f("device"), ReferenceDevice: f("reference_device"), ReferenceDType: f("reference_dtype"),
+		Materialize: f("materialize") == "1"}
+	var err error
+	if req.Dataset, err = absPath(f("dataset"), "evaluation dataset"); err != nil {
+		return req, err
+	}
+	for _, q := range lines(r.PostFormValue("questions")) {
+		p, err := absPath(q, "Question Definition")
+		if err != nil {
+			return req, err
+		}
+		req.Questions = append(req.Questions, p)
+	}
+	if pol := f("policy"); pol != "" {
+		if req.Policy, err = absPath(pol, "policy"); err != nil {
+			return req, err
+		}
+	}
+	return req, nil
 }
 
 // lines splits a textarea into its non-empty trimmed lines.
