@@ -103,7 +103,11 @@ func fakeUV(args []string) int {
 		if ctl.Torch != "" {
 			torch = ctl.Torch
 		}
-		b, _ := json.Marshal([]string{"laya==0.3.21", "opendecider==0.3.0", "numpy==2.5.3", "torch==" + torch, "transformers==5.17.0", "safetensors==0.8.0", "tokenizers==0.23.2", "accelerate==1.15.0", "compressed-tensors==0.19.0"})
+		pkgs := []string{"laya==0.3.21", "opendecider==0.3.0", "numpy==2.5.3", "torch==" + torch, "transformers==5.17.0", "safetensors==0.8.0", "tokenizers==0.23.2", "accelerate==1.15.0", "compressed-tensors==0.19.0"}
+		if pj, _ := os.ReadFile("pyproject.toml"); strings.Contains(string(pj), "hachidori-optimizer") {
+			pkgs = []string{"llmcompressor==0.14.0", "compressed-tensors==0.19.0", "numpy==2.5.3", "torch==" + torch, "transformers==5.17.0"}
+		}
+		b, _ := json.Marshal(pkgs)
 		return writeOr1(filepath.Join(os.Getenv("UV_PROJECT_ENVIRONMENT"), "installed.json"), b)
 	}
 	return 2
@@ -166,6 +170,9 @@ type fixture struct {
 	mu   sync.Mutex
 	hits map[string]int
 	down map[string]bool // paths answering 404
+	// clef holds the files of the System One fixture model once addClef was
+	// called: rel path -> content, served under /test/clef/resolve/.
+	clef map[string][]byte
 }
 
 const fakeUVMember = "uv-fake/uv"
@@ -229,6 +236,17 @@ func newFixture(t *testing.T) *fixture {
 			w.Write(modelFile)
 		case strings.HasPrefix(r.URL.Path, "/test/tuned/resolve/"):
 			w.Write(tunedFile)
+		case strings.HasPrefix(r.URL.Path, "/test/clef/resolve/"):
+			rel := strings.TrimPrefix(r.URL.Path, "/test/clef/resolve/")
+			rel = rel[strings.Index(rel, "/")+1:]
+			f.mu.Lock()
+			body, ok := f.clef[rel]
+			f.mu.Unlock()
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			w.Write(body)
 		default:
 			http.NotFound(w, r)
 		}
@@ -407,4 +425,26 @@ func (f *fixture) olderWorker(device string) string {
 		f.t.Fatal(err)
 	}
 	return rm.Identity
+}
+
+// clefFixtureFiles are the files of the System One fixture model: the file
+// names of the real release, with tiny contents.
+var clefFixtureFiles = []string{"LICENSE", "chat_template.jinja", "config.json", "generation_config.json", "joint_head.safetensors",
+	"joint_head_config.json", "joint_schema_model.py", "model.safetensors", "processor_config.json", "tokenizer.json", "tokenizer_config.json"}
+
+// addClef adds a System One model to the fixture catalog, under the real
+// Clef-Flash ID so that variants and the canonical recipe apply, and serves
+// its files from the fixture server. It returns the catalog entry.
+func (f *fixture) addClef() home.ModelManifest {
+	f.t.Helper()
+	f.clef = map[string][]byte{}
+	files := map[string]string{}
+	for _, rel := range clefFixtureFiles {
+		b := []byte("fixture " + rel)
+		f.clef[rel] = b
+		files[rel] = digest(b)
+	}
+	m := home.ModelManifest{ID: ClefFlash, Provider: providerClef, Repo: "test/clef", Revision: strings.Repeat("ef", 20), Files: files}
+	Models = append(Models, m)
+	return m
 }

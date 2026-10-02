@@ -71,3 +71,17 @@ func MaterializeFakeResidents(t *testing.T, device string) (h home.Home, def, ot
 	}
 	return f.H, DefaultModel, tunedModel
 }
+
+// MaterializeFakeClef materializes the runtime and a System One fixture model
+// under the real Clef-Flash catalog ID through the real setup path, activating
+// it, and returns the home and the catalog entry. Variants of it can then be
+// built with the fake optimizer.
+func MaterializeFakeClef(t *testing.T, device string) (home.Home, home.ModelManifest) {
+	f := newFixture(t)
+	m := f.addClef()
+	f.mustRunModel(device, ClefFlash)
+	return f.H, m
+}
+
+// FileSHA256Bytes is the digest of b, for tests outside this package.
+func FileSHA256Bytes(b []byte) (string, error) { return digest(b), nil }

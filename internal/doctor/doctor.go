@@ -17,6 +17,7 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/client"
+	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
@@ -117,12 +118,31 @@ func Run(homeFlag string, out io.Writer) bool {
 	if err == nil {
 		err = setup.VerifyModel(h.ModelDir(a), model)
 	}
+	variantDetail := ""
+	if err == nil && a.Variant != "" {
+		// A selected variant is verified like the model: manifest, source link,
+		// every artifact digest and its preserved modules. It is never replaced
+		// by the source when it fails.
+		var v home.VariantManifest
+		if v, _, err = h.LoadVariant(a); err == nil {
+			if err = v.CheckSource(model); err == nil {
+				err = setup.VerifyVariantArtifacts(h, model, v, nil)
+			}
+		}
+		if err == nil {
+			state := eval.ResolveCertification(h, v).State
+			if a.Experimental && state != eval.StateAccepted {
+				state = eval.StateExperimental
+			}
+			variantDetail = fmt.Sprintf("; variant %s (%s, %d files verified, certification %s)", v.ID, v.Weights.Scheme, len(v.Files), state)
+		}
+	}
 	if err != nil {
 		report(Check{Name: "model", Status: "fail", Owner: "hachidori", Class: ModelUnavailable, Detail: err.Error()})
 		return skipRest(later[2:]...)
 	}
 	report(Check{Name: "model", Status: "pass", Owner: "hachidori",
-		Detail: fmt.Sprintf("%s (%s@%s), %d files verified", model.ID, mm.Repo, mm.Revision, len(model.Files))})
+		Detail: fmt.Sprintf("%s (%s@%s), %d files verified%s", model.ID, mm.Repo, mm.Revision, len(model.Files), variantDetail)})
 
 	env := h.Env(filepath.Dir(python), true)
 	iso, err := probe(python, env, isolationProbe)
@@ -238,6 +258,16 @@ print(json.dumps({"prefix": sys.prefix, "executable": sys.executable, "no_user_s
 // providerProbe imports the model provider the active model needs. The name is
 // a catalog provider kind, never operator input.
 func providerProbe(provider string) string {
+	if provider == home.ProviderClef {
+		// The clef provider is the model's own joint_schema_model.py on the
+		// runtime's transformers; the importable packages are what is probed.
+		return `import json, torch, transformers, safetensors, compressed_tensors, accelerate
+d = {"torch": torch.__version__, "torch_cuda": torch.version.cuda, "provider_version": "clef/" + transformers.__version__,
+ "cuda_available": torch.cuda.is_available()}
+if d["cuda_available"]:
+    d["device_name"] = torch.cuda.get_device_name(0)
+print(json.dumps(d))`
+	}
 	return `import json, torch, ` + provider + `
 d = {"torch": torch.__version__, "torch_cuda": torch.version.cuda, "provider_version": ` + provider + `.__version__,
  "cuda_available": torch.cuda.is_available()}
