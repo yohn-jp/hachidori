@@ -443,15 +443,19 @@ func TestSupervisorRestartsWithinBudget(t *testing.T) {
 	if _, ok := err.(*Failure); !ok {
 		t.Fatalf("err = %v", err)
 	}
-	// one restart allowed
+	// one restart allowed: wait for the second worker lifetime, read in one
+	// snapshot so a stale READY of the exited worker cannot pair with the
+	// restarted worker's count
 	deadline := time.Now().Add(5 * time.Second)
-	for !(s.Ready() && s.Snapshot().Starts == 2) {
+	for st := s.Snapshot(); !(st.State == StateReady && st.Starts == 2); st = s.Snapshot() {
 		if time.Now().After(deadline) {
-			t.Fatalf("no restart: state %s starts %d", s.State(), s.Snapshot().Starts)
+			t.Fatalf("no restart: state %s starts %d", st.State, st.Starts)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	_, _, _ = s.Decide([]Item{item})
+	if _, _, err := s.Decide([]Item{item}); !errors.As(err, new(*Failure)) {
+		t.Fatalf("the restarted worker did not crash: err = %v", err)
+	}
 	<-done // budget exhausted: supervisor gives up
 	if s.State() != StateFailed || s.LastFailure().Class != ClassCrash {
 		t.Fatalf("state %s failure %+v", s.State(), s.LastFailure())
@@ -465,17 +469,23 @@ func TestSupervisorRunAfterGivingUpHasAFreshRestartBudget(t *testing.T) {
 		done := make(chan struct{})
 		go func() { s.Run(ctx); close(done) }()
 		waitState(t, s, StateReady)
-		_, _, _ = s.Decide([]Item{item})
+		if _, _, err := s.Decide([]Item{item}); !errors.As(err, new(*Failure)) {
+			t.Fatalf("the first worker did not crash: err = %v", err)
+		}
 		// The first exit is retried within the budget; the exit after that
-		// exhausts it.
+		// exhausts it. State and restart count are read in one snapshot: a
+		// stale READY of the exited worker must not pair with the count the
+		// supervisor records when it observes that exit.
 		deadline := time.Now().Add(5 * time.Second)
-		for !(s.Ready() && s.Snapshot().Restarts == 1) {
+		for st := s.Snapshot(); !(st.State == StateReady && st.Restarts == 1); st = s.Snapshot() {
 			if time.Now().After(deadline) {
-				t.Fatalf("no restart: state %s", s.State())
+				t.Fatalf("no restart: state %s restarts %d", st.State, st.Restarts)
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-		_, _, _ = s.Decide([]Item{item})
+		if _, _, err := s.Decide([]Item{item}); !errors.As(err, new(*Failure)) {
+			t.Fatalf("the restarted worker did not crash: err = %v", err)
+		}
 		<-done
 		if s.State() != StateFailed {
 			t.Fatalf("state %s, want failed (budget exhausted)", s.State())

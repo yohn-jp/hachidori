@@ -178,7 +178,14 @@ func TestProbeLoadsThePersistedVariantDecidesOnceAndTearsDown(t *testing.T) {
 	marker := t.TempDir()
 	var phases []setup.Phase
 	obs := &setup.Observer{OnPhase: func(p setup.Phase) { phases = append(phases, p) }}
-	rec, err := Probe(context.Background(), h, ProbeParams{Variant: v.ID, Device: "cuda"}, probeDeps(t, "ok", marker, "uncertified"), io.Discard, obs)
+	deps := probeDeps(t, "ok", marker, "uncertified")
+	// The probe's own clock advances one millisecond per reading, so startup
+	// and request time are what the probe measured between its own marks,
+	// independent of the host clock's resolution (a local fake worker answers
+	// within one tick of a coarse Windows clock).
+	clock := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	deps.Now = func() time.Time { clock = clock.Add(time.Millisecond); return clock }
+	rec, err := Probe(context.Background(), h, ProbeParams{Variant: v.ID, Device: "cuda"}, deps, io.Discard, obs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +196,7 @@ func TestProbeLoadsThePersistedVariantDecidesOnceAndTearsDown(t *testing.T) {
 	if rec.Execution.VariantID != v.ID || rec.Execution.DType != "bfloat16" || rec.Execution.Quantization != "W4A16" || rec.Execution.PID == 0 {
 		t.Fatalf("execution %+v", rec.Execution)
 	}
-	if rec.Timing.LoadMS != 1234.5 || rec.Timing.WarmupMS != 67.8 || rec.Timing.StartupMS <= 0 || rec.Timing.RequestMS <= 0 || rec.Timing.Inference != 12.5 {
+	if rec.Timing.LoadMS != 1234.5 || rec.Timing.WarmupMS != 67.8 || rec.Timing.StartupMS != 1 || rec.Timing.RequestMS != 1 || rec.Timing.Inference != 12.5 {
 		t.Fatalf("timing %+v: load/warmup are the worker's, startup and request are measured here", rec.Timing)
 	}
 	d := rec.Decision
