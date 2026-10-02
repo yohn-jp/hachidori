@@ -1177,6 +1177,27 @@ says what it does not measure. `variant optimize` runs the same checks before it
 loads anything and refuses with the blockers. Reports are kept as the latest of
 their target under `state/forge/preflight/`.
 
+A materialize preflight distinguishes an absent source (it will be downloaded)
+from a present one, which materialization would reuse only if it verifies: a
+present source whose manifest is unreadable, names another repository,
+revision or pinned digests, or misses a pinned file is a blocker, and its
+pinned files are hashed (a corrupt file is a blocker); `-quick` reports the
+unhashed digests `unknown`, never `pass`.
+
+A report (`hachidori.forge-preflight.v2`) carries its `binding`: the operation
+kind and device, the catalog model with its pinned repository, revision and
+file-digest identity, the digest of the materialized source manifest, the
+Runtime Spec identity of the operation's runtime and the digest of its
+materialized manifest, the variant and its manifest digest, the recipe and its
+digest, and a certification's reference dtype, all derived from the existing
+catalog, home and recipe authorities when the preflight runs. When a report is
+read back the binding is recomputed for its target: equal, the report is
+`current`; different, it is `stale` and names the changed dimensions; a report
+without a binding (`hachidori.forge-preflight.v1`) is `legacy`. Only a current
+report is the readiness of its target: the desktop shows a stale or legacy
+report with that state instead of its recorded outcome (never READY), and no
+recorded report authorizes anything.
+
 **Probe** (`app.Probe`, `server.ProbeConfig`). `hachidori forge probe --device D
 <variant-id>` verifies the source and the variant (the preflight), starts an
 isolated worker for the variant's *published, persisted* directory through the
@@ -1201,7 +1222,11 @@ provider; the recipe ID and digest, optimizer backend and version, scheme and th
 preserved selectors; the certification policy and the digests (never the content)
 of the datasets and runs; device, dtype, quantization, Python, Torch, Transformers
 and compression-backend versions; RAM, VRAM, disk, load/warmup timing and the
-worker identity; the latest preflight's non-pass findings; the error chain, the
+worker identity; the non-pass findings of the latest *current* preflight of
+exactly the failed target (kind, model, variant, recipe and device: a cpu
+report never stands for a cuda failure, a probe report never for a
+certification; setup maps to the materialize preflight, repair to none); the
+error chain, the
 worker's stderr tail and the tail of that operation's section of the setup log
 (each line and the whole document are bounded). Every string goes through the
 shared redaction policy (secrets, tokens, authorization headers and cookies are
@@ -1210,7 +1235,15 @@ dataset payloads, question/state bodies and the environment are never read. A
 problem collecting or writing the diagnostic is attached to it as secondary
 evidence and never replaces the operation's own error. `hachidori forge
 diagnostics list|show|export` reads them (the latest, or one by its identity), and
-the desktop's failure state links the same document.
+the desktop's failure state links the same document. The identity is derived
+from the stored document itself (`hachidori.forge-diagnostic/v2`,
+`diagnostics.ForgeContentID`): the document is redacted, bounded and
+truncated first, then its `id` field is cleared, it is serialized compactly
+with `encoding/json`, and the first four bytes of the SHA-256 of those bytes
+complete `<kind>-<time>-<hash>`. Recomputing it from a stored document
+reproduces the ID (`diagnostics.VerifyForge`, checked on every read of a v2
+document); a v1 document stays readable but its ID was taken before
+truncation.
 
 **Operations and desktop.** Preflight and probe are `app.Controller` operations
 (`preflight`, `probe`) with the same admission rules as the others: one action at
