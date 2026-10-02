@@ -34,6 +34,14 @@ func fakeExecWorker(spec string) {
 	out := json.NewEncoder(os.Stdout)
 	emit := func(v map[string]any) { _ = out.Encode(v) }
 	emit(map[string]any{"event": "hello", "pid": os.Getpid()})
+	switch mode {
+	case "fatal": // the model cannot be loaded
+		emit(map[string]any{"event": "phase", "phase": "loading"})
+		emit(map[string]any{"event": "fatal", "class": worker.ClassModelLoad, "message": "no weights for " + variant})
+		os.Exit(3)
+	case "hang": // never becomes READY
+		time.Sleep(time.Hour)
+	}
 	info := map[string]any{"provider": "clef", "provider_version": "1", "model_id": model, "model_revision": rev, "device": device, "dtype": "torch." + dtype,
 		"execution": "source", "weights_quantized_modules": 0, "load_ms": 12.5, "warmup_ms": 3.5}
 	if variant != "" {
@@ -79,11 +87,21 @@ func fakeExecWorker(spec string) {
 				_ = os.WriteFile(filepath.Join(marker, "deciding"), nil, 0o644)
 				time.Sleep(1500 * time.Millisecond)
 			}
+			switch mode {
+			case "decide_error":
+				emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": api.ErrInferenceFailed, "message": "boom"}})
+				continue
+			case "crash_on_decide":
+				os.Exit(7)
+			}
 			var results [][]api.Result
 			for _, it := range req.Items {
 				var rs []api.Result
 				for _, q := range it.Questions {
 					probs := map[string]float64{q.Choices[0]: 0.8, q.Choices[1]: 0.2}
+					if mode == "bad_probabilities" {
+						probs[q.Choices[1]] = 0.5
+					}
 					rs = append(rs, api.Result{ID: q.ID, Type: "choice", Choice: q.Choices[0], Confidence: 0.8, Probabilities: probs})
 				}
 				results = append(results, rs)

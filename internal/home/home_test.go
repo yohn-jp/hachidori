@@ -187,3 +187,33 @@ func TestLoadActiveAppliesRuntimeIdentity(t *testing.T) {
 		t.Errorf("corrupt identity: got %v, want a non-legacy rejection", err)
 	}
 }
+
+// The activation record is restored byte for byte, atomically.
+func TestRestoreActiveRecordIsByteExact(t *testing.T) {
+	h := Home{Root: t.TempDir()}
+	if err := h.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ReadActiveRecord(); !os.IsNotExist(err) {
+		t.Fatalf("read of a missing record: %v", err)
+	}
+	// Not what WriteJSON would produce: indentation, key order and a trailing
+	// blank line survive a restore.
+	raw := []byte("{\"device\":\"cuda\",   \"runtime\":\"rt\",\n \"model\":\"m\"}\n\n")
+	if err := h.RestoreActiveRecord(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteJSON(h.Path("state", "active-runtime.json"), Active{Runtime: "other", Model: "m", Device: "cpu"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.RestoreActiveRecord(raw); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.ReadActiveRecord()
+	if err != nil || string(got) != string(raw) {
+		t.Fatalf("restored %q, want %q (%v)", got, raw, err)
+	}
+	if es, _ := os.ReadDir(h.Path("state")); len(es) != 1 {
+		t.Fatalf("a restore leaves only the record, got %d entries", len(es))
+	}
+}

@@ -220,6 +220,19 @@ func (h Home) LoadActive() (Active, RuntimeManifest, ModelManifest, error) {
 	return a, rm, mm, nil
 }
 
+// ReadActiveRecord returns the activation record exactly as stored, for a
+// caller that must be able to put it back byte for byte.
+func (h Home) ReadActiveRecord() ([]byte, error) {
+	return os.ReadFile(h.Path("state", "active-runtime.json"))
+}
+
+// RestoreActiveRecord atomically puts back an activation record previously read
+// with ReadActiveRecord. It is the same atomic write the activation uses; it
+// exists so that a failed transaction restores exactly the record it replaced.
+func (h Home) RestoreActiveRecord(raw []byte) error {
+	return WriteFileAtomic(h.Path("state", "active-runtime.json"), raw, 0o644)
+}
+
 // RuntimeDir is the active runtime's directory.
 func (h Home) RuntimeDir(a Active) string { return h.Path("runtime", a.Runtime) }
 

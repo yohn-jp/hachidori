@@ -446,3 +446,25 @@ func TestAmbiguousLegacyCertificationIsNeverActivated(t *testing.T) {
 		}
 	}
 }
+
+// RequireAccepted is the activation gate evaluated alone: only an accepted
+// record passes, and the experimental exception never applies.
+func TestRequireAcceptedIsTheCertificationGateAlone(t *testing.T) {
+	h, m := setup.MaterializeFakeClef(t, "cpu")
+	v := buildVariant(t, h)
+	before := rawActive(h)
+	if err := setup.RequireAccepted(h, v); !errors.Is(err, setup.ErrVariantNotCertified) {
+		t.Fatalf("uncertified: %v", err)
+	}
+	certify(t, h, m, v, false, time.Now())
+	if err := setup.RequireAccepted(h, v); !errors.Is(err, setup.ErrVariantNotCertified) || !strings.Contains(err.Error(), "rejecting") {
+		t.Fatalf("rejected: %v", err)
+	}
+	certify(t, h, m, v, true, time.Now().Add(time.Hour))
+	if err := setup.RequireAccepted(h, v); err != nil {
+		t.Fatalf("accepted: %v", err)
+	}
+	if rawActive(h) != before {
+		t.Fatal("the gate changed the activation record")
+	}
+}

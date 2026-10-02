@@ -165,7 +165,7 @@ func project(home string, op string, running bool, st *server.Status, lastFail *
 		}
 		return Starting, nil
 	}
-	if op == OpStart || op == OpRestart {
+	if op == OpStart || op == OpRestart || op == OpApply {
 		return Starting, nil
 	}
 	if lastFail != nil {

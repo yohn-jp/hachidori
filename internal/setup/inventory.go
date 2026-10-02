@@ -436,6 +436,16 @@ func checkCertified(h home.Home, v home.VariantManifest, allowUncertified bool) 
 		"or launch it explicitly as experimental/uncertified", ErrVariantNotCertified, v.ID)
 }
 
+// RequireAccepted is the certification gate of an explicit apply, evaluated on
+// its own so that a refusal happens before anything is changed: the variant's
+// latest certification record must be accepted. An uncertified, rejected,
+// ambiguous or untrusted state is refused with ErrVariantNotCertified; the
+// experimental exception of ActivateTarget never applies.
+func RequireAccepted(h home.Home, v home.VariantManifest) error {
+	_, err := checkCertified(h, v, false)
+	return err
+}
+
 // Repair re-establishes the catalog choice (device, modelID) after a failed
 // verification. An artifact that is present but fails verification is moved
 // aside (never modified in place), Materialize rebuilds whatever is missing

@@ -603,7 +603,13 @@ func TestAggregateResidents(t *testing.T) {
 	st := func(state string) server.Status {
 		return server.Status{Worker: worker.Snapshot{State: state, Ready: state == worker.StateReady}}
 	}
-	r := func(model, state string) ResidentStatus { return ResidentStatus{Model: model, Status: st(state)} }
+	// A member the supervisor is looping for (ready, starting, restarting) runs;
+	// a stopped or failed one does not.
+	r := func(model, state string) ResidentStatus {
+		running := state == "ready" || state == "starting" || state == "restarting"
+		return ResidentStatus{Model: model, Running: running, Status: st(state)}
+	}
+	neverStarted := func(model string) ResidentStatus { return ResidentStatus{Model: model, Status: st("starting")} }
 	fail := &worker.FailureView{Class: worker.ClassCrash, Message: "boom"}
 	for _, tc := range []struct {
 		name    string
@@ -618,6 +624,10 @@ func TestAggregateResidents(t *testing.T) {
 		{"default stopped, other ready", []ResidentStatus{r("a", "stopped"), r("b", "ready")}, "ready", ""},
 		{"stopped is ignored beside failed", []ResidentStatus{r("a", "stopped"), r("b", "failed")}, "failed", "b"},
 		{"all stopped", []ResidentStatus{r("a", "stopped"), r("b", "stopped")}, "stopped", ""},
+		// A set started member by member (a restored resident set) has members that
+		// were never started; they are not "starting".
+		{"never started is ignored", []ResidentStatus{r("a", "ready"), neverStarted("b")}, "ready", ""},
+		{"never started beside a loading member", []ResidentStatus{neverStarted("a"), r("b", "starting")}, "starting", "b"},
 	} {
 		tc.rs[len(tc.rs)-1].Status.Worker.LastFailure = fail
 		got, culprit := aggregateResidents(tc.rs[0].Status, tc.rs)
