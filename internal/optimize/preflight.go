@@ -3,7 +3,9 @@ package optimize
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -78,10 +80,97 @@ func Preflight(ctx context.Context, h home.Home, req PreflightRequest, deps Pref
 	obs.Phase(setup.PhasePreflight)
 	rep := setup.NewPreflightReport(req.Kind, req.Model, now())
 	rep.Recipe, rep.Variant, rep.Device = req.Recipe, req.Variant, req.Device
+	// The identities are bound before anything is inspected: the findings
+	// are conclusions about exactly these.
+	b := PreflightBindingOf(h, req)
+	rep.Binding = &b
 	p := &preflight{ctx: ctx, h: h, req: req, host: host, accel: probeAccel, obs: obs, rep: rep}
 	p.run()
 	rep.NotMeasured = append(rep.NotMeasured, "network reachability and remote object sizes (the preflight performs no network access)")
 	return *rep
+}
+
+// PreflightBindingOf derives the binding of the preflight target req from the
+// authorities as they are now: the catalog model and its pinned identity, the
+// materialized source manifest, the variant manifest, the recipe, the Runtime
+// Spec of the operation's runtime and its materialized manifest, the device
+// and the reference dtype. It reads manifests only and never hashes an
+// artifact. A part that does not resolve is left empty, so a report whose
+// target resolved differently then and now never matches.
+//
+// Preflight records it in the report; a reader recomputes it for the report's
+// own target (PreflightRequestOf) and the report is current only while both
+// are equal.
+func PreflightBindingOf(h home.Home, req PreflightRequest) setup.PreflightBinding {
+	b := setup.PreflightBinding{Kind: req.Kind, Device: req.Device}
+	if req.Kind == setup.PreflightCertify {
+		b.ReferenceDType = req.ReferenceDType
+	}
+	var m home.ModelManifest
+	resolved := false
+	switch req.Kind {
+	case setup.PreflightProbe, setup.PreflightCertify:
+		b.Variant = req.Variant
+		if mm, v, err := setup.FindVariant(h, req.Variant); err == nil {
+			m, resolved = mm, true
+			b.VariantManifestSHA256, b.Recipe, b.RecipeSHA256 = v.ManifestSHA256(), v.Recipe.Name, v.RecipeSHA256
+		}
+	default:
+		b.Model = req.Model
+		if mm, err := setup.LookupModel(req.Model); err == nil {
+			m, resolved = mm, true
+		}
+	}
+	if resolved {
+		src := home.SourceOf(m)
+		b.Model, b.Provider, b.SourceRepo, b.SourceRevision, b.SourceFilesSHA256 = src.ID, src.Provider, src.Repo, src.Revision, src.FilesSHA256
+		b.SourceManifestSHA256 = manifestDigest(h.Path("models", filepath.FromSlash(setup.ModelDirName(m)), "hachidori-model.json"))
+		if req.Kind == setup.PreflightOptimize {
+			b.Recipe = req.Recipe
+			if r, err := LookupRecipe(m.ID, req.Recipe); err == nil {
+				b.Recipe, b.RecipeSHA256 = r.Name, r.SHA256()
+			}
+		}
+	}
+	var spec home.RuntimeSpec
+	var err error
+	switch {
+	case req.Kind == setup.PreflightOptimize:
+		spec, err = setup.DesiredOptimizer()
+	case req.Device != "":
+		spec, err = setup.Desired(req.Device)
+	default:
+		return b
+	}
+	if err == nil {
+		b.Runtime = spec.ID()
+		b.RuntimeManifestSHA256 = manifestDigest(h.Path("runtime", spec.ID(), "manifest.json"))
+	}
+	return b
+}
+
+// PreflightRequestOf is the target a recorded report was requested for: what
+// PreflightBindingOf is recomputed from when the report is read back.
+func PreflightRequestOf(r setup.PreflightReport) PreflightRequest {
+	req := PreflightRequest{Kind: r.Kind, Model: r.Model, Recipe: r.Recipe, Variant: r.Variant, Device: r.Device}
+	if r.Binding != nil {
+		req.ReferenceDType = r.Binding.ReferenceDType
+	}
+	return req
+}
+
+// manifestDigest is the SHA-256 of a manifest file, "" when it does not exist
+// and a marker that matches no digest when it cannot be read.
+func manifestDigest(path string) string {
+	d, err := setup.FileSHA256(path)
+	switch {
+	case err == nil:
+		return d
+	case errors.Is(err, fs.ErrNotExist):
+		return ""
+	default:
+		return "unreadable"
+	}
 }
 
 // RequirePreflight runs Preflight and refuses the operation with a
@@ -190,16 +279,26 @@ func (p *preflight) sourceIdentity() {
 	m := p.model
 	p.srcDir = p.h.Path("models", filepath.FromSlash(setup.ModelDirName(m)))
 	facts := map[string]any{"model": m.ID, "provider": m.Provider, "repo": m.Repo, "revision": m.Revision, "files": len(m.Files)}
+	cond, err := setup.InspectSource(p.srcDir, m)
+	facts["condition"] = string(cond)
 	if p.req.Kind == setup.PreflightMaterialize {
-		if _, err := os.Stat(filepath.Join(p.srcDir, "hachidori-model.json")); err == nil {
-			p.add("source.manifest", setup.AreaIdentity, setup.FindingPass, "the pinned source is already materialized; materialization verifies and reuses it", facts)
-		} else {
+		// Materialization downloads an absent source, and verifies and
+		// reuses a present one, failing on a present one that does not
+		// verify. A present source is therefore checked as strictly as for
+		// any other operation: what would make materialization fail is a
+		// blocker now, not a pass because a manifest file exists.
+		switch cond {
+		case setup.SourceAbsent:
 			p.add("source.manifest", setup.AreaIdentity, setup.FindingPass,
 				fmt.Sprintf("catalog model %s pins %s@%s with %d files; it is not materialized yet", m.ID, m.Repo, m.Revision[:12], len(m.Files)), facts)
+			return
+		case setup.SourcePresent:
+		default:
+			p.add("source.manifest", setup.AreaIdentity, setup.FindingBlocker,
+				fmt.Sprintf("a source of %s exists but is not the pinned catalog model (%s: %v); materialization would refuse to reuse it; Repair (Settings, Models & runtimes) rebuilds it", m.ID, cond, err), facts)
+			return
 		}
-		return
-	}
-	if err := setup.PresentModel(p.srcDir, m); err != nil {
+	} else if err != nil {
 		p.add("source.manifest", setup.AreaIdentity, setup.FindingBlocker,
 			fmt.Sprintf("source %s is not materialized as the pinned catalog model: %v (materialize it with `hachidori setup --model %s`)", m.ID, err, m.ID), facts)
 		return

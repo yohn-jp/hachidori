@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/diagnostics"
 	"github.com/yohn-jp/hachidori/internal/home"
@@ -285,5 +286,92 @@ func TestMaterializeProgressCarriesResumedBytes(t *testing.T) {
 	close(gate)
 	if s := waitIdle(t, c); s.Maintenance.Failure != nil {
 		t.Fatalf("failure %+v", s.Maintenance.Failure)
+	}
+}
+
+// recordFailure records the diagnostic of a failed operation f and loads it.
+func recordFailure(t *testing.T, h home.Home, f ForgeFailure) diagnostics.ForgeDiagnostic {
+	t.Helper()
+	id, err := RecordForgeFailure(h.Root, f, errors.New("the operation failed"))
+	if err != nil || id == "" {
+		t.Fatalf("recording: %v", err)
+	}
+	return diagOf(t, h, id)
+}
+
+// A failed operation's diagnostic carries the preflight of exactly its target
+// or none: a report of another device, recipe, variant, model or operation
+// kind is never attached, nor a stale or legacy one of the same target.
+func TestFailureDiagnosticAttachesOnlyTheExactTargetPreflight(t *testing.T) {
+	h, v := forgeHome(t)
+	at := time.Unix(100, 0)
+	// Evidence on record: a cpu probe of v, a cpu certify preflight of v, an
+	// optimize preflight of an unknown recipe, a cpu materialize preflight.
+	recordPreflight(t, h, optimize.PreflightRequest{Kind: setup.PreflightProbe, Variant: v.ID, Device: "cpu", Quick: true}, at)
+	recordPreflight(t, h, optimize.PreflightRequest{Kind: setup.PreflightCertify, Variant: v.ID, Device: "cpu", Quick: true}, at)
+	recordPreflight(t, h, optimize.PreflightRequest{Kind: setup.PreflightOptimize, Model: setup.ClefFlash, Recipe: "clef-flash-other-recipe", Quick: true}, at)
+	recordPreflight(t, h, optimize.PreflightRequest{Kind: setup.PreflightMaterialize, Model: setup.ClefFlash, Device: "cpu", Quick: true}, at)
+
+	for name, f := range map[string]ForgeFailure{
+		"cuda probe failure, cpu probe preflight":       {Kind: OpProbe, Variant: v.ID, Device: "cuda"},
+		"probe of another variant":                      {Kind: OpProbe, Variant: "clef-flash--other--000000000000", Device: "cpu"},
+		"optimize with recipe A, preflight of recipe B": {Kind: OpOptimize, Model: setup.ClefFlash, Recipe: optimize.RecipeClefFlashW4A16},
+		"optimize with an unresolvable recipe":          {Kind: OpOptimize, Model: setup.ClefFlash, Recipe: "clef-flash-other-recipe"},
+		"materialize of another model":                  {Kind: OpMaterialize, Model: setup.DefaultModel, Device: "cpu"},
+		"cuda materialize, cpu materialize preflight":   {Kind: OpMaterialize, Model: setup.ClefFlash, Device: "cuda"},
+		"repair attaches no preflight":                  {Kind: OpRepair, Model: setup.ClefFlash, Device: "cpu"},
+		"certify without a device":                      {Kind: OpCertify, Variant: v.ID},
+	} {
+		if d := recordFailure(t, h, f); d.Preflight != nil {
+			t.Errorf("%s: attached %+v", name, d.Preflight)
+		}
+	}
+
+	// The exact targets get exactly their report.
+	for name, tc := range map[string]struct {
+		f    ForgeFailure
+		kind string
+	}{
+		"cpu probe":                       {ForgeFailure{Kind: OpProbe, Variant: v.ID, Device: "cpu"}, setup.PreflightProbe},
+		"cpu materialize":                 {ForgeFailure{Kind: OpMaterialize, Model: setup.ClefFlash, Device: "cpu"}, setup.PreflightMaterialize},
+		"cpu setup maps to materialize":   {ForgeFailure{Kind: OpSetup, Model: setup.ClefFlash, Device: "cpu"}, setup.PreflightMaterialize},
+		"probe and certify stay separate": {ForgeFailure{Kind: OpProbe, Variant: v.ID, Device: "cpu"}, setup.PreflightProbe},
+	} {
+		d := recordFailure(t, h, tc.f)
+		p := d.Preflight
+		if p == nil || p.Kind != tc.kind || p.Evidence != setup.EvidenceCurrent || p.Device != tc.f.Device || p.Model != setup.ClefFlash || p.Variant != tc.f.Variant {
+			t.Errorf("%s: preflight %+v", name, p)
+		}
+	}
+
+	// The optimize report of the exact recipe is attached; another one's is not.
+	recordPreflight(t, h, optimize.PreflightRequest{Kind: setup.PreflightOptimize, Model: setup.ClefFlash, Recipe: optimize.RecipeClefFlashW4A16, Quick: true}, at)
+	d := recordFailure(t, h, ForgeFailure{Kind: OpOptimize, Model: setup.ClefFlash, Recipe: optimize.RecipeClefFlashW4A16})
+	if p := d.Preflight; p == nil || p.Kind != setup.PreflightOptimize || p.Recipe != optimize.RecipeClefFlashW4A16 || p.Device != "" {
+		t.Fatalf("optimize preflight %+v", p)
+	}
+
+	// A stale report of the exact target is not attached: the runtime it was
+	// bound to has changed.
+	spec, _ := setup.Desired("cpu")
+	path := h.Path("runtime", spec.ID(), "manifest.json")
+	var rm home.RuntimeManifest
+	home.ReadJSON(path, &rm)
+	rm.PythonVersion += "+rebuilt"
+	home.WriteJSON(path, rm)
+	if d := recordFailure(t, h, ForgeFailure{Kind: OpProbe, Variant: v.ID, Device: "cpu"}); d.Preflight != nil {
+		t.Fatalf("a stale preflight was attached: %+v", d.Preflight)
+	}
+}
+
+// A variant that does not resolve names no source: the diagnostic does not
+// assume the default model and attaches no preflight.
+func TestUnresolvedVariantDiagnosticAssumesNoModel(t *testing.T) {
+	h, _ := forgeHome(t)
+	recordPreflight(t, h, optimize.PreflightRequest{Kind: setup.PreflightMaterialize, Model: setup.ClefFlash, Device: "cpu", Quick: true}, time.Unix(100, 0))
+	d := recordFailure(t, h, ForgeFailure{Kind: OpProbe, Variant: "clef-flash--other--000000000000", Device: "cpu"})
+	if d.Identity.Model != "" || d.Identity.Variant != "clef-flash--other--000000000000" || d.Preflight != nil ||
+		!strings.Contains(strings.Join(d.Secondary, " "), "variant") {
+		t.Fatalf("diagnostic identity %+v preflight %+v secondary %v", d.Identity, d.Preflight, d.Secondary)
 	}
 }

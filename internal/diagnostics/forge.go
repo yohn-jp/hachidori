@@ -174,11 +174,18 @@ type ForgeFinding struct {
 	Summary string `json:"summary"`
 }
 
-// ForgePreflight is the latest preflight of the target, if there was one.
+// ForgePreflight is the latest current preflight of exactly the failed
+// operation's target, if there was one: the target it was bound to and its
+// evidence state are recorded with it.
 type ForgePreflight struct {
 	Kind     string         `json:"kind"`
 	Outcome  string         `json:"outcome"`
 	At       string         `json:"at"`
+	Evidence string         `json:"evidence,omitempty"`
+	Model    string         `json:"model,omitempty"`
+	Variant  string         `json:"variant,omitempty"`
+	Recipe   string         `json:"recipe,omitempty"`
+	Device   string         `json:"device,omitempty"`
 	Findings []ForgeFinding `json:"findings"` // everything that is not a pass
 }
 
@@ -247,7 +254,9 @@ func BuildForge(in ForgeInput, root string, now time.Time) ForgeDiagnostic {
 		d.Certification = &c
 	}
 	if in.Preflight != nil {
-		p := ForgePreflight{Kind: line(in.Preflight.Kind, 32), Outcome: line(in.Preflight.Outcome, 32), At: line(in.Preflight.At, 64), Findings: []ForgeFinding{}}
+		p := ForgePreflight{Kind: line(in.Preflight.Kind, 32), Outcome: line(in.Preflight.Outcome, 32), At: line(in.Preflight.At, 64),
+			Evidence: line(in.Preflight.Evidence, 32), Model: line(in.Preflight.Model, 128), Variant: line(in.Preflight.Variant, 128),
+			Recipe: line(in.Preflight.Recipe, 128), Device: line(in.Preflight.Device, 32), Findings: []ForgeFinding{}}
 		for _, f := range in.Preflight.Findings {
 			if len(p.Findings) == maxForgeFindings {
 				break

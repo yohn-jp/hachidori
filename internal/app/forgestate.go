@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/diagnostics"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/setup"
 )
 
@@ -21,14 +23,14 @@ import (
 
 func forgeDir(h home.Home, kind string) string { return h.Path("state", "forge", kind) }
 
-// preflightName names the latest-preflight record of a target.
+// preflightName names the latest-preflight record of a target: its kind,
+// model, variant, requested recipe and device.
 func preflightName(r setup.PreflightReport) string {
 	parts := []string{r.Kind, r.Model}
-	if r.Variant != "" {
-		parts = append(parts, r.Variant)
-	}
-	if r.Device != "" {
-		parts = append(parts, r.Device)
+	for _, p := range []string{r.Variant, r.Recipe, r.Device} {
+		if p != "" {
+			parts = append(parts, p)
+		}
 	}
 	return safeName(strings.Join(parts, "--")) + ".json"
 }
@@ -57,24 +59,91 @@ func SavePreflight(h home.Home, r setup.PreflightReport) error {
 	return home.WriteFileAtomic(filepath.Join(dir, preflightName(r)), append(b, '\n'), 0o644)
 }
 
-// LatestPreflight returns the most recently recorded preflight report that
-// matches kind (and model, variant when given), or false.
-func LatestPreflight(h home.Home, kind, model, variant string) (setup.PreflightReport, bool) {
-	var best setup.PreflightReport
-	found := false
-	for _, f := range readDirJSON(forgeDir(h, "preflight")) {
+// RecordedPreflight is a recorded preflight report together with what it is
+// worth now: Evidence is setup.EvidenceCurrent only while the identities the
+// report was bound to are still the identities of its target; Stale names the
+// ones that changed. A report that is not current is history, never the
+// readiness of its target.
+type RecordedPreflight struct {
+	setup.PreflightReport
+	Evidence string   `json:"evidence"`
+	Stale    []string `json:"stale,omitempty"`
+}
+
+// Current reports whether the report is current evidence about its target.
+func (r RecordedPreflight) Current() bool { return r.Evidence == setup.EvidenceCurrent }
+
+// judgePreflight compares a recorded report's binding with the binding its
+// target has now (recomputed from the same authorities Preflight used).
+func judgePreflight(h home.Home, r setup.PreflightReport) RecordedPreflight {
+	out := RecordedPreflight{PreflightReport: r}
+	if r.Schema != setup.PreflightSchema || r.Binding == nil {
+		out.Evidence = setup.EvidenceLegacy
+		return out
+	}
+	cur := optimize.PreflightBindingOf(h, optimize.PreflightRequestOf(r))
+	if out.Stale = r.Binding.Mismatch(cur); len(out.Stale) > 0 {
+		out.Evidence = setup.EvidenceStale
+		return out
+	}
+	out.Evidence = setup.EvidenceCurrent
+	return out
+}
+
+// readPreflights reads every recorded preflight report, current schema or
+// legacy, and judges each.
+func readPreflights(h home.Home) []RecordedPreflight {
+	var out []RecordedPreflight
+	for _, b := range readDirJSON(forgeDir(h, "preflight")) {
 		var r setup.PreflightReport
-		if json.Unmarshal(f, &r) != nil || r.Schema != setup.PreflightSchema {
+		if json.Unmarshal(b, &r) != nil || (r.Schema != setup.PreflightSchema && r.Schema != setup.LegacyPreflightSchema) {
 			continue
 		}
-		if (kind != "" && r.Kind != kind) || (model != "" && r.Model != model) || (variant != "" && r.Variant != variant) {
+		out = append(out, judgePreflight(h, r))
+	}
+	return out
+}
+
+// PreflightTarget is the exact target of an operation as a preflight binds
+// it: every field must equal the report's binding, an empty field included.
+// Model and Recipe are resolved identities (the catalog model, the recipe
+// name), never a default to be filled in.
+type PreflightTarget struct {
+	Kind, Model, Variant, Recipe, Device string
+}
+
+func (t PreflightTarget) matches(b setup.PreflightBinding) bool {
+	return b.Kind == t.Kind && b.Model == t.Model && b.Variant == t.Variant && b.Recipe == t.Recipe && b.Device == t.Device
+}
+
+// LatestPreflight returns the most recent preflight report of exactly target
+// that is current evidence, or false. A report of another kind, model,
+// variant, recipe or device, a legacy report and a stale report are never
+// returned; nor is any report when the latest cannot be determined (two
+// reports of the target recorded at the same instant).
+func LatestPreflight(h home.Home, target PreflightTarget) (RecordedPreflight, bool) {
+	var best RecordedPreflight
+	var bestAt time.Time
+	found, tied := false, false
+	for _, r := range readPreflights(h) {
+		if r.Binding == nil || !target.matches(*r.Binding) || !r.Current() {
 			continue
 		}
-		if !found || r.CreatedAt > best.CreatedAt {
-			best, found = r, true
+		at, err := time.Parse(time.RFC3339Nano, r.CreatedAt)
+		if err != nil {
+			continue
+		}
+		switch {
+		case !found || at.After(bestAt):
+			best, bestAt, found, tied = r, at, true, false
+		case at.Equal(bestAt):
+			tied = true
 		}
 	}
-	return best, found
+	if !found || tied {
+		return RecordedPreflight{}, false
+	}
+	return best, true
 }
 
 // SaveProbe records a probe as the latest of its variant and device.
@@ -137,11 +206,12 @@ func statSize(dir, rel string) (uint64, error) {
 }
 
 // ForgeState is what the home records about the Forge readiness operations:
-// the latest preflight per target, the latest probe per variant and device,
-// and the newest failure diagnostics. The desktop and the CLI read it from
+// the latest preflight per target with what it is worth now (current, stale
+// or legacy), the latest probe per variant and device, and the newest failure
+// diagnostics. The desktop and the CLI read it from
 // here; nothing in it is kept by a front end.
 type ForgeState struct {
-	Preflights  []setup.PreflightReport    `json:"preflights"`
+	Preflights  []RecordedPreflight        `json:"preflights"`
 	Probes      []ProbeRecord              `json:"probes"`
 	Diagnostics []diagnostics.ForgeSummary `json:"diagnostics"`
 }
@@ -151,13 +221,8 @@ const maxForgeListed = 8
 
 // ReadForgeState reads the Forge records of the home. It only reads.
 func ReadForgeState(h home.Home) ForgeState {
-	st := ForgeState{Preflights: []setup.PreflightReport{}, Probes: []ProbeRecord{}, Diagnostics: []diagnostics.ForgeSummary{}}
-	for _, b := range readDirJSON(forgeDir(h, "preflight")) {
-		var r setup.PreflightReport
-		if json.Unmarshal(b, &r) == nil && r.Schema == setup.PreflightSchema {
-			st.Preflights = append(st.Preflights, r)
-		}
-	}
+	st := ForgeState{Preflights: []RecordedPreflight{}, Probes: []ProbeRecord{}, Diagnostics: []diagnostics.ForgeSummary{}}
+	st.Preflights = append(st.Preflights, readPreflights(h)...)
 	sort.SliceStable(st.Preflights, func(i, j int) bool { return st.Preflights[i].CreatedAt > st.Preflights[j].CreatedAt })
 	for _, b := range readDirJSON(forgeDir(h, "probe")) {
 		var r ProbeRecord
@@ -186,7 +251,7 @@ func (c *Controller) Forge() ForgeState {
 	root := c.home
 	c.mu.Unlock()
 	if root == "" {
-		return ForgeState{Preflights: []setup.PreflightReport{}, Probes: []ProbeRecord{}, Diagnostics: []diagnostics.ForgeSummary{}}
+		return ForgeState{Preflights: []RecordedPreflight{}, Probes: []ProbeRecord{}, Diagnostics: []diagnostics.ForgeSummary{}}
 	}
 	return ReadForgeState(home.Home{Root: root})
 }

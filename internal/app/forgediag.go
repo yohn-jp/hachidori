@@ -39,6 +39,20 @@ type ForgeFailure struct {
 	Certify *CertifyParams
 }
 
+// forgePreflightKind maps a Forge operation to the preflight kind that gates
+// exactly its target. Setup materializes the same runtime and source a
+// materialize preflight checks (and then activates), so it maps to it. Repair
+// rebuilds an artifact that already failed verification; no preflight gates
+// that, so it deliberately maps to none.
+var forgePreflightKind = map[string]string{
+	OpMaterialize: setup.PreflightMaterialize,
+	OpSetup:       setup.PreflightMaterialize,
+	OpRepair:      "",
+	OpOptimize:    setup.PreflightOptimize,
+	OpProbe:       setup.PreflightProbe,
+	OpCertify:     setup.PreflightCertify,
+}
+
 // IsForgeOperation reports whether a failed operation of this kind and model
 // leaves a Forge diagnostic: materialization of a System One source,
 // optimization, probe and certification.
@@ -150,12 +164,18 @@ func collectForge(root string, f ForgeFailure, cause error) (in diagnostics.Forg
 	// Identity: the pinned source, the variant and the runtime.
 	var model home.ModelManifest
 	var haveModel bool
+	// target is the exact preflight target of the operation; it stays
+	// unresolved (and no preflight is attached) unless every identity of it
+	// resolved.
+	target := PreflightTarget{Kind: forgePreflightKind[f.Kind], Variant: f.Variant, Device: f.Device}
+	targetOK := target.Kind != ""
 	try("source identity", func() error {
 		id := f.Model
 		if f.Variant != "" {
 			m, v, err := setup.FindVariant(h, f.Variant)
 			if err == nil {
 				model, haveModel = m, true
+				target.Recipe = v.Recipe.Name
 				in.Identity.Variant, in.Identity.VariantManifestSHA256, in.Identity.VariantBuildID = v.ID, v.ManifestSHA256(), v.BuildID
 				in.Optimization = optimizationOf(v.Recipe, v.Optimizer.Engine, v.Optimizer.Version)
 				in.Runtime.Quantization, in.Runtime.DType = v.Weights.Scheme, v.Weights.DType
@@ -164,8 +184,11 @@ func collectForge(root string, f ForgeFailure, cause error) (in diagnostics.Forg
 				in.Runtime.Torch = v.Optimizer.Versions["torch"]
 				in.Identity.Variant = v.ID
 			} else {
+				// The variant names its source; without it the source is
+				// not known and no other model is assumed.
 				in.Identity.Variant = f.Variant
-				secondary = append(secondary, "variant: "+err.Error())
+				targetOK = false
+				return fmt.Errorf("variant: %w", err)
 			}
 		}
 		if !haveModel {
@@ -178,19 +201,31 @@ func collectForge(root string, f ForgeFailure, cause error) (in diagnostics.Forg
 		src := home.SourceOf(model)
 		in.Identity.Model, in.Identity.Provider, in.Identity.SourceRepo = model.ID, model.Provider, model.Repo
 		in.Identity.SourceRevision, in.Identity.SourceFilesSHA256 = model.Revision, src.FilesSHA256
+		target.Model = model.ID
 		return nil
 	})
-	if f.Variant == "" && f.Recipe != "" && haveModel {
+	if !haveModel {
+		targetOK = false
+	}
+	if f.Kind == OpOptimize {
+		// An optimization's target includes the recipe it applies, resolved
+		// as the build resolves it.
+		targetOK = targetOK && f.Variant == ""
+	}
+	if f.Kind == OpOptimize && f.Variant == "" && haveModel {
+		resolved := false
 		try("recipe", func() error {
 			r, err := optimize.LookupRecipe(model.ID, f.Recipe)
 			if err != nil {
 				return err
 			}
+			resolved, target.Recipe = true, r.Name
 			in.Optimization = optimizationOf(r, r.Engine, setup.OptimizerEngineVersion)
 			in.Runtime.Quantization = r.Scheme
 			in.Runtime.CompressionBackend, in.Runtime.CompressionVersion = r.Engine, setup.OptimizerEngineVersion
 			return nil
 		})
+		targetOK = targetOK && resolved
 	}
 
 	// Runtime: the versions the runtime manifest verified at materialization.
@@ -299,24 +334,26 @@ func collectForge(root string, f ForgeFailure, cause error) (in diagnostics.Forg
 		})
 	}
 
-	// Preflight: the latest readiness report for this target.
-	try("preflight", func() error {
-		kind := map[string]string{OpOptimize: setup.PreflightOptimize, OpProbe: setup.PreflightProbe, OpCertify: setup.PreflightCertify,
-			OpMaterialize: setup.PreflightMaterialize}[f.Kind]
-		if kind == "" {
-			return nil
-		}
-		if r, ok := LatestPreflight(h, kind, in.Identity.Model, f.Variant); ok {
-			p := &diagnostics.ForgePreflight{Kind: r.Kind, Outcome: r.Outcome, At: r.CreatedAt}
+	// Preflight: the latest current readiness report of exactly this target
+	// (kind, model, variant, recipe and device), or none. Evidence about
+	// another target, a stale report and a legacy report are never attached.
+	if targetOK {
+		try("preflight", func() error {
+			r, ok := LatestPreflight(h, target)
+			if !ok {
+				return nil
+			}
+			p := &diagnostics.ForgePreflight{Kind: r.Kind, Outcome: r.Outcome, At: r.CreatedAt, Evidence: r.Evidence,
+				Model: r.Binding.Model, Variant: r.Binding.Variant, Recipe: r.Binding.Recipe, Device: r.Binding.Device}
 			for _, fd := range r.Findings {
 				if fd.Status != setup.FindingPass {
 					p.Findings = append(p.Findings, diagnostics.ForgeFinding{ID: fd.ID, Status: string(fd.Status), Summary: fd.Summary})
 				}
 			}
 			in.Preflight = p
-		}
-		return nil
-	})
+			return nil
+		})
+	}
 
 	// Evidence: the worker's stderr tail from the error chain, and the tail of
 	// this operation's own log section.
