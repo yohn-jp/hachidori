@@ -1,0 +1,100 @@
+package setup
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/yohn-jp/hachidori/internal/home"
+)
+
+// OptimizerRuntime is a verified, materialized optimizer runtime: the separate
+// environment that builds System One variants.
+type OptimizerRuntime struct {
+	ID       string
+	Dir      string
+	Python   string // absolute path of its private interpreter
+	Script   string // absolute path of hachidori_optimizer.py
+	Manifest home.RuntimeManifest
+}
+
+// Env is the complete environment for an optimizer process. The optimizer
+// never needs the network: the source it transforms is already materialized
+// and verified, so it is always offline.
+func (o OptimizerRuntime) Env(h home.Home) []string { return h.Env(filepath.Dir(o.Python), true) }
+
+// FindOptimizer returns the optimizer runtime if it is already materialized,
+// checking its manifest identity (not re-verifying its packages). It never
+// materializes anything and never touches the network.
+func FindOptimizer(h home.Home) (OptimizerRuntime, error) {
+	spec, err := DesiredOptimizer()
+	if err != nil {
+		return OptimizerRuntime{}, err
+	}
+	dir := h.Path("runtime", spec.ID())
+	var m home.RuntimeManifest
+	if err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &m); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return OptimizerRuntime{}, fmt.Errorf("the optimizer runtime %s is not materialized (run `hachidori variant optimize`, which materializes it, or `hachidori variant prepare`)", spec.ID())
+		}
+		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: %w", spec.ID(), err)
+	}
+	if m.Identity != spec.ID() || m.Spec != spec {
+		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: manifest identity does not match its Runtime Spec", spec.ID())
+	}
+	rt := OptimizerRuntime{ID: spec.ID(), Dir: dir, Python: filepath.Join(dir, filepath.FromSlash(m.PythonRelPath)), Manifest: m,
+		Script: filepath.Join(dir, filepath.FromSlash(kindOf(spec).scriptRel))}
+	if got, err := FileSHA256(rt.Script); err != nil || got != spec.Worker {
+		return rt, fmt.Errorf("optimizer runtime %s: optimizer script does not match its pinned digest", spec.ID())
+	}
+	return rt, nil
+}
+
+// EnsureOptimizer materializes the optimizer runtime if it is not present,
+// through the same staged, verified and atomically published path as the
+// serving runtime, and returns it. This is the one place the optimizer's
+// network access happens (the private uv installs the locked packages);
+// optimization itself is offline. An existing runtime is verified and reused,
+// never modified in place.
+func EnsureOptimizer(h home.Home, log io.Writer, obs *Observer) (OptimizerRuntime, error) {
+	obs.phase(PhasePreparing)
+	spec, err := DesiredOptimizer()
+	if err != nil {
+		return OptimizerRuntime{}, err
+	}
+	if err := h.Ensure(); err != nil {
+		return OptimizerRuntime{}, err
+	}
+	final := h.Path("runtime", spec.ID())
+	if _, err := os.Stat(final); err == nil {
+		obs.step(StepVerify, "optimizer runtime "+spec.ID())
+		if err := verifyPublished(h, final, spec); err != nil {
+			return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s exists but failed verification; it is never modified in place (remove %s to rematerialize): %w", spec.ID(), final, err)
+		}
+		return FindOptimizer(h)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return OptimizerRuntime{}, err
+	}
+	uv, err := ensureUV(h, log, obs)
+	if err != nil {
+		return OptimizerRuntime{}, fmt.Errorf("private uv: %w", err)
+	}
+	obs.phase(PhaseRuntime)
+	stage, err := materializeRuntime(h, uv, spec, log, obs)
+	if err != nil {
+		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: %w", spec.ID(), err)
+	}
+	obs.phase(PhasePublish)
+	obs.step(StepPublish, "optimizer runtime "+spec.ID())
+	if err := os.Rename(stage, final); err != nil {
+		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: publish: %w", spec.ID(), err)
+	}
+	obs.step(StepVerify, "published optimizer runtime "+spec.ID())
+	if err := verifyPublished(h, final, spec); err != nil {
+		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: published runtime failed verification: %w", spec.ID(), err)
+	}
+	fmt.Fprintf(log, "optimizer runtime %s published\n", spec.ID())
+	return FindOptimizer(h)
+}

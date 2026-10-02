@@ -424,6 +424,7 @@ func TestOpenAPISchemasMatchGoTypes(t *testing.T) {
 		{"Health", reflect.TypeFor[api.Health](), nil},
 		{"Status", reflect.TypeFor[Status](), nil},
 		{"Runtime", reflect.TypeFor[Runtime](), nil},
+		{"Variant", reflect.TypeFor[Variant](), nil},
 		{"Served", reflect.TypeFor[api.Served](), nil},
 		{"ResidentStatus", reflect.TypeFor[ResidentStatus](), nil},
 		{"Worker", reflect.TypeFor[worker.Snapshot](), nil},

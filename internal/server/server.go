@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/redact"
 	"github.com/yohn-jp/hachidori/internal/route"
@@ -66,12 +67,45 @@ type Residents interface {
 }
 
 // Runtime describes the active runtime for status.
+//
+// ModelID is always the semantic source model identity. When the resident
+// executes a derived variant, Variant says which one and how it is quantized;
+// it is execution provenance, never a different model identity, and it is
+// absent for the upstream source artifact.
 type Runtime struct {
-	Home    string `json:"home"`
-	Runtime string `json:"runtime"`
-	ModelID string `json:"model_id"` // catalog model identity
-	Model   string `json:"model"`    // model directory: <repo>/<revision>
-	Device  string `json:"device"`
+	Home    string   `json:"home"`
+	Runtime string   `json:"runtime"`
+	ModelID string   `json:"model_id"` // catalog model identity
+	Model   string   `json:"model"`    // model directory: <repo>/<revision>
+	Device  string   `json:"device"`
+	Variant *Variant `json:"variant,omitempty"`
+}
+
+// Variant is the identity of the variant a resident executes, from its
+// manifest, with the certification state the activation was admitted under.
+// The device and dtype the worker actually reports are in worker.provider.
+type Variant struct {
+	ID             string `json:"id"`
+	Recipe         string `json:"recipe"`
+	Scheme         string `json:"scheme"`
+	Bits           int    `json:"bits"`
+	DType          string `json:"dtype"` // compute dtype of everything not quantized
+	Format         string `json:"format"`
+	Engine         string `json:"engine"`
+	EngineVersion  string `json:"engine_version"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	// Certification is accepted, or experimental/uncertified for a variant
+	// launched on an explicit operator request without an accepted record.
+	Certification string        `json:"certification"`
+	Source        VariantSource `json:"source"`
+}
+
+// VariantSource is the immutable source identity of a variant.
+type VariantSource struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider"`
+	Repo     string `json:"repo"`
+	Revision string `json:"revision"`
 }
 
 // Handler builds the public HTTP handler.
@@ -377,15 +411,34 @@ func ResidentConfig(h home.Home, modelID string, log io.Writer) (worker.Config, 
 // actually on is always reported by /v1/status (worker.provider.dtype).
 const EnvOpenDeciderDType = "HACHIDORI_OPENDECIDER_DTYPE"
 
-// openDeciderDType resolves EnvOpenDeciderDType for model. An unsupported value
-// is a launch error, never silently replaced by another dtype.
-func openDeciderDType(model home.ModelManifest) (string, error) {
-	v := os.Getenv(EnvOpenDeciderDType)
-	if v == "" || model.Provider != setup.ProviderOpenDecider {
+// EnvClefDType is the explicit control for the dtype of a Clef resident that
+// runs the upstream source model: bfloat16 (the default, what the release
+// ships) or float32, the high-precision reference. It is read at launch, never
+// persisted, and refused for a variant, which executes at the dtype its
+// manifest declares.
+const EnvClefDType = "HACHIDORI_CLEF_DTYPE"
+
+// providerDType resolves the dtype control of model's provider. An unsupported
+// value is a launch error, never silently replaced by another dtype.
+func providerDType(model home.ModelManifest, variant bool) (string, error) {
+	env := ""
+	switch model.Provider {
+	case setup.ProviderOpenDecider:
+		env = EnvOpenDeciderDType
+	case home.ProviderClef:
+		env = EnvClefDType
+	default:
+		return "", nil
+	}
+	v := os.Getenv(env)
+	if v == "" {
 		return "", nil
 	}
 	if v != "float32" && v != "bfloat16" {
-		return "", fmt.Errorf("%s=%q: want float32 or bfloat16", EnvOpenDeciderDType, v)
+		return "", fmt.Errorf("%s=%q: want float32 or bfloat16", env, v)
+	}
+	if variant {
+		return "", fmt.Errorf("%s=%q: a variant executes at the dtype its manifest declares", env, v)
 	}
 	return v, nil
 }
@@ -415,7 +468,17 @@ func workerConfig(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.M
 	modelDir := h.ModelDir(a)
 	args := []string{"-I", "-X", "utf8", script, "--model-dir", modelDir, "--device", a.Device,
 		"--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", model.Provider}
-	dtype, err := openDeciderDType(model)
+	status := Runtime{Home: h.Root, Runtime: a.Runtime, ModelID: model.ID, Model: a.Model, Device: a.Device}
+	variant, err := launchVariant(h, a, rm, model)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	if variant != nil {
+		vdir := h.VariantDir(model.ID, variant.ID)
+		args = append(args, "--variant-dir", vdir, "--variant-manifest", filepath.Join(vdir, home.VariantManifestFile))
+		status.Variant = variant
+	}
+	dtype, err := providerDType(model, variant != nil)
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
 	}
@@ -438,7 +501,45 @@ func workerConfig(h home.Home, a home.Active, rm home.RuntimeManifest, mm home.M
 		// show why and offer the recovery (Materialize, Activate, Restart).
 		Preflight: func() error { return setup.CheckWorkerContract(a, rm) },
 	}
-	return cfg, Runtime{Home: h.Root, Runtime: a.Runtime, ModelID: model.ID, Model: a.Model, Device: a.Device}, nil
+	return cfg, status, nil
+}
+
+// launchVariant resolves the variant an activation record selects and checks
+// everything that must hold at every launch: its manifest and identity, its
+// link to exactly this catalog model, the runtime's provider, and its
+// certification state. Nothing falls back: a record that names a variant that
+// cannot be launched fails the launch with the cause, and the source artifact
+// is never started in its place. The worker verifies every artifact digest
+// before it loads anything.
+func launchVariant(h home.Home, a home.Active, rm home.RuntimeManifest, model home.ModelManifest) (*Variant, error) {
+	v, ok, err := h.LoadVariant(a)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		if a.Experimental {
+			return nil, errors.New("the activation record is marked experimental but names no variant")
+		}
+		return nil, nil
+	}
+	if err := v.CheckSource(model); err != nil {
+		return nil, err
+	}
+	if !rm.Spec.Provides(v.Provider) {
+		return nil, fmt.Errorf("runtime %s does not carry provider %s needed by variant %s (run `hachidori setup`)", a.Runtime, v.Provider, v.ID)
+	}
+	st := eval.ResolveCertification(h, v)
+	cert := st.State
+	switch {
+	case st.State == eval.StateAccepted:
+	case st.State == eval.StateUncertified && a.Experimental:
+		cert = eval.StateExperimental
+	default:
+		return nil, fmt.Errorf("variant %s: certification state is %s; an accepted certification record is required (or an explicit experimental activation of an uncertified variant)", v.ID, st.State)
+	}
+	return &Variant{ID: v.ID, Recipe: v.Recipe.Name, Scheme: v.Weights.Scheme, Bits: v.Weights.Bits, DType: v.Weights.DType,
+		Format: v.Weights.Format, Engine: v.Optimizer.Engine, EngineVersion: v.Optimizer.Version, ManifestSHA256: v.ManifestSHA256(),
+		Certification: cert, Source: VariantSource{ID: v.Source.ID, Provider: v.Source.Provider, Repo: v.Source.Repo, Revision: v.Source.Revision}}, nil
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

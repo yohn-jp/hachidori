@@ -19,7 +19,6 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/subprocess"
-	"github.com/yohn-jp/hachidori/internal/worker/py"
 )
 
 // Run reconciles HACHIDORI_HOME with the desired Runtime Spec for device and
@@ -170,8 +169,9 @@ func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Wr
 	if err := os.MkdirAll(specDir, 0o755); err != nil {
 		return "", err
 	}
+	kind := kindOf(spec)
 	for _, name := range []string{"pyproject.toml", "uv.lock"} {
-		if err := os.WriteFile(filepath.Join(specDir, name), specFile(name), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(specDir, name), kind.file(name), 0o644); err != nil {
 			return "", err
 		}
 	}
@@ -198,7 +198,7 @@ func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Wr
 	if err := os.MkdirAll(filepath.Join(stage, "worker"), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(stage, "worker", "hachidori_worker.py"), py.Script, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(stage, filepath.FromSlash(kind.scriptRel)), kind.script, 0o644); err != nil {
 		return "", err
 	}
 	obs.step(StepVerify, "runtime "+spec.ID())
@@ -209,7 +209,7 @@ func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Wr
 	m := home.RuntimeManifest{
 		Identity: spec.ID(), Spec: spec, PythonVersion: p.Python, PythonRelPath: pythonRelPath(),
 		BasePython: p.BasePrefix, Installed: p.Installed,
-		Worker: map[string]string{"worker/hachidori_worker.py": spec.Worker},
+		Worker: map[string]string{kind.scriptRel: spec.Worker},
 	}
 	// The manifest is written last: its presence marks a complete runtime.
 	if err := home.WriteJSON(filepath.Join(stage, "manifest.json"), m); err != nil {
@@ -253,7 +253,7 @@ print(json.dumps({"python": "%d.%d.%d" % sys.version_info[:3], "prefix": sys.pre
 // its base interpreter live under HACHIDORI_HOME.
 func verifyRuntime(h home.Home, dir string, spec home.RuntimeSpec) (runtimeProbe, error) {
 	var p runtimeProbe
-	if got, err := FileSHA256(filepath.Join(dir, "worker", "hachidori_worker.py")); err != nil || got != spec.Worker {
+	if got, err := FileSHA256(filepath.Join(dir, filepath.FromSlash(kindOf(spec).scriptRel))); err != nil || got != spec.Worker {
 		return p, fmt.Errorf("worker script digest mismatch")
 	}
 	python := filepath.Join(dir, filepath.FromSlash(pythonRelPath()))
@@ -285,7 +285,15 @@ func verifyRuntime(h home.Home, dir string, spec home.RuntimeSpec) (runtimeProbe
 	for _, d := range p.Installed {
 		have[normalizeDist(d)] = true
 	}
-	for _, want := range append(spec.ProviderPins(), "torch=="+spec.Torch) {
+	var required []string
+	for _, pin := range spec.ProviderPins() {
+		if name, _, _ := strings.Cut(pin, "=="); carriedProviders[name] {
+			required = append(required, clefDistributions...)
+			continue
+		}
+		required = append(required, pin)
+	}
+	for _, want := range append(required, "torch=="+spec.Torch) {
 		if !have[normalizeDist(want)] {
 			return p, fmt.Errorf("%s not installed", want)
 		}

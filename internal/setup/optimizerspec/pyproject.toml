@@ -1,35 +1,34 @@
-# Hachidori private runtime environment (Runtime Spec, uv project).
+# Hachidori private optimizer environment (Runtime Spec, uv project).
 #
-# This is not a Python package. It declares the Python/ML environment that
-# `hachidori setup` materializes with its pinned, Hachidori-managed uv:
+# This is not a Python package. It declares the Python/ML environment of the
+# System One optimizer: a bounded, separate environment that `hachidori variant
+# optimize` materializes with Hachidori's pinned private uv, so that the
+# optimizer-only compression stack never enters the serving runtime. It is
+# materialized like the serving runtime:
 #
 #   uv sync --locked --no-build --no-install-project --extra <cpu|cu128>
 #
 # uv.lock next to this file is the locked environment. Both files are embedded
-# in the hachidori executable and are part of the runtime identity. After
-# editing this file, regenerate the lock with the pinned uv version
+# in the hachidori executable and are part of the optimizer runtime identity.
+# After editing this file, regenerate the lock with the pinned uv version
 # (internal/setup/spec.go) and commit both files:
 #
-#   uv lock --directory internal/setup/runtimespec
+#   uv lock --directory internal/setup/optimizerspec
 [project]
-name = "hachidori-runtime"
+name = "hachidori-optimizer"
 version = "1"
 requires-python = "==3.12.11"
 dependencies = [
-  "laya==0.3.21",
-  "opendecider==0.3.0",
+  "llmcompressor==0.14.0",
+  "compressed-tensors==0.19.0",
   "transformers==5.17.0",
+  "accelerate==1.15.0",
   "tokenizers==0.23.2",
   "safetensors==0.8.0",
-  "huggingface_hub==1.33.0",
-  "hf-xet==1.6.0",
   "numpy==2.5.3",
-  "accelerate==1.15.0",
-  "compressed-tensors==0.19.0",
 ]
 
-# PyTorch device flavors. Exactly one is selected per runtime. CUDA 12.8 wheels
-# support RTX 20xx..50xx (Turing..Blackwell) and need an NVIDIA driver >= 570.
+# PyTorch device flavors. Exactly one is selected per runtime.
 [project.optional-dependencies]
 cpu = ["torch==2.11.0+cpu"]
 cu128 = ["torch==2.11.0+cu128"]

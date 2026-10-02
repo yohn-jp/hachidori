@@ -103,7 +103,7 @@ func fakeUV(args []string) int {
 		if ctl.Torch != "" {
 			torch = ctl.Torch
 		}
-		b, _ := json.Marshal([]string{"laya==0.3.21", "opendecider==0.3.0", "numpy==2.5.3", "torch==" + torch})
+		b, _ := json.Marshal([]string{"laya==0.3.21", "opendecider==0.3.0", "numpy==2.5.3", "torch==" + torch, "transformers==5.17.0", "safetensors==0.8.0", "tokenizers==0.23.2", "accelerate==1.15.0", "compressed-tensors==0.19.0"})
 		return writeOr1(filepath.Join(os.Getenv("UV_PROJECT_ENVIRONMENT"), "installed.json"), b)
 	}
 	return 2

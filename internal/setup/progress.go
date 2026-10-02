@@ -19,6 +19,20 @@ const (
 	StepRemove      Step = "removing"      // deleting an unused artifact
 )
 
+// Phases of the optimization and certification operations. Like the setup
+// phases they are reported only when really entered; accepted, completed and
+// failed are the operation's own boundaries and are not phases.
+const (
+	PhaseStarting      Phase = "starting"       // the optimizer process is being launched and importing
+	PhaseLoadingSource Phase = "loading_source" // the pinned source is being loaded
+	PhaseQuantizing    Phase = "quantizing"     // the recipe is being applied
+	PhaseSerializing   Phase = "serializing"    // the transformed model is being written
+	PhaseVerifying     Phase = "verifying"      // artifacts are being digested and checked
+	PhaseLoadingRuns   Phase = "loading_runs"   // reference and candidate runs are being read
+	PhaseComparing     Phase = "comparing"      // the runs are being compared
+	PhaseRecording     Phase = "recording"      // the certification is being written
+)
+
 // Progress is a real report of work inside the current phase. Total is zero
 // when the amount of work is not known: the step is then indeterminate and no
 // percentage may be derived from it. Done and Total count bytes when set.
@@ -63,6 +77,12 @@ func (o *Observer) progress(p Progress) {
 		o.OnProgress(p)
 	}
 }
+
+// Phase and Step are the exported forms of phase and step, for the operations
+// outside this package (optimization, certification) that report through the
+// same observer. Both are no-ops on a nil observer.
+func (o *Observer) Phase(p Phase)              { o.phase(p) }
+func (o *Observer) Step(s Step, detail string) { o.step(s, detail) }
 
 // step reports an indeterminate step: work whose total is not measurable.
 func (o *Observer) step(s Step, detail string) { o.progress(Progress{Step: s, Detail: detail}) }
