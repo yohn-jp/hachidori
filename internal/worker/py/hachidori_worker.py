@@ -1208,21 +1208,27 @@ class ClefProvider(Provider):
                 log("state truncated to the model's %d-token context" % CLEF_MAX_LENGTH)
             encoded.append(record)
         self.batch_profile["encode_ms"] += (time.perf_counter() - start) * 1000
-        out = []
-        # Bound both padded activation size and number of records. Group similar
-        # lengths so an exceptionally long state cannot pad an entire burst.
+        out = [None] * len(encoded)
+        # Execute records in stable encoded-length order so alternating short/long
+        # inputs do not degenerate into one forward per State. Restore caller order
+        # after each bounded model batch.
+        indexed = sorted(enumerate(encoded), key=lambda pair: len(pair[1].input_ids))
         pending = []
-        for record in encoded:
+        for index, record in indexed:
             length = len(record.input_ids)
             if pending and (len(pending) >= 8 or
-                            max(max(len(r.input_ids) for r in pending), length) * (len(pending) + 1) > 8192 or
-                            length > 2 * min(len(r.input_ids) for r in pending) or
-                            2 * length < max(len(r.input_ids) for r in pending)):
-                out.extend(self._predict_batch(pending, torch))
+                            max(max(len(r.input_ids) for _, r in pending), length) * (len(pending) + 1) > 8192 or
+                            length > 2 * min(len(r.input_ids) for _, r in pending) or
+                            2 * length < max(len(r.input_ids) for _, r in pending)):
+                batch = self._predict_batch([r for _, r in pending], torch)
+                for (original, _), result in zip(pending, batch):
+                    out[original] = result
                 pending = []
-            pending.append(record)
+            pending.append((index, record))
         if pending:
-            out.extend(self._predict_batch(pending, torch))
+            batch = self._predict_batch([r for _, r in pending], torch)
+            for (original, _), result in zip(pending, batch):
+                out[original] = result
         return out
 
     def _predict_batch(self, records, torch):

@@ -66,13 +66,15 @@ class ClefBatch(unittest.TestCase):
                 types.SimpleNamespace(question_id='q', option_ids=['a','b'])])
         provider.jsm = types.SimpleNamespace(encode_record=encode,
                      collate_records=lambda records, pad, device: (calls.append(len(records)) or records))
-        provider.model = lambda records: [[Tensor([0.6,0.4])] for _ in records]
-        result = provider.predict(['10','10','100','100'], [])
+        provider.model = lambda records: [[Tensor([0.8,0.2] if len(record.input_ids) < 50 else [0.3,0.7])]
+                                          for record in records]
+        lengths = ['10','100','10','100']
+        result = provider.predict(lengths, [])
         self.assertEqual(calls, [2,2])
         self.assertEqual(len(result),4)
         self.assertEqual(provider.batch_profile['forwards'],2)
-        self.assertEqual(result, [provider.predict([length], [])[0]
-                                  for length in ['10','10','100','100']])
+        self.assertEqual([row['answers']['q']['choice'] for row in result], ['a','b','a','b'])
+        self.assertEqual(result, [provider.predict([length], [])[0] for length in lengths])
         calls.clear()
         provider.predict(['5000','5000'], [])
         self.assertEqual(calls, [1,1])
