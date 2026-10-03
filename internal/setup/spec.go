@@ -60,17 +60,14 @@ const providerPins = providerLaya + "==" + layaVersion + "," + providerOpenDecid
 // materialized runtime that declares the clef provider.
 var clefDistributions = []string{"transformers==5.17.0", "safetensors==0.8.0", "tokenizers==0.23.2", "accelerate==1.15.0", "compressed-tensors==0.19.0"}
 
-// CUDA carries FLA's two serving kernels. The backend distributions expose the
-// same triton module; only the platform-appropriate one may be materialized.
+// Native Windows CUDA carries the FLA serving kernels. Other platforms keep
+// the existing reference path; optimized Clef CUDA serving is not a supported
+// product contract there.
 func clefKernelDistributions(spec home.RuntimeSpec) []string {
-	if spec.Flavor != "cu128" {
+	if spec.Flavor != "cu128" || spec.Platform != "windows/amd64" {
 		return nil
 	}
-	backend := "triton==3.6.0"
-	if spec.Platform == "windows/amd64" {
-		backend = "triton-windows==3.6.0.post26"
-	}
-	return []string{"fla-core==0.5.2", backend}
+	return []string{"fla-core==0.5.2", "triton-windows==3.6.0.post26"}
 }
 
 // carriedProviders are the providers a runtime declares without a package of
