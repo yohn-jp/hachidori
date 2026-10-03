@@ -14,7 +14,8 @@ const (
 	// LevelOK: the runtime is ready.
 	LevelOK Level = iota
 	// LevelBusy: something is in progress (starting, warming, setting up,
-	// stopping) or the runtime is deliberately stopped.
+	// stopping), the runtime is deliberately stopped, or serving is paused
+	// while model engineering uses the accelerator.
 	LevelBusy
 	// LevelAttention: the user has something to fix or read: a failure, no
 	// home selected, or no installed runtime.
@@ -46,6 +47,10 @@ func Summarize(s app.Snapshot) Summary {
 		sum.Label, sum.Level = "Stopping", LevelBusy
 	case app.Installed:
 		sum.Label, sum.Level = "Stopped", LevelBusy
+	case app.Paused:
+		// Serving is intentionally down while Forge or Tuning uses the GPU; the
+		// controller brings it back by itself.
+		sum.Label, sum.Level = "Paused", LevelBusy
 	default: // Failed, Unconfigured, NotInstalled and any unknown state
 		sum.Label, sum.Level = "Needs attention", LevelAttention
 	}
@@ -110,7 +115,7 @@ func BuildMenu(s Summary, p Preferences) []MenuItem {
 // canRestart: restart needs an installed runtime and no setup/stop in flight.
 func canRestart(s Summary) bool {
 	switch s.State {
-	case app.Unconfigured, app.NotInstalled, app.Installing, app.Stopping:
+	case app.Unconfigured, app.NotInstalled, app.Installing, app.Stopping, app.Paused:
 		return false
 	}
 	return true

@@ -217,6 +217,12 @@ func TestDesktopResidentSelectionPersistsAndIsRestoredOnLaunch(t *testing.T) {
 		if len(reads) != 1 || !slices.Equal(reads[0], []string{nanoID}) || !slices.Equal(rts[0].models, []string{layaBase, nanoID}) {
 			t.Errorf("relaunch did not restore the selection: reads %v members %v", reads, rts[0].models)
 		}
+		// Opening the desktop starts nothing; the operator's explicit Start
+		// brings the restored set up, once.
+		if starts, _ := rts[0].counts(); starts != 0 {
+			t.Errorf("opening the desktop started the restored set %d times", starts)
+		}
+		post(t, origin, "/runtime/start", url.Values{})
 		if starts, _ := rts[0].counts(); starts != 1 {
 			t.Errorf("the restored set was started %d times", starts)
 		}
@@ -243,6 +249,7 @@ func TestDesktopResidencyChangeIsPendingDesiredState(t *testing.T) {
 	d.run(t, func(origin string) {
 		_, rts := d.opens()
 		old := rts[0]
+		post(t, origin, "/runtime/start", url.Values{})
 
 		post(t, origin, "/models/residents", url.Values{}) // deselect everything
 		body := page(t, origin, "/models")
@@ -328,6 +335,7 @@ func TestDesktopForgeApplyIsOneControllerAction(t *testing.T) {
 	d.run(t, func(origin string) {
 		_, rts := d.opens()
 		rt := rts[0]
+		post(t, origin, "/runtime/start", url.Values{})
 		post(t, origin, "/forge/apply", url.Values{"variant": {"clef-flash--none--000000000000"}, "model": {setup.ClefFlash}, "device": {"cpu"}, "return": {"forge"}})
 		deadline := time.Now().Add(10 * time.Second)
 		var body string
