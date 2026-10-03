@@ -654,8 +654,14 @@ type certController struct {
 	*leaseEnv
 	e *certEnv
 	// during are the residents as one coherent reading at the probe, the
-	// reference run and the candidate run.
+	// reference run and the candidate run (and the build, in a composed
+	// Forge operation).
 	during map[string]map[string]ResidentStatus
+	// snaps are the controller's own projection at those same points.
+	snaps map[string]Snapshot
+	// at, when set, runs at a named point (probe, build, source, variant)
+	// with the controller, inside the transaction.
+	at map[string]func()
 }
 
 func newCertController(t *testing.T, mutate func(*certEnv)) *certController {
@@ -664,26 +670,38 @@ func newCertController(t *testing.T, mutate func(*certEnv)) *certController {
 	if mutate != nil {
 		mutate(e)
 	}
-	cc := &certController{e: e, during: map[string]map[string]ResidentStatus{}}
+	cc := &certController{e: e, during: map[string]map[string]ResidentStatus{}, snaps: map[string]Snapshot{}, at: map[string]func(){}}
+	var c *Controller
+	observe := func(point string) {
+		cc.during[point] = residentsNow(cc.set)
+		cc.snaps[point] = c.Snapshot()
+		if f := cc.at[point]; f != nil {
+			f()
+		}
+	}
 	a, b := residentMember(t, modelA, "ok"), residentMember(t, modelB, "ok")
 	set := newResidentSet(t, noRestart, a, b)
 	if _, err := set.SetRouting(keepPolicy()); err != nil {
 		t.Fatal(err)
 	}
 	desired := []string{modelB}
-	c := New(Config{Home: e.h.Root, Installed: func(string) bool { return true }, Open: func(string) (Runtime, error) { return set, nil },
+	c = New(Config{Home: e.h.Root, Installed: func(string) bool { return true }, Open: func(string) (Runtime, error) { return set, nil },
 		Residents: func() []string { return desired }, RestoreTimeout: 10 * time.Second,
 		Maintenance: Maintenance{
-			Preflight: e.deps.Preflight,
+			Preflight: buildEvaluateDeps(t, e, nil).Certify.Preflight,
+			Build: func(context.Context, home.Home, optimize.Request, io.Writer, *setup.Observer) (optimize.Result, error) {
+				observe("build")
+				return optimize.Result{Variant: e.v}, nil
+			},
 			Materialize: func(root, device, model string, log io.Writer, obs *setup.Observer) error {
 				return e.deps.Materialize(context.Background(), root, device, model, log, obs)
 			},
 			Probe: func(ctx context.Context, root string, p ProbeParams, log io.Writer, obs *setup.Observer) (ProbeRecord, error) {
-				cc.during["probe"] = residentsNow(set)
+				observe("probe")
 				return e.deps.Probe(ctx, root, p, log, obs)
 			},
 			Execute: func(ctx context.Context, root string, p ExecuteParams, log io.Writer) (ExecutionResult, error) {
-				cc.during[p.Target.Kind] = residentsNow(set)
+				observe(p.Target.Kind)
 				return e.deps.Execute(ctx, root, p, log)
 			},
 		}})
@@ -700,10 +718,10 @@ func newCertController(t *testing.T, mutate func(*certEnv)) *certController {
 	return cc
 }
 
-// 16: through the controller, the probe and the candidate (on the accelerator)
-// run with the serving residents quiesced, the reference (on the cpu) does not
-// disturb them, every resident comes back, and the activation record, the
-// desired residents, the default and the routing policy are unchanged. The
+// 16: through the controller, the probe, the reference and the candidate run
+// with the serving residents quiesced for the whole transaction, every resident
+// comes back, and the activation record, the desired residents, the default and
+// the routing policy are unchanged. The
 // operation reports each real phase and completes.
 func TestCertifyVariantThroughTheControllerLeavesServingStateUntouched(t *testing.T) {
 	cc := newCertController(t, nil)
@@ -719,16 +737,17 @@ func TestCertifyVariantThroughTheControllerLeavesServingStateUntouched(t *testin
 	if !reflect.DeepEqual(m.Phases, fullPhases) || !reflect.DeepEqual(m.Plan, fullPhases) || m.Phase != "persisting" {
 		t.Fatalf("phases %v plan %v phase %q", m.Phases, m.Plan, m.Phase)
 	}
-	for _, step := range []string{"probe", eval.ForgeTargetVariant} {
+	// The certification is one model-engineering transaction: serving is down
+	// at the probe, the cpu reference and the candidate alike (the reference
+	// does not bring it back in the middle), and comes back once at the end.
+	for _, step := range []string{"probe", eval.ForgeTargetSource, eval.ForgeTargetVariant} {
+		if len(cc.during[step]) == 0 {
+			t.Fatalf("%s was never observed", step)
+		}
 		for model, r := range cc.during[step] {
 			if r.Running {
-				t.Fatalf("%s: resident %s was still running on the accelerator", step, model)
+				t.Fatalf("%s: resident %s was running during the transaction", step, model)
 			}
-		}
-	}
-	for model, r := range cc.during[eval.ForgeTargetSource] {
-		if !r.Running {
-			t.Fatalf("the cpu reference stopped resident %s", model)
 		}
 	}
 	bothReady(t, cc.set)

@@ -92,6 +92,10 @@ type Config struct {
 	// SmokeTimeout bounds the one typed-decision smoke of an apply; zero is
 	// 3 minutes.
 	SmokeTimeout time.Duration
+	// Accelerator observes the device capacity under root without a serving
+	// worker and without loading a model (production: the private runtime's
+	// torch, setup.ProbeAccelerator). Tests substitute a fake.
+	Accelerator func(ctx context.Context, root string) (setup.AcceleratorFacts, error)
 }
 
 // Maintenance are the explicit model/runtime operations of the setup/home
@@ -326,6 +330,10 @@ type Snapshot struct {
 	// confused.
 	Recovery        *Recovery `json:"recovery,omitempty"`
 	OperatorStopped bool      `json:"operator_stopped,omitempty"`
+	// Paused is set while model engineering owns the accelerator and has
+	// stopped serving for it. It is the third way for the worker to be down:
+	// distinct from an operator Stop (OperatorStopped) and from a failure.
+	Paused *Pause `json:"paused,omitempty"`
 	// Residents is the status of every member of a bound resident set,
 	// default first (nil for a single worker). State, Failure and Recovery
 	// are projected over all of them: the application is Ready only when
@@ -374,9 +382,18 @@ type Controller struct {
 	// stop, Close) and cleared by the next Start/Restart. It is what
 	// distinguishes an operator Stop from a crash.
 	stopped bool
-	subs    map[int]chan struct{}
-	nextID  int
-	seq     int // operations begun; part of an operation's ID
+	// eng is the model-engineering ownership of the accelerator while an
+	// operation holds it (engineering.go).
+	eng    *engineering
+	subs   map[int]chan struct{}
+	nextID int
+	seq    int // operations begun; part of an operation's ID
+
+	// accel is the device capacity observed without a worker (device.go).
+	accel accelCache
+	// bg ends the controller's own background observations on Close.
+	bg     context.Context
+	stopBg context.CancelFunc
 }
 
 // New creates a controller. It starts nothing.
@@ -392,8 +409,12 @@ func New(cfg Config) *Controller {
 			return err == nil
 		}
 	}
+	if cfg.Accelerator == nil {
+		cfg.Accelerator = observeAccelerator
+	}
 	cfg.Maintenance = cfg.Maintenance.withDefaults()
-	return &Controller{cfg: cfg, home: cleanHome(cfg.Home), subs: map[int]chan struct{}{}}
+	bg, stopBg := context.WithCancel(context.Background())
+	return &Controller{cfg: cfg, home: cleanHome(cfg.Home), subs: map[int]chan struct{}{}, bg: bg, stopBg: stopBg}
 }
 
 func cleanHome(root string) string {
@@ -410,6 +431,11 @@ func cleanHome(root string) string {
 func (c *Controller) Snapshot() Snapshot {
 	c.mu.Lock()
 	root, rt, stopped := c.home, c.rt, c.stopped
+	var pause *Pause
+	holding := c.eng != nil
+	if holding {
+		pause = c.eng.pause()
+	}
 	op, last, maint, pending := c.op.clone(), c.last.clone(), c.lastMaint.clone(), c.pending
 	var checks map[string]Check
 	if len(c.checks) > 0 {
@@ -461,7 +487,15 @@ func (c *Controller) Snapshot() Snapshot {
 	s.State, s.Failure = project(root, projKind, running, proj, lastFail, installed)
 	s.RestartRequired = (pending || drift) && running
 	s.ResidencyChanged = drift && running
-	s.OperatorStopped = stopped && !running && kind == ""
+	// The operator's Stop stays the operator's while model engineering holds
+	// the accelerator: the ownership never rewrites that intent.
+	s.OperatorStopped = stopped && !running && (kind == "" || holding)
+	if pause != nil {
+		s.Paused = pause
+		if !running {
+			s.State, s.Failure = Paused, nil
+		}
+	}
 	if !s.OperatorStopped {
 		s.Recovery = recoveryOf(projKind, running, proj)
 	}
@@ -579,6 +613,7 @@ func (c *Controller) SetHome(root string) error {
 		return ErrRuntimeBusy
 	}
 	c.home, c.rt, c.last, c.lastMaint, c.stopped, c.pending, c.checks = cleanHome(root), nil, nil, nil, false, false, nil
+	c.accel = accelCache{}
 	c.notify()
 	return nil
 }
@@ -980,16 +1015,27 @@ func (c *Controller) Preflight(p PreflightParams) error {
 
 // Probe loads the persisted variant p.Variant on p.Device in an isolated worker
 // and asks one typed decision (see Probe). It is not a certification and not
-// an activation: it never touches the bound runtime, the resident set, the
-// activation record or a certification record, and it may run beside a running
-// worker. Its record is Forge().Probes; a failure leaves a diagnostic.
+// an activation: it never changes the activation record or a certification
+// record, and a probe on the accelerator owns it exclusively (the serving
+// residents on it are stopped for the probe and restored after it, as for every
+// model-engineering operation). Its record is Forge().Probes; a failure leaves
+// a diagnostic.
 func (c *Controller) Probe(p ProbeParams) error {
 	var rec ProbeRecord
 	return c.async(SetupParams{Device: p.Device}, action{kind: OpProbe, device: p.Device, target: setup.KindVariant + " " + p.Variant, needDevice: true,
 		forge:  &ForgeFailure{Kind: OpProbe, Variant: p.Variant, Device: p.Device},
 		enrich: func(f *ForgeFailure) { f.Probe = &rec },
 		run: func(root string, log io.Writer, obs *setup.Observer) (err error) {
-			rec, err = c.cfg.Maintenance.Probe(context.Background(), root, p, log, obs)
+			c.mu.Lock()
+			rt := c.rt
+			c.mu.Unlock()
+			ctx := context.Background()
+			// A probe on the accelerator is model-engineering work: it owns
+			// the accelerator exclusively while it runs.
+			_, _, err = c.leased(ctx, root, rt, p.Device, nil, func() (e error) {
+				rec, e = c.cfg.Maintenance.Probe(ctx, root, p, log, obs)
+				return e
+			})
 			return err
 		}})
 }
@@ -1149,6 +1195,51 @@ func (c *Controller) Start() error { return c.run(OpStart) }
 
 // Restart stops the worker (if running) and starts it again.
 func (c *Controller) Restart() error { return c.run(OpRestart) }
+
+// Bind binds the serving runtime (its worker supervisor, API and dashboard) to
+// the active runtime without starting the worker. The desktop process and the
+// serving runtime are separate lifetimes: opening Hachidori does not request
+// that the source model occupy the accelerator, and Hachidori stays fully usable
+// for planning, Tuning and Forge while serving is stopped. Serving begins only
+// with an explicit Start (or Restart) and ends with Stop; the stopped state
+// Bind leaves is the same stable, non-failing state an operator Stop leaves.
+//
+// It is a no-op (nil) when a runtime is already bound. An activation that
+// cannot be bound is recorded as a failure exactly as a Start would record it.
+func (c *Controller) Bind() error {
+	c.mu.Lock()
+	if err := c.admit(); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if c.rt != nil {
+		c.mu.Unlock()
+		return nil
+	}
+	if !c.cfg.Installed(c.home) {
+		c.mu.Unlock()
+		return ErrNotInstalled
+	}
+	op := c.begin(OpBind, "", "")
+	root := c.home
+	c.mu.Unlock()
+
+	rt, err := c.cfg.Open(root)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var f *Failure
+	if err != nil {
+		f = &Failure{Source: SourceRuntime, Phase: PhasePreflight, Message: err.Error()}
+	} else {
+		c.rt, c.pending, c.stopped = rt, false, true
+		c.observeAcceleratorLocked()
+	}
+	c.finish(op, f)
+	if f != nil {
+		return f
+	}
+	return nil
+}
 
 func (c *Controller) run(kind string) error {
 	c.mu.Lock()
@@ -1331,6 +1422,7 @@ func (c *Controller) residentAction(kind, model string) error {
 // not interrupted), then stops the runtime. It returns an error naming what
 // was still in progress if ctx ends first; it never leaves a second worker.
 func (c *Controller) Close(ctx context.Context) error {
+	c.stopBg()
 	c.mu.Lock()
 	c.closed = true
 	c.stopped = true

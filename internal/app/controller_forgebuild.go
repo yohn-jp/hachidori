@@ -9,7 +9,10 @@ import (
 )
 
 // BuildAndEvaluate starts one controller-owned Forge transaction. The build
-// and certification are visible through the same operation and diagnostic.
+// and certification are visible through the same operation and diagnostic. The
+// transaction owns the accelerator exclusively from before its first GPU phase
+// to its end (engineering.go): its probe and both runs nest in that ownership
+// and none of them restores serving on its own.
 func (c *Controller) BuildAndEvaluate(p ForgeBuildEvaluateParams) error {
 	var result ForgeBuildEvaluateResult
 	return c.async(SetupParams{Device: p.Device}, action{
@@ -58,9 +61,22 @@ func (c *Controller) BuildAndEvaluate(p ForgeBuildEvaluateParams) error {
 					c.mu.Unlock()
 				},
 			}
-			var err error
-			result, err = RunForgeBuildEvaluate(context.Background(), home.Home{Root: root}, p, deps, log, obs)
-			return err
+			// The whole composed transaction owns the accelerator: serving
+			// is stopped before its first GPU phase and stays down through
+			// preflight, build, probe and both runs, then comes back once.
+			// The devices are those of the resolved plan; a request that
+			// does not resolve fails in RunForgeBuildEvaluate without ever
+			// touching serving.
+			ctx := context.Background()
+			h := home.Home{Root: root}
+			var devices []string
+			if plan, perr := resolveForgeBuildPlan(h, p); perr == nil {
+				devices = []string{plan.resolution.CandidateDevice.Value, plan.resolution.ReferenceDevice.Value}
+			}
+			return c.engineer(ctx, root, rt, devices, func() (err error) {
+				result, err = RunForgeBuildEvaluate(ctx, h, p, deps, log, obs)
+				return err
+			})
 		},
 		after: func(err error) {
 			if c.op == nil || c.op.Kind != OpForgeBuildEvaluate || result.Resolution.Source == "" {
