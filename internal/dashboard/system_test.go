@@ -104,8 +104,9 @@ func TestWorkspacesUseTheOneVisualSystem(t *testing.T) {
 	withSettings(e, &fakeSettings{}, nil)
 	withModels(e, &fakeModels{state: ModelsState{Inventory: variantInventory()}})
 	withVariants(e, &fakeVariants{})
+	withTuning(e, &fakeTuning{analysis: tuningAnalysis(t)})
 	sys := string(ui.CSS())
-	for _, p := range []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings", "/models", "/forge"} {
+	for _, p := range []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings", "/models", "/forge", "/tuning"} {
 		body := e.get(t, p).Body.String()
 		if strings.Count(body, sys) != 1 {
 			t.Errorf("%s does not inline the visual system exactly once", p)
@@ -136,7 +137,8 @@ func TestWorkspacesComposeWithoutCardChrome(t *testing.T) {
 	withSettings(e, &fakeSettings{}, nil)
 	withModels(e, &fakeModels{state: ModelsState{Inventory: variantInventory()}})
 	withVariants(e, &fakeVariants{})
-	for _, p := range []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings", "/models", "/forge"} {
+	withTuning(e, &fakeTuning{analysis: tuningAnalysis(t)})
+	for _, p := range []string{"/", "/workbench", "/experiments", "/errors", "/diagnostics", "/settings", "/models", "/forge", "/tuning"} {
 		body := e.get(t, p).Body.String()
 		for _, banned := range []string{"box-shadow: inset", "inset 3px", "border-left: 3px", "word-break: break-all", "var(--r-lg)"} {
 			if strings.Contains(body, banned) {

@@ -284,6 +284,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <li><a href="/"{{if eq .Nav "runtime"}} aria-current="page"{{end}}>{{t "Runtime"}}</a></li>
     {{if .HasModels}}<li><a href="/models"{{if eq .Nav "models"}} aria-current="page"{{end}}>{{t "Models"}}</a></li>
     <li><a href="/forge"{{if eq .Nav "forge"}} aria-current="page"{{end}}>{{t "Forge"}}</a></li>
+    {{end}}{{if .HasTuning}}<li><a href="/tuning"{{if eq .Nav "tuning"}} aria-current="page"{{end}}>{{t "Tuning"}}</a></li>
     {{end}}<li><a href="/workbench"{{if eq .Nav "workbench"}} aria-current="page"{{end}}>{{t "Workbench"}}</a></li>
     <li><a href="/experiments"{{if eq .Nav "experiments"}} aria-current="page"{{end}}>{{t "Experiments"}}</a></li>
     <li><a href="/errors"{{if eq .Nav "evidence"}} aria-current="page"{{end}}>{{t "Evidence"}}</a></li>

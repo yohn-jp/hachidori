@@ -118,6 +118,13 @@ type Config struct {
 	// projections of the same inventory and operation state Models reports;
 	// Variants only forwards the operator's actions.
 	Variants VariantActions
+	// Tuning, when set (with Models), adds the Tuning workspace: backend
+	// semantic-region analysis, versioned preservation profiles and the
+	// handoff of one exact saved profile to the Forge build. It is the
+	// typed tuning authority (internal/tuning through the application);
+	// the dashboard edits and persists intent through it and never runs an
+	// optimizer itself.
+	Tuning Tuning
 	// Token is the per-process form token. A composition that replaces its
 	// dashboard during the process (the desktop, on every runtime rebind)
 	// passes one from NewToken so a page loaded before the replacement keeps
@@ -456,7 +463,7 @@ type Prefs struct {
 	Tunnel tunnel.Spec `json:"tunnel"`
 }
 
-//go:embed page.html workbench.html experiments.html errors.html updates.html models.html forge.html
+//go:embed page.html workbench.html experiments.html errors.html updates.html models.html forge.html tuning.html
 var pageFS embed.FS
 
 // pageBase parses the workstation templates once; "t" is the catalog lookup,
@@ -497,7 +504,8 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"since":           since,
 	"took":            took,
 	"failureOf":       failureOf,
-}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html", "updates.html", "models.html", "forge.html"))
+	"objective":       objectiveLabel,
+}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html", "updates.html", "models.html", "forge.html", "tuning.html"))
 
 // pages are the workstation templates for each supported locale. Rendering
 // goes through the catalog, never through rewriting rendered HTML.
@@ -514,14 +522,19 @@ var pages = func() map[i18n.Locale]*template.Template {
 // runtime status restated from the /v1/status document.
 type Chrome struct {
 	Title       string
-	Nav         string // runtime | models | forge | workbench | experiments | evidence | diagnostics | settings
+	Nav         string // runtime | models | forge | tuning | workbench | experiments | evidence | diagnostics | settings
 	Lang        i18n.Locale
 	APIAddr     string
 	Live        bool // the workspace shows the live-refresh indicator
 	HasSettings bool // the Settings workspace is available
 	HasModels   bool // the Models and Forge workspaces are available
+	HasTuning   bool // the Tuning workspace is available
 	Rt          shellStatus
 }
+
+// hasTuning: the Tuning workspace needs the tuning authority and the Models
+// inventory it lists sources from.
+func (c Config) hasTuning() bool { return c.Tuning != nil && c.Models != nil }
 
 func (c Config) hasSettings() bool {
 	return c.Settings != nil || c.Desktop != nil || c.Connections != nil || c.Updates != nil
@@ -591,6 +604,11 @@ func New(cfg Config) *Dashboard {
 		d.mux.HandleFunc("POST /settings/models/{op}", d.modelsOp)
 		d.mux.HandleFunc("POST /settings/variants/{op}", d.variantsOp)
 		d.mux.HandleFunc("GET /settings/forge/diagnostics/{id}", d.forgeDiagnostic)
+	}
+	if cfg.hasTuning() {
+		d.mux.HandleFunc("GET /tuning", d.tuningPage)
+		d.mux.HandleFunc("POST /tuning/save", d.tuningSave)
+		d.mux.HandleFunc("POST /tuning/build", d.tuningBuild)
 	}
 	if cfg.Models != nil && cfg.Residency != nil {
 		d.mux.HandleFunc("POST /models/residents", d.settingsResidents)
@@ -684,6 +702,7 @@ type view struct {
 	Models  *ModelsView      // nil unless the model/runtime manager is configured
 	Forge   *ForgeView       // the Forge workspace only
 	Art     *ArtifactsView   // the Models and Forge workspaces only
+	Tuning  *TuningView      // the Tuning workspace only
 	Next    *nextStart       // nil unless the model/runtime manager is configured
 	Conns   *ConnectionsView // nil unless Development Connections are configured
 	Upd     *UpdatesView     // nil unless the update subsystem is configured
@@ -699,7 +718,7 @@ func (d *Dashboard) statusView(title, nav string) view {
 	d.mu.Lock()
 	last, doc := d.last, d.doctor
 	d.mu.Unlock()
-	v := view{Chrome: Chrome{Title: title, Nav: nav, Lang: d.locale(), APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings(), HasModels: d.cfg.Models != nil},
+	v := view{Chrome: Chrome{Title: title, Nav: nav, Lang: d.locale(), APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings(), HasModels: d.cfg.Models != nil, HasTuning: d.cfg.hasTuning()},
 		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
 	v.Rt = shellOf(v)
 	return v
@@ -794,7 +813,9 @@ func (d *Dashboard) renderView(w http.ResponseWriter, name string, v any) {
 	_, _ = buf.WriteTo(w)
 }
 
-func (d *Dashboard) done(w http.ResponseWriter, r *http.Request, name string, err error, okMsg string) {
+// remember records the outcome of an explicit operator action; the next
+// workspace render shows it once.
+func (d *Dashboard) remember(name string, err error, okMsg string) {
 	a := &Action{Time: time.Now(), Name: name, OK: err == nil, Message: okMsg}
 	if err != nil {
 		a.Message = err.Error()
@@ -802,6 +823,10 @@ func (d *Dashboard) done(w http.ResponseWriter, r *http.Request, name string, er
 	d.mu.Lock()
 	d.last = a
 	d.mu.Unlock()
+}
+
+func (d *Dashboard) done(w http.ResponseWriter, r *http.Request, name string, err error, okMsg string) {
+	d.remember(name, err, okMsg)
 	dest := returnTo(r.URL.Path)
 	switch r.PostFormValue("return") {
 	case "settings":
@@ -810,6 +835,8 @@ func (d *Dashboard) done(w http.ResponseWriter, r *http.Request, name string, er
 		dest = "/models"
 	case "forge":
 		dest = "/forge"
+	case "tuning":
+		dest = "/tuning"
 	}
 	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
@@ -825,6 +852,8 @@ func returnTo(path string) string {
 		return "/models"
 	case strings.HasPrefix(path, "/forge/") || strings.HasPrefix(path, "/settings/variants/"):
 		return "/forge"
+	case strings.HasPrefix(path, "/tuning/"):
+		return "/tuning"
 	}
 	if strings.HasPrefix(path, "/settings/updates/") {
 		return "/settings/updates"
