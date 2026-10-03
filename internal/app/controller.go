@@ -77,6 +77,10 @@ type Config struct {
 	// the members of the bound runtime, so a change applies on the next
 	// explicit Start/Restart and never mutates running workers.
 	Residents func() []string
+	// SetResidents persists a desired resident selection through the existing
+	// settings authority. ReconcileDesiredState refuses a changed selection
+	// when this setter is absent so an in-memory-only choice cannot succeed.
+	SetResidents func([]string) error
 	// RestoreTimeout bounds the wait for the serving residents to be READY
 	// again after an execution session or a rolled-back apply; zero is 15
 	// minutes.
@@ -218,15 +222,18 @@ type SetupParams struct {
 // the step and is indeterminate, and no percentage is ever derived.
 type Operation struct {
 	// ID identifies this operation: it names it in its diagnostic.
-	ID       string          `json:"id,omitempty"`
-	Kind     string          `json:"kind"`
-	Device   string          `json:"device,omitempty"`
-	Model    string          `json:"model,omitempty"`
-	Target   string          `json:"target,omitempty"`   // verify/remove: "<kind> <id>"
-	Plan     []string        `json:"plan,omitempty"`     // the phases the action goes through, in order
-	Phase    string          `json:"phase,omitempty"`    // the phase currently/last entered
-	Phases   []string        `json:"phases,omitempty"`   // every phase entered, in order
-	Progress *setup.Progress `json:"progress,omitempty"` // the current step within Phase
+	ID             string          `json:"id,omitempty"`
+	Kind           string          `json:"kind"`
+	Device         string          `json:"device,omitempty"`
+	Model          string          `json:"model,omitempty"`
+	Target         string          `json:"target,omitempty"`   // verify/remove: "<kind> <id>"
+	Plan           []string        `json:"plan,omitempty"`     // the phases the action goes through, in order
+	Phase          string          `json:"phase,omitempty"`    // the phase currently/last entered
+	Phases         []string        `json:"phases,omitempty"`   // every phase entered, in order
+	Progress       *setup.Progress `json:"progress,omitempty"` // the current step within Phase
+	Residents      []string        `json:"residents,omitempty"`
+	ResolvedDevice string          `json:"resolved_device,omitempty"`
+	ActualDevice   string          `json:"actual_device,omitempty"`
 	// ForgeResolution is the resolved Auto/override execution plan of a
 	// composed Forge build/evaluate operation.
 	ForgeResolution *ForgeBuildEvaluateResolution `json:"forge_resolution,omitempty"`
@@ -236,7 +243,9 @@ type Operation struct {
 	// Cancellable is always false: setup materialization is not safely
 	// interruptible, and Stop/Restart are bounded by the worker's own
 	// shutdown timeout.
-	Cancellable bool `json:"cancellable"`
+	Cancellable     bool   `json:"cancellable"`
+	DeviceMode      string `json:"device_mode,omitempty"`
+	RequestedDevice string `json:"requested_device,omitempty"`
 }
 
 func (o *Operation) clone() *Operation {
@@ -246,6 +255,7 @@ func (o *Operation) clone() *Operation {
 	c := *o
 	c.Phases = append([]string(nil), o.Phases...)
 	c.Plan = append([]string(nil), o.Plan...)
+	c.Residents = append([]string(nil), o.Residents...)
 	if o.Progress != nil {
 		p := *o.Progress
 		c.Progress = &p
@@ -749,6 +759,10 @@ func plan(kind, target string) []string {
 		// snapshot and the rebind; a rollback adds PhaseApplyRollback.
 		return append(append([]string{PhaseApplyValidate, PhaseApplySnapshot}, p(setup.PhaseRuntime, setup.PhaseModel, setup.PhaseVariant, setup.PhaseActivation)...),
 			PhaseApplyRebind, PhaseApplyReady, PhaseApplyProve, PhaseApplySmoke, PhaseApplyFinal)
+	case OpDesiredState:
+		return []string{PhaseDesiredResolve, PhaseApplyValidate, PhaseApplySnapshot, PhaseDesiredProvision,
+			string(setup.PhaseRuntime), string(setup.PhaseModel), string(setup.PhaseVariant), string(setup.PhaseActivation),
+			PhaseApplyRebind, PhaseApplyReady, PhaseApplyProve, PhaseApplySmoke, PhaseApplyFinal}
 	case OpPreflight:
 		return p(setup.PhasePreflight)
 	case OpProbe:
@@ -1065,7 +1079,7 @@ func (c *Controller) Inventory(verify bool) (setup.Inventory, error) {
 
 func isMaintenance(kind string) bool {
 	switch kind {
-	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpForgeBuildEvaluate, OpPreflight, OpProbe, OpExecute, OpApply:
+	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpForgeBuildEvaluate, OpPreflight, OpProbe, OpExecute, OpApply, OpDesiredState:
 		return true
 	}
 	return false
