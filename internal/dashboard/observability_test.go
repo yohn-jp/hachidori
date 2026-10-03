@@ -48,7 +48,11 @@ func TestActiveForgeOperationShowsProgressAndConsoleOnForgeOnly(t *testing.T) {
 	if strings.Contains(console[:strings.Index(console, ">")], " open") {
 		t.Errorf("the console is open by default: %s", console[:strings.Index(console, ">")])
 	}
-	if live := section(forge, `<div class="last op tone-active" role="status" aria-live="polite">`, `</p>
+	// Template source may be checked out with CRLF on Windows. Normalize the
+	// rendered markup before using a line-break-sensitive boundary so the test
+	// verifies the DOM relationship rather than the checkout newline policy.
+	normalizedForge := strings.ReplaceAll(forge, "\r\n", "\n")
+	if live := section(normalizedForge, `<div class="last op tone-active" role="status" aria-live="polite">`, `</p>
 </div>`); strings.Contains(live, "op-console") {
 		t.Error("the console is inside the live region")
 	}
