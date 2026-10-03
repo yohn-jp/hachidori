@@ -1086,8 +1086,6 @@ var ja = map[string]string{
 	"Rolling back":                                                         "ロールバック中",
 	"Resolving inputs":                                                     "入力を解決中",
 	// Messages the Models and Forge templates already render without a Japanese entry.
-	"what serves now and what the next start serves": "現在提供中のものと、次回起動時に提供されるもの",
-	"Only the catalog's pinned runtime and model identities are listed. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker, so a running worker keeps serving its model until you restart it. A requested device is never replaced by another. The active runtime and model cannot be removed.": "カタログで固定されたランタイムとモデルの ID のみを表示します。展開は同じ段階的セットアップでダウンロードと検証を行い、有効化はしません。修復は検証に失敗した成果物を再構築し、ワーカーの停止が必要です。有効化は有効な組み合わせを切り替えるだけでワーカーは再起動しないため、実行中のワーカーは再起動するまで現在のモデルで動作し続けます。要求されたデバイスが別のデバイスに置き換わることはありません。有効なランタイムとモデルは削除できません。",
 	// Tuning workspace (#187)
 	"Tuning": "チューニング",
 	"Choose what the model must preserve under a resource objective. Save a versioned profile, then hand that exact profile to Forge to build a candidate. Nothing is applied automatically.": "リソース目標のもとでモデルが何を保持すべきかを選びます。バージョン付きプロファイルを保存し、その正確なプロファイルを Forge に渡して候補を構築します。自動的に適用されるものはありません。",
