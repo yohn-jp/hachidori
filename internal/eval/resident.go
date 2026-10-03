@@ -185,6 +185,10 @@ type ModelRun struct {
 	InferenceLatency Latency               `json:"inference_latency"`
 	LengthBuckets    []LengthBucket        `json:"length_buckets"`
 	Observations     []ResidentObservation `json:"observations"`
+
+	// Instability says why ResidentStable is false. It is in-memory only: it
+	// is never part of the recorded evidence.
+	Instability *Instability `json:"-"`
 }
 
 // Evidence is the run as a plain Decision Evidence report, for the tools
@@ -255,6 +259,12 @@ type ResidentOptions struct {
 	HighConfidence float64
 	Thresholds     []float64
 	LengthEdges    []int
+	// Terminal, when set, is asked about every failed request and ends the
+	// run at once when it reports true: no further request is sent. It is for
+	// a dedicated single-worker run whose worker is gone for good, where the
+	// remaining requests can only repeat the first causal failure. Nil (the
+	// resident comparison) keeps recording each failure and continuing.
+	Terminal func(err error) bool
 	// Families maps a question id to a measurement family name; questions
 	// without an entry are grouped as "unassigned".
 	Families map[string]string
@@ -437,6 +447,15 @@ type rawStatus json.RawMessage
 
 func (r rawStatus) Status() (json.RawMessage, error) { return json.RawMessage(r), nil }
 
+// Instability is why a run's resident was not provably one uninterrupted
+// worker: either the status after the run could not be read (StatusError), or
+// it was read and Changed names the dimensions that differ from the status
+// before the run.
+type Instability struct {
+	StatusError string
+	Changed     []string
+}
+
 func sameTiming(a, b *float64) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -449,6 +468,31 @@ func stable(a, b residentState) bool {
 	return a.Served.Compatible(&b.Served) && a.Served.WorkerPID == b.Served.WorkerPID &&
 		a.Served.WorkerStarts == b.Served.WorkerStarts &&
 		sameTiming(a.Startup.LoadMS, b.Startup.LoadMS) && sameTiming(a.Startup.WarmupMS, b.Startup.WarmupMS)
+}
+
+// differences names every dimension on which two readings are not the same
+// worker; it is empty exactly when stable(a, b).
+func differences(a, b residentState) []string {
+	var d []string
+	if a.Served.Digest != b.Served.Digest {
+		d = append(d, "served identity digest")
+	}
+	if b.Served.UptimeS < a.Served.UptimeS {
+		d = append(d, fmt.Sprintf("uptime reset (%ds -> %ds)", a.Served.UptimeS, b.Served.UptimeS))
+	}
+	if a.Served.WorkerPID != b.Served.WorkerPID {
+		d = append(d, fmt.Sprintf("worker pid (%d -> %d)", a.Served.WorkerPID, b.Served.WorkerPID))
+	}
+	if a.Served.WorkerStarts != b.Served.WorkerStarts {
+		d = append(d, fmt.Sprintf("worker start count (%d -> %d)", a.Served.WorkerStarts, b.Served.WorkerStarts))
+	}
+	if !sameTiming(a.Startup.LoadMS, b.Startup.LoadMS) {
+		d = append(d, "load timing")
+	}
+	if !sameTiming(a.Startup.WarmupMS, b.Startup.WarmupMS) {
+		d = append(d, "warmup timing")
+	}
+	return d
 }
 
 func (s residentState) memorySample(phase string) MemorySample {
@@ -567,7 +611,7 @@ func runResidents(e Endpoint, cases []Case, datasetSHA256 string, opt ResidentOp
 			}
 			memory[m] = append(memory[m], st.memorySample(phase))
 		}
-		r, det := runDetailed(pin, cases, Options{Warmup: dec.Warmup, Passes: dec.Passes}, hook)
+		r, det := runDetailed(pin, cases, Options{Warmup: dec.Warmup, Passes: dec.Passes}, hook, opt.Terminal)
 		b := before[m]
 		run := ModelRun{Model: m, Provider: b.Provider, StartedAt: r.StartedAt, Identity: b.Served, Startup: b.Startup,
 			DatasetSHA256: datasetSHA256, InputSHA256: inputSHA, SentSHA256: hex.EncodeToString(pin.sent.Sum(nil)),
@@ -599,10 +643,14 @@ func runResidents(e Endpoint, cases []Case, datasetSHA256 string, opt ResidentOp
 			run.Errors = append(run.Errors, RequestError{Phase: "status", Class: ErrClassStatus, Message: "after_run: " + err.Error()})
 			run.IdentityEnd = run.Identity
 			run.ResidentStable = false
+			run.Instability = &Instability{StatusError: err.Error()}
 		} else {
 			memory[m] = append(memory[m], end.memorySample("after_run"))
 			run.IdentityEnd = end.Served
 			run.ResidentStable = stable(before[m], end)
+			if !run.ResidentStable {
+				run.Instability = &Instability{Changed: differences(before[m], end)}
+			}
 		}
 		run.Memory = buildMemory(memory[m])
 		run.ErrorCount, run.ErrorsByClass = len(run.Errors), map[string]int{}

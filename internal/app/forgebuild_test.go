@@ -14,8 +14,10 @@ import (
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/optimize"
+	"github.com/yohn-jp/hachidori/internal/optimize/optimizetest"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tuning"
+	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
 func buildEvaluateParams(e *certEnv) ForgeBuildEvaluateParams {
@@ -323,5 +325,75 @@ func TestForgeBuildEvaluatePlansASavedTuningProfile(t *testing.T) {
 	p.TuningProfile = strings.Repeat("a", 64)
 	if _, err := resolveForgeBuildPlan(e.h, p); err == nil {
 		t.Fatal("an unknown tuning profile was planned")
+	}
+}
+
+// A reference execution whose worker dies surfaces the worker's own failure
+// through the whole composed error chain, into the Forge diagnostic, and
+// records no run evidence.
+func TestForgeBuildEvaluateReferenceWorkerFailureReachesTheDiagnostic(t *testing.T) {
+	e := newCertEnv(t)
+	e.mode[eval.ForgeTargetSource] = "crash_on_decide"
+	deps := buildEvaluateDeps(t, e, func(context.Context, home.Home, optimize.Request, io.Writer, *setup.Observer) (optimize.Result, error) {
+		return optimize.Result{Variant: e.v}, nil
+	})
+	_, err := RunForgeBuildEvaluate(context.Background(), e.h, buildEvaluateParams(e), deps, io.Discard, nil)
+	var wf *worker.Failure
+	var se *ExecutionStabilityError
+	if !errors.As(err, &wf) || wf.Class != worker.ClassCrash || !errors.As(err, &se) || !se.Terminal {
+		t.Fatalf("error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "worker_crash") {
+		t.Fatalf("the generic stability message hides the cause: %v", err)
+	}
+	in, _ := collectForge(e.h.Root, ForgeFailure{Kind: OpForgeBuildEvaluate, Phase: string(CertPhaseReference), Device: "cuda", Model: setup.ClefFlash}, err)
+	if in.Resources.WorkerClass != worker.ClassCrash {
+		t.Fatalf("diagnostic worker class %q, want %q", in.Resources.WorkerClass, worker.ClassCrash)
+	}
+	if got := e.recordedRuns(); len(got) != 0 {
+		t.Fatalf("an unstable reference left evidence %v", got)
+	}
+}
+
+// Retrying Build & evaluate after the reference failed does not publish the
+// candidate again: the deterministic build contract finds the variant that was
+// already published and the optimizer is not invoked a second time.
+func TestForgeBuildEvaluateRetryReusesThePublishedVariant(t *testing.T) {
+	e := newCertEnv(t)
+	// Start from a home whose candidate is not yet published.
+	if err := os.RemoveAll(e.h.VariantDir(setup.ClefFlash, e.v.ID)); err != nil {
+		t.Fatal(err)
+	}
+	runner := &optimizetest.Runner{}
+	var existing []bool
+	build := func(ctx context.Context, h home.Home, req optimize.Request, log io.Writer, obs *setup.Observer) (optimize.Result, error) {
+		res, err := optimize.Build(ctx, h, req, optimize.Deps{Runner: runner, OptimizerRuntime: "optimizer-test"}, log, obs)
+		existing = append(existing, res.Existing)
+		return res, err
+	}
+	deps := buildEvaluateDeps(t, e, build)
+
+	e.mode[eval.ForgeTargetSource] = "crash_on_decide"
+	if _, err := RunForgeBuildEvaluate(context.Background(), e.h, buildEvaluateParams(e), deps, io.Discard, nil); err == nil {
+		t.Fatal("the reference failure did not fail the operation")
+	}
+	if runner.Calls != 1 || len(existing) != 1 || existing[0] {
+		t.Fatalf("first attempt: %d optimizer calls, existing %v", runner.Calls, existing)
+	}
+	published := setup.ListVariants(e.h, false, nil)
+	if len(published) != 1 {
+		t.Fatalf("published variants %+v", published)
+	}
+
+	delete(e.mode, eval.ForgeTargetSource)
+	result, err := RunForgeBuildEvaluate(context.Background(), e.h, buildEvaluateParams(e), deps, io.Discard, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.Calls != 1 || len(existing) != 2 || !existing[1] {
+		t.Fatalf("retry: %d optimizer calls, existing %v; the published variant must be reused", runner.Calls, existing)
+	}
+	if result.Variant.ID != published[0].ID || result.Certification.CandidateEvidence == "" || len(setup.ListVariants(e.h, false, nil)) != 1 {
+		t.Fatalf("retry result %+v", result.Variant.ID)
 	}
 }

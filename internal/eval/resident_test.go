@@ -610,3 +610,102 @@ func TestSingleModelEvaluationUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A dedicated run whose worker is declared terminally lost sends nothing more:
+// the first failure is the run's only failure, and the final status read that
+// cannot succeed is reported as the instability.
+func TestTerminalFailureEndsTheRunWithoutFurtherRequests(t *testing.T) {
+	for name, warmup := range map[string]int{"during the scored pass": 0, "during warmup": 2} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			f.onDecide = func(f *fakeResidents, _ string, n int) {
+				if n == 1+warmup/2 {
+					f.find("laya-base").running = false
+				}
+			}
+			var asked int
+			run, err := RunResident(f, residentCases(), "d", true, "laya-base", ResidentOptions{
+				Options:  Options{Warmup: warmup, Passes: 2},
+				Terminal: func(error) bool { asked++; return true },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.total != 1+warmup/2 || asked != 1 {
+				t.Fatalf("%d requests sent, terminal asked %d times; nothing may follow the first terminal failure", f.total, asked)
+			}
+			if run.Run.ErrorCount < 1 || run.Run.Errors[0].Class != ErrClassTransport {
+				t.Fatalf("errors %+v", run.Run.Errors)
+			}
+			in := run.Run.Instability
+			if run.Run.ResidentStable || in == nil || !strings.Contains(in.StatusError, "not running") || len(in.Changed) != 0 {
+				t.Fatalf("stable %v, instability %+v", run.Run.ResidentStable, in)
+			}
+		})
+	}
+}
+
+// A failure the caller does not call terminal (a healthy resident's own
+// request error) and a run without the option both continue as before.
+func TestNonTerminalRequestErrorsDoNotEndTheRun(t *testing.T) {
+	for name, terminal := range map[string]func(error) bool{"not terminal": func(error) bool { return false }, "no option": nil} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			f.onDecide = func(f *fakeResidents, _ string, n int) { f.find("laya-base").running = n != 2 }
+			run, err := RunResident(f, residentCases(), "d", true, "laya-base", ResidentOptions{Options: Options{Passes: 1}, Terminal: terminal})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.total != 3 || run.Run.ErrorCount != 1 || run.Run.Succeeded != 2 {
+				t.Fatalf("%d requests, %d errors, %d succeeded; every case must be sent", f.total, run.Run.ErrorCount, run.Run.Succeeded)
+			}
+		})
+	}
+}
+
+// An instability names the dimensions that actually differ, not merely that
+// the worker is "different".
+func TestInstabilityNamesTheDifferingDimensions(t *testing.T) {
+	cases := map[string]struct {
+		change func(*fakeResident)
+		want   []string
+	}{
+		"restart":        {func(r *fakeResident) { r.starts, r.pid, r.uptime = 2, 101, 1 }, []string{"uptime reset", "worker pid (100 -> 101)", "worker start count (1 -> 2)"}},
+		"pid only":       {func(r *fakeResident) { r.pid = 777 }, []string{"worker pid (100 -> 777)"}},
+		"starts only":    {func(r *fakeResident) { r.starts = 3 }, []string{"worker start count (1 -> 3)"}},
+		"reloaded model": {func(r *fakeResident) { r.loadMS, r.warmupMS = 1, 1 }, []string{"load timing", "warmup timing"}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			f.onDecide = func(f *fakeResidents, _ string, n int) {
+				if n == 2 {
+					c.change(f.find("laya-base"))
+				}
+			}
+			run, err := RunResident(f, residentCases(), "d", true, "laya-base", ResidentOptions{Options: Options{Passes: 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := run.Run.Instability
+			if run.Run.ResidentStable || in == nil || in.StatusError != "" {
+				t.Fatalf("stable %v, instability %+v", run.Run.ResidentStable, in)
+			}
+			if len(in.Changed) != len(c.want) {
+				t.Fatalf("changed %q, want %q", in.Changed, c.want)
+			}
+			for i, w := range c.want {
+				if !strings.HasPrefix(in.Changed[i], w) {
+					t.Fatalf("changed %q, want %q", in.Changed, c.want)
+				}
+			}
+		})
+	}
+}
+
+func TestStableRunHasNoInstability(t *testing.T) {
+	run, err := RunResident(newFake(), residentCases(), "d", true, "laya-base", ResidentOptions{Options: Options{Passes: 1}})
+	if err != nil || !run.Run.ResidentStable || run.Run.Instability != nil {
+		t.Fatalf("%v %v %+v", err, run.Run.ResidentStable, run.Run.Instability)
+	}
+}

@@ -425,7 +425,7 @@ func (d *Dashboard) forgeView() view {
 			if ps, err := d.cfg.Tuning.Profiles(src.ID); err == nil {
 				for _, p := range ps {
 					v.Forge.Profiles = append(v.Forge.Profiles, ForgeProfileOption{Source: src.ID, Value: tuningProfilePrefix + p.ID(), Tuned: true,
-						Label: short12(p.ID()) + " · " + objectiveLabel(p.Objective) + " · " + strconv.Itoa(pinnedCount(p)) + " preserved"})
+						Label: short12(p.ID()) + " · " + objectiveLabel(p.Objective) + " · " + d.profilePreservation(p)})
 				}
 			}
 		}
@@ -434,6 +434,29 @@ func (d *Dashboard) forgeView() view {
 		}
 	}
 	return v
+}
+
+// profilePreservation is a saved profile's effective preservation: the regions
+// the canonical tuning compiler keeps at source precision for the profile bound
+// to its own analysis, the same count Tuning shows. Explicit pins are only part
+// of it (Auto preserves regions the canonical policy preserves), and when the
+// profile cannot be loaded or compiled no count is invented.
+func (d *Dashboard) profilePreservation(p tuning.Profile) string {
+	profile, analysis, err := d.cfg.Tuning.LoadProfile(p.ID())
+	if err != nil {
+		return "preservation unavailable"
+	}
+	compiled, err := tuning.Compile(profile, analysis)
+	if err != nil {
+		return "preservation unavailable"
+	}
+	n := 0
+	for _, m := range compiled.Evidence.Regions {
+		if m.Preserved {
+			n++
+		}
+	}
+	return strconv.Itoa(n) + " / " + strconv.Itoa(len(analysis.Regions)) + " preserved"
 }
 
 // variantFit is the variant's device memory against the envelope: measured
