@@ -276,8 +276,8 @@ func (a *desktopApp) run() error {
 				HistoryDir:       h.Path("state", "history"),
 				EvaluationSample: h.InariSampleEvaluation(),
 				Desktop:          prefs,
-				Settings:   prefs,
-				Models:     models,
+				Settings:         prefs,
+				Models:           models,
 				// System One variant actions go through the same controller.
 				Variants: models,
 				// Tuning edits and saves semantic profiles and hands the
