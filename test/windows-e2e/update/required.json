@@ -1,5 +1,12 @@
 {
   "scenarios": [
-    "candidate-identity"
+    "candidate-identity",
+    "update-check-download-progress",
+    "update-no-network-on-open",
+    "update-single-check-flight",
+    "update-corruption-rejected",
+    "update-network-failure-bounded",
+    "update-replace-restart",
+    "update-file-lock-keeps-previous"
   ]
 }

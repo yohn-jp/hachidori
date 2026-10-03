@@ -1,5 +1,7 @@
 {
   "scenarios": [
-    "candidate-identity"
+    "candidate-identity",
+    "diagnostics-bundle-schema-identity",
+    "diagnostics-bundle-secrecy"
   ]
 }
