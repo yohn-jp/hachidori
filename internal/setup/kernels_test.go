@@ -20,14 +20,14 @@ func TestClefKernelRuntimeContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(clefKernelDistributions(cpu)) != 0 {
-			t.Fatal("CPU runtime requires CUDA kernels")
+			t.Fatal("CPU runtime requires Clef CUDA kernels")
 		}
-		backend := "triton==3.6.0"
+		want := []string(nil)
 		if plat == "windows/amd64" {
-			backend = "triton-windows==3.6.0.post26"
+			want = []string{"fla-core==0.5.2", "triton-windows==3.6.0.post26"}
 		}
-		if !slices.Equal(clefKernelDistributions(cuda), []string{"fla-core==0.5.2", backend}) {
-			t.Fatalf("wrong CUDA kernel pins for %s", plat)
+		if !slices.Equal(clefKernelDistributions(cuda), want) {
+			t.Fatalf("wrong Clef kernel pins for %s: %v", plat, clefKernelDistributions(cuda))
 		}
 		if cuda.Project != digest(specFile("pyproject.toml")) || cuda.Lock != digest(specFile("uv.lock")) || cuda.Worker != WorkerDigest() {
 			t.Fatal("kernel materialization/dispatch is outside runtime identity")
@@ -48,10 +48,13 @@ func TestClefKernelRuntimeContract(t *testing.T) {
 		}
 	}
 	project, lock := string(specFile("pyproject.toml")), string(specFile("uv.lock"))
-	for _, pin := range []string{"fla-core==0.5.2", "triton==3.6.0; sys_platform == 'linux'", "triton-windows==3.6.0.post26; sys_platform == 'win32'"} {
+	for _, pin := range []string{"fla-core==0.5.2; sys_platform == 'win32'", "triton-windows==3.6.0.post26; sys_platform == 'win32'"} {
 		if !strings.Contains(project, pin) {
 			t.Fatalf("project lacks %s", pin)
 		}
+	}
+	if strings.Contains(project, "triton==3.6.0") {
+		t.Fatal("project carries unsupported Linux Clef Triton runtime")
 	}
 	for _, pkg := range []string{"name = \"fla-core\"\nversion = \"0.5.2\"", "name = \"triton-windows\"\nversion = \"3.6.0.post26\"", "triton_windows-3.6.0.post26-cp312-cp312-win_amd64.whl"} {
 		if !strings.Contains(lock, pkg) {
@@ -59,7 +62,6 @@ func TestClefKernelRuntimeContract(t *testing.T) {
 		}
 	}
 }
-
 func TestClefKernelRuntimeVerification(t *testing.T) {
 	f := newFixture(t)
 	f.mustRun("cuda")
