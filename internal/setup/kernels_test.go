@@ -56,7 +56,7 @@ func TestClefKernelRuntimeContract(t *testing.T) {
 	if strings.Contains(project, "triton==3.6.0") {
 		t.Fatal("project carries unsupported Linux Clef Triton runtime")
 	}
-	for _, pkg := range []string{"name = \"fla-core\"\nversion = \"0.5.2\"", "name = \"triton-windows\"\nversion = \"3.6.0.post26\"", "triton_windows-3.6.0.post26-cp312-cp312-win_amd64.whl"} {
+	for _, pkg := range []string{"name = \"fla-core\"\nversion = \"0.5.2\"", "name = \"triton\"\nversion = \"3.6.0\"", "name = \"triton-windows\"\nversion = \"3.6.0.post26\"", "triton_windows-3.6.0.post26-cp312-cp312-win_amd64.whl"} {
 		if !strings.Contains(lock, pkg) {
 			t.Fatalf("lock lacks %s", pkg)
 		}
