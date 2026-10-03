@@ -423,6 +423,33 @@ Tuning edits intent and may request “Build candidate”.
 
 Forge still owns optimization/certification/apply lifecycle. Tuning hands the exact profile/recipe to Forge and receives resulting evidence.
 
+### 9.8 Layer-wise profiles (schema 2)
+
+Issue #225 refines the semantic regions of 9.2 into stable layer groups. A schema 2 profile holds one choice for every group of the exact source analysis; the schema 1 profile (one choice per region) remains readable and buildable.
+
+**Groups.** The analyzer (`clef-qwen3.5/2`) partitions each region by transformer block: `block.NN.linear-attn`, `block.NN.linear-attn.decay-gate`, `block.NN.linear-attn.beta-gate`, `block.NN.full-attn`, `block.NN.mlp`, plus `output-embeddings`, `vision-tower` and `joint-schema-head`. Identifiers derive from the declared layout, never from tensor names. For the pinned Clef-Flash revision this is 32 blocks (24 linear-attention, 8 full-attention) and 115 groups over 359 Linear modules. The analysis digest covers the groups, so a saved profile cannot apply to another revision or to a structurally different model.
+
+**Policies.** A group is AUTO or carries one named policy from an ordered set that contains only what the optimizer executes today:
+
+| rank | policy | transformation |
+| --- | --- | --- |
+| 0 | `source-precision` | the group's Linear modules stay at the source precision (bfloat16) |
+| 1 | `w4a16` | weight-only int4, symmetric, group size 128, round to nearest |
+
+Two policies are a discrete choice, not a slider; a slider is admissible only for a longer ordered set whose every position is a named, executable policy. Other precisions (for example W8A16) are not offered: the optimizer writes one compressed-tensors quantization group, `setup.CheckPreserved` refuses any variant whose saved config is not that single group, and the only per-module selector the backend addresses is its ignore list. Per-group mixed precision therefore requires an accepted backend change first.
+
+**AUTO and required groups.** AUTO resolves to the canonical recipe's policy (`clef-auto/1`): W4A16 for the backbone projections. The groups the canonical contract always preserves (both linear-attention gates, output embeddings, vision tower, joint head) are required: they have no control and an override is rejected, so a profile can never quantize them.
+
+**Plan and identity.** Compiling a profile resolves a plan: for every group the requested policy (`auto` or the override), the effective policy, AUTO versus OVERRIDDEN, and the basis. The plan digest is recorded in the build provenance (`hachidori.tuning-provenance/2`), so the complete effective profile, AUTO resolutions included, is part of the BuildID and the variant ID; an override that restates AUTO leaves the recipe unchanged but is a different effective profile. A profile also records the canonical recipe it was authored against and is refused if that recipe changes.
+
+**Validation before a build.** Unsupported policies, overrides of required groups, a profile that would quantize nothing, a profile bound to another source, structure or recipe are refused when the profile is saved and again while Forge resolves its inputs, before preflight and before the optimizer starts.
+
+**Evidence.** The optimizer builder checks the optimizer's own report against the plan before anything is digested and refuses a build whose applied transformation differs from the resolved policy of any group. It then writes `hachidori-tuning-evidence.json` into the variant (covered by the variant digests): for every group the requested and effective policy, AUTO or OVERRIDDEN, the transformation applied and the written dtype of preserved modules.
+
+**Baseline comparison.** The Tuning page lists the groups whose effective policy differs from the baseline: the accepted baseline's applied evidence, or the canonical recipe's all-AUTO resolution when the baseline was built by the canonical recipe, and NOT_CHECKED when neither is known. For a built candidate it shows accuracy, fidelity, latency, VRAM and artifact size beside the accepted baseline (the active variant when its certification is accepted), each MEASURED or NOT_CHECKED; evaluated figures are compared only when both come from the same dataset and questions.
+
+**Migration.** A schema 1 profile is shown as its exact schema 2 equivalent: every group of a pinned region becomes an override to `source-precision`, everything else is AUTO, pins on regions the canonical contract already requires are recorded as redundant. Migration is refused unless the current analysis describes the same declared layout and both compile to the same set of preserved modules. The legacy profile is never changed; saving the equivalent creates a new profile that names its lineage.
+
 ## 10. Evidence feedback loop
 
 The target product loop is:

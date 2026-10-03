@@ -31,6 +31,10 @@ type Request struct {
 	// it is the canonical recipe produced by the tuning compiler.
 	CompiledRecipe *home.Recipe
 	Tuning         *home.TuningProvenance
+	// Plan is the resolved layer-wise policy of every group. It is set exactly
+	// when Tuning is layer-wise (schema 2): the build applies the plan and
+	// refuses to publish a variant whose applied transformations differ from it.
+	Plan *home.TuningPlan
 	// Reproduce rebuilds a contract that already has a published variant and
 	// compares the new artifacts with it, publishing nothing.
 	Reproduce bool
@@ -133,8 +137,8 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	src := home.SourceOf(model)
 	recipe := canonical
 	if req.Tuning == nil {
-		if req.CompiledRecipe != nil {
-			return Result{}, errors.New("a compiled tuning recipe requires exact tuning provenance")
+		if req.CompiledRecipe != nil || req.Plan != nil {
+			return Result{}, errors.New("a compiled tuning recipe or plan requires exact tuning provenance")
 		}
 	} else {
 		if req.CompiledRecipe == nil {
@@ -152,6 +156,9 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 		}
 		if err := compiled.Validate(); err != nil {
 			return Result{}, fmt.Errorf("compiled tuning recipe: %w", err)
+		}
+		if err := checkPlan(req, compiled); err != nil {
+			return Result{}, err
 		}
 		recipe = compiled
 	}
@@ -241,6 +248,13 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	opt.Versions = engine.Versions
 
 	enter(setup.PhaseVerifying)
+	if req.Plan != nil {
+		// What the optimizer did to every group is verified against what the plan
+		// resolved before anything is digested: a mismatch is never published.
+		if err := writeTuningEvidence(stage, model, *req.Plan); err != nil {
+			return Result{}, err
+		}
+	}
 	files, err := setup.DigestTree(stage, nil, obs)
 	if err != nil {
 		return Result{}, fmt.Errorf("digesting the optimizer output: %w", err)

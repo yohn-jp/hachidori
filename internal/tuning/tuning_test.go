@@ -40,9 +40,12 @@ func clefLayout() DeclaredLayout {
 	}
 }
 
+// clefAnalysis is the legacy (schema 1) analysis: the tests of this file and of
+// feedback_test.go cover the legacy coarse profile, which must keep working.
+// The layer-wise contract is covered by layerwise_test.go.
 func clefAnalysis(t *testing.T) Analysis {
 	t.Helper()
-	analysis, err := Analyze(clefSource(t), clefLayout())
+	analysis, err := AnalyzeLegacy(clefSource(t), clefLayout())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,21 +54,21 @@ func clefAnalysis(t *testing.T) Analysis {
 
 func TestAnalyzeClefIsDeterministicAndSourceBound(t *testing.T) {
 	source, layout := clefSource(t), clefLayout()
-	first, err := Analyze(source, layout)
+	first, err := AnalyzeLegacy(source, layout)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for left, right := 0, len(layout.LinearModules)-1; left < right; left, right = left+1, right-1 {
 		layout.LinearModules[left], layout.LinearModules[right] = layout.LinearModules[right], layout.LinearModules[left]
 	}
-	second, err := Analyze(source, layout)
+	second, err := AnalyzeLegacy(source, layout)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(first.Canonical(), second.Canonical()) || first.SHA256() != second.SHA256() {
 		t.Fatal("equivalent declared layouts produced different analyses")
 	}
-	if first.Schema != AnalysisSchema || first.Source != home.SourceOf(source) || first.AnalyzerVersion != ClefAnalyzerVersion {
+	if first.Schema != AnalysisSchemaV1 || first.Source != home.SourceOf(source) || first.AnalyzerVersion != ClefAnalyzerVersionV1 || len(first.Groups) != 0 {
 		t.Fatalf("analysis is not bound to the exact source and analyzer: %+v", first)
 	}
 	if len(first.Regions) != len(requiredRegions) {
@@ -74,14 +77,14 @@ func TestAnalyzeClefIsDeterministicAndSourceBound(t *testing.T) {
 
 	changed := source
 	changed.Revision = strings.Repeat("0", len(source.Revision))
-	if _, err := Analyze(changed, clefLayout()); err == nil {
+	if _, err := AnalyzeLegacy(changed, clefLayout()); err == nil {
 		t.Fatal("analysis accepted a different source revision")
 	}
 }
 
 func TestDefaultAutoCompilesCanonicalRecipeAndExactEvidence(t *testing.T) {
 	analysis := clefAnalysis(t)
-	profile, err := NewDefaultProfile(analysis, "balanced typed decisions")
+	profile, err := NewLegacyProfile(analysis, "balanced typed decisions")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +99,7 @@ func TestDefaultAutoCompilesCanonicalRecipeAndExactEvidence(t *testing.T) {
 	if !bytes.Equal(compiled.Recipe.Canonical(), baseline.Canonical()) {
 		t.Fatalf("default Auto changed canonical recipe:\n%s\n%s", compiled.Recipe.Canonical(), baseline.Canonical())
 	}
-	if compiled.Evidence.Source != analysis.Source || compiled.Evidence.AnalyzerVersion != ClefAnalyzerVersion || compiled.Evidence.CompilerVersion != RecipeCompilerVersion || compiled.Evidence.ProfileSHA256 != profile.SHA256() {
+	if compiled.Evidence.Source != analysis.Source || compiled.Evidence.AnalyzerVersion != ClefAnalyzerVersionV1 || compiled.Evidence.CompilerVersion != RecipeCompilerVersionV1 || compiled.Evidence.ProfileSHA256 != profile.SHA256() {
 		t.Fatalf("compiler evidence is not bound to its inputs: %+v", compiled.Evidence)
 	}
 	decay := regionMapping(t, compiled.Evidence, RegionLinearAttentionDecay)
@@ -114,7 +117,7 @@ func TestDefaultAutoCompilesCanonicalRecipeAndExactEvidence(t *testing.T) {
 
 func TestPinnedSemanticRegionChangesCanonicalIdentity(t *testing.T) {
 	analysis := clefAnalysis(t)
-	profile, err := NewDefaultProfile(analysis, "preserve full attention at source precision")
+	profile, err := NewLegacyProfile(analysis, "preserve full attention at source precision")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +147,7 @@ func TestPinnedSemanticRegionChangesCanonicalIdentity(t *testing.T) {
 
 func TestProfileValidationRejectsUnknownAndMismatchedInputs(t *testing.T) {
 	analysis := clefAnalysis(t)
-	valid, err := NewDefaultProfile(analysis, "balanced")
+	valid, err := NewLegacyProfile(analysis, "balanced")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +180,7 @@ func TestProfileValidationRejectsUnknownAndMismatchedInputs(t *testing.T) {
 func TestStoredAnalysisAndProfileAreImmutableAndSourceBound(t *testing.T) {
 	h := home.Home{Root: t.TempDir()}
 	analysis := clefAnalysis(t)
-	profile, err := NewDefaultProfile(analysis, "balanced")
+	profile, err := NewLegacyProfile(analysis, "balanced")
 	if err != nil {
 		t.Fatal(err)
 	}

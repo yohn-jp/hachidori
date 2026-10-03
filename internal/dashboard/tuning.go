@@ -16,12 +16,14 @@ import (
 )
 
 // The Tuning workspace: model-engineering intent. It edits and persists a
-// versioned semantic profile (an objective and a preservation choice for each
-// backend-analyzed region) and hands that exact saved profile to Forge. It
-// never runs, sequences or inspects the optimizer: the regions, the profile
-// store, the recipe compiler and the build are the typed tuning authority's.
-// Generated module mappings and the recipe stay in Details/Evidence, and every
-// impact figure states whether it was measured, estimated or not checked.
+// versioned layer-wise profile (an objective and, for each stable group of the
+// backend-analyzed model, AUTO or one named policy the optimizer executes) and
+// hands that exact saved profile to Forge. It never runs, sequences or
+// inspects the optimizer: the groups, the profile store, the recipe compiler
+// and the build are the typed tuning authority's. A stored legacy coarse
+// profile is shown as its exact layer-wise equivalent. Generated module
+// mappings and the recipe stay in Details/Evidence, and every impact figure
+// states whether it was measured, estimated or not checked.
 
 // Tuning is the typed tuning authority the dashboard edits through
 // (internal/tuning over HACHIDORI_HOME, hosted by the application).
@@ -39,6 +41,10 @@ type Tuning interface {
 	// say about the exact profile. It is advisory: every value carries its
 	// state, and the dashboard shows nothing it does not state.
 	Impact(tuning.Profile, tuning.Analysis, tuning.Compilation) (TuningImpact, error)
+	// Candidate reports the candidate built from the exact profile (its
+	// applied per-group evidence and measured figures) beside the accepted
+	// baseline. A figure without a record is NOT_CHECKED, never estimated.
+	Candidate(tuning.Profile, tuning.Compilation) (TuningCandidate, error)
 }
 
 // ImpactValue is one projected consequence of a profile. State is Measured
@@ -126,10 +132,12 @@ type TuningImpactRow struct {
 	ImpactValue
 }
 
-// TuningProfileRow is one saved profile of the source.
+// TuningProfileRow is one saved profile of the source. Overrides counts the
+// groups a layer-wise profile overrides, or the regions a legacy profile pins.
 type TuningProfileRow struct {
 	ID, Objective string
-	Pinned        int
+	Overrides     int
+	Legacy        bool
 	Current       bool
 }
 
@@ -137,8 +145,13 @@ type TuningProfileRow struct {
 // profile: the generated mappings and recipe identity. It is never an input.
 type TuningEvidenceView struct {
 	Recipe, RecipeSHA256, CompilerVersion string
-	Regions                               []tuning.RegionMapping
-	Preserved                             []tuning.PreservedMapping
+	// AutoPolicy and PlanSHA256 identify the resolved layer-wise plan: the
+	// complete effective policy, AUTO resolutions included. Empty for a legacy
+	// profile.
+	AutoPolicy, PlanSHA256 string
+	Plan                   []home.TuningGroupPlan
+	Regions                []tuning.RegionMapping
+	Preserved              []tuning.PreservedMapping
 }
 
 // TuningView is the Tuning workspace view model.
@@ -159,7 +172,22 @@ type TuningView struct {
 	Saved                                            bool
 
 	Regions []TuningRegionRow
-	Pinned  int
+	// Layerwise is true for the layer-wise editor; the shown profile is always
+	// layer-wise, a legacy one appears as Legacy's equivalent.
+	Layerwise bool
+	Policies  []TuningPolicyOption
+	Families  []TuningFamilyRow
+	Summary   TuningSummary
+	Legacy    *TuningLegacyView
+	// Changes lists the groups whose policy differs from the baseline's, and
+	// ChangesBasis names the baseline (or says why none can be stated).
+	Changes      []TuningChangeRow
+	ChangesBasis string
+	ChangesNote  string
+	Candidate    *TuningCandidateView
+	Bulk         TuningBulkForm
+	Notice       string // the outcome of the last editor operation
+	NoticeBad    bool
 	// PreservedRegions counts the regions the compiled profile keeps at
 	// source precision (pinned or preserved by the canonical policy).
 	PreservedRegions int
@@ -210,10 +238,17 @@ func objectiveLabel(id string) string {
 	return id
 }
 
-func pinnedCount(p tuning.Profile) int {
+// overrideCount is the number of groups a layer-wise profile overrides, or of
+// regions a legacy profile pins.
+func overrideCount(p tuning.Profile) int {
 	n := 0
 	for _, c := range p.Preservation {
 		if c.Mode == tuning.PreservationPinned {
+			n++
+		}
+	}
+	for _, c := range p.Groups {
+		if c.Mode == tuning.GroupOverride {
 			n++
 		}
 	}
@@ -260,14 +295,10 @@ func (d *Dashboard) tuningPage(w http.ResponseWriter, r *http.Request) {
 			profileID = ctx.ProfileID
 		}
 	}
-	v.Tuning = d.tuningView(mv, source, profileID)
-	v.Tuning.Envelope = d.envelopeOf(v)
-	if len(v.Tuning.Impact) > 1 {
-		v.Tuning.Fit = fitOfTuning(v.Tuning)
-		v.Tuning.AdvancedOpen = v.Tuning.Fit.Blocked()
-	}
+	v.Tuning = d.tuningView(mv, source, profileID, nil)
+	d.finishTuning(&v)
 	defer func() {
-		v.Tuning.AdvancedDisclosure = DisclosureProjection{ID: "tuning-advanced", Label: "Semantic preservation", Open: v.Tuning.AdvancedOpen}
+		v.Tuning.AdvancedDisclosure = DisclosureProjection{ID: "tuning-advanced", Label: "Layer-wise policy", Open: v.Tuning.AdvancedOpen}
 		d.renderView(w, "tuning", v)
 	}()
 	switch {
@@ -276,6 +307,23 @@ func (d *Dashboard) tuningPage(w http.ResponseWriter, r *http.Request) {
 	case handedOver:
 		v.Tuning.Context = d.tuningContextView(v.Tuning, q, ctx, ctxErr)
 	}
+}
+
+// finishTuning places the shown profile against the device envelope and
+// builds the editor's disclosure. Callers that edit open it themselves.
+func (d *Dashboard) finishTuning(v *view) {
+	v.Tuning.Envelope = d.envelopeOf(*v)
+	if len(v.Tuning.Impact) > 1 {
+		v.Tuning.Fit = fitOfTuning(v.Tuning)
+		v.Tuning.AdvancedOpen = v.Tuning.AdvancedOpen || v.Tuning.Fit.Blocked()
+	}
+	v.Tuning.AdvancedDisclosure = DisclosureProjection{ID: "tuning-advanced", Label: "Layer-wise policy", Open: v.Tuning.AdvancedOpen}
+}
+
+// shows reports whether the page shows the profile with the given identity:
+// the saved profile itself, or the layer-wise equivalent of that legacy one.
+func (tv *TuningView) shows(profileID string) bool {
+	return tv.Saved && tv.ProfileID == profileID || tv.Legacy != nil && tv.Legacy.ID == profileID
 }
 
 // tuningContextView binds a resolved context to the profile the page shows and
@@ -287,7 +335,7 @@ func (d *Dashboard) tuningContextView(tv *TuningView, q url.Values, ctx tuning.E
 		return cv
 	}
 	cv.Context, cv.Regression, cv.Handoff = ctx, ctx.Regression, handoffValues(q)
-	if !tv.Saved || tv.ProfileID != ctx.ProfileID {
+	if !tv.shows(ctx.ProfileID) {
 		cv.Refused = "The profile named by the evidence context cannot be shown, so the context informs nothing."
 		return cv
 	}
@@ -306,14 +354,19 @@ func (d *Dashboard) tuningContextView(tv *TuningView, q url.Values, ctx tuning.E
 		for i := range tv.Regions {
 			tv.Regions[i].Recommended = tv.Regions[i].ID == cv.Recommendation.RegionID
 		}
+		for i := range tv.Families {
+			tv.Families[i].Recommended = tv.Families[i].ID == cv.Recommendation.RegionID
+		}
 	}
 	return cv
 }
 
 // tuningView projects the tuning authority's state for one source and,
-// optionally, one saved profile. Without a saved profile it shows the initial
-// all-Auto profile, labelled as unsaved: nothing is invented or remembered.
-func (d *Dashboard) tuningView(mv *ModelsView, source, profileID string) *TuningView {
+// optionally, one saved profile or an unsaved draft. Without either it shows
+// the initial all-AUTO profile, labelled as unsaved: nothing is invented or
+// remembered. A stored legacy coarse profile is shown as its exact
+// layer-wise equivalent (tuning.MigrateProfile), labelled as an upgrade.
+func (d *Dashboard) tuningView(mv *ModelsView, source, profileID string, draft *tuning.Profile) *TuningView {
 	tv := &TuningView{Sources: tuningSources(mv), Objectives: TuningObjectives, Objective: "balanced",
 		EvidenceDisclosure: DisclosureProjection{ID: "tuning-evidence-details", Label: "Generated mappings and recipe"}}
 	if source == "" && len(tv.Sources) > 0 {
@@ -350,13 +403,34 @@ func (d *Dashboard) tuningView(mv *ModelsView, source, profileID string) *Tuning
 	if err != nil {
 		tv.Err = "Saved profiles are unavailable: " + err.Error()
 	}
+	isSaved := func(id string) bool {
+		return slices.ContainsFunc(saved, func(p tuning.Profile) bool { return p.ID() == id })
+	}
 	var profile tuning.Profile
 	switch {
+	case draft != nil:
+		profile, tv.Saved = *draft, isSaved(draft.ID())
 	case profileID != "":
 		p, a, err := t.LoadProfile(profileID)
 		switch {
 		case err != nil:
 			tv.Err = "Saved profile " + short12(profileID) + " cannot be used: " + err.Error()
+		case p.Schema == tuning.ProfileSchemaV1:
+			migrated, merr := tuning.MigrateProfile(p, a, analysis)
+			if merr != nil {
+				tv.Err = "Legacy profile " + short12(profileID) + " cannot be upgraded to a layer-wise profile: " + merr.Error()
+				break
+			}
+			profile, tv.Saved = migrated, isSaved(migrated.ID())
+			tv.Legacy = &TuningLegacyView{ID: p.ID(), Objective: p.Objective, UpgradedID: migrated.ID(), UpgradedSaved: tv.Saved}
+			for _, region := range analysis.Regions {
+				if p.Preservation[region.ID].Mode == tuning.PreservationPinned {
+					tv.Legacy.Pinned = append(tv.Legacy.Pinned, region.ID)
+				}
+			}
+			if migrated.MigratedFrom != nil {
+				tv.Legacy.Redundant = migrated.MigratedFrom.RedundantPins
+			}
 		case p.Source != analysis.Source || a.SHA256() != analysis.SHA256():
 			tv.Err = "Saved profile " + short12(profileID) + " is not bound to the current analysis of " + source + "."
 		default:
@@ -364,26 +438,28 @@ func (d *Dashboard) tuningView(mv *ModelsView, source, profileID string) *Tuning
 		}
 	default:
 		for _, p := range saved {
-			if p.Source == analysis.Source && p.AnalysisSHA256 == analysis.SHA256() {
+			if p.Schema == tuning.ProfileSchema && p.Source == analysis.Source && p.AnalysisSHA256 == analysis.SHA256() {
 				profile, tv.Saved = p, true
 				break
 			}
 		}
 	}
-	if !tv.Saved {
+	if profile.Schema == "" {
 		p, err := tuning.NewDefaultProfile(analysis, tv.Objective)
 		if err != nil {
 			tv.Err = "The initial profile cannot be created: " + err.Error()
 			return tv
 		}
-		profile = p
+		profile, tv.Saved = p, false
 	}
 	compiled, err := tuning.Compile(profile, analysis)
 	if err != nil {
 		tv.Err = "The profile cannot be compiled: " + err.Error()
 		return tv
 	}
-	tv.Objective, tv.Pinned = profile.Objective, pinnedCount(profile)
+	tv.Layerwise = true
+	tv.Policies = tuningPolicies()
+	tv.Objective = profile.Objective
 	tv.AnalyzerVersion, tv.AnalysisSHA256, tv.CompilerVersion = analysis.AnalyzerVersion, analysis.SHA256(), profile.CompilerVersion
 	tv.ProfileSchema, tv.ProfileID = profile.Schema, profile.ID()
 	if !slices.Contains(tv.Objectives, profile.Objective) {
@@ -399,28 +475,71 @@ func (d *Dashboard) tuningView(mv *ModelsView, source, profileID string) *Tuning
 		if !ok {
 			text.Label, text.Purpose = region.ID, region.Description
 		}
+		m := mapping[region.ID]
 		row := TuningRegionRow{ID: region.ID, Label: text.Label, Purpose: text.Purpose, Modules: len(region.Modules), Files: len(region.Files),
-			Pinned: profile.Preservation[region.ID].Mode == tuning.PreservationPinned, Effective: Auto}
-		switch m := mapping[region.ID]; {
-		case row.Pinned:
-			row.Effective, row.Note = Preserved, "Pinned by this profile at source precision."
+			Pinned: m.Mode == tuning.PreservationPinned || m.Mode == tuning.PreservationOverride, Effective: Auto}
+		switch {
+		case m.Preserved && row.Pinned:
+			row.Effective, row.Note = Preserved, "Every tunable group is overridden to source precision."
 		case m.Preserved:
-			row.Effective, row.Note = Preserved, "Auto: the canonical policy already preserves this region."
+			row.Effective, row.Note = Preserved, "Required: the canonical policy preserves this region."
+		case m.Mode == tuning.PreservationMixed || row.Pinned:
+			row.Note = "Some groups are overridden; the rest follow AUTO."
 		default:
-			row.Note = "Auto: the canonical policy quantizes this region."
+			row.Note = "AUTO: the canonical policy quantizes this region."
 		}
 		if row.Effective == Preserved {
 			tv.PreservedRegions++
 		}
 		tv.Regions = append(tv.Regions, row)
 	}
+	tv.Families, tv.Summary = layerwiseRows(analysis, profile, *compiled.Plan)
+	tv.Bulk = TuningBulkForm{Policy: home.PolicySourcePrecision, Blocks: blockCount(analysis)}
 	for _, p := range saved {
-		tv.Profiles = append(tv.Profiles, TuningProfileRow{ID: p.ID(), Objective: p.Objective, Pinned: pinnedCount(p), Current: tv.Saved && p.ID() == profile.ID()})
+		tv.Profiles = append(tv.Profiles, TuningProfileRow{ID: p.ID(), Objective: p.Objective, Overrides: overrideCount(p),
+			Legacy: p.Schema == tuning.ProfileSchemaV1, Current: tv.Saved && p.ID() == profile.ID() || tv.Legacy != nil && p.ID() == tv.Legacy.ID})
 	}
 	tv.Impact, tv.memoryUsage = d.tuningImpact(profile, analysis, compiled)
 	tv.Evidence = &TuningEvidenceView{Recipe: compiled.Recipe.Name, RecipeSHA256: compiled.Recipe.SHA256(), CompilerVersion: compiled.Evidence.CompilerVersion,
+		AutoPolicy: compiled.Plan.AutoPolicy, PlanSHA256: compiled.Plan.SHA256(), Plan: compiled.Plan.Groups,
 		Regions: compiled.Evidence.Regions, Preserved: compiled.Evidence.Preserved}
+
+	cand, err := t.Candidate(profile, compiled)
+	if err != nil {
+		cand = TuningCandidate{}
+		tv.ChangesNote = "The accepted baseline and candidate evidence could not be read: " + err.Error()
+	}
+	tv.Candidate = candidateView(cand, *compiled.Plan)
+	if canonical, cerr := canonicalPlan(analysis, profile.Objective); cerr == nil {
+		if policies, basis := baselinePolicies(cand, canonical); policies != nil {
+			tv.Changes, tv.ChangesBasis = planChanges(*compiled.Plan, policies), basis
+		} else {
+			tv.ChangesNote = basis + ", so the change from it is NOT_CHECKED."
+		}
+	}
 	return tv
+}
+
+// canonicalPlan is the all-AUTO resolution: the policy of the canonical recipe.
+func canonicalPlan(analysis tuning.Analysis, objective string) (home.TuningPlan, error) {
+	p, err := tuning.NewDefaultProfile(analysis, objective)
+	if err != nil {
+		return home.TuningPlan{}, err
+	}
+	c, err := tuning.Compile(p, analysis)
+	if err != nil {
+		return home.TuningPlan{}, err
+	}
+	return *c.Plan, nil
+}
+
+// blockCount is the number of transformer blocks the analysis' groups name.
+func blockCount(a tuning.Analysis) int {
+	n := 0
+	for _, g := range a.Groups {
+		n = max(n, g.Layer+1)
+	}
+	return n
 }
 
 // tuningImpact normalizes the authority's projection. An authority that
@@ -459,9 +578,10 @@ func fitOfTuning(tv *TuningView) FitView {
 
 func short12(s string) string { return s[:min(len(s), 12)] }
 
-// tuningProfile builds the profile the form describes from the backend
-// analysis: every choice is Auto unless the form pins that region. The form
-// names regions by identifier only; it can express nothing else.
+// tuningProfile builds the layer-wise profile the form describes from the
+// backend analysis: every group is AUTO unless its field names a policy. The
+// form names groups by their stable identifiers only. A form that carries a
+// legacy profile's identity records that lineage in the profile.
 func (d *Dashboard) tuningProfile(r *http.Request) (string, tuning.Profile, tuning.Analysis, error) {
 	source := strings.TrimSpace(r.PostFormValue("source"))
 	if source == "" {
@@ -479,21 +599,19 @@ func (d *Dashboard) tuningProfile(r *http.Request) (string, tuning.Profile, tuni
 	if err != nil {
 		return source, profile, analysis, err
 	}
-	for key, values := range r.PostForm {
-		id, ok := strings.CutPrefix(key, "region.")
-		if !ok {
-			continue
+	if legacyID := strings.TrimSpace(r.PostFormValue("legacy_profile")); legacyID != "" {
+		legacy, legacyAnalysis, err := d.cfg.Tuning.LoadProfile(legacyID)
+		if err != nil {
+			return source, profile, analysis, fmt.Errorf("the legacy profile %s cannot be loaded: %w", short12(legacyID), err)
 		}
-		if _, known := profile.Preservation[id]; !known {
-			return source, profile, analysis, fmt.Errorf("unknown semantic region %q", id)
+		migrated, err := tuning.MigrateProfile(legacy, legacyAnalysis, analysis)
+		if err != nil {
+			return source, profile, analysis, fmt.Errorf("the legacy profile %s cannot be upgraded: %w", short12(legacyID), err)
 		}
-		switch mode := values[len(values)-1]; mode {
-		case string(tuning.PreservationAuto):
-		case string(tuning.PreservationPinned):
-			profile.Preservation[id] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
-		default:
-			return source, profile, analysis, fmt.Errorf("unknown preservation %q for region %q", mode, id)
-		}
+		profile.MigratedFrom = migrated.MigratedFrom
+	}
+	if profile, err = groupPolicyFields(r, profile, analysis); err != nil {
+		return source, profile, analysis, err
 	}
 	return source, profile, analysis, nil
 }
@@ -716,6 +834,17 @@ func (d *Dashboard) tuningAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next, err := tuning.Accept(*rec, profile, analysis)
+	if err == nil && next.Schema == tuning.ProfileSchemaV1 {
+		// A legacy profile's accepted recommendation is saved as its exact
+		// layer-wise equivalent: no new legacy profile is ever created.
+		var current tuning.Analysis
+		if current, err = d.cfg.Tuning.Analysis(source); err == nil {
+			if next, err = tuning.MigrateProfile(next, analysis, current); err == nil {
+				next.MigratedFrom.FromProfileID, next.MigratedFrom.FromAnalysisSHA256 = profile.ID(), analysis.SHA256()
+				analysis = current
+			}
+		}
+	}
 	if err == nil {
 		err = d.cfg.Tuning.SaveProfile(next, analysis)
 	}
@@ -851,9 +980,26 @@ type TuningCompareView struct {
 	ProfileA   string // link to profile A in Tuning
 	ProfileB   string
 	Regions    []TuningRegionChangeRow
+	Groups     []TuningGroupChangeRow
 	Quality    []TuningDeltaRow
 	Resources  []TuningDeltaRow
 	Questions  []TuningDeltaRow
+}
+
+// TuningGroupChangeRow is one layer group whose choice differs between the
+// two layer-wise profiles.
+type TuningGroupChangeRow struct {
+	ID, A, B string
+}
+
+func groupChoiceLabel(c tuning.GroupChoice) string {
+	switch c.Mode {
+	case tuning.GroupAuto:
+		return "AUTO"
+	case tuning.GroupOverride:
+		return policyLabel(c.Policy)
+	}
+	return "Absent"
 }
 
 func preservationLabel(c tuning.PreservationChoice) string {
@@ -882,7 +1028,7 @@ func (d *Dashboard) tuningCompareView(tv *TuningView, cmp tuning.CandidateCompar
 		return cv
 	}
 	cv.Comparison = cmp
-	if !tv.Saved || tv.ProfileID != cmp.B.ProfileID {
+	if !tv.shows(cmp.B.ProfileID) {
 		cv.Refused = "The profile of candidate B cannot be shown, so the comparison informs nothing."
 		return cv
 	}
@@ -905,6 +1051,9 @@ func (d *Dashboard) tuningCompareView(tv *TuningView, cmp tuning.CandidateCompar
 		return cv
 	}
 	cv.ProfileA, cv.ProfileB = tuningLocation(tv.Source, pa.ID()), tuningLocation(tv.Source, pb.ID())
+	for _, c := range cv.Delta.Groups {
+		cv.Groups = append(cv.Groups, TuningGroupChangeRow{ID: c.GroupID, A: groupChoiceLabel(c.A), B: groupChoiceLabel(c.B)})
+	}
 	for _, c := range cv.Delta.Regions {
 		label := c.RegionID
 		if text, ok := regionCopy[c.RegionID]; ok {

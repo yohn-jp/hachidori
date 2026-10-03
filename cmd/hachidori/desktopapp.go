@@ -960,7 +960,7 @@ func (s tuningStore) Impact(p tuning.Profile, a tuning.Analysis, c tuning.Compil
 		Size: none("no candidate built from this profile"), Memory: none("no candidate built from this profile"),
 		Latency: none("no candidate built from this profile"), Fidelity: none("no candidate built from this profile"),
 	}
-	v, vdir, ok := tunedVariant(h, p)
+	v, vdir, ok := tunedVariant(h, p, tuningPlanSHA(c))
 	if !ok {
 		if est, bytes, err := estimateSize(dir, m, c); err == nil {
 			imp.Size = est
@@ -1028,9 +1028,18 @@ func residentWeights(v home.VariantManifest, rel string) bool {
 
 func gib(b int64) string { return fmt.Sprintf("%.2f GiB", float64(b)/(1<<30)) }
 
+func tuningPlanSHA(c tuning.Compilation) string {
+	if c.Plan == nil {
+		return ""
+	}
+	return c.Plan.SHA256()
+}
+
 // tunedVariant is the latest variant whose build provenance names exactly this
-// profile.
-func tunedVariant(h home.Home, p tuning.Profile) (home.VariantManifest, string, bool) {
+// profile and resolved plan. A layer-wise profile can keep the same profile ID
+// across AUTO-policy revisions, so ProfileID alone is not enough to identify
+// the candidate represented by the current compilation.
+func tunedVariant(h home.Home, p tuning.Profile, planSHA256 string) (home.VariantManifest, string, bool) {
 	entries, err := os.ReadDir(h.VariantsDir(p.Source.ID))
 	if err != nil {
 		return home.VariantManifest{}, "", false
@@ -1043,7 +1052,7 @@ func tunedVariant(h home.Home, p tuning.Profile) (home.VariantManifest, string, 
 		}
 		dir := h.VariantDir(p.Source.ID, e.Name())
 		v, err := home.ReadVariant(dir)
-		if err != nil || v.Tuning == nil || v.Tuning.ProfileID != p.ID() || v.Source != p.Source {
+		if err != nil || v.Tuning == nil || v.Tuning.ProfileID != p.ID() || v.Source != p.Source || v.Tuning.PlanSHA256 != planSHA256 {
 			continue
 		}
 		if bestDir == "" || v.Creation.CreatedAt > best.Creation.CreatedAt {

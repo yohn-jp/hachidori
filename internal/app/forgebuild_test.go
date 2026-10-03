@@ -304,7 +304,9 @@ func TestForgeBuildEvaluatePlansASavedTuningProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile.Preservation[tuning.RegionFeedForward] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
+	if profile, err = tuning.SetPolicy(profile, analysis, []string{"block.00.mlp"}, home.PolicySourcePrecision); err != nil {
+		t.Fatal(err)
+	}
 	if err := tuning.SaveProfile(e.h, profile, analysis); err != nil {
 		t.Fatal(err)
 	}
@@ -322,9 +324,32 @@ func TestForgeBuildEvaluatePlansASavedTuningProfile(t *testing.T) {
 		plan.recipe.SHA256() != compiled.Recipe.SHA256() || plan.resolution.Recipe != compiled.Recipe.Name {
 		t.Fatalf("plan does not build the exact profile: %+v", plan.optimization)
 	}
+	// Forge receives the exact resolved fine-grained policy, and the build
+	// contract names its digest.
+	got := plan.optimization.Plan
+	if got == nil || got.SHA256() != compiled.Plan.SHA256() || plan.optimization.Tuning.PlanSHA256 != compiled.Plan.SHA256() || plan.optimization.Tuning.Schema != home.TuningProvenanceSchema {
+		t.Fatalf("Forge did not receive the resolved plan: %+v", plan.optimization)
+	}
+	for _, g := range got.Groups {
+		if g.ID == "block.00.mlp" && (g.Selection != home.SelectionOverridden || g.Effective != home.PolicySourcePrecision) {
+			t.Errorf("the override is not in the plan Forge receives: %+v", g)
+		}
+	}
 	p.TuningProfile = strings.Repeat("a", 64)
 	if _, err := resolveForgeBuildPlan(e.h, p); err == nil {
 		t.Fatal("an unknown tuning profile was planned")
+	}
+
+	// A stored profile that is no longer valid for the current canonical contract
+	// is refused while inputs are resolved, before preflight or any build.
+	stale := profile
+	stale.RecipeSHA256 = strings.Repeat("0", 64)
+	if err := home.WriteJSON(e.h.Path("state", "tuning", "profiles", stale.ID()+".json"), stale); err != nil {
+		t.Fatal(err)
+	}
+	p.TuningProfile = stale.ID()
+	if _, err := resolveForgeBuildPlan(e.h, p); err == nil || !strings.Contains(err.Error(), "canonical recipe") {
+		t.Fatalf("a profile bound to another recipe was planned: %v", err)
 	}
 }
 

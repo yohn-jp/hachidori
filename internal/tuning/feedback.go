@@ -151,9 +151,24 @@ func Recommend(ctx EvidenceContext, profile Profile, analysis Analysis) (*Recomm
 	for _, m := range compiled.Evidence.Regions {
 		preserved[m.RegionID] = m.Preserved
 	}
+	// A region is open when the profile still leaves something of it to AUTO
+	// quantization: a legacy region left Auto and not preserved by the
+	// canonical policy, or a layer-wise region with an AUTO group resolved to
+	// the quantizing policy.
+	autoQuantized := map[string]bool{}
+	if compiled.Plan != nil {
+		for _, g := range compiled.Plan.Groups {
+			if g.Selection == home.SelectionAuto && g.Effective == home.PolicyW4A16 {
+				autoQuantized[g.Region] = true
+			}
+		}
+	}
 	var open []string
 	for _, id := range recommendable {
-		if _, ok := modules[id]; ok && !preserved[id] && profile.Preservation[id].Mode == PreservationAuto {
+		if _, ok := modules[id]; !ok {
+			continue
+		}
+		if profile.Schema == ProfileSchema && autoQuantized[id] || profile.Schema == ProfileSchemaV1 && !preserved[id] && profile.Preservation[id].Mode == PreservationAuto {
 			open = append(open, id)
 		}
 	}
@@ -194,6 +209,9 @@ func Accept(rec Recommendation, profile Profile, analysis Analysis) (Profile, er
 	if !contains(recommendable, rec.RegionID) || rec.From != PreservationAuto || rec.To != PreservationPinned {
 		return Profile{}, fmt.Errorf("recommendation to change region %q is not supported", rec.RegionID)
 	}
+	if profile.Schema == ProfileSchema {
+		return acceptLayerwise(rec, profile, analysis)
+	}
 	if profile.Preservation[rec.RegionID].Mode != PreservationAuto {
 		return Profile{}, fmt.Errorf("region %q is already pinned by the profile", rec.RegionID)
 	}
@@ -203,6 +221,29 @@ func Accept(rec Recommendation, profile Profile, analysis Analysis) (Profile, er
 		next.Preservation[id] = choice
 	}
 	next.Preservation[rec.RegionID] = PreservationChoice{Mode: PreservationPinned, Precision: PreservedPrecision}
+	if _, err := Compile(next, analysis); err != nil {
+		return Profile{}, err
+	}
+	return next, nil
+}
+
+// acceptLayerwise applies a recommendation to a layer-wise profile: every group
+// of the region that the profile still leaves to AUTO becomes an explicit
+// source-precision override. Groups the operator already set are untouched.
+func acceptLayerwise(rec Recommendation, profile Profile, analysis Analysis) (Profile, error) {
+	var ids []string
+	for _, g := range analysis.Groups {
+		if g.Region == rec.RegionID && profile.Groups[g.ID].Mode == GroupAuto {
+			ids = append(ids, g.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return Profile{}, fmt.Errorf("region %q is already set by the profile", rec.RegionID)
+	}
+	next, err := SetPolicy(profile, analysis, ids, home.PolicySourcePrecision)
+	if err != nil {
+		return Profile{}, err
+	}
 	if _, err := Compile(next, analysis); err != nil {
 		return Profile{}, err
 	}
@@ -300,11 +341,26 @@ type RegionChange struct {
 // two profiles only.
 type ProfileDelta struct {
 	A, B                   string // profile identities
+	SchemaA, SchemaB       string
 	ObjectiveA, ObjectiveB string
 	AnalysisA, AnalysisB   string
 	CompilerA, CompilerB   string
-	Regions                []RegionChange // by region id
+	Regions                []RegionChange // by region id (legacy coarse profiles)
+	Groups                 []GroupChange  // by group id (layer-wise profiles)
 }
+
+// GroupChange is one layer group whose choice differs between two layer-wise
+// profiles. A choice with an empty Mode means the profile has no choice for
+// the group.
+type GroupChange struct {
+	GroupID string
+	A, B    GroupChoice
+}
+
+// SchemaChanged reports whether the profiles use different schemas (a legacy
+// coarse profile and a layer-wise one), so that no group or region difference
+// is defined between them.
+func (d ProfileDelta) SchemaChanged() bool { return d.SchemaA != d.SchemaB }
 
 // Identical reports whether the profiles are the same profile.
 func (d ProfileDelta) Identical() bool { return d.A == d.B }
@@ -327,8 +383,31 @@ func DiffProfiles(a, b Profile) (ProfileDelta, error) {
 	if a.Source != b.Source {
 		return ProfileDelta{}, fmt.Errorf("profiles are for different sources: %s@%s and %s@%s", a.Source.ID, a.Source.Revision, b.Source.ID, b.Source.Revision)
 	}
-	d := ProfileDelta{A: a.ID(), B: b.ID(), ObjectiveA: a.Objective, ObjectiveB: b.Objective,
+	d := ProfileDelta{A: a.ID(), B: b.ID(), SchemaA: a.Schema, SchemaB: b.Schema, ObjectiveA: a.Objective, ObjectiveB: b.Objective,
 		AnalysisA: a.AnalysisSHA256, AnalysisB: b.AnalysisSHA256, CompilerA: a.CompilerVersion, CompilerB: b.CompilerVersion}
+	if a.Schema != b.Schema {
+		return d, nil
+	}
+	if a.Schema == ProfileSchema {
+		ids := map[string]bool{}
+		for id := range a.Groups {
+			ids[id] = true
+		}
+		for id := range b.Groups {
+			ids[id] = true
+		}
+		sorted := make([]string, 0, len(ids))
+		for id := range ids {
+			sorted = append(sorted, id)
+		}
+		sort.Strings(sorted)
+		for _, id := range sorted {
+			if x, y := a.Groups[id], b.Groups[id]; x != y {
+				d.Groups = append(d.Groups, GroupChange{GroupID: id, A: x, B: y})
+			}
+		}
+		return d, nil
+	}
 	ids := map[string]bool{}
 	for id := range a.Preservation {
 		ids[id] = true

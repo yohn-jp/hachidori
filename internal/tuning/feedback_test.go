@@ -10,15 +10,16 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 )
 
-// feedbackAnalysis has three linear-attention projection modules against one
-// full-attention module, so the smallest unpreserved supported region is
-// unique. (clefAnalysis ties them at one module each.)
+// feedbackAnalysis is a legacy (schema 1) analysis with three linear-attention
+// projection modules against one full-attention module, so the smallest
+// unpreserved supported region is unique. (clefAnalysis ties them at one module
+// each.)
 func feedbackAnalysis(t *testing.T) Analysis {
 	t.Helper()
 	layout := clefLayout()
 	layout.LinearModules = append(layout.LinearModules,
 		"model.language_model.layers.0.linear_attn.in_proj_z", "model.language_model.layers.0.linear_attn.out_proj")
-	analysis, err := Analyze(clefSource(t), layout)
+	analysis, err := AnalyzeLegacy(clefSource(t), layout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +28,7 @@ func feedbackAnalysis(t *testing.T) Analysis {
 
 func defaultProfile(t *testing.T, a Analysis) Profile {
 	t.Helper()
-	p, err := NewDefaultProfile(a, "balanced")
+	p, err := NewLegacyProfile(a, "balanced")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,8 +219,8 @@ func writeTunedVariant(t *testing.T, h home.Home, p Profile, a Analysis, tuned b
 		Files:    map[string]string{"model.safetensors": strings.Repeat("4", 64)},
 		Creation: home.Creation{CreatedAt: "2026-01-01T00:00:00Z", Platform: "linux/amd64", Command: "hachidori variant optimize"}}
 	if tuned {
-		v.Tuning = &home.TuningProvenance{Schema: home.TuningProvenanceSchema, Source: p.Source, ProfileID: p.ID(), ProfileSHA256: p.ID(),
-			AnalysisID: a.ID(), AnalysisSHA256: a.SHA256(), CompilerVersion: RecipeCompilerVersion}
+		prov := Provenance(p, a, c)
+		v.Tuning = &prov
 	}
 	v.Seal()
 	dir := h.VariantDir(p.Source.ID, v.ID)

@@ -1,5 +1,11 @@
 // Package tuning analyzes the supported Clef model layout and compiles
-// semantic preservation profiles into the canonical optimizer recipe.
+// tuning profiles into the canonical optimizer recipe.
+//
+// A profile (schema 2) is layer-wise: it holds one AUTO-or-override choice for
+// every stable layer group of the exact source, each naming a policy the
+// optimizer executes. The legacy coarse profile (schema 1, one choice per
+// semantic region) remains readable and buildable and has a deterministic,
+// equivalence-checked migration into schema 2 (MigrateProfile).
 package tuning
 
 import (
@@ -20,16 +26,28 @@ import (
 )
 
 const (
-	AnalysisSchema = "hachidori.tuning-analysis/1"
-	ProfileSchema  = "hachidori.tuning-profile/1"
+	// AnalysisSchema and ProfileSchema are the current layer-wise contracts;
+	// the V1 schemas are the legacy coarse (per-region) contracts.
+	AnalysisSchema   = "hachidori.tuning-analysis/2"
+	ProfileSchema    = "hachidori.tuning-profile/2"
+	AnalysisSchemaV1 = "hachidori.tuning-analysis/1"
+	ProfileSchemaV1  = "hachidori.tuning-profile/1"
 
 	// ClefAnalyzerVersion identifies the model-family rules used by Analyze.
-	ClefAnalyzerVersion = "clef-qwen3.5/1"
+	ClefAnalyzerVersion = "clef-qwen3.5/2"
 	// RecipeCompilerVersion identifies the rules used by Compile.
-	RecipeCompilerVersion = "home-recipe/1"
+	RecipeCompilerVersion = "home-recipe/2"
+	// The legacy versions, still accepted for stored schema 1 documents.
+	ClefAnalyzerVersionV1   = "clef-qwen3.5/1"
+	RecipeCompilerVersionV1 = "home-recipe/1"
 
 	PreservationAuto   PreservationMode = "auto"
 	PreservationPinned PreservationMode = "pinned"
+	// PreservationOverride and PreservationMixed describe a region of a
+	// layer-wise profile in compiler evidence: every tunable group of the
+	// region is overridden, or only some are.
+	PreservationOverride PreservationMode = "override"
+	PreservationMixed    PreservationMode = "mixed"
 
 	PreservedPrecision = "bfloat16"
 
@@ -72,6 +90,9 @@ type Analysis struct {
 	AnalyzerVersion string             `json:"analyzer_version"`
 	LayoutSHA256    string             `json:"layout_sha256"`
 	Regions         []SemanticRegion   `json:"regions"`
+	// Groups are the stable layer groups (schema 2): a partition of the
+	// regions' members by transformer block and component.
+	Groups []Group `json:"groups,omitempty"`
 }
 
 // PreservationMode controls how one semantic region compiles. Auto retains
@@ -89,13 +110,23 @@ type PreservationChoice struct {
 // Profile is an immutable, versioned tuning request bound to one exact source
 // and one analysis/compiler identity.
 type Profile struct {
-	Schema          string                        `json:"schema"`
-	Objective       string                        `json:"objective"`
-	Source          home.VariantSource            `json:"source"`
-	AnalyzerVersion string                        `json:"analyzer_version"`
-	CompilerVersion string                        `json:"compiler_version"`
-	AnalysisSHA256  string                        `json:"analysis_sha256"`
-	Preservation    map[string]PreservationChoice `json:"preservation"`
+	Schema          string             `json:"schema"`
+	Objective       string             `json:"objective"`
+	Source          home.VariantSource `json:"source"`
+	AnalyzerVersion string             `json:"analyzer_version"`
+	CompilerVersion string             `json:"compiler_version"`
+	AnalysisSHA256  string             `json:"analysis_sha256"`
+	// Preservation is the legacy coarse choice per semantic region (schema 1).
+	Preservation map[string]PreservationChoice `json:"preservation,omitempty"`
+	// Recipe and RecipeSHA256 bind a layer-wise profile to the canonical
+	// recipe whose AUTO policy it resolves against (schema 2).
+	Recipe       string `json:"recipe,omitempty"`
+	RecipeSHA256 string `json:"recipe_sha256,omitempty"`
+	// Groups holds one choice for every group of the analysis (schema 2).
+	Groups map[string]GroupChoice `json:"groups,omitempty"`
+	// MigratedFrom records the legacy profile a schema 2 profile was derived
+	// from.
+	MigratedFrom *Migration `json:"migrated_from,omitempty"`
 }
 
 // RegionMapping is compiler evidence for the exact modules and files in one
@@ -137,6 +168,9 @@ type CompilerEvidence struct {
 type Compilation struct {
 	Recipe   home.Recipe      `json:"recipe"`
 	Evidence CompilerEvidence `json:"evidence"`
+	// Plan is the resolved layer-wise policy of every group; nil for a legacy
+	// coarse profile.
+	Plan *home.TuningPlan `json:"plan,omitempty"`
 }
 
 var layerModuleRE = regexp.MustCompile(`^model\.language_model\.layers\.([0-9]+)\.([^.]+)\.(.+)$`)
@@ -152,37 +186,89 @@ var regionDescriptions = map[string]string{
 	RegionJointSchemaHead:      "separate joint-schema decision head file",
 }
 
-// Analyze produces deterministic semantic regions for the exact catalog
-// Clef-Flash source. It accepts declared metadata/layout only and performs no
-// model download or weight inspection.
+// Analyze produces the deterministic semantic regions and stable layer groups
+// of the exact catalog Clef-Flash source. It accepts declared metadata/layout
+// only and performs no model download or weight inspection.
 func Analyze(source home.ModelManifest, layout DeclaredLayout) (Analysis, error) {
-	identity, err := supportedSource(source)
+	a, canonical, err := analyze(source, layout)
 	if err != nil {
 		return Analysis{}, err
+	}
+	a.Schema, a.AnalyzerVersion = AnalysisSchema, ClefAnalyzerVersion
+	if a.Groups, err = deriveGroups(canonical); err != nil {
+		return Analysis{}, err
+	}
+	return a, nil
+}
+
+// AnalyzeLegacy produces the schema 1 analysis (semantic regions only) that
+// legacy coarse profiles are bound to. Current tuning uses Analyze.
+func AnalyzeLegacy(source home.ModelManifest, layout DeclaredLayout) (Analysis, error) {
+	a, _, err := analyze(source, layout)
+	if err != nil {
+		return Analysis{}, err
+	}
+	a.Schema, a.AnalyzerVersion = AnalysisSchemaV1, ClefAnalyzerVersionV1
+	return a, nil
+}
+
+func analyze(source home.ModelManifest, layout DeclaredLayout) (Analysis, DeclaredLayout, error) {
+	identity, err := supportedSource(source)
+	if err != nil {
+		return Analysis{}, DeclaredLayout{}, err
 	}
 	canonical, err := canonicalLayout(layout)
 	if err != nil {
-		return Analysis{}, err
+		return Analysis{}, DeclaredLayout{}, err
 	}
 	regions, err := analyzeRegions(canonical)
 	if err != nil {
-		return Analysis{}, err
+		return Analysis{}, DeclaredLayout{}, err
 	}
 	layoutDigest, err := digestJSON(canonical)
 	if err != nil {
-		return Analysis{}, err
+		return Analysis{}, DeclaredLayout{}, err
 	}
-	return Analysis{
-		Schema: AnalysisSchema, Source: identity, AnalyzerVersion: ClefAnalyzerVersion,
-		LayoutSHA256: layoutDigest, Regions: regions,
-	}, nil
+	return Analysis{Source: identity, LayoutSHA256: layoutDigest, Regions: regions}, canonical, nil
 }
 
-// NewDefaultProfile creates an all-Auto profile for an analysis. Auto leaves
-// the canonical recipe's current preservation exceptions in place.
+// NewDefaultProfile creates the all-AUTO layer-wise profile for an analysis.
+// AUTO keeps the canonical recipe's policy for every group, so an all-AUTO
+// profile compiles to the canonical recipe byte for byte.
 func NewDefaultProfile(analysis Analysis, objective string) (Profile, error) {
 	if err := validateAnalysis(analysis); err != nil {
 		return Profile{}, err
+	}
+	if analysis.Schema != AnalysisSchema {
+		return Profile{}, fmt.Errorf("a layer-wise profile needs a %s analysis, not %s", AnalysisSchema, analysis.Schema)
+	}
+	if strings.TrimSpace(objective) == "" {
+		return Profile{}, errors.New("tuning profile objective is required")
+	}
+	canonical, err := canonicalRecipe(analysis)
+	if err != nil {
+		return Profile{}, err
+	}
+	groups := make(map[string]GroupChoice, len(analysis.Groups))
+	for _, g := range analysis.Groups {
+		groups[g.ID] = GroupChoice{Mode: GroupAuto}
+	}
+	return Profile{
+		Schema: ProfileSchema, Objective: objective, Source: analysis.Source,
+		AnalyzerVersion: analysis.AnalyzerVersion, CompilerVersion: RecipeCompilerVersion,
+		AnalysisSHA256: analysis.SHA256(), Recipe: canonical.Name, RecipeSHA256: canonical.SHA256(), Groups: groups,
+	}, nil
+}
+
+// NewLegacyProfile creates the all-Auto legacy coarse profile (schema 1) of a
+// schema 1 analysis. It exists for compatibility; current tuning creates
+// layer-wise profiles with NewDefaultProfile.
+func NewLegacyProfile(analysis Analysis, objective string) (Profile, error) {
+	if err := validateAnalysis(analysis); err != nil {
+		return Profile{}, err
+	}
+	if analysis.Schema != AnalysisSchemaV1 {
+		return Profile{}, fmt.Errorf("a legacy profile needs a %s analysis, not %s", AnalysisSchemaV1, analysis.Schema)
 	}
 	if strings.TrimSpace(objective) == "" {
 		return Profile{}, errors.New("tuning profile objective is required")
@@ -192,8 +278,8 @@ func NewDefaultProfile(analysis Analysis, objective string) (Profile, error) {
 		choices[region.ID] = PreservationChoice{Mode: PreservationAuto}
 	}
 	return Profile{
-		Schema: ProfileSchema, Objective: objective, Source: analysis.Source,
-		AnalyzerVersion: analysis.AnalyzerVersion, CompilerVersion: RecipeCompilerVersion,
+		Schema: ProfileSchemaV1, Objective: objective, Source: analysis.Source,
+		AnalyzerVersion: analysis.AnalyzerVersion, CompilerVersion: RecipeCompilerVersionV1,
 		AnalysisSHA256: analysis.SHA256(), Preservation: choices,
 	}, nil
 }
@@ -229,14 +315,19 @@ func (a Analysis) SHA256() string { return sha256Hex(a.Canonical()) }
 func (a Analysis) ID() string { return a.SHA256() }
 
 // Compile deterministically turns a profile into the existing canonical
-// home.Recipe. Auto keeps the optimizer baseline byte-for-byte; pinned adds
-// exact module names at the source precision. It does not build a variant.
+// home.Recipe. Auto keeps the optimizer baseline byte-for-byte; preserving a
+// group (or, for a legacy profile, pinning a region) adds exactly the modules
+// it addresses at the source precision. A layer-wise profile also yields the
+// resolved plan of every group. It does not build a variant.
 func Compile(profile Profile, analysis Analysis) (Compilation, error) {
 	if err := validateAnalysis(analysis); err != nil {
 		return Compilation{}, err
 	}
 	if err := validateProfile(profile, analysis); err != nil {
 		return Compilation{}, err
+	}
+	if profile.Schema == ProfileSchema {
+		return compileLayerwise(profile, analysis)
 	}
 	recipe, err := optimize.LookupRecipe(analysis.Source.ID, optimize.RecipeClefFlashW4A16)
 	if err != nil {
@@ -280,8 +371,18 @@ func Compile(profile Profile, analysis Analysis) (Compilation, error) {
 }
 
 func validateProfile(profile Profile, analysis Analysis) error {
-	if profile.Schema != ProfileSchema {
-		return fmt.Errorf("tuning profile schema %q, want %q", profile.Schema, ProfileSchema)
+	switch profile.Schema {
+	case ProfileSchema:
+		return validateLayerwiseProfile(profile, analysis)
+	case ProfileSchemaV1:
+	default:
+		return fmt.Errorf("tuning profile schema %q, want %q (or legacy %q)", profile.Schema, ProfileSchema, ProfileSchemaV1)
+	}
+	if analysis.Schema != AnalysisSchemaV1 {
+		return fmt.Errorf("legacy tuning profile %q needs a %s analysis, not %s", profile.Schema, AnalysisSchemaV1, analysis.Schema)
+	}
+	if len(profile.Groups) != 0 || profile.Recipe != "" || profile.RecipeSHA256 != "" || profile.MigratedFrom != nil {
+		return errors.New("a legacy coarse tuning profile cannot carry layer-wise fields")
 	}
 	if strings.TrimSpace(profile.Objective) == "" {
 		return errors.New("tuning profile objective is required")
@@ -289,11 +390,11 @@ func validateProfile(profile Profile, analysis Analysis) error {
 	if profile.Source != analysis.Source {
 		return errors.New("tuning profile source identity does not match analysis")
 	}
-	if profile.AnalyzerVersion != analysis.AnalyzerVersion || profile.AnalyzerVersion != ClefAnalyzerVersion {
+	if profile.AnalyzerVersion != analysis.AnalyzerVersion || profile.AnalyzerVersion != ClefAnalyzerVersionV1 {
 		return fmt.Errorf("tuning profile analyzer %q does not match analysis %q", profile.AnalyzerVersion, analysis.AnalyzerVersion)
 	}
-	if profile.CompilerVersion != RecipeCompilerVersion {
-		return fmt.Errorf("tuning profile compiler %q, want %q", profile.CompilerVersion, RecipeCompilerVersion)
+	if profile.CompilerVersion != RecipeCompilerVersionV1 {
+		return fmt.Errorf("tuning profile compiler %q, want %q", profile.CompilerVersion, RecipeCompilerVersionV1)
 	}
 	if profile.AnalysisSHA256 != analysis.SHA256() {
 		return errors.New("tuning profile analysis identity does not match analysis")
@@ -328,11 +429,17 @@ func validateProfile(profile Profile, analysis Analysis) error {
 }
 
 func validateAnalysis(analysis Analysis) error {
-	if analysis.Schema != AnalysisSchema {
-		return fmt.Errorf("tuning analysis schema %q, want %q", analysis.Schema, AnalysisSchema)
-	}
-	if analysis.AnalyzerVersion != ClefAnalyzerVersion {
-		return fmt.Errorf("unsupported tuning analyzer %q", analysis.AnalyzerVersion)
+	switch analysis.Schema {
+	case AnalysisSchema:
+		if analysis.AnalyzerVersion != ClefAnalyzerVersion {
+			return fmt.Errorf("unsupported tuning analyzer %q", analysis.AnalyzerVersion)
+		}
+	case AnalysisSchemaV1:
+		if analysis.AnalyzerVersion != ClefAnalyzerVersionV1 || len(analysis.Groups) != 0 {
+			return fmt.Errorf("unsupported legacy tuning analyzer %q", analysis.AnalyzerVersion)
+		}
+	default:
+		return fmt.Errorf("tuning analysis schema %q, want %q (or legacy %q)", analysis.Schema, AnalysisSchema, AnalysisSchemaV1)
 	}
 	if _, err := sourceForIdentity(analysis.Source); err != nil {
 		return err
@@ -371,6 +478,9 @@ func validateAnalysis(analysis Analysis) error {
 		if _, ok := seen[id]; !ok {
 			return fmt.Errorf("tuning analysis is missing semantic region %q", id)
 		}
+	}
+	if analysis.Schema == AnalysisSchema {
+		return validateGroups(analysis)
 	}
 	return nil
 }
@@ -457,54 +567,11 @@ func analyzeRegions(layout DeclaredLayout) ([]SemanticRegion, error) {
 		builders[id] = &SemanticRegion{ID: id, Description: description}
 	}
 	for _, module := range layout.LinearModules {
-		if module == "lm_head" {
-			builders[RegionOutputEmbeddings].Modules = append(builders[RegionOutputEmbeddings].Modules, module)
-			continue
+		region, _, err := classifyModule(layout, module)
+		if err != nil {
+			return nil, err
 		}
-		if strings.HasPrefix(module, "model.visual.") {
-			builders[RegionVision].Modules = append(builders[RegionVision].Modules, module)
-			continue
-		}
-		match := layerModuleRE.FindStringSubmatch(module)
-		if match == nil {
-			return nil, fmt.Errorf("Clef Linear module %q is outside the supported Qwen3.5 layout", module)
-		}
-		layer, err := strconv.Atoi(match[1])
-		if err != nil || layer < 0 || layer >= len(layout.LayerTypes) {
-			return nil, fmt.Errorf("Clef Linear module %q names an undeclared layer", module)
-		}
-		component, suffix := match[2], match[3]
-		switch component {
-		case "mlp":
-			if suffix != "gate_proj" && suffix != "up_proj" && suffix != "down_proj" {
-				return nil, fmt.Errorf("Clef Linear module %q has unsupported feed-forward projection", module)
-			}
-			builders[RegionFeedForward].Modules = append(builders[RegionFeedForward].Modules, module)
-		case "linear_attn":
-			if layout.LayerTypes[layer] != "linear_attention" {
-				return nil, fmt.Errorf("Clef module %q conflicts with declared layer type %q", module, layout.LayerTypes[layer])
-			}
-			switch suffix {
-			case "in_proj_a":
-				builders[RegionLinearAttentionDecay].Modules = append(builders[RegionLinearAttentionDecay].Modules, module)
-			case "in_proj_b":
-				builders[RegionLinearAttentionBeta].Modules = append(builders[RegionLinearAttentionBeta].Modules, module)
-			case "in_proj_qkv", "in_proj_z", "out_proj":
-				builders[RegionLinearAttention].Modules = append(builders[RegionLinearAttention].Modules, module)
-			default:
-				return nil, fmt.Errorf("Clef Linear module %q has unsupported linear-attention projection", module)
-			}
-		case "self_attn":
-			if layout.LayerTypes[layer] != "full_attention" {
-				return nil, fmt.Errorf("Clef module %q conflicts with declared layer type %q", module, layout.LayerTypes[layer])
-			}
-			if suffix != "q_proj" && suffix != "k_proj" && suffix != "v_proj" && suffix != "o_proj" {
-				return nil, fmt.Errorf("Clef Linear module %q has unsupported full-attention projection", module)
-			}
-			builders[RegionFullAttention].Modules = append(builders[RegionFullAttention].Modules, module)
-		default:
-			return nil, fmt.Errorf("Clef Linear module %q has unsupported component %q", module, component)
-		}
+		builders[region].Modules = append(builders[region].Modules, module)
 	}
 	builders[RegionJointSchemaHead].Files = []string{"joint_head.safetensors"}
 	regions := make([]SemanticRegion, 0, len(regionDescriptions))
@@ -520,11 +587,60 @@ func analyzeRegions(layout DeclaredLayout) ([]SemanticRegion, error) {
 	return regions, nil
 }
 
+// classifyModule names the semantic region and transformer block (-1 for a
+// module outside every block) of one declared Linear module.
+func classifyModule(layout DeclaredLayout, module string) (string, int, error) {
+	if module == "lm_head" {
+		return RegionOutputEmbeddings, -1, nil
+	}
+	if strings.HasPrefix(module, "model.visual.") {
+		return RegionVision, -1, nil
+	}
+	match := layerModuleRE.FindStringSubmatch(module)
+	if match == nil {
+		return "", 0, fmt.Errorf("Clef Linear module %q is outside the supported Qwen3.5 layout", module)
+	}
+	layer, err := strconv.Atoi(match[1])
+	if err != nil || layer < 0 || layer >= len(layout.LayerTypes) {
+		return "", 0, fmt.Errorf("Clef Linear module %q names an undeclared layer", module)
+	}
+	component, suffix := match[2], match[3]
+	switch component {
+	case "mlp":
+		if suffix != "gate_proj" && suffix != "up_proj" && suffix != "down_proj" {
+			return "", 0, fmt.Errorf("Clef Linear module %q has unsupported feed-forward projection", module)
+		}
+		return RegionFeedForward, layer, nil
+	case "linear_attn":
+		if layout.LayerTypes[layer] != "linear_attention" {
+			return "", 0, fmt.Errorf("Clef module %q conflicts with declared layer type %q", module, layout.LayerTypes[layer])
+		}
+		switch suffix {
+		case "in_proj_a":
+			return RegionLinearAttentionDecay, layer, nil
+		case "in_proj_b":
+			return RegionLinearAttentionBeta, layer, nil
+		case "in_proj_qkv", "in_proj_z", "out_proj":
+			return RegionLinearAttention, layer, nil
+		}
+		return "", 0, fmt.Errorf("Clef Linear module %q has unsupported linear-attention projection", module)
+	case "self_attn":
+		if layout.LayerTypes[layer] != "full_attention" {
+			return "", 0, fmt.Errorf("Clef module %q conflicts with declared layer type %q", module, layout.LayerTypes[layer])
+		}
+		if suffix != "q_proj" && suffix != "k_proj" && suffix != "v_proj" && suffix != "o_proj" {
+			return "", 0, fmt.Errorf("Clef Linear module %q has unsupported full-attention projection", module)
+		}
+		return RegionFullAttention, layer, nil
+	}
+	return "", 0, fmt.Errorf("Clef Linear module %q has unsupported component %q", module, component)
+}
+
 func compilerEvidence(profile Profile, analysis Analysis, recipe home.Recipe) (CompilerEvidence, error) {
 	byRegion := make(map[string]RegionMapping, len(analysis.Regions))
 	for _, region := range analysis.Regions {
 		byRegion[region.ID] = RegionMapping{
-			RegionID: region.ID, Mode: profile.Preservation[region.ID].Mode,
+			RegionID: region.ID, Mode: regionMode(profile, analysis, region.ID),
 			Modules: append([]string(nil), region.Modules...), Files: append([]string(nil), region.Files...),
 		}
 	}
@@ -568,7 +684,7 @@ func compilerEvidence(profile Profile, analysis Analysis, recipe home.Recipe) (C
 	}
 	return CompilerEvidence{
 		Source: analysis.Source, AnalyzerVersion: analysis.AnalyzerVersion,
-		CompilerVersion: RecipeCompilerVersion, ProfileSHA256: profile.SHA256(),
+		CompilerVersion: profile.CompilerVersion, ProfileSHA256: profile.SHA256(),
 		Regions: regions, Preserved: preserved,
 	}, nil
 }

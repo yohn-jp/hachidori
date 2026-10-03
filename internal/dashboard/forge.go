@@ -436,11 +436,10 @@ func (d *Dashboard) forgeView() view {
 	return v
 }
 
-// profilePreservation is a saved profile's effective preservation: the regions
-// the canonical tuning compiler keeps at source precision for the profile bound
-// to its own analysis, the same count Tuning shows. Explicit pins are only part
-// of it (Auto preserves regions the canonical policy preserves), and when the
-// profile cannot be loaded or compiled no count is invented.
+// profilePreservation is a saved profile's effective policy: what the
+// canonical tuning compiler resolves for the profile bound to its own
+// analysis, the same figures Tuning shows. When the profile cannot be loaded or
+// compiled no figure is invented.
 func (d *Dashboard) profilePreservation(p tuning.Profile) string {
 	profile, analysis, err := d.cfg.Tuning.LoadProfile(p.ID())
 	if err != nil {
@@ -450,13 +449,25 @@ func (d *Dashboard) profilePreservation(p tuning.Profile) string {
 	if err != nil {
 		return "preservation unavailable"
 	}
+	if plan := compiled.Plan; plan != nil {
+		atSource, overridden := 0, 0
+		for _, g := range plan.Groups {
+			if g.Effective == home.PolicySourcePrecision {
+				atSource++
+			}
+			if g.Selection == home.SelectionOverridden {
+				overridden++
+			}
+		}
+		return strconv.Itoa(atSource) + " / " + strconv.Itoa(len(plan.Groups)) + " groups at source precision · " + strconv.Itoa(overridden) + " overridden"
+	}
 	n := 0
 	for _, m := range compiled.Evidence.Regions {
 		if m.Preserved {
 			n++
 		}
 	}
-	return strconv.Itoa(n) + " / " + strconv.Itoa(len(analysis.Regions)) + " preserved"
+	return "legacy · " + strconv.Itoa(n) + " / " + strconv.Itoa(len(analysis.Regions)) + " regions preserved"
 }
 
 // variantFit is the variant's device memory against the envelope: measured

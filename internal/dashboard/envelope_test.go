@@ -87,17 +87,17 @@ func TestTuningOverBudgetPlanIsBlockedNotRewritten(t *testing.T) {
 	}
 }
 
-// The normal Tuning surface is intent: semantic regions are an Advanced
+// The normal Tuning surface is intent: the layer-wise editor is an Advanced
 // disclosure, closed unless the operator has a reason to act.
 func TestTuningNormalSurfaceIsIntentFirst(t *testing.T) {
 	e, _, _ := tuningEnv(t)
 	body := workspace(e.get(t, "/tuning").Body.String())
 	adv := strings.Index(body, `data-disclosure="advanced" id="tuning-advanced"`)
-	if adv < 0 || strings.Index(body, `id="tuning-region-table"`) < adv {
-		t.Fatal("semantic regions are not inside the Advanced disclosure")
+	if adv < 0 || strings.Index(body, `id="tuning-families"`) < adv || strings.Index(body, `id="tuning-bulk"`) < adv {
+		t.Fatal("the layer-wise editor is not inside the Advanced disclosure")
 	}
 	normal := body[:adv]
-	for _, want := range []string{"Source", "Target device", "Memory budget", "Quality objective", "Current plan", "semantic regions kept at source precision"} {
+	for _, want := range []string{"Source", "Target device", "Memory budget", "Quality objective", "Current plan", "at source precision"} {
 		if !strings.Contains(normal, want) {
 			t.Errorf("normal surface lacks %q", want)
 		}

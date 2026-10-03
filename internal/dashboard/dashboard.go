@@ -560,6 +560,7 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"consoleTail":     consoleTail,
 	"failureOf":       failureOf,
 	"objective":       objectiveLabel,
+	"policyLabel":     policyLabel,
 }).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html", "updates.html", "models.html", "forge.html", "tuning.html"))
 
 // pages are the workstation templates for each supported locale. Rendering
@@ -666,6 +667,7 @@ func New(cfg Config) *Dashboard {
 	if cfg.hasTuning() {
 		d.mux.HandleFunc("GET /tuning", d.tuningPage)
 		d.mux.HandleFunc("POST /tuning/save", d.tuningSave)
+		d.mux.HandleFunc("POST /tuning/edit", d.tuningEdit)
 		d.mux.HandleFunc("POST /tuning/budget", d.tuningBudget)
 		d.mux.HandleFunc("POST /tuning/build", d.tuningBuild)
 	}

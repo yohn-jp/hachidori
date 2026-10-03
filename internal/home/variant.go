@@ -162,16 +162,33 @@ type TuningProvenance struct {
 	AnalysisID      string        `json:"analysis_id"`
 	AnalysisSHA256  string        `json:"analysis_sha256"`
 	CompilerVersion string        `json:"compiler_version"`
+	// PlanSHA256 is the digest of the resolved layer-wise plan: the complete
+	// effective policy, AUTO resolutions included. It is set exactly when the
+	// profile is layer-wise (schema 2) and is part of the build contract.
+	PlanSHA256 string `json:"plan_sha256,omitempty"`
 }
 
-// TuningProvenanceSchema versions the optional tuning linkage stored in a
-// variant manifest.
-const TuningProvenanceSchema = "hachidori.tuning-provenance/1"
+// TuningProvenanceSchema versions the tuning linkage stored in a variant
+// manifest of a layer-wise profile; TuningProvenanceSchemaV1 is the linkage of
+// a legacy coarse (per-region) profile and stays valid.
+const (
+	TuningProvenanceSchema   = "hachidori.tuning-provenance/2"
+	TuningProvenanceSchemaV1 = "hachidori.tuning-provenance/1"
+)
 
 // Validate checks the provenance's self-contained identities and source.
 func (p TuningProvenance) Validate(source VariantSource) error {
-	if p.Schema != TuningProvenanceSchema {
-		return fmt.Errorf("tuning provenance schema %q, want %q", p.Schema, TuningProvenanceSchema)
+	switch p.Schema {
+	case TuningProvenanceSchemaV1:
+		if p.PlanSHA256 != "" {
+			return errors.New("legacy tuning provenance cannot carry a layer-wise plan")
+		}
+	case TuningProvenanceSchema:
+		if !validSHA256(p.PlanSHA256) {
+			return errors.New("tuning provenance has no valid layer-wise plan digest")
+		}
+	default:
+		return fmt.Errorf("tuning provenance schema %q, want %q or legacy %q", p.Schema, TuningProvenanceSchema, TuningProvenanceSchemaV1)
 	}
 	if p.Source != source {
 		return errors.New("tuning provenance source identity does not match variant source")
