@@ -54,7 +54,8 @@ var forgePreflightKind = map[string]string{
 	// A self-contained certification gates its candidate with the probe
 	// preflight on the candidate's device (and its reference with a certify
 	// preflight on the reference device).
-	OpForgeCertify: setup.PreflightProbe,
+	OpForgeCertify:       setup.PreflightProbe,
+	OpForgeBuildEvaluate: setup.PreflightProbe,
 }
 
 // IsForgeOperation reports whether a failed operation of this kind and model
@@ -62,7 +63,7 @@ var forgePreflightKind = map[string]string{
 // optimization, probe and certification.
 func IsForgeOperation(kind, model string) bool {
 	switch kind {
-	case OpOptimize, OpProbe, OpCertify, OpForgeCertify:
+	case OpOptimize, OpProbe, OpCertify, OpForgeCertify, OpForgeBuildEvaluate:
 		return true
 	case OpMaterialize, OpSetup, OpRepair:
 		if m, err := setup.LookupModel(model); err == nil {
@@ -171,7 +172,11 @@ func collectForge(root string, f ForgeFailure, cause error) (in diagnostics.Forg
 	// target is the exact preflight target of the operation; it stays
 	// unresolved (and no preflight is attached) unless every identity of it
 	// resolved.
-	target := PreflightTarget{Kind: forgePreflightKind[f.Kind], Variant: f.Variant, Device: f.Device}
+	kind, device := forgePreflightKind[f.Kind], f.Device
+	if f.Kind == OpForgeBuildEvaluate && f.Variant == "" {
+		kind, device = setup.PreflightOptimize, ""
+	}
+	target := PreflightTarget{Kind: kind, Variant: f.Variant, Device: device}
 	targetOK := target.Kind != ""
 	try("source identity", func() error {
 		id := f.Model
@@ -216,7 +221,7 @@ func collectForge(root string, f ForgeFailure, cause error) (in diagnostics.Forg
 		// as the build resolves it.
 		targetOK = targetOK && f.Variant == ""
 	}
-	if f.Kind == OpOptimize && f.Variant == "" && haveModel {
+	if (f.Kind == OpOptimize || f.Kind == OpForgeBuildEvaluate) && f.Variant == "" && haveModel {
 		resolved := false
 		try("recipe", func() error {
 			r, err := optimize.LookupRecipe(model.ID, f.Recipe)

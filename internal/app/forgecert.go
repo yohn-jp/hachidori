@@ -170,9 +170,23 @@ type certPlan struct {
 	candidate ExecutionTarget
 }
 
+// forgeCertInputs are the policy and semantic evaluation resources resolved
+// once for a composed build/evaluate operation. Keeping these values in memory
+// binds certification to the inputs selected before the build began.
+type forgeCertInputs struct {
+	source    home.ModelManifest
+	policy    eval.CertPolicy
+	input     ExecutionInput
+	reference ExecutionTarget
+}
+
 // resolveCertification resolves the exact source, variant, policy, corpus and
 // both execution targets, refusing anything that is not exact.
 func resolveCertification(h home.Home, p ForgeCertifyParams) (certPlan, error) {
+	return resolveCertificationWith(h, p, nil)
+}
+
+func resolveCertificationWith(h home.Home, p ForgeCertifyParams, resolved *forgeCertInputs) (certPlan, error) {
 	var c certPlan
 	if p.Variant == "" {
 		return c, errors.New("a certification names the variant to certify")
@@ -187,47 +201,72 @@ func resolveCertification(h home.Home, p ForgeCertifyParams) (certPlan, error) {
 	if c.src, c.variant, err = setup.FindVariant(h, p.Variant); err != nil {
 		return c, err
 	}
-	c.policy = eval.DefaultPolicy()
-	if p.Policy != "" {
-		if c.policy, err = eval.LoadPolicy(p.Policy); err != nil {
+	inputs := resolved
+	if inputs == nil {
+		inputs, err = resolveForgeCertInputs(c.src, p)
+		if err != nil {
 			return c, err
 		}
+	} else if home.SourceOf(inputs.source) != home.SourceOf(c.src) {
+		return c, fmt.Errorf("the built variant source %s does not match the requested source %s", c.src.ID, inputs.source.ID)
 	}
-	var defs *question.Set
-	if len(p.Questions) > 0 {
-		if defs, err = question.Load(p.Questions...); err != nil {
-			return c, err
-		}
-	}
-	cases, sum, labelled, err := eval.LoadAny(p.Dataset, defs)
-	if err != nil {
-		return c, err
-	}
-	passes := p.Passes
-	if passes == 0 {
-		passes = 1
-	}
-	c.input = ExecutionInput{Dataset: p.Dataset, DatasetSHA256: sum, Cases: cases, Labelled: labelled, Warmup: p.Warmup, Passes: passes,
-		HighConfidence: c.policy.HighConfidence}
-
-	refDevice, refDType := p.ReferenceDevice, p.ReferenceDType
-	if refDevice == "" {
-		refDevice = DefaultReferenceDevice
-	}
-	if refDType == "" && (c.src.Provider == home.ProviderClef || c.src.Provider == setup.ProviderOpenDecider) {
-		refDType = DefaultReferenceDType
-	}
-	c.reference = ExecutionTarget{Kind: eval.ForgeTargetSource, Model: c.src.ID, Device: refDevice, DType: refDType}
+	c.policy, c.input, c.reference = inputs.policy, inputs.input, inputs.reference
 	c.candidate = ExecutionTarget{Kind: eval.ForgeTargetVariant, Model: c.src.ID, Variant: c.variant.ID, Device: p.Device}
 	for _, t := range []ExecutionTarget{c.reference, c.candidate} {
 		if _, _, err := resolveTarget(h, t); err != nil {
 			return c, err
 		}
 	}
-	if refDType != "" && refDType != "float32" && refDType != "bfloat16" {
-		return c, fmt.Errorf("the reference dtype must be float32 or bfloat16 (high precision), got %q", refDType)
-	}
 	return c, nil
+}
+
+// resolveForgeCertInputs validates the semantic inputs and applies the
+// existing canonical reference defaults before any expensive build begins.
+func resolveForgeCertInputs(src home.ModelManifest, p ForgeCertifyParams) (*forgeCertInputs, error) {
+	if p.Dataset == "" {
+		return nil, errors.New("a certification needs an evaluation corpus (dataset)")
+	}
+	inputs := &forgeCertInputs{source: src, policy: eval.DefaultPolicy()}
+	if p.Policy != "" {
+		policy, err := eval.LoadPolicy(p.Policy)
+		if err != nil {
+			return nil, err
+		}
+		inputs.policy = policy
+	}
+	var defs *question.Set
+	if len(p.Questions) > 0 {
+		var err error
+		if defs, err = question.Load(p.Questions...); err != nil {
+			return nil, err
+		}
+	}
+	cases, sum, labelled, err := eval.LoadAny(p.Dataset, defs)
+	if err != nil {
+		return nil, err
+	}
+	passes := p.Passes
+	if passes == 0 {
+		passes = 1
+	}
+	inputs.input = ExecutionInput{Dataset: p.Dataset, DatasetSHA256: sum, Cases: cases, Labelled: labelled, Warmup: p.Warmup, Passes: passes,
+		HighConfidence: inputs.policy.HighConfidence}
+
+	refDevice, refDType := p.ReferenceDevice, p.ReferenceDType
+	if refDevice == "" {
+		refDevice = DefaultReferenceDevice
+	}
+	if refDType == "" && (src.Provider == home.ProviderClef || src.Provider == setup.ProviderOpenDecider) {
+		refDType = DefaultReferenceDType
+	}
+	if _, err := setup.Desired(refDevice); err != nil {
+		return nil, fmt.Errorf("the reference device must be cpu or cuda: %w", err)
+	}
+	if refDType != "" && refDType != "float32" && refDType != "bfloat16" {
+		return nil, fmt.Errorf("the reference dtype must be float32 or bfloat16 (high precision), got %q", refDType)
+	}
+	inputs.reference = ExecutionTarget{Kind: eval.ForgeTargetSource, Model: src.ID, Device: refDevice, DType: refDType}
+	return inputs, nil
 }
 
 // RunForgeCertification certifies one persisted variant end to end: the
@@ -236,6 +275,10 @@ func resolveCertification(h home.Home, p ForgeCertifyParams) (certPlan, error) {
 // a completed certification (its evidence is recorded and returned), never an
 // error. Cancellation records no certification.
 func RunForgeCertification(ctx context.Context, h home.Home, p ForgeCertifyParams, deps ForgeCertifyDeps, log io.Writer, obs *setup.Observer) (res ForgeCertifyResult, err error) {
+	return runForgeCertification(ctx, h, p, deps, log, obs, nil)
+}
+
+func runForgeCertification(ctx context.Context, h home.Home, p ForgeCertifyParams, deps ForgeCertifyDeps, log io.Writer, obs *setup.Observer, inputs *forgeCertInputs) (res ForgeCertifyResult, err error) {
 	deps = deps.withDefaults()
 	phase := ""
 	enter := func(ph setup.Phase) {
@@ -254,7 +297,7 @@ func RunForgeCertification(ctx context.Context, h home.Home, p ForgeCertifyParam
 	}
 
 	enter(CertPhaseResolving)
-	plan, err := resolveCertification(h, p)
+	plan, err := resolveCertificationWith(h, p, inputs)
 	if err != nil {
 		return fail(err)
 	}
