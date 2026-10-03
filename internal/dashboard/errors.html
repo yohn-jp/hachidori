@@ -53,7 +53,7 @@
           <option value="request_ms"{{if eq $.C.Sort "request_ms"}} selected{{end}}>{{t "request latency"}}</option>
           <option value="inference_ms"{{if eq $.C.Sort "inference_ms"}} selected{{end}}>{{t "inference latency"}}</option></select></label>
       </div>
-      <details class="inline"{{if or $.C.Expected $.C.Predicted $.C.ErrClass (ne $.C.Min "0") (ne $.C.Max "1")}} open{{end}}><summary>{{t "More filters"}}</summary>
+      <details class="inline" id="errors-more-filters"{{if or $.C.Expected $.C.Predicted $.C.ErrClass (ne $.C.Min "0") (ne $.C.Max "1")}} open{{end}}><summary>{{t "More filters"}}</summary>
         <div class="fields">
           <label class="field">{{t "Expected"}}<select name="exp"><option value="">{{t "any"}}</option>{{range .Expected}}<option{{if eq . $.C.Expected}} selected{{end}}>{{.}}</option>{{end}}</select></label>
           <label class="field">{{t "Predicted"}}<select name="pred"><option value="">{{t "any"}}</option>{{range .Predicted}}<option{{if eq . $.C.Predicted}} selected{{end}}>{{.}}</option>{{end}}</select></label>

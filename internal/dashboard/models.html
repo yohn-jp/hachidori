@@ -14,11 +14,11 @@
   </div>
   {{end}}
   {{with .Inventory.ActiveProblem}}<div class="last tone-bad" role="alert" id="active-problem"><strong>{{t "CANNOT START"}}</strong><span class="msg-text">{{t "The active runtime cannot be started by this version of Hachidori."}} {{.}}</span></div>{{end}}
-  {{with .Busy}}
+  {{with .Busy}}{{if .OwnedBy "models"}}
   {{template "op-busy" .}}
   {{template "op-refresh" "models-workspace"}}
-  {{end}}
-  {{with .Last}}{{template "op-last" .}}{{end}}
+  {{end}}{{end}}
+  {{with .Last}}{{if .OwnedBy "models"}}{{template "op-last" .}}{{else}}{{template "op-last-compact" .}}{{end}}{{end}}
   {{with .Inventory.ActiveErr}}<p class="msg bad" role="alert">{{t "Activation record:"}} {{.}}</p>{{end}}
 
   <section class="region section" id="desired-state" aria-labelledby="desired-state-h">
@@ -32,7 +32,7 @@
             {{range .Models}}<option value="source:{{.ID}}">SOURCE · {{.ID}}</option>{{end}}
           </optgroup>
           {{if .Variants}}<optgroup label="{{t "Certified VARIANT"}}">
-            {{range .Variants}}{{if .CanActivate}}<option value="variant:{{.ID}}">VARIANT · {{.ID}} · {{.SourceID}}</option>{{end}}{{end}}
+            {{range .Variants}}{{if .CanActivate}}<option value="variant:{{.ID}}" title="{{.ID}}">VARIANT · {{.Label}}</option>{{end}}{{end}}
           </optgroup>{{end}}
         </select>
       </label>
@@ -53,7 +53,7 @@
   <section class="region section" id="execution-artifact" aria-labelledby="ea-h">
     <div class="region-h"><h2 id="ea-h">{{t "Execution artifact"}}</h2><span class="sub">{{t "what is serving now and the active target"}}</span></div>
     {{template "artifacts" $.Art}}
-    <p class="note">{{t "SOURCE is the upstream model artifact. A VARIANT is a derived, quantized artifact of one source with its own exact identity; it is never substituted for the source or for another variant."}} <a href="/forge">{{t "Open Forge"}}</a></p>
+    <p class="note prose">{{t "SOURCE is the upstream model artifact. A VARIANT is a derived, quantized artifact of one source with its own exact identity; it is never substituted for the source or for another variant."}} <a href="/forge">{{t "Open Forge"}}</a></p>
   </section>
 
   <section class="region section" id="models-runtimes" aria-labelledby="sm-h">
@@ -119,12 +119,12 @@
       </tbody>
     </table></div>
   </div>
-  <p class="note">{{t "Additional residents are reconciled with the execution target when you apply the desired state. The active target is always the default resident. Each resident is its own worker process, and a failed one never stops the others."}}</p>
+  <p class="note prose">{{t "Additional residents are reconciled with the execution target when you apply the desired state. The active target is always the default resident. Each resident is its own worker process, and a failed one never stops the others."}}</p>
   {{end}}
 
   <details class="region" id="models-choice">
     <summary>{{t "Advanced artifact actions"}}</summary>
-    <p class="note">{{t "These maintenance controls remain available for compatibility. Choosing a model in this form changes nothing by itself; Materialize, Repair, and Activate are separate operations."}}</p>
+    <p class="note prose">{{t "These maintenance controls remain available for compatibility. Choosing a model in this form changes nothing by itself; Materialize, Repair, and Activate are separate operations."}}</p>
   <form method="post">
     <input type="hidden" name="token" value="{{$.Token}}">
     <input type="hidden" name="return" value="models">
@@ -141,7 +141,7 @@
       <button type="submit" class="btn primary" formaction="/models/activate">{{t "Activate"}}</button>
     </div>
   </form>
-  <p class="note">{{t "Only the catalog's pinned runtime and model identities are listed. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker, so a running worker keeps serving its model until you restart it. A requested device is never replaced by another. The active runtime and model cannot be removed."}}</p>
+  <p class="note prose">{{t "Only the catalog's pinned runtime and model identities are listed. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker, so a running worker keeps serving its model until you restart it. A requested device is never replaced by another. The active runtime and model cannot be removed."}}</p>
   </details>
   </section>
 </div>
@@ -186,7 +186,7 @@
       var src = new DOMParser().parseFromString(h, "text/html").getElementById(id), dst = document.getElementById(id);
       if (!src || !dst) { clearInterval(t); return; }
       if (!src.querySelector("#models-busy")) clearInterval(t);
-      if (src.innerHTML !== dst.innerHTML) dst.innerHTML = src.innerHTML;
+      hachidoriUI.swap(dst, src);
     }).catch(function () {});
   }, 1500);
 })();
