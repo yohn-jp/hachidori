@@ -110,10 +110,14 @@ Rules:
   retired assertion keeps its row. The item that was previously a second `W19`
   (update progress and repeated actions, #137) is now `W29`; `W19` is the
   OpenDecider-nano FP32 vs BF16 item only.
-- The `Proof` column of a `CI_AUTOMATED` assertion is `shard:<name>` (one of
-  `bootstrap`, `runtime`, `recovery`, `single-instance`, `update`,
-  `diagnostics`, the six proof boundaries of the Windows E2E workflow) or
-  `go test <package>` for an existing portable test. It is `-` otherwise.
+- The `Proof` column of a `CI_AUTOMATED` assertion is `shard:<name>/<scenario>`
+  (one of `bootstrap`, `runtime`, `recovery`, `single-instance`, `update`,
+  `diagnostics`, the six proof boundaries of the Windows E2E workflow, and a
+  scenario listed in that shard's `required.json`), several joined by `+` when
+  all of them must pass, or `go test <package>` for an existing portable test.
+  It is `-` otherwise. Every scenario in a shard's `required.json` other than
+  the shared `candidate-identity` is cited by at least one assertion, so the
+  matrix and the implemented proof cannot drift apart unnoticed.
 - Hosted-runner proof of a `CI_AUTOMATED` assertion does not change the meaning
   of a physical outcome above. A physical item is `PASS` only when its
   procedure was observed on a real Windows desktop; #66 remains the authority for
@@ -124,43 +128,47 @@ Rules:
 | id | assertion | class | proof |
 |---|---|---|---|
 | W01.1 | The "Hachidori" window visibly shows the first-run page with no companion console | PHYSICAL_REQUIRED | - |
-| W01.2 | A clean profile (no `bootstrap.json`, no `HACHIDORI_HOME`) starts in the first-run state and writes nothing before Install | CI_AUTOMATED | shard:bootstrap |
+| W01.2 | A clean profile (no `bootstrap.json`, no `HACHIDORI_HOME`) starts in the first-run state and writes nothing before Install | CI_AUTOMATED | shard:bootstrap/bootstrap-clean-profile |
 | W02.1 | **Browse...** opens the standard Windows folder dialog and returns the chosen folder (#47); cancel leaves nothing chosen | PHYSICAL_REQUIRED | - |
-| W02.2 | A chosen folder (spaces, Unicode, supported deep paths) is accepted and reported with its free space through the controller | CI_AUTOMATED | shard:bootstrap |
-| W03.1 | A deterministic CPU setup reaches READY with model, device and runtime identity | CI_AUTOMATED | shard:runtime |
-| W03.2 | `bootstrap.json` holds only `schema` and `home`; the heavy state is under the chosen home; owned staging is cleaned up | CI_AUTOMATED | shard:bootstrap |
+| W02.2 | A chosen folder (spaces, Unicode, supported deep paths) is accepted and reported with its free space through the controller | CI_AUTOMATED | shard:bootstrap/bootstrap-remembered-home+shard:bootstrap/bootstrap-commit-record |
+| W03.1 | A deterministic fixture CPU home reaches READY with model, device and runtime identity (setup and runtime materialization are not exercised) | CI_AUTOMATED | shard:runtime/cpu-ready-typed-inference |
+| W03.2 | `bootstrap.json` holds only `schema` and `home` and the heavy state is under the chosen home (production first-run flow and controller, fixture setup step) | CI_AUTOMATED | shard:bootstrap/bootstrap-commit-record |
 | W03.3 | The window shows the setup phases as they begin, then the runtime warming, then READY | PHYSICAL_REQUIRED | - |
 | W03.4 | A CUDA install reaches READY on a supported NVIDIA machine | OPTIONAL_HARDWARE | - |
-| W04.1 | After Quit, a new launch reaches READY from the same home without the wizard | CI_AUTOMATED | shard:runtime |
-| W04.2 | A renamed or missing home gives a recovery state naming the folder and installs nothing | CI_AUTOMATED | shard:bootstrap |
-| W04.3 | A corrupt `bootstrap.json` gives a diagnostic recovery state, not an exit | CI_AUTOMATED | shard:bootstrap |
+| W03.5 | A failed setup leaves the owned layout only, with no staging, partial download, runtime, model or activation record and no `bootstrap.json` | CI_AUTOMATED | shard:bootstrap/bootstrap-failed-setup-cleanup |
+| W03.6 | After a real successful setup (pinned uv, production model) owned staging is removed and the heavy state is complete | PHYSICAL_REQUIRED | - |
+| W04.1 | After Quit, a new launch reaches READY from the same home without the wizard | CI_AUTOMATED | shard:runtime/same-home-relaunch+shard:bootstrap/bootstrap-remembered-installed-home |
+| W04.2 | A renamed or missing home gives a recovery state naming the folder and installs nothing | CI_AUTOMATED | shard:bootstrap/bootstrap-missing-home |
+| W04.3 | A corrupt `bootstrap.json` gives a diagnostic recovery state, not an exit | CI_AUTOMATED | shard:bootstrap/bootstrap-corrupt-locator |
 | W04.4 | Browse to locate the renamed-back folder, then "Use this installation" starts it without running setup | PHYSICAL_REQUIRED | - |
 | W05.1 | A visible first-run launch renders the first-run UI, never a blank white surface (#41) | PHYSICAL_REQUIRED | - |
 | W05.2 | A render-process failure reloads at most 3 times, then one message box and tray notice, with `WebView2 navigation/process failure` console lines | PHYSICAL_REQUIRED | - |
 | W05.3 | F12 / Ctrl+Shift+I open no DevTools and right-click shows no browser context menu | PHYSICAL_REQUIRED | - |
 | W05.4 | Without the WebView2 Runtime the command fails before any worker starts with the WebView2 diagnostic and downloads nothing | PHYSICAL_REQUIRED | - |
 | W06.1 | Closing the window hides it to the tray with the same worker pid; tray Open restores the same window | PHYSICAL_REQUIRED | - |
-| W06.2 | A second launch exits 0, starts no second worker or endpoint and leaves the first owner's worker pid unchanged (non-visual activation contract) | CI_AUTOMATED | shard:single-instance |
+| W06.2 | A second launch exits 0, starts no second worker or endpoint and leaves the first owner's worker pid unchanged (non-visual activation contract) | CI_AUTOMATED | shard:single-instance/single-instance-second-launch |
 | W06.3 | Exactly one tray icon exists; its tooltip and menu header read Starting, Ready, Stopped and Needs attention with a one-time notice, and Open lands on Diagnostics | PHYSICAL_REQUIRED | - |
-| W06.4 | **Quit Hachidori** frees the API and dashboard ports and leaves no owned worker process | CI_AUTOMATED | shard:runtime |
+| W06.4 | **Quit Hachidori** frees the API and dashboard ports and leaves no owned worker process | CI_AUTOMATED | shard:runtime/quit-leaves-no-worker-or-port |
 | W06.5 | After Quit the tray icon is gone and no `msedgewebview2.exe` child of the run remains | PHYSICAL_REQUIRED | - |
 | W06.6 | A second launch visibly restores and focuses the running window, also from the tray | PHYSICAL_REQUIRED | - |
+| W06.7 | Six near-simultaneous launches leave exactly one owner, one API and dashboard endpoint pair and one worker | CI_AUTOMATED | shard:single-instance/single-instance-concurrent-launch |
+| W06.8 | After the owner is terminated abruptly the next launch becomes the owner | CI_AUTOMATED | shard:single-instance/single-instance-guard-released |
 | W07.1 | Enabling start at sign-in creates exactly one `HKCU\...\Run` value `Hachidori`, enabling again changes nothing, disabling removes it | PHYSICAL_REQUIRED | - |
 | W07.2 | After a real sign-out/sign-in the app starts in the background and reaches Ready | PHYSICAL_REQUIRED | - |
-| W08.1 | Restart Runtime gives a new worker pid with no second owner | CI_AUTOMATED | shard:runtime |
-| W08.2 | Stop and Quit never restart the worker by themselves | CI_AUTOMATED | shard:runtime |
-| W09.1 | Ending the worker reports "Recovering from an unexpected worker exit" and the worker returns to READY with a new pid | CI_AUTOMATED | shard:recovery |
-| W09.2 | More than 3 worker kills in 10 minutes end in Needs attention and "Automatic recovery stopped" until Restart Runtime | CI_AUTOMATED | shard:recovery |
-| W09.3 | Persisted state is consistent after worker termination and supported corrupt-state or interruption recovery | CI_AUTOMATED | shard:recovery |
+| W08.1 | Restart Runtime gives a new worker pid with no second owner | CI_AUTOMATED | shard:runtime/stop-start-restart |
+| W08.2 | Stop and Quit never restart the worker by themselves | CI_AUTOMATED | shard:runtime/stop-start-restart+shard:runtime/quit-leaves-no-worker-or-port |
+| W09.1 | Ending the worker reports "Recovering from an unexpected worker exit" and the worker returns to READY with a new pid | CI_AUTOMATED | shard:recovery/worker-kill-recovers |
+| W09.2 | More than 3 worker kills in 10 minutes end in Needs attention and "Automatic recovery stopped" until Restart Runtime | CI_AUTOMATED | shard:recovery/repeated-failure-needs-attention |
+| W09.3 | Persisted state is consistent after worker termination and supported corrupt-state or interruption recovery | CI_AUTOMATED | shard:recovery/worker-kill-recovers+shard:recovery/host-kill-no-orphan-worker+shard:recovery/corrupt-activation-record-recovery+shard:recovery/damaged-worker-script-replaced |
 | W10.1 | Ending a `msedgewebview2.exe` render process gives a bounded reload, then message box and tray notice | PHYSICAL_REQUIRED | - |
-| W11.1 | Export bundle writes one `.zip` under `state\diagnostics` holding only `manifest.json`, `facts.json` and `worker-log-tail.txt` | CI_AUTOMATED | shard:diagnostics |
-| W11.2 | The facts carry the executable name and SHA-256 matching the candidate, runtime, model, device and the recovery state | CI_AUTOMATED | shard:diagnostics |
+| W11.1 | Export bundle writes one `.zip` under `state\diagnostics` holding only `manifest.json`, `facts.json` and `worker-log-tail.txt` | CI_AUTOMATED | shard:diagnostics/diagnostics-bundle-schema-identity+shard:diagnostics/diagnostics-bundle-secrecy |
+| W11.2 | The facts carry the executable name and SHA-256 matching the candidate, runtime, model, device and the worker state with its recovery fields (the recovering and gave-up transitions are proven under W09) | CI_AUTOMATED | shard:diagnostics/diagnostics-bundle-schema-identity |
 | W11.3 | The facts carry the WebView2 Runtime version of the desktop shell | PHYSICAL_REQUIRED | - |
-| W11.4 | The bundle excludes request/state/question text, datasets, environment variables, SSH keys, known_hosts, credentials and model files | CI_AUTOMATED | shard:diagnostics |
+| W11.4 | The bundle excludes request/state/question text, datasets, environment variables, SSH keys, known_hosts, credentials and model files | CI_AUTOMATED | shard:diagnostics/diagnostics-bundle-secrecy |
 | W12.1 | `setup`, `doctor` (all checks pass) and a real smoke inference with the production model succeed with `--device cpu` | PHYSICAL_REQUIRED | - |
-| W12.2 | A deterministic fixture CPU home crosses packaged executable, controller, worker, HTTP API and typed inference; this is not a production-model result | CI_AUTOMATED | shard:runtime |
+| W12.2 | A deterministic fixture CPU home crosses packaged executable, controller, worker, HTTP API and typed inference; this is not a production-model result | CI_AUTOMATED | shard:runtime/cpu-ready-typed-inference |
 | W13.1 | The CUDA runtime sets up, passes `doctor` and answers a real decision on an NVIDIA GPU with driver 570 or newer | OPTIONAL_HARDWARE | - |
-| W13.2 | Requesting CUDA with no usable GPU reports the failure and never switches to CPU | CI_AUTOMATED | shard:runtime |
+| W13.2 | Requesting CUDA with no usable GPU reports the failure and never switches to CPU | CI_AUTOMATED | shard:runtime/cuda-unavailable-no-cpu-fallback |
 | W14.1 | `hachidori.exe` shows the current Hachidori icon in Explorer, the taskbar, the title bar, Alt+Tab and the tray | PHYSICAL_REQUIRED | - |
 | W14.2 | The embedded icon resource matches `assets/icons` byte-for-byte | CI_AUTOMATED | go test ./internal/winres |
 | W15.1 | Selecting, Materializing, Activating and restarting `opendecider-nano` serves it on `cuda:0` and a real decision answers; switching back to `laya-base` works | OPTIONAL_HARDWARE | - |
@@ -169,11 +177,11 @@ Rules:
 | W17.1 | A runtime from before #116 is named as not startable by this build and Restart starts no process | PHYSICAL_REQUIRED | - |
 | W17.2 | Materializing the current `cuda` runtime and `opendecider-nano`, Activate and Restart serve it on `cuda:0` and a real decision answers | OPTIONAL_HARDWARE | - |
 | W17.3 | A forced load failure shows the failed phase, the class and the stderr tail on Runtime | PHYSICAL_REQUIRED | - |
-| W18.1 | Opening Settings > Updates and switching Stable/Development sends no request | CI_AUTOMATED | shard:update |
-| W18.2 | Check for updates lists releases; Download reports phases and bytes and reaches "matches the release checksum" | CI_AUTOMATED | shard:update |
-| W18.3 | A corrupted download or checksum is rejected and Restart & update stays unavailable | CI_AUTOMATED | shard:update |
-| W18.4 | Restart & update replaces the executable of a disposable copy, reopens the same path, reports UPDATED, keeps the previous executable as `<exe>.old` and leaves home, models, settings, history and evidence unchanged | CI_AUTOMATED | shard:update |
-| W18.5 | A held lock on the executable ends in NOT UPDATED with the previous executable still starting | CI_AUTOMATED | shard:update |
+| W18.1 | Opening Settings > Updates and switching Stable/Development sends no request | CI_AUTOMATED | shard:update/update-no-network-on-open |
+| W18.2 | Check for updates lists releases; Download reports phases and bytes and reaches "matches the release checksum" | CI_AUTOMATED | shard:update/update-check-download-progress |
+| W18.3 | A corrupted download or checksum is rejected and Restart & update stays unavailable | CI_AUTOMATED | shard:update/update-corruption-rejected |
+| W18.4 | Restart & update replaces the executable of a disposable copy, reopens the same path, reports UPDATED, keeps the previous executable as `<exe>.old` and leaves home, models, settings, history and evidence unchanged | CI_AUTOMATED | shard:update/update-replace-restart |
+| W18.5 | A held lock on the executable ends in NOT UPDATED with the previous executable still starting | CI_AUTOMATED | shard:update/update-file-lock-keeps-previous |
 | W18.6 | The window visibly closes, replaces the executable and reopens at the same path | PHYSICAL_REQUIRED | - |
 | W19.1 | OpenDecider-nano FP32 vs BF16 on the RTX 3060 (#136): `provider.dtype`, an unsupported value refusing the launch, and the `hachidori precision` comparison | OPTIONAL_HARDWARE | - |
 | W20.1 | Clef-Flash source download and CPU reference run (about 19 GB) with a real decision | PHYSICAL_REQUIRED | - |
@@ -186,9 +194,9 @@ Rules:
 | W27.1 | `forge probe --device cuda` of the real persisted variant leaves the running runtime and certification state unchanged | OPTIONAL_HARDWARE | - |
 | W28.1 | Forge diagnostics after a real failure give a bounded document without token, home path or dataset content, linked from Settings | PHYSICAL_REQUIRED | - |
 | W29.1 | Check for updates shows "Checking…" and the RUNNING panel immediately; while it runs Check, Download, Save channel and Restart & update are disabled with the in-progress note | PHYSICAL_REQUIRED | - |
-| W29.2 | A second Check for updates while one runs starts no second request burst | CI_AUTOMATED | shard:update |
-| W29.3 | Download reports Starting, checksum, download with bytes and percent, and verify; the same operation is observable after a reload; completion points to Restart & update | CI_AUTOMATED | shard:update |
-| W29.4 | A network failure mid-download reports phase, cause and "partial download was discarded" | CI_AUTOMATED | shard:update |
+| W29.2 | A second Check for updates while one runs starts no second request burst | CI_AUTOMATED | shard:update/update-single-check-flight |
+| W29.3 | Download reports Starting, checksum, download with bytes and percent, and verify; the same operation is observable after a reload; completion points to Restart & update | CI_AUTOMATED | shard:update/update-check-download-progress |
+| W29.4 | A network failure mid-download reports phase, cause and "partial download was discarded" | CI_AUTOMATED | shard:update/update-network-failure-bounded |
 
 ## Recorded state for the change that introduced this checklist
 

@@ -482,6 +482,14 @@ Windows item as `CI_AUTOMATED`, `PHYSICAL_REQUIRED` or `OPTIONAL_HARDWARE`
 the manual sections below remain the procedures for the physical and hardware
 assertions, and #66 remains their authority.
 
+The workflow certifies in this order: candidate build (once) -> parallel shards
+-> aggregate certification (fails closed) -> development release, which
+publishes the certified candidate bytes and only when the aggregate passed. The
+evidence retained for each run (`windows-e2e-evidence-<shard>`,
+`windows-e2e-certification`) identifies the source commit, the executable file
+name and SHA-256, the runner and the shard results; see
+[test/windows-e2e/README.md](../test/windows-e2e/README.md).
+
 ## Windows desktop shell (manual, real Windows only)
 
 Generic CI and cross-compilation cannot open a WebView2 window; report these

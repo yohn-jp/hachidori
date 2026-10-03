@@ -1,8 +1,10 @@
 name: Go Windows development release
 
+# Pull requests only: the shared workflow tests and builds the Windows
+# executable without publishing. Development release publication moved to
+# windows-e2e.yml, which publishes the certified candidate after the Windows E2E
+# certification passes; a push to main must not publish from here.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
