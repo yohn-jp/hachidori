@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"html"
 	"net/http"
 	"net/url"
 	"strings"
@@ -196,12 +197,13 @@ func TestForgeBuildsASavedTuningProfile(t *testing.T) {
 	if n := strings.Count(form, `class="btn primary"`); n != 1 {
 		t.Errorf("the build form has %d primary actions", n)
 	}
-	e.post(t, "/forge/build-evaluate", url.Values{"source": {"clef-flash"}, "profile": {"tuning:" + p.ID()}, "dataset": {"/data/eval.jsonl"}, "provisioning": {"auto"}})
+	dataset := hostPath("data", "eval.jsonl")
+	e.post(t, "/forge/build-evaluate", url.Values{"source": {"clef-flash"}, "profile": {"tuning:" + p.ID()}, "dataset": {dataset}, "provisioning": {"auto"}})
 	if len(fv.buildRequests) != 1 || fv.buildRequests[0].TuningProfile != p.ID() || fv.buildRequests[0].Profile != "" {
 		t.Fatalf("build request %+v", fv.buildRequests)
 	}
 	// The dataset used is now a known resource, offered by name.
-	if !strings.Contains(e.get(t, "/forge").Body.String(), `<option value="/data/eval.jsonl">eval.jsonl</option>`) {
+	if !strings.Contains(e.get(t, "/forge").Body.String(), `<option value="`+html.EscapeString(dataset)+`">eval.jsonl</option>`) {
 		t.Error("a used dataset is not offered again by name")
 	}
 }
