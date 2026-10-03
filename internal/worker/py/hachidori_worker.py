@@ -17,7 +17,9 @@ Library output written to stdout (Laya prints warnings there) is redirected to s
 so the protocol channel carries protocol messages only.
 """
 import argparse
+import functools
 import hashlib
+import inspect
 import json
 import os
 import signal
@@ -92,6 +94,87 @@ def file_sha256(path):
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def clef_reference(dispatch, operation):
+    """Recover the reference frozen by the pinned Transformers 5.17 decorator.
+
+    Even a CPU launch in a CUDA environment must not inherit FLA's GPU callable
+    from Transformers' import-time optional-package selection.
+    """
+    closure = inspect.getclosurevars(dispatch).nonlocals
+    implementation = closure.get("implementation")
+    reference = closure.get("torch_function")
+    optimized = closure.get("is_new_implementation")
+    if (not callable(implementation) or not callable(reference)
+            or type(optimized) is not bool or optimized != (implementation is not reference)):
+        raise RuntimeError("unrecognized Transformers Clef kernel dispatch: %s" % operation)
+    params = inspect.signature(reference).parameters
+
+    @functools.wraps(reference)
+    def filtered(*args, **kwargs):
+        return reference(*args, **{k: v for k, v in kwargs.items() if k in params})
+
+    return filtered
+
+
+def fla_clef_conv(conv, hidden_states, weight, bias=None, activation=None, **kwargs):
+    # Transformers: [B, D, T] -> FLA: [B, T, D]. No caching or packed
+    # variable-length sequences are used by the Clef joint-schema forward.
+    output, _ = conv(x=hidden_states.transpose(1, 2).contiguous(), weight=weight,
+                     bias=bias, activation=activation, backend="triton",
+                     output_final_state=False)
+    return output.transpose(1, 2)
+
+
+def configure_clef_kernels(qwen, torch, device, dtype):
+    """Bind upstream FLA kernels for supported CUDA inference, or explicit refs.
+
+    Import success establishes availability only. Successful calls through these
+    bindings establish active execution; failures propagate without CPU or
+    reference retries. The resident never downloads or kernelizes from the Hub.
+    """
+    reason = "CPU reference execution"
+    supported = False
+    if device == "cuda":
+        capability = torch.cuda.get_device_capability()
+        supported = capability[0] >= 8 and dtype == "bfloat16"
+        reason = ("Triton 3.6 requires CUDA compute capability >= 8.0" if capability[0] < 8
+                  else "float32 uses the high-precision reference path")
+    bindings = [
+        ("causal_conv1d_fn", "causal_conv1d_fn"),
+        ("torch_chunk_gated_delta_rule", "chunk_gated_delta_rule"),
+    ]
+    references = {op: clef_reference(getattr(qwen, symbol), op) for symbol, op in bindings}
+    implementations = references.copy()
+    if supported:
+        # fla-core, not the full model/training distribution, owns these APIs.
+        # Missing/incompatible kernels are a startup error on the supported path.
+        from fla.modules.conv import causal_conv1d
+        from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+        implementations = {
+            "causal_conv1d_fn": functools.partial(fla_clef_conv, causal_conv1d),
+            "chunk_gated_delta_rule": chunk_gated_delta_rule,
+        }
+        reason = "pinned fla-core Triton kernels"
+    evidence = {}
+    for symbol, operation in bindings:
+        implementation = implementations[operation]
+        name = ("fla.modules.conv.causal_conv1d" if operation == "causal_conv1d_fn"
+                else "fla.ops.gated_delta_rule.chunk_gated_delta_rule") if supported else (
+                    references[operation].__module__ + "." + references[operation].__name__)
+        entry = {"selected": "optimized" if supported else "reference",
+                 "availability": "available" if supported else "unavailable",
+                 "implementation": name, "execution": "not_observed", "reason": reason}
+        evidence[operation] = entry
+
+        def observed(*args, _implementation=implementation, _entry=entry, **kwargs):
+            result = _implementation(*args, **kwargs)
+            _entry["execution"] = _entry["selected"] + "_active"
+            return result
+
+        setattr(qwen, symbol, observed)
+    return evidence
 
 
 class Provider:
@@ -429,6 +512,9 @@ class ClefProvider(Provider):
         import joint_schema_model
         self.jsm = joint_schema_model
         dtype = getattr(torch, want)
+        from transformers.models.qwen3_5 import modeling_qwen3_5
+        self.kernel_paths = configure_clef_kernels(modeling_qwen3_5, torch, self.requested, want)
+        log("Clef kernel selection: " + json.dumps(self.kernel_paths, sort_keys=True))
         # The same composition as upstream load_release_model, without the multimodal
         # processor: typed decisions are text-only, and the tokenizer is all they use.
         backbone = self.transformers.Qwen3_5ForConditionalGeneration.from_pretrained(
@@ -516,7 +602,7 @@ class ClefProvider(Provider):
 
     def extra_info(self):
         info = {"transformers_version": self.transformers.__version__, "weights_quantized_modules": self.quantized,
-                "execution": "variant" if self.variant else "source"}
+                "execution": "variant" if self.variant else "source", "kernel_paths": self.kernel_paths}
         if self.variant:
             weights = self.variant["weights"]
             info["quantization_scheme"] = weights["scheme"]

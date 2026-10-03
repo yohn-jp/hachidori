@@ -32,7 +32,15 @@ dependencies = [
 # support RTX 20xx..50xx (Turing..Blackwell) and need an NVIDIA driver >= 570.
 [project.optional-dependencies]
 cpu = ["torch==2.11.0+cpu"]
-cu128 = ["torch==2.11.0+cu128"]
+cu128 = [
+  "torch==2.11.0+cu128",
+  # FLA's core wheel carries both Gated DeltaNet and Triton causal convolution.
+  # Torch 2.11 uses Triton 3.6; Windows supplies the same backend via its
+  # upstream Windows distribution. CPU runtimes carry neither kernel package.
+  "fla-core==0.5.2",
+  "triton==3.6.0; sys_platform == 'linux'",
+  "triton-windows==3.6.0.post26; sys_platform == 'win32'",
+]
 
 [tool.uv]
 package = false

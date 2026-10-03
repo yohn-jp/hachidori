@@ -340,7 +340,7 @@ func TestSpecMatchesProject(t *testing.T) {
 		`"` + providerLaya + "==" + layaVersion + `"`,
 		`"` + providerOpenDecider + "==" + openDeciderVersion + `"`,
 		`cpu = ["torch==` + torchVersion + `+cpu"]`,
-		`cu128 = ["torch==` + torchVersion + `+cu128"]`,
+		"cu128 = [\n  \"torch==" + torchVersion + "+cu128\",",
 		`https://download.pytorch.org/whl/cu128`,
 	} {
 		if !strings.Contains(proj, s) {

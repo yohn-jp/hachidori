@@ -302,6 +302,7 @@ func verifyRuntime(h home.Home, dir string, spec home.RuntimeSpec) (runtimeProbe
 	for _, pin := range spec.ProviderPins() {
 		if name, _, _ := strings.Cut(pin, "=="); carriedProviders[name] {
 			required = append(required, clefDistributions...)
+			required = append(required, clefKernelDistributions(spec)...)
 			continue
 		}
 		required = append(required, pin)
