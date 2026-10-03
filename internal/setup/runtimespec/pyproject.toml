@@ -32,7 +32,13 @@ dependencies = [
 # support RTX 20xx..50xx (Turing..Blackwell) and need an NVIDIA driver >= 570.
 [project.optional-dependencies]
 cpu = ["torch==2.11.0+cpu"]
-cu128 = ["torch==2.11.0+cu128"]
+cu128 = [
+  "torch==2.11.0+cu128",
+  # Clef's optimized serving path is a native Windows CUDA product contract.
+  # Other platforms keep the reference implementation.
+  "fla-core==0.5.2; sys_platform == 'win32'",
+  "triton-windows==3.6.0.post26; sys_platform == 'win32'",
+]
 
 [tool.uv]
 package = false

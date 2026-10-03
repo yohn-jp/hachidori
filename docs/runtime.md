@@ -422,11 +422,30 @@ parsed or retried.
   `HACHIDORI_CLEF_DTYPE=float32`, in `float32` as the high-precision reference. The
   device is explicit: CUDA is never silently replaced by the CPU. A 9B model in
   `bfloat16` does not fit an RTX 3060; the reference path is the CPU and may be
-  slow, and the CUDA path is for a variant (below). Without the optional
-  `flash-linear-attention` and `causal-conv1d` kernels (not installed by
-  Hachidori) transformers runs the gated delta rule and the causal convolution
-  of the Qwen3.5 backbone through its reference PyTorch implementation: correct,
-  and slower. Nothing is generated, parsed or retried.
+  slow, and the CUDA path is for a variant (below). On native Windows amd64
+  with CUDA compute capability >= 8.0 in `bfloat16`, Hachidori binds FLA's
+  Triton causal convolution and chunk Gated DeltaNet kernels. The convolution
+  adapter only transposes between Transformers' `[B, D, T]` and FLA's
+  `[B, T, D]` layout. The Windows CUDA runtime locks `fla-core==0.5.2` and
+  `triton-windows==3.6.0.post26`. CPU and non-Windows runtimes carry no Clef
+  kernel dependencies. Non-Windows CUDA, CPU, older CUDA capabilities, and
+  `float32` use explicit PyTorch references. Missing kernels or kernel execution
+  errors on the supported Windows path are startup or inference failures, never
+  reference retries or CPU substitution. Nothing is generated, parsed or retried.
+
+  Clef worker startup logs kernel selection. READY/status provider information
+  includes `kernel_paths.causal_conv1d_fn` and
+  `kernel_paths.chunk_gated_delta_rule`. Each records `selected` (`optimized` or
+  `reference`), `implementation`, `availability` (`available` or `unavailable`),
+  `execution` (`not_observed`, `reference_active`, or `optimized_active`), and
+  the selection reason. Execution becomes active only after that binding returns
+  successfully during inference/warmup; importing a package is insufficient.
+  Unsupported combinations report unavailable optimization separately from
+  active reference execution. An unknown Transformers dispatch contract is a
+  model load failure. The dependency project, lock and embedded worker digest
+  participate in runtime identity; materialize the current runtime before
+  launching it. The resident does not download Hub kernels. Physical Windows
+  acceptance remains separate; see the #221 evidence in `certification.md`.
 
 Which model is the default is decided by recorded evidence, not by size or
 upstream claims; see "Decision-model comparison" in `certification.md`.

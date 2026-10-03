@@ -104,6 +104,9 @@ func fakeUV(args []string) int {
 			torch = ctl.Torch
 		}
 		pkgs := []string{"laya==0.3.21", "opendecider==0.3.0", "numpy==2.5.3", "torch==" + torch, "transformers==5.17.0", "safetensors==0.8.0", "tokenizers==0.23.2", "accelerate==1.15.0", "compressed-tensors==0.19.0"}
+		if flagValue(args, "--extra") == "cu128" {
+			pkgs = append(pkgs, clefKernelDistributions(home.RuntimeSpec{Flavor: "cu128", Platform: platform()})...)
+		}
 		if pj, _ := os.ReadFile("pyproject.toml"); strings.Contains(string(pj), "hachidori-optimizer") {
 			pkgs = []string{"llmcompressor==0.14.0", "compressed-tensors==0.19.0", "numpy==2.5.3", "torch==" + torch, "transformers==5.17.0"}
 		}

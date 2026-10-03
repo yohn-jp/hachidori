@@ -618,3 +618,69 @@ run, the native folder picker (#47), remembered-home launch, WebView2
 navigation and rendering (#41), tray/reopen, start at sign-in, runtime restart,
 worker crash and recovery, CPU, and CUDA when the hardware exists. Cross-builds
 and portable tests never produce `PASS` for a physical item.
+
+## Clef Gated DeltaNet kernels (#221)
+
+The optimized path is intentionally a native Windows amd64 CUDA product
+contract. It uses `fla-core==0.5.2` for both convolution and chunk Gated
+DeltaNet with `triton-windows==3.6.0.post26`. These are wheel-only dependencies
+in the Windows CUDA serving Runtime Spec/uv lock, not user-site packages or
+worker-time Hub downloads. The kernels require CUDA compute capability >= 8.0
+and the Clef `bfloat16` compute path. CPU, non-Windows CUDA, older CUDA
+capabilities and `float32` explicitly execute references. Supported Windows
+CUDA startup/inference errors propagate without a reference or CPU retry. This
+does not change the W4A16 recipe, artifact identity, question encoding, joint
+head, or preservation policy.
+
+Investigation on 2026-10-03 used the exact locked `transformers==5.17.0` wheel
+(SHA-256 `78ec1ce21579b38dfb83950a0658cd119f87212a2fcfdff478096ce9d6c03801`).
+Its Qwen3.5 and Hub integration sources match the upstream v5.17.0 tag:
+
+- [Qwen3.5 implementation](https://github.com/huggingface/transformers/blob/v5.17.0/src/transformers/models/qwen3_5/modeling_qwen3_5.py):
+  Clef's `use_cache=False` forward uses `causal_conv1d_fn` and
+  `torch_chunk_gated_delta_rule`, not the cached update/recurrent functions.
+- [Transformers dispatch](https://github.com/huggingface/transformers/blob/v5.17.0/src/transformers/integrations/hub_kernels.py):
+  optional-package dispatch freezes a callable at import time and catches import
+  errors. Merely installing a distribution does not establish optimized execution.
+  `use_kernels=True` can substitute Hub functions, but its whole-layer
+  `Atlas-Inference/gdn` replacement is SM121-only, excluding the RTX 3060 (SM86).
+- [causal-conv1d 1.7.0 release](https://github.com/Dao-AILab/causal-conv1d/releases/tag/v1.7.0)
+  has Linux wheels, no Windows wheels, and no Torch 2.11 wheel. Its PyPI sdist
+  cannot satisfy `uv sync --no-build`. Convolution Hub builds similarly do not
+  establish a native Windows solution. Installing `kernels` alone neither pins
+  its Hub artifacts in uv nor supplies a matching Windows convolution binary.
+- [FLA's upstream convolution](https://github.com/fla-org/flash-linear-attention/blob/v0.5.2/fla/modules/conv/causal_conv1d.py)
+  offers a Triton backend with the same causal depthwise convolution, weight
+  layout and SiLU activation. Hachidori's adapter transposes inputs/outputs and
+  explicitly selects that backend without recurrent state. The
+  [chunk delta API](https://github.com/fla-org/flash-linear-attention/blob/v0.5.2/fla/ops/gated_delta_rule/chunk.py)
+  accepts the pinned Qwen3.5 positional Q/K/V and named gate, beta, state,
+  normalization and sequence-length arguments directly.
+- [FLA Windows support](https://github.com/fla-org/flash-linear-attention/blob/v0.5.2/fla/utils/_device.py)
+  explicitly recognizes `triton-windows`.
+  [Triton Windows compatibility](https://github.com/triton-lang/triton-windows/blob/e113e6b604f25e38dd45565a875d12069f9d7245/README.md)
+  pairs Torch 2.11 with Triton 3.6, supports Ampere BF16, and bundles a CUDA 12.8
+  toolchain. The locked CPython 3.12 Windows amd64 wheel SHA-256 is
+  `189d8c57911aa9d2ff983a715e5c967b325f576307db60924cab22b501a36515`.
+
+`kernel_paths` in resident provider information distinguishes availability from
+successful execution (see `runtime.md`). Physical benchmarks may claim
+optimized execution only if **both** operations report `optimized_active` on
+the same resident runtime. Portable tests exercise selection, layout/argument
+adaptation, error propagation, explicit references, and existing Clef result
+and variant contracts with simulated kernels; they do not certify CUDA.
+
+| Physical acceptance | Result |
+|---|---|
+| Native Windows amd64 private-runtime materialization and kernel JIT | NOT_CHECKED |
+| RTX 3060 startup with both operations `optimized_active` | NOT_CHECKED |
+| Removal of both observed reference-fallback warnings | NOT_CHECKED |
+| Fixed accepted W4A16 before/after latency, correctness, peak VRAM, long-state behavior | NOT_CHECKED |
+| Numerical equivalence and accuracy regression | NOT_CHECKED |
+
+For the physical before/after comparison, retain the exact accepted W4A16
+artifact, states, questions, options and dtype. Require identical choices and
+maximum absolute per-option probability difference <= 0.01 across the fixed
+workload, and no accuracy regression against its expected labels. Record the
+long-state result or timeout explicitly. This kernel comparison tolerance does
+not replace or relax the existing variant preservation/certification policy.

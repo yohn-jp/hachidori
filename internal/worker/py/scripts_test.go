@@ -76,3 +76,14 @@ func TestWorkerArgumentContract(t *testing.T) {
 		}
 	}
 }
+
+func TestClefKernelEvidence(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3")
+	}
+	cmd := exec.Command(python, "-B", filepath.Join("testdata", "clef_kernels.py"), "hachidori_worker.py")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Clef kernel dispatch evidence: %v\n%s", err, out)
+	}
+}
