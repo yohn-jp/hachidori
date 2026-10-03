@@ -19,7 +19,7 @@ import (
 // Every figure is read from an artifact, a probe of the exact manifest or a
 // certification record; nothing is estimated, and a figure with no record is
 // NOT_CHECKED.
-func (s tuningStore) Candidate(p tuning.Profile) (dashboard.TuningCandidate, error) {
+func (s tuningStore) Candidate(p tuning.Profile, c tuning.Compilation) (dashboard.TuningCandidate, error) {
 	h, err := s.home()
 	if err != nil {
 		return dashboard.TuningCandidate{}, err
@@ -33,7 +33,7 @@ func (s tuningStore) Candidate(p tuning.Profile) (dashboard.TuningCandidate, err
 			out.BaselineEvidence = &ev
 		}
 	}
-	cv, cdir, ok := tunedVariant(h, p)
+	cv, cdir, ok := tunedVariant(h, p, tuningPlanSHA(c))
 	if !ok {
 		return out, nil
 	}
