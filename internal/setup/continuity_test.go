@@ -100,6 +100,36 @@ func TestSchemaV1RuntimeIsReusedWithoutRematerialization(t *testing.T) {
 // What cannot be verified is not reused: a runtime of the previous scheme whose
 // declared environment differs, whose identity does not match its own spec, or
 // whose interpreter no longer verifies is never taken for the required one.
+func TestReconcileActiveReportsEquivalentWhenItReusesSchemaV1Runtime(t *testing.T) {
+	x := setup.NewFake(t)
+	if err := x.Run("cpu", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Keep a stale active runtime and a separate, verified schema-1 runtime
+	// whose dependency environment exactly matches the current requirement.
+	stale := x.Stale("cpu")
+	if err := x.Run("cpu", ""); err != nil {
+		t.Fatal(err)
+	}
+	legacy := x.SchemaV1("cpu")
+	x.ActivateDir(stale)
+
+	rec, changed, err := setup.ReconcileActive(t.Context(), x.H, io.Discard, nil)
+	if err != nil || !changed {
+		t.Fatalf("ReconcileActive = %+v, %v, %v", rec, changed, err)
+	}
+	if rec.State != setup.CompatEquivalent || rec.ActiveRuntime != legacy || rec.ActiveEnvironment != rec.RequiredEnvironment {
+		t.Fatalf("reconciliation reported %+v; want the equivalent runtime actually activated", rec)
+	}
+	var a home.Active
+	if err := home.ReadJSON(x.H.Path("state", "active-runtime.json"), &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Runtime != legacy {
+		t.Fatalf("activation runtime %q, want reused legacy runtime %q", a.Runtime, legacy)
+	}
+}
+
 func TestSchemaV1RuntimeThatIsNotVerifiablyEquivalentIsNotReused(t *testing.T) {
 	rewrite := func(t *testing.T, x *setup.Fake, name string, edit func(m map[string]any)) {
 		t.Helper()
