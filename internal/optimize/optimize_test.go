@@ -10,12 +10,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/optimize/optimizetest"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/setup/bytecodetest"
+	"github.com/yohn-jp/hachidori/internal/tuning"
 )
 
 var carried = []string{"LICENSE", "chat_template.jinja", "joint_head.safetensors", "joint_head_config.json", "joint_schema_model.py",
@@ -54,6 +56,12 @@ type phases struct {
 	mu       sync.Mutex
 	seen     []setup.Phase
 	progress []setup.Progress
+}
+
+type runnerFunc func(context.Context, []string, io.Writer, io.Writer) error
+
+func (f runnerFunc) Run(ctx context.Context, args []string, events, log io.Writer) error {
+	return f(ctx, args, events, log)
 }
 
 func (p *phases) obs() *setup.Observer {
@@ -180,6 +188,124 @@ func TestBuildPublishesVerifiedVariant(t *testing.T) {
 		if pr.Total == 0 && pr.Determinate() {
 			t.Errorf("fabricated progress: %+v", pr)
 		}
+	}
+}
+
+func TestTunedBuildIdentityAndProvenanceAreReproducible(t *testing.T) {
+	h, m := source(t)
+	analysis, err := tuning.Analyze(m, tuning.DeclaredLayout{
+		ModelType: "qwen3_5", TextModelType: "qwen3_5_text",
+		Architectures: []string{"Qwen3_5ForConditionalGeneration"},
+		LayerTypes:    []string{"linear_attention", "linear_attention", "linear_attention", "full_attention"},
+		LinearModules: []string{
+			"lm_head", "model.visual.blocks.0.attn.qkv", "model.visual.merger.linear_fc1",
+			"model.language_model.layers.0.linear_attn.in_proj_a", "model.language_model.layers.0.linear_attn.in_proj_b",
+			"model.language_model.layers.0.linear_attn.in_proj_qkv", "model.language_model.layers.0.mlp.gate_proj",
+			"model.language_model.layers.3.self_attn.q_proj",
+		},
+		CarriedFiles: []string{"joint_head.safetensors"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := tuning.NewDefaultProfile(analysis, "balanced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tuning.SaveProfile(h, profile, analysis); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := tuning.Compile(profile, analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenance := &home.TuningProvenance{
+		Schema: home.TuningProvenanceSchema, Source: profile.Source,
+		ProfileID: profile.ID(), ProfileSHA256: profile.SHA256(),
+		AnalysisID: analysis.ID(), AnalysisSHA256: analysis.SHA256(),
+		CompilerVersion: profile.CompilerVersion,
+	}
+	req := optimize.Request{Model: m.ID, Recipe: compiled.Recipe.Name, CompiledRecipe: &compiled.Recipe, Tuning: provenance}
+	fixed := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	first, err := optimize.Build(context.Background(), h, req, optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test", Now: func() time.Time { return fixed }}, io.Discard, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Variant.Tuning == nil || first.Variant.Tuning.ProfileID != profile.ID() ||
+		first.Variant.Tuning.AnalysisID != analysis.ID() || first.Variant.Tuning.CompilerVersion != profile.CompilerVersion {
+		t.Fatalf("published variant lost tuning provenance: %+v", first.Variant.Tuning)
+	}
+	if first.Variant.RecipeSHA256 != compiled.Recipe.SHA256() {
+		t.Fatal("published variant does not contain the recipe emitted by the tuning compiler")
+	}
+	legacyBuildID := home.DeriveBuildID(first.Variant.Source, first.Variant.Provider, first.Variant.Optimizer, first.Variant.RecipeSHA256, first.Variant.Calibration)
+	if first.Variant.BuildID == legacyBuildID {
+		t.Fatal("tuning provenance did not affect build identity")
+	}
+
+	req.Reproduce = true
+	second, err := optimize.Build(context.Background(), h, req, optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test", Now: func() time.Time { return fixed }}, io.Discard, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Existing || !second.Reproduced || second.Variant.ID != first.Variant.ID ||
+		second.Variant.ManifestSHA256() != first.Variant.ManifestSHA256() {
+		t.Fatalf("same profile/source did not reproduce canonical variant provenance: first=%+v second=%+v", first.Variant, second.Variant)
+	}
+
+	pinned := profile
+	pinned.Objective = "preserve full attention"
+	pinned.Preservation = make(map[string]tuning.PreservationChoice, len(profile.Preservation))
+	for id, choice := range profile.Preservation {
+		pinned.Preservation[id] = choice
+	}
+	pinned.Preservation[tuning.RegionFullAttention] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
+	if err := tuning.SaveProfile(h, pinned, analysis); err != nil {
+		t.Fatal(err)
+	}
+	pinnedCompilation, err := tuning.Compile(pinned, analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinnedProvenance := *provenance
+	pinnedProvenance.ProfileID, pinnedProvenance.ProfileSHA256 = pinned.ID(), pinned.SHA256()
+	pinnedReq := optimize.Request{Model: m.ID, Recipe: pinnedCompilation.Recipe.Name, CompiledRecipe: &pinnedCompilation.Recipe, Tuning: &pinnedProvenance}
+	pinnedBuild, err := optimize.Build(context.Background(), h, pinnedReq, optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test", Now: func() time.Time { return fixed }}, io.Discard, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinnedBuild.Variant.RecipeSHA256 == first.Variant.RecipeSHA256 || pinnedBuild.Variant.BuildID == first.Variant.BuildID || pinnedBuild.Variant.ID == first.Variant.ID {
+		t.Fatal("semantic profile change did not change recipe, build and variant identity")
+	}
+}
+
+func TestBuildRefusesTuningProvenanceForAnotherSourceBeforeOptimization(t *testing.T) {
+	h, model := source(t)
+	recipe, err := optimize.LookupRecipe(model.ID, optimize.RecipeClefFlashW4A16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceIdentity := home.SourceOf(model)
+	wrongSource := sourceIdentity
+	wrongSource.Revision = strings.Repeat("00", 20)
+	called := false
+	runner := runnerFunc(func(context.Context, []string, io.Writer, io.Writer) error {
+		called = true
+		return nil
+	})
+	_, err = optimize.Build(context.Background(), h, optimize.Request{
+		Model: model.ID, Recipe: recipe.Name, CompiledRecipe: &recipe,
+		Tuning: &home.TuningProvenance{
+			Schema: home.TuningProvenanceSchema, Source: wrongSource,
+			ProfileID: strings.Repeat("a", 64), ProfileSHA256: strings.Repeat("a", 64),
+			AnalysisID: strings.Repeat("b", 64), AnalysisSHA256: strings.Repeat("b", 64), CompilerVersion: "home-recipe/1",
+		},
+	}, optimize.Deps{Runner: runner, OptimizerRuntime: "optimizer-test"}, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "does not match variant source") {
+		t.Fatalf("mismatched source was not refused before build work: %v", err)
+	}
+	if called {
+		t.Fatal("optimizer ran for a profile bound to another source")
 	}
 }
 

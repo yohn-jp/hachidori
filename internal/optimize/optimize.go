@@ -27,6 +27,10 @@ import (
 type Request struct {
 	Model  string // catalog model ID
 	Recipe string // recipe name
+	// CompiledRecipe is set only when Tuning names a stored semantic profile;
+	// it is the canonical recipe produced by the tuning compiler.
+	CompiledRecipe *home.Recipe
+	Tuning         *home.TuningProvenance
 	// Reproduce rebuilds a contract that already has a published variant and
 	// compares the new artifacts with it, publishing nothing.
 	Reproduce bool
@@ -122,9 +126,34 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	if !setup.SupportsVariants(model) {
 		return Result{}, fmt.Errorf("model %s has no variants (only System One models are optimized)", model.ID)
 	}
-	recipe, err := LookupRecipe(model.ID, req.Recipe)
+	canonical, err := LookupRecipe(model.ID, req.Recipe)
 	if err != nil {
 		return Result{}, err
+	}
+	src := home.SourceOf(model)
+	recipe := canonical
+	if req.Tuning == nil {
+		if req.CompiledRecipe != nil {
+			return Result{}, errors.New("a compiled tuning recipe requires exact tuning provenance")
+		}
+	} else {
+		if req.CompiledRecipe == nil {
+			return Result{}, errors.New("tuning provenance requires the canonical recipe produced by its compiler")
+		}
+		if err := req.Tuning.Validate(src); err != nil {
+			return Result{}, fmt.Errorf("tuning profile cannot build this source: %w", err)
+		}
+		compiled := *req.CompiledRecipe
+		if compiled.Name != canonical.Name || compiled.Schema != canonical.Schema || compiled.Engine != canonical.Engine ||
+			compiled.Scheme != canonical.Scheme || compiled.Algorithm != canonical.Algorithm ||
+			!equalStrings(compiled.Targets, canonical.Targets) || !equalStrings(compiled.Carry, canonical.Carry) ||
+			!includesPreserved(compiled.Preserved, canonical.Preserved) {
+			return Result{}, errors.New("tuning compiler recipe changes the canonical optimizer contract")
+		}
+		if err := compiled.Validate(); err != nil {
+			return Result{}, fmt.Errorf("compiled tuning recipe: %w", err)
+		}
+		recipe = compiled
 	}
 	weights, err := weightsOf(recipe)
 	if err != nil {
@@ -158,10 +187,9 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	if now == nil {
 		now = time.Now
 	}
-	src := home.SourceOf(model)
 	opt := home.Optimizer{Engine: recipe.Engine, Version: setup.OptimizerEngineVersion, Runtime: runtimeID, Device: "cpu"}
 	recipeSHA := recipe.SHA256()
-	buildID := home.DeriveBuildID(src, model.Provider, opt, recipeSHA, nil)
+	buildID := home.DeriveBuildIDWithTuning(src, model.Provider, opt, recipeSHA, nil, req.Tuning)
 	existing, err := findByBuild(h, model, buildID)
 	if err != nil {
 		return Result{}, err
@@ -225,7 +253,12 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 			return Result{}, fmt.Errorf("the optimizer did not carry %s over from the source", rel)
 		}
 	}
-	v := home.VariantManifest{Source: src, Provider: model.Provider, Optimizer: opt, Recipe: recipe, Weights: weights, Files: files,
+	var tuning *home.TuningProvenance
+	if req.Tuning != nil {
+		copy := *req.Tuning
+		tuning = &copy
+	}
+	v := home.VariantManifest{Source: src, Provider: model.Provider, Optimizer: opt, Recipe: recipe, Tuning: tuning, Weights: weights, Files: files,
 		Creation: home.Creation{CreatedAt: now().UTC().Format(time.RFC3339), Platform: runtime.GOOS + "/" + runtime.GOARCH,
 			Command: fmt.Sprintf("hachidori variant optimize --model %s --recipe %s", model.ID, recipe.Name)}}
 	v.Seal()
@@ -274,6 +307,34 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	}
 	fmt.Fprintf(log, "variant %s published\n", v.ID)
 	return Result{Variant: v, Dir: final}, nil
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func includesPreserved(actual, required []home.PreservedModule) bool {
+	for _, want := range required {
+		found := false
+		for _, got := range actual {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func writeManifest(dir string, v home.VariantManifest) error {

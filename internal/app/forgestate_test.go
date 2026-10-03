@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tuning"
 )
 
 // recordPreflight runs the optimize authority's preflight for req over a
@@ -31,6 +33,70 @@ func recordPreflight(t *testing.T, h home.Home, req optimize.PreflightRequest, a
 		t.Fatal(err)
 	}
 	return rep
+}
+
+func TestOptimizeProfileResolvesExactProfileAndRefusesAnotherSource(t *testing.T) {
+	source, err := setup.LookupModel(setup.ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis, err := tuning.Analyze(source, tuning.DeclaredLayout{
+		ModelType: "qwen3_5", TextModelType: "qwen3_5_text",
+		Architectures: []string{"Qwen3_5ForConditionalGeneration"},
+		LayerTypes:    []string{"linear_attention", "linear_attention", "linear_attention", "full_attention"},
+		LinearModules: []string{
+			"lm_head", "model.visual.blocks.0.attn.qkv", "model.visual.merger.linear_fc1",
+			"model.language_model.layers.0.linear_attn.in_proj_a", "model.language_model.layers.0.linear_attn.in_proj_b",
+			"model.language_model.layers.0.linear_attn.in_proj_qkv", "model.language_model.layers.0.mlp.gate_proj",
+			"model.language_model.layers.3.self_attn.q_proj",
+		},
+		CarriedFiles: []string{"joint_head.safetensors"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := tuning.NewDefaultProfile(analysis, "balanced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := home.Home{Root: t.TempDir()}
+	if err := tuning.SaveProfile(h, profile, analysis); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := tunedBuildRequest(h, source, profile.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Model != source.ID || req.Recipe != optimize.RecipeClefFlashW4A16 || req.CompiledRecipe == nil || req.Tuning == nil {
+		t.Fatalf("profile did not resolve to a tuned optimizer request: %+v", req)
+	}
+	if req.Tuning.ProfileID != profile.ID() || req.Tuning.ProfileSHA256 != profile.SHA256() ||
+		req.Tuning.AnalysisID != analysis.ID() || req.Tuning.AnalysisSHA256 != analysis.SHA256() ||
+		req.Tuning.CompilerVersion != profile.CompilerVersion {
+		t.Fatalf("optimizer request lost exact tuning provenance: %+v", req.Tuning)
+	}
+	var built optimize.Request
+	c := New(Config{Home: h.Root, Maintenance: Maintenance{Build: func(_ context.Context, _ home.Home, got optimize.Request, _ io.Writer, _ *setup.Observer) (optimize.Result, error) {
+		built = got
+		return optimize.Result{Variant: home.VariantManifest{ID: "fixture"}}, nil
+	}}})
+	if err := c.OptimizeProfile(source.ID, profile.ID()); err != nil {
+		t.Fatal(err)
+	}
+	operation := waitIdle(t, c).Maintenance
+	if operation == nil || operation.Failure != nil || operation.Target != "tuning profile "+profile.ID() {
+		t.Fatalf("profile build operation did not complete with the exact target: %+v", operation)
+	}
+	if built.Tuning == nil || built.Tuning.ProfileID != profile.ID() || built.CompiledRecipe == nil || built.Recipe != req.Recipe {
+		t.Fatalf("controller did not pass the resolved tuning request to the build authority: %+v", built)
+	}
+
+	otherSource := source
+	otherSource.Revision = strings.Repeat("0", len(source.Revision))
+	if _, err := tunedBuildRequest(h, otherSource, profile.ID()); err == nil {
+		t.Fatal("Forge accepted a tuning profile bound to another source")
+	}
 }
 
 // recorded is the one recorded preflight of the home, judged now.

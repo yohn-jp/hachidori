@@ -17,6 +17,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tuning"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -887,6 +888,49 @@ func (c *Controller) Optimize(model, recipe string) error {
 		run: func(root string, log io.Writer, obs *setup.Observer) error {
 			return c.cfg.Maintenance.Optimize(context.Background(), root, model, recipe, log, obs)
 		}})
+}
+
+// OptimizeProfile builds a variant from one exact persisted tuning profile.
+// The fixed-recipe Optimize path remains available to existing callers.
+func (c *Controller) OptimizeProfile(model, profileID string) error {
+	return c.async(SetupParams{}, action{kind: OpOptimize, model: model, target: "tuning profile " + profileID,
+		forge: &ForgeFailure{Kind: OpOptimize, Model: model},
+		run: func(root string, log io.Writer, obs *setup.Observer) error {
+			source, err := setup.LookupModel(model)
+			if err != nil {
+				return err
+			}
+			req, err := tunedBuildRequest(home.Home{Root: root}, source, profileID)
+			if err != nil {
+				return err
+			}
+			_, err = c.cfg.Maintenance.Build(context.Background(), home.Home{Root: root}, req, log, obs)
+			return err
+		}})
+}
+
+func tunedBuildRequest(h home.Home, source home.ModelManifest, profileID string) (optimize.Request, error) {
+	if !setup.SupportsVariants(source) {
+		return optimize.Request{}, fmt.Errorf("model %s has no variants (only System One models are optimized)", source.ID)
+	}
+	profile, analysis, err := tuning.LoadProfile(h, profileID)
+	if err != nil {
+		return optimize.Request{}, err
+	}
+	if profile.Source != home.SourceOf(source) {
+		return optimize.Request{}, fmt.Errorf("tuning profile %s is bound to a different source model", profileID)
+	}
+	compiled, err := tuning.Compile(profile, analysis)
+	if err != nil {
+		return optimize.Request{}, err
+	}
+	provenance := &home.TuningProvenance{
+		Schema: home.TuningProvenanceSchema, Source: profile.Source,
+		ProfileID: profile.ID(), ProfileSHA256: profile.SHA256(),
+		AnalysisID: analysis.ID(), AnalysisSHA256: analysis.SHA256(),
+		CompilerVersion: profile.CompilerVersion,
+	}
+	return optimize.Request{Model: source.ID, Recipe: compiled.Recipe.Name, CompiledRecipe: &compiled.Recipe, Tuning: provenance}, nil
 }
 
 // Certify compares a reference run and a candidate run of a variant and

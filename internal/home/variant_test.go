@@ -1,6 +1,8 @@
 package home
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"strings"
@@ -31,6 +33,32 @@ func testVariant(files map[string]string) VariantManifest {
 		Files: files, Creation: Creation{CreatedAt: "2026-01-01T00:00:00Z", Platform: "linux/amd64", Command: "hachidori variant optimize"}}
 	v.Seal()
 	return v
+}
+
+func testTuning() *TuningProvenance {
+	return &TuningProvenance{
+		Schema: TuningProvenanceSchema, Source: SourceOf(testSource()),
+		ProfileID: strings.Repeat("a", 64), ProfileSHA256: strings.Repeat("a", 64),
+		AnalysisID: strings.Repeat("b", 64), AnalysisSHA256: strings.Repeat("b", 64),
+		CompilerVersion: "home-recipe/1",
+	}
+}
+
+func priorRecipeOnlyBuildID(v VariantManifest) string {
+	b, err := json.Marshal(struct {
+		Schema      string        `json:"schema"`
+		Source      VariantSource `json:"source"`
+		Provider    string        `json:"provider"`
+		Engine      string        `json:"engine"`
+		Version     string        `json:"version"`
+		Recipe      string        `json:"recipe_sha256"`
+		Calibration *Calibration  `json:"calibration,omitempty"`
+	}{VariantSchema, v.Source, v.Provider, v.Optimizer.Engine, v.Optimizer.Version, v.RecipeSHA256, v.Calibration})
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // Identity is deterministic, and changes with exactly the inputs it is derived
@@ -77,6 +105,47 @@ func TestVariantIdentityIsDeterministicAndSensitive(t *testing.T) {
 	v.Seal()
 	if v.ID != a.ID {
 		t.Error("provenance changed the variant identity")
+	}
+}
+
+func TestTuningProvenanceBindsBuildIdentityAndLegacyVariantsRemainValid(t *testing.T) {
+	legacy := testVariant(nil)
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("recipe-only legacy variant is invalid: %v", err)
+	}
+	if priorRecipeOnlyBuildID(legacy) != legacy.BuildID || DeriveBuildIDWithTuning(legacy.Source, legacy.Provider, legacy.Optimizer, legacy.RecipeSHA256, legacy.Calibration, nil) != legacy.BuildID {
+		t.Fatal("an absent tuning record changed the legacy build identity")
+	}
+
+	tuned := testVariant(nil)
+	tuned.Tuning = testTuning()
+	tuned.Seal()
+	if err := tuned.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if tuned.RecipeSHA256 != legacy.RecipeSHA256 || tuned.BuildID == legacy.BuildID || tuned.ID == legacy.ID {
+		t.Fatal("tuning provenance did not add its identity while keeping the canonical recipe identity")
+	}
+	otherProfile := testVariant(nil)
+	otherProfile.Tuning = testTuning()
+	otherProfile.Tuning.ProfileID = strings.Repeat("c", 64)
+	otherProfile.Tuning.ProfileSHA256 = strings.Repeat("c", 64)
+	otherProfile.Seal()
+	if otherProfile.BuildID == tuned.BuildID {
+		t.Fatal("a different exact tuning profile did not change BuildID")
+	}
+
+	bad := tuned
+	bad.Tuning = testTuning()
+	bad.Tuning.Source.Revision = strings.Repeat("f", 40)
+	if err := bad.Validate(); err == nil {
+		t.Fatal("variant accepted tuning provenance for another source")
+	}
+	bad = tuned
+	bad.Tuning = testTuning()
+	bad.Tuning.AnalysisSHA256 = strings.Repeat("c", 64)
+	if err := bad.Validate(); err == nil {
+		t.Fatal("variant accepted an analysis identity that differs from its digest")
 	}
 }
 

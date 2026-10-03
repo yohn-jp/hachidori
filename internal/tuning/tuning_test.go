@@ -2,6 +2,8 @@ package tuning
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -169,6 +171,59 @@ func TestProfileValidationRejectsUnknownAndMismatchedInputs(t *testing.T) {
 				t.Fatal("invalid profile compiled")
 			}
 		})
+	}
+}
+
+func TestStoredAnalysisAndProfileAreImmutableAndSourceBound(t *testing.T) {
+	h := home.Home{Root: t.TempDir()}
+	analysis := clefAnalysis(t)
+	profile, err := NewDefaultProfile(analysis, "balanced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveProfile(h, profile, analysis); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{analysisPath(h, analysis.ID()), profilePath(h, profile.ID())} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("versioned tuning document %s was not persisted: %v", filepath.Base(path), err)
+		}
+	}
+	loadedProfile, loadedAnalysis, err := LoadProfile(h, profile.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(profile.Canonical(), loadedProfile.Canonical()) || !bytes.Equal(analysis.Canonical(), loadedAnalysis.Canonical()) {
+		t.Fatal("loaded tuning documents differ from their canonical persisted inputs")
+	}
+
+	changed := profile
+	changed.Objective = "another objective"
+	if err := SaveProfile(h, changed, analysis); err != nil {
+		t.Fatalf("a new profile identity could not be stored: %v", err)
+	}
+	if changed.ID() == profile.ID() {
+		t.Fatal("a changed profile did not change its identity")
+	}
+
+	stored := loadedProfile
+	stored.Objective = "tampered"
+	if err := home.WriteJSON(profilePath(h, profile.ID()), stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadProfile(h, profile.ID()); err == nil {
+		t.Fatal("a stored profile changed without changing its persisted identity")
+	}
+	if err := home.WriteJSON(profilePath(h, profile.ID()), loadedProfile); err != nil {
+		t.Fatal(err)
+	}
+	tamperedAnalysis := loadedAnalysis
+	tamperedAnalysis.LayoutSHA256 = strings.Repeat("0", 64)
+	if err := home.WriteJSON(analysisPath(h, analysis.ID()), tamperedAnalysis); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAnalysis(h, analysis.ID()); err == nil {
+		t.Fatal("a stored analysis changed without changing its persisted identity")
 	}
 }
 
