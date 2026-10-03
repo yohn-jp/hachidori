@@ -768,7 +768,6 @@ func TestDesktopHostsTheTuningWorkspace(t *testing.T) {
 	})
 }
 
-
 // The production layout reader is intentionally pinned to the exact Clef-Flash
 // checkpoint vocabulary. Keep representative names from every Linear family in
 // the pinned weight map here so a naming drift fails closed instead of silently
