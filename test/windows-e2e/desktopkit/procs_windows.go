@@ -3,6 +3,7 @@
 package desktopkit
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -19,9 +20,19 @@ func Processes() ([]ProcEntry, error) {
 	defer func() { _ = windows.CloseHandle(snap) }()
 	var e windows.ProcessEntry32
 	e.Size = uint32(unsafe.Sizeof(e))
+	if err = windows.Process32First(snap, &e); err != nil {
+		return nil, fmt.Errorf("first process: %w", err)
+	}
 	var out []ProcEntry
-	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+	for {
 		out = append(out, ProcEntry{PID: int(e.ProcessID), PPID: int(e.ParentProcessID), Name: windows.UTF16ToString(e.ExeFile[:])})
+		err = windows.Process32Next(snap, &e)
+		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("next process: %w", err)
+		}
 	}
 	return out, nil
 }
