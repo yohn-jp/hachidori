@@ -44,7 +44,7 @@ type Tuning interface {
 	// Candidate reports the candidate built from the exact profile (its
 	// applied per-group evidence and measured figures) beside the accepted
 	// baseline. A figure without a record is NOT_CHECKED, never estimated.
-	Candidate(tuning.Profile) (TuningCandidate, error)
+	Candidate(tuning.Profile, tuning.Compilation) (TuningCandidate, error)
 }
 
 // ImpactValue is one projected consequence of a profile. State is Measured
@@ -504,7 +504,7 @@ func (d *Dashboard) tuningView(mv *ModelsView, source, profileID string, draft *
 		AutoPolicy: compiled.Plan.AutoPolicy, PlanSHA256: compiled.Plan.SHA256(), Plan: compiled.Plan.Groups,
 		Regions: compiled.Evidence.Regions, Preserved: compiled.Evidence.Preserved}
 
-	cand, err := t.Candidate(profile)
+	cand, err := t.Candidate(profile, compiled)
 	if err != nil {
 		cand = TuningCandidate{}
 		tv.ChangesNote = "The accepted baseline and candidate evidence could not be read: " + err.Error()
