@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +19,14 @@ import (
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
+
+// hostPath names an absolute fixture path in the host's own syntax: the
+// dashboard requires paths that are absolute for the platform it runs on, so
+// POSIX-rooted literals are not absolute on Windows.
+func hostPath(elem ...string) string {
+	root := filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+	return filepath.Join(append([]string{root}, elem...)...)
+}
 
 type fakeVariants struct {
 	mu            sync.Mutex
@@ -294,7 +304,7 @@ func TestForgeKeepsNoLifecycleStateOfItsOwn(t *testing.T) {
 		t.Fatal("start state")
 	}
 	// Acting does not move any stage: only the records do.
-	e.post(t, "/forge/certify", url.Values{"variant": {id}, "dataset": {"/d.jsonl"}, "device": {"cuda"}})
+	e.post(t, "/forge/certify", url.Values{"variant": {id}, "dataset": {hostPath("d.jsonl")}, "device": {"cuda"}})
 	e.post(t, "/forge/apply", url.Values{"variant": {id}, "device": {"cuda"}})
 	if stage("certified") != StagePending || stage("active") != StagePending {
 		t.Fatal("a posted action changed the projected lifecycle")
@@ -523,6 +533,8 @@ func TestForgeControlsAbsentWithoutAuthority(t *testing.T) {
 // refusals and need the form token; they never touch the lifecycle.
 func TestForgeActionsForwarded(t *testing.T) {
 	e, fm, fv := forgeEnv(t, variantInventory())
+	dataset, shortDataset := hostPath("data", "eval.jsonl"), hostPath("d.jsonl")
+	qFile, qDir, policy := hostPath("q", "a.json"), hostPath("q", "dir"), hostPath("p.json")
 	for _, c := range []struct {
 		op   string
 		form url.Values
@@ -531,10 +543,10 @@ func TestForgeActionsForwarded(t *testing.T) {
 		{"activate", url.Values{"device": {"cuda"}, "model": {"clef-flash"}, "variant": {"v1"}}, "activate-variant cuda clef-flash v1"},
 		{"activate", url.Values{"device": {"cuda"}, "model": {"clef-flash"}, "variant": {"v2"}, "experimental": {"1"}}, "activate-variant cuda clef-flash v2 experimental"},
 		{"optimize", url.Values{"model": {"clef-flash"}, "recipe": {"clef-flash-w4a16-rtn-g128"}}, "optimize clef-flash clef-flash-w4a16-rtn-g128"},
-		{"certify", url.Values{"variant": {"v1"}, "device": {"cuda"}, "dataset": {" /data/eval.jsonl "}, "questions": {"/q/a.json\r\n\r\n /q/dir \n"}, "policy": {" /p.json "},
+		{"certify", url.Values{"variant": {"v1"}, "device": {"cuda"}, "dataset": {" " + dataset + " "}, "questions": {qFile + "\r\n\r\n " + qDir + " \n"}, "policy": {" " + policy + " "},
 			"reference_device": {"cpu"}, "reference_dtype": {"float32"}, "materialize": {"1"}},
-			"certify v1 device=cuda reference=cpu/float32 dataset=/data/eval.jsonl questions=[/q/a.json,/q/dir] policy=[/p.json] materialize=true"},
-		{"certify", url.Values{"variant": {"v1"}, "device": {"cpu"}, "dataset": {"/d.jsonl"}}, "certify v1 device=cpu reference=/ dataset=/d.jsonl questions=[] policy=[] materialize=false"},
+			"certify v1 device=cuda reference=cpu/float32 dataset=" + dataset + " questions=[" + qFile + "," + qDir + "] policy=[" + policy + "] materialize=true"},
+		{"certify", url.Values{"variant": {"v1"}, "device": {"cpu"}, "dataset": {shortDataset}}, "certify v1 device=cpu reference=/ dataset=" + shortDataset + " questions=[] policy=[] materialize=false"},
 		{"preflight", url.Values{"kind": {"optimize"}, "model": {"clef-flash"}, "recipe": {"r1"}}, "preflight optimize [clef-flash] [r1] [] []"},
 		{"preflight", url.Values{"kind": {"probe"}, "variant": {"v1"}, "device": {"cuda"}}, "preflight probe [] [] [v1] [cuda]"},
 		{"probe", url.Values{"variant": {"v1"}, "device": {"cpu"}}, "probe v1 cpu"},
@@ -557,8 +569,8 @@ func TestForgeActionsForwarded(t *testing.T) {
 	for name, form := range map[string]url.Values{
 		"relative dataset":  {"variant": {"v1"}, "device": {"cuda"}, "dataset": {"eval.jsonl"}},
 		"missing dataset":   {"variant": {"v1"}, "device": {"cuda"}},
-		"relative question": {"variant": {"v1"}, "device": {"cuda"}, "dataset": {"/d.jsonl"}, "questions": {"/q/a.json\nq/b.json"}},
-		"relative policy":   {"variant": {"v1"}, "device": {"cuda"}, "dataset": {"/d.jsonl"}, "policy": {"p.json"}},
+		"relative question": {"variant": {"v1"}, "device": {"cuda"}, "dataset": {shortDataset}, "questions": {qFile + "\nq/b.json"}},
+		"relative policy":   {"variant": {"v1"}, "device": {"cuda"}, "dataset": {shortDataset}, "policy": {"p.json"}},
 	} {
 		e.post(t, "/forge/certify", form)
 		if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "path") {
@@ -570,13 +582,13 @@ func TestForgeActionsForwarded(t *testing.T) {
 	}
 	// A path is forwarded in its cleaned form, so it names exactly the
 	// location that is shown.
-	e.post(t, "/forge/certify", url.Values{"variant": {"v1"}, "device": {"cuda"}, "dataset": {"/data/../etc/eval.jsonl"}})
-	if got := fv.calls[len(fv.calls)-1]; !strings.Contains(got, "dataset=/etc/eval.jsonl ") {
+	e.post(t, "/forge/certify", url.Values{"variant": {"v1"}, "device": {"cuda"}, "dataset": {hostPath("data") + string(filepath.Separator) + ".." + string(filepath.Separator) + "etc" + string(filepath.Separator) + "eval.jsonl"}})
+	if got := fv.calls[len(fv.calls)-1]; !strings.Contains(got, "dataset="+hostPath("etc", "eval.jsonl")+" ") {
 		t.Fatalf("path not cleaned: %q", got)
 	}
 	// A run-file certification is no longer a dashboard input: the old
 	// fields are ignored, never forwarded.
-	e.post(t, "/forge/certify", url.Values{"variant": {"v1"}, "device": {"cuda"}, "dataset": {"/d.jsonl"}, "reference": {"C:\\runs\\ref.json"}, "candidate": {"C:\\runs\\cand.json"}})
+	e.post(t, "/forge/certify", url.Values{"variant": {"v1"}, "device": {"cuda"}, "dataset": {shortDataset}, "reference": {"C:\\runs\\ref.json"}, "candidate": {"C:\\runs\\cand.json"}})
 	if got := fv.calls[len(fv.calls)-1]; strings.Contains(got, "ref.json") || strings.Contains(got, "cand.json") {
 		t.Fatalf("a run path reached the authority: %q", got)
 	}
@@ -733,9 +745,11 @@ func TestForgeBuildEvaluateProgressUsesBackendPhases(t *testing.T) {
 
 func TestForgeBuildEvaluateUsesOneBackendOperation(t *testing.T) {
 	e, _, fv := forgeEnv(t, variantInventory())
+	dataset, shortDataset := hostPath("data", "eval.jsonl"), hostPath("d.jsonl")
+	qFile, qDir, policy := hostPath("defs", "a.json"), hostPath("defs", "questions"), hostPath("policy", "p.json")
 	form := url.Values{
 		"return": {"forge"}, "source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"},
-		"dataset": {" /data/eval.jsonl "}, "questions": {"/defs/a.json\r\n /defs/questions "}, "policy": {" /policy/p.json "},
+		"dataset": {" " + dataset + " "}, "questions": {qFile + "\r\n " + qDir + " "}, "policy": {" " + policy + " "},
 		"reference_device": {""}, "reference_dtype": {""}, "provisioning": {"auto"},
 	}
 	rec := e.post(t, "/forge/build-evaluate", form)
@@ -749,8 +763,8 @@ func TestForgeBuildEvaluateUsesOneBackendOperation(t *testing.T) {
 		t.Fatalf("Build & evaluate made %d backend calls: %v", len(fv.calls), fv.calls)
 	}
 	r := fv.buildRequests[0]
-	if r.Source != "clef-flash" || r.Profile != "clef-flash-w4a16-rtn-g128" || r.Dataset != "/data/eval.jsonl" ||
-		strings.Join(r.Questions, ",") != "/defs/a.json,/defs/questions" || r.Policy != "/policy/p.json" || !r.Materialize ||
+	if r.Source != "clef-flash" || r.Profile != "clef-flash-w4a16-rtn-g128" || r.Dataset != dataset ||
+		strings.Join(r.Questions, ",") != qFile+","+qDir || r.Policy != policy || !r.Materialize ||
 		r.Device != "" || r.ReferenceDevice != "" || r.ReferenceDType != "" {
 		t.Fatalf("semantic request %+v", r)
 	}
@@ -758,7 +772,7 @@ func TestForgeBuildEvaluateUsesOneBackendOperation(t *testing.T) {
 	// Overrides are forwarded exactly and provisioning can be explicitly disabled.
 	e.post(t, "/forge/build-evaluate", url.Values{
 		"return": {"forge"}, "source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"},
-		"dataset": {"/data/eval.jsonl"}, "device": {"cuda"}, "reference_device": {"cpu"}, "reference_dtype": {"float32"}, "provisioning": {"never"},
+		"dataset": {dataset}, "device": {"cuda"}, "reference_device": {"cpu"}, "reference_dtype": {"float32"}, "provisioning": {"never"},
 	})
 	if len(fv.calls) != 2 || len(fv.buildRequests) != 2 {
 		t.Fatalf("override operation count calls=%v requests=%d", fv.calls, len(fv.buildRequests))
@@ -776,8 +790,8 @@ func TestForgeBuildEvaluateUsesOneBackendOperation(t *testing.T) {
 	n := len(fv.calls)
 	for name, bad := range map[string]url.Values{
 		"relative dataset":  {"source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"}, "dataset": {"eval.jsonl"}, "provisioning": {"auto"}},
-		"relative question": {"source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"}, "dataset": {"/d.jsonl"}, "questions": {"q.json"}, "provisioning": {"auto"}},
-		"relative policy":   {"source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"}, "dataset": {"/d.jsonl"}, "policy": {"p.json"}, "provisioning": {"auto"}},
+		"relative question": {"source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"}, "dataset": {shortDataset}, "questions": {"q.json"}, "provisioning": {"auto"}},
+		"relative policy":   {"source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"}, "dataset": {shortDataset}, "policy": {"p.json"}, "provisioning": {"auto"}},
 	} {
 		e.post(t, "/forge/build-evaluate", bad)
 		if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "path") {
