@@ -109,6 +109,14 @@ func (l Locale) Table(msgs []string) map[string]string {
 
 // FirstRunScript are the messages the first-run page script composes.
 var FirstRunScript = []string{
+	"Updating the Hachidori runtime",
+	"Reconciling the runtime",
+	"Verifying the existing model",
+	"Verifying the variant",
+	"Elapsed: ",
+	"Last activity: ",
+	" seconds ago",
+	"No recent activity reported. Work may still be running; materialization and activation are not forcibly interrupted. Check the setup log for details.",
 	" (runtime ",
 	" on ",
 	") in ",
@@ -155,6 +163,14 @@ var FirstRunScript = []string{
 }
 
 var ja = map[string]string{
+	"Updating the Hachidori runtime": "Hachidori ランタイムを更新中",
+	"Reconciling the runtime":        "ランタイムの整合性を確認中",
+	"Verifying the existing model":   "既存モデルを検証中",
+	"Verifying the variant":          "バリアントを検証中",
+	"Elapsed: ":                      "経過時間: ",
+	"Last activity: ":                "最後の動作報告: ",
+	" seconds ago":                   " 秒前",
+	"No recent activity reported. Work may still be running; materialization and activation are not forcibly interrupted. Check the setup log for details.": "最近の動作報告がありません。処理は継続している可能性があります。構築や有効化は強制的に中断しません。詳細はセットアップログを確認してください。",
 	// Shared operator presentation vocabulary.
 	"INTENT":                              "意図",
 	"AUTO":                                "自動",

@@ -266,18 +266,31 @@ print(json.dumps({"python": "%d.%d.%d" % sys.version_info[:3], "prefix": sys.pre
 // under HACHIDORI_HOME. The worker is not part of the environment and is not
 // checked here (see DeliverWorker).
 func verifyRuntime(h home.Home, dir string, spec home.RuntimeSpec) (runtimeProbe, error) {
+	// This isolated, offline metadata probe is read-only: killing it cannot
+	// damage staging or the previous activation. Do not apply this deadline
+	// to uv materialization, publication, or atomic activation.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return verifyRuntimeContext(ctx, h, dir, spec)
+}
+
+func verifyRuntimeContext(ctx context.Context, h home.Home, dir string, spec home.RuntimeSpec) (runtimeProbe, error) {
 	var p runtimeProbe
 	python := filepath.Join(dir, filepath.FromSlash(pythonRelPath()))
 	if _, err := os.Stat(python); err != nil {
 		return p, fmt.Errorf("private python missing: %w", err)
 	}
-	cmd := exec.Command(python, "-I", "-c", runtimeProbeCode)
+	cmd := exec.CommandContext(ctx, python, "-I", "-c", runtimeProbeCode)
+	cmd.WaitDelay = 5 * time.Second
 	subprocess.Configure(cmd)
 	cmd.Env = h.Env(filepath.Dir(python), true)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return p, fmt.Errorf("private python probe interrupted (read-only verification): %w", ctx.Err())
+		}
 		return p, fmt.Errorf("private python probe: %v: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	if err := json.Unmarshal(out, &p); err != nil {

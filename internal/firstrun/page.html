@@ -64,6 +64,9 @@ pre { max-height: 12rem; }
     <p id="step"></p>
     <div class="bar progress indeterminate" id="stepbar" role="progressbar"><span></span></div>
     <p class="note" id="worker"></p>
+    <p class="note" id="timing" role="status"></p>
+    <p class="msg" id="stale" role="status" hidden></p>
+    <p class="note" id="progresslog"></p>
     <p class="vh" id="plive" role="status"></p>
   </section>
 
@@ -111,6 +114,7 @@ function stepOf(stage) { return stage === "installing" || stage === "starting" ?
 function render(v) {
   const moved = !last || stepOf(last.stage) !== stepOf(v.stage);
   last = v;
+  if (v.dashboard && !redirecting) { redirecting = true; location.replace("/"); return; }
   const n = $("notice"); n.textContent = v.notice || ""; show("notice", !!v.notice && v.stage === "select");
   show("select", v.stage === "select");
   show("progress", v.stage === "installing" || v.stage === "starting");
@@ -136,9 +140,10 @@ function render(v) {
     if (!devInit) { devInit = true; for (const r of document.getElementsByName("device")) r.checked = r.value === v.device; }
   }
   if (v.stage === "installing" || v.stage === "starting") {
-    $("ptitle").textContent = v.stage === "installing" ? tr("Installing Hachidori") : tr("Starting the model");
+    const updating = v.operation && v.operation.kind === "runtime_reconcile";
+    $("ptitle").textContent = v.stage === "installing" ? tr(updating ? "Updating the Hachidori runtime" : "Installing Hachidori") : tr("Starting the model");
     const ol = $("phases"), phases = v.phases || [];
-    const label = { preparing: tr("Preparing the storage folder"), runtime: tr("Installing the runtime"), model: tr("Installing the model"), activation: tr("Activating") };
+    const label = { preparing: tr("Preparing the storage folder"), runtime: tr(updating ? "Reconciling the runtime" : "Installing the runtime"), model: tr(updating ? "Verifying the existing model" : "Installing the model"), publish: tr("Publishing"), variant: tr("Verifying the variant"), activation: tr("Activating") };
     const key = JSON.stringify(phases);
     if (key !== phaseKey) {
       phaseKey = key; ol.textContent = "";
@@ -165,6 +170,10 @@ function render(v) {
     const cur = phases.find(p => p.status === "current");
     const say = cur ? (label[cur.name] || cur.name) : "";
     if (say && say !== spoken) { spoken = say; $("plive").textContent = say; }
+    $("timing").textContent = v.operation ? tr("Elapsed: ") + Math.floor(v.elapsed_seconds || 0) + " s · " + tr("Last activity: ") + Math.floor(v.idle_seconds || 0) + tr(" seconds ago") : "";
+    $("progresslog").textContent = v.setup_log ? tr("Details are kept in ") + v.setup_log : "";
+    show("stale", !!v.stale);
+    $("stale").textContent = tr("No recent activity reported. Work may still be running; materialization and activation are not forcibly interrupted. Check the setup log for details.");
     $("worker").textContent = v.stage === "starting" ? tr("Runtime: ") + (v.worker || "starting") : tr("This can take several minutes. Setup reports each stage as it begins.");
   }
   if (v.stage === "ready") {
@@ -176,6 +185,7 @@ function render(v) {
     const f = v.failure || {};
     $("fmsg").textContent = (f.phase ? tr("Failed in phase") + " " + f.phase + ": " : "") + (tr(f.message) || tr("The last action failed."));
     $("fdetail").textContent = (f.class ? f.class + "\n" : "") + (f.stderr_tail || []).join("\n");
+    if (f.step) $("fdetail").textContent = f.step + "\n" + $("fdetail").textContent;
     $("flog").textContent = v.setup_log ? tr("Details are kept in ") + v.setup_log : "";
     $("retry").disabled = !v.can_retry; show("change", v.can_change);
   }
