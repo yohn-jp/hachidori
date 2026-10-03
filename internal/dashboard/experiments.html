@@ -13,8 +13,8 @@
   <div class="region-h"><h2 id="setup-h">{{if .Exp}}{{t "New experiment"}}{{else}}{{t "Set up an experiment"}}{{end}}</h2><span class="sub">{{t "one experiment at a time · nothing is stored except the reports you export or save to history"}}</span></div>
   <form method="post" action="/experiments/run" class="stack" id="exp-form">
     <input type="hidden" name="token" value="{{.Token}}">
-    <div class="path-form"><label class="field">{{t "Dataset (JSONL, absolute path)"}}<input name="dataset" value="{{.Form.Dataset}}" spellcheck="false" autocomplete="off" placeholder="/path/to/dataset.jsonl" required></label>{{if .PathPicker}}<button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="dataset" formnovalidate>{{t "Choose file"}}</button>{{end}}</div>
-    <div class="field"><span>{{t "Question Definition files or directories (optional, absolute paths, one per line)"}}</span><textarea name="definitions" rows="2" spellcheck="false">{{.Form.Definitions}}</textarea>{{if .PathPicker}}<div class="btn-row"><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-file" formnovalidate>{{t "Choose file"}}</button><button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="definition-folder" formnovalidate>{{t "Choose folder"}}</button></div>{{end}}</div>
+    {{template "resource-selection" (resourceInput .PathPicker "Dataset (JSONL, absolute path)" "dataset" .Form.Dataset "/path/to/dataset.jsonl" true false "/experiments/pick" "pick" "dataset" "Choose file")}}
+    {{template "resource-selection" (resourceInput .PathPicker "Question Definition files or directories (optional, absolute paths, one per line)" "definitions" .Form.Definitions "" false true "/experiments/pick" "pick" "definition-file" "Choose file" "definition-folder" "Choose folder")}}
     <div class="fields">
       <label class="field">{{t "Warmup requests (excluded from latency)"}}<input name="warmup" value="{{.Form.Warmup}}" inputmode="numeric"></label>
       <label class="field">{{t "Passes (accuracy uses pass 1)"}}<input name="passes" value="{{.Form.Passes}}" inputmode="numeric"></label>
@@ -139,8 +139,7 @@
     <form method="post" action="/experiments/export" class="path-form">
       <input type="hidden" name="token" value="{{$.Token}}">
       <input type="hidden" name="seq" value="{{.Seq}}">
-      <label class="field">{{t "Export"}} {{.Report.Schema}} {{t "report to a new file (absolute path; never overwritten)"}}<input name="export_path" value="{{$.Form.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/report.json"></label>
-      {{if $.PathPicker}}<button type="submit" class="btn" formaction="/experiments/pick" name="pick" value="export" formnovalidate>{{t "Choose file"}}</button>{{end}}
+      {{template "resource-selection" (resourceInput $.PathPicker "Export path" "export_path" $.Form.ExportPath "/path/to/report.json" false false "/experiments/pick" "pick" "export" "Choose file")}}
       <button type="submit" class="btn">{{t "Export report"}}</button>
     </form>
   </div>

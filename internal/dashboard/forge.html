@@ -64,16 +64,9 @@
       </div>
       <div class="region" role="group" aria-labelledby="forge-evaluation-h">
         <div class="region-h"><h3 id="forge-evaluation-h">{{t "Evaluation suite"}}</h3></div>
-        <div class="path-form">
-          <label class="field wide">{{t "Evaluation dataset (JSONL, absolute path)"}}<input type="text" name="dataset" value="{{.Form.Dataset}}" required autocomplete="off" spellcheck="false" placeholder="/path/to/dataset.jsonl"></label>
-          {{if .PathPicker}}<button type="submit" class="btn" formaction="/forge/pick" name="pick" value="dataset" formnovalidate>{{t "Choose file"}}</button>{{end}}
-        </div>
-        <label class="field wide"><span>{{t "Question Definition files or directories (absolute paths, one per line)"}}</span><textarea name="questions" rows="2" spellcheck="false">{{.Form.Questions}}</textarea></label>
-        {{if .PathPicker}}<div class="btn-row"><button type="submit" class="btn" formaction="/forge/pick" name="pick" value="question-file" formnovalidate>{{t "Choose file"}}</button><button type="submit" class="btn" formaction="/forge/pick" name="pick" value="question-folder" formnovalidate>{{t "Choose folder"}}</button></div>{{end}}
-        <div class="path-form">
-          <label class="field wide">{{t "Policy file (optional; default is the built-in profile)"}}<input type="text" name="policy" value="{{.Form.Policy}}" autocomplete="off" spellcheck="false"></label>
-          {{if .PathPicker}}<button type="submit" class="btn" formaction="/forge/pick" name="pick" value="policy" formnovalidate>{{t "Choose file"}}</button>{{end}}
-        </div>
+        {{template "resource-selection" (resourceInput .PathPicker "Evaluation dataset (JSONL, absolute path)" "dataset" .Form.Dataset "/path/to/dataset.jsonl" true false "/forge/pick" "pick" "dataset" "Choose file")}}
+        {{template "resource-selection" (resourceInput .PathPicker "Question Definition files or directories (absolute paths, one per line)" "questions" .Form.Questions "" false true "/forge/pick" "pick" "question-file" "Choose file" "question-folder" "Choose folder")}}
+        {{template "resource-selection" (resourceInput .PathPicker "Policy file (optional; default is the built-in profile)" "policy" .Form.Policy "" false false "/forge/pick" "pick" "policy" "Choose file")}}
       </div>
       <details class="region" id="forge-execution-overrides" data-keep="forge-execution-overrides">
         <summary>{{t "Execution overrides"}}</summary>

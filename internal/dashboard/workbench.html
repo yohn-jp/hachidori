@@ -53,8 +53,8 @@
             {{with $qv.Identity}}<p class="note mono">{{t "current"}} {{.ID}}@{{.Version}} · {{.Digest}}</p>{{else}}<p class="note bad-t">{{t "not exportable:"}} {{$qv.DefErr}}</p>{{end}}
             <div class="fields">
               <label class="field">{{t "Definition version (export only)"}}<input name="q{{$i}}.version" value="{{$q.Version}}" inputmode="numeric"></label>
-              <label class="field">{{t "New file (absolute path; never overwritten)"}}<input name="q{{$i}}.export_path" value="{{$q.ExportPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/my.question.json"></label>
-              <div class="btn-row">{{if $.PathPicker}}<button type="submit" class="btn" name="op" value="pick-export:{{$i}}" formnovalidate>{{t "Choose file"}}</button>{{end}}<button type="submit" class="btn" name="op" value="export:{{$i}}">{{t "Export"}}</button></div>
+              {{template "resource-selection" (resourceInput $.PathPicker "New file (absolute path; never overwritten)" (printf "q%d.export_path" $i) $q.ExportPath "/path/to/my.question.json" false false "" "op" (printf "pick-export:%d" $i) "Choose file")}}
+              <div class="btn-row"><button type="submit" class="btn" name="op" value="export:{{$i}}">{{t "Export"}}</button></div>
             </div>
             {{with $.Export}}{{if eq .Index $i}}
               {{if .Err}}<p class="msg bad" role="alert">{{.Err}}</p>
@@ -98,11 +98,8 @@
 
       <details class="disclosure"{{if or .LoadErr .LoadMsg}} open{{end}}><summary>{{t "Load Question Definition"}}<span class="sub">{{t "one hachidori.question.v1 file"}}</span></summary>
         <div class="body">
-          <div class="path-form">
-            <label class="field">{{t "Definition file (absolute path)"}}<input name="load_path" value="{{.W.LoadPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/my.question.json"></label>
-            {{if .PathPicker}}<button type="submit" class="btn" name="op" value="pick-load" formnovalidate>{{t "Choose file"}}</button>{{end}}
-            <button type="submit" class="btn" name="op" value="load">{{t "Load into editor"}}</button>
-          </div>
+          {{template "resource-selection" (resourceInput .PathPicker "Definition file (absolute path)" "load_path" .W.LoadPath "/path/to/my.question.json" false false "" "op" "pick-load" "Choose file")}}
+          <div class="btn-row"><button type="submit" class="btn" name="op" value="load">{{t "Load into editor"}}</button></div>
           {{with .LoadErr}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
           {{with .LoadMsg}}<p class="msg ok" role="status">{{.}}</p>{{end}}
           <p class="note">{{t "The file is read once, validated with the same rules as"}} <code>hachidori question</code>{{t ", and projected into the editor. It is not stored or watched."}}</p>
