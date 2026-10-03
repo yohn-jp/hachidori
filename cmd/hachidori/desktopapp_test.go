@@ -767,3 +767,57 @@ func TestDesktopHostsTheTuningWorkspace(t *testing.T) {
 		}
 	})
 }
+
+
+// The production layout reader is intentionally pinned to the exact Clef-Flash
+// checkpoint vocabulary. Keep representative names from every Linear family in
+// the pinned weight map here so a naming drift fails closed instead of silently
+// dropping a semantic region.
+func TestClefLinearModuleMatchesPinnedCheckpointVocabulary(t *testing.T) {
+	t.Parallel()
+	linear := []string{
+		"lm_head",
+		"model.language_model.layers.0.linear_attn.in_proj_a",
+		"model.language_model.layers.0.linear_attn.in_proj_b",
+		"model.language_model.layers.0.linear_attn.in_proj_qkv",
+		"model.language_model.layers.0.linear_attn.in_proj_z",
+		"model.language_model.layers.0.linear_attn.out_proj",
+		"model.language_model.layers.0.mlp.gate_proj",
+		"model.language_model.layers.0.mlp.up_proj",
+		"model.language_model.layers.0.mlp.down_proj",
+		"model.language_model.layers.3.self_attn.q_proj",
+		"model.language_model.layers.3.self_attn.k_proj",
+		"model.language_model.layers.3.self_attn.v_proj",
+		"model.language_model.layers.3.self_attn.o_proj",
+		"model.visual.blocks.0.attn.qkv",
+		"model.visual.blocks.0.attn.proj",
+		"model.visual.blocks.0.mlp.linear_fc1",
+		"model.visual.blocks.0.mlp.linear_fc2",
+		"model.visual.merger.linear_fc1",
+		"model.visual.merger.linear_fc2",
+	}
+	for _, name := range linear {
+		if !clefLinearModule(name) {
+			t.Errorf("pinned Linear module %q is not recognized", name)
+		}
+	}
+	notLinear := []string{
+		"model.language_model.embed_tokens",
+		"model.language_model.layers.0.input_layernorm",
+		"model.language_model.layers.0.post_attention_layernorm",
+		"model.language_model.layers.0.linear_attn.conv1d",
+		"model.language_model.layers.0.linear_attn.norm",
+		"model.language_model.layers.3.self_attn.q_norm",
+		"model.language_model.layers.3.self_attn.k_norm",
+		"model.visual.blocks.0.norm1",
+		"model.visual.blocks.0.norm2",
+		"model.visual.merger.norm",
+		"model.visual.patch_embed.proj",
+		"model.visual.pos_embed",
+	}
+	for _, name := range notLinear {
+		if clefLinearModule(name) {
+			t.Errorf("non-Linear pinned module %q is classified as Linear", name)
+		}
+	}
+}
