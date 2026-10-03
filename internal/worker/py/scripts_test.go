@@ -18,7 +18,7 @@ func TestPrivateScriptsParse(t *testing.T) {
 	}
 	for _, p := range []string{"hachidori_worker.py", filepath.Join("..", "..", "optimize", "py", "hachidori_optimizer.py"),
 		filepath.Join("..", "..", "optimize", "testdata", "tinyclef.py"),
-		filepath.Join("testdata", "profile_w4.py"), filepath.Join("testdata", "w4_linear.py")} {
+		filepath.Join("testdata", "profile_w4.py"), filepath.Join("testdata", "w4_linear.py"), filepath.Join("testdata", "clef_batch.py")} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatal(err)
 		}
@@ -78,6 +78,17 @@ func TestWorkerArgumentContract(t *testing.T) {
 		if code == 2 || !strings.Contains(out, `"event":"hello"`) {
 			t.Errorf("a well-formed clef launch %v: exit %d output %q", args, code, out)
 		}
+	}
+}
+
+func TestClefBatchContract(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3")
+	}
+	cmd := exec.Command(python, "-B", filepath.Join("testdata", "clef_batch.py"), "hachidori_worker.py")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Clef batch contract: %v\n%s", err, out)
 	}
 }
 

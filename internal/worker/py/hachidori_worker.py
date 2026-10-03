@@ -327,6 +327,9 @@ class Provider:
         out = {}
         if self.name == "clef":
             out["w4_linear_paths"] = self.extra_info()["w4_linear_paths"]
+            out["clef_batch"] = dict(getattr(self, "batch_profile", {}))
+            if self.requested == "cuda":
+                out["memory_peak_allocated"] = self.torch.cuda.max_memory_allocated()
         # Host RAM of this worker process, only when it can actually be read.
         try:
             import psutil
@@ -1192,19 +1195,68 @@ class ClefProvider(Provider):
 
     def predict(self, states, questions):
         torch = self.torch
-        out = []
+        if not hasattr(self, "batch_profile"):
+            self.batch_profile = {"forwards": 0, "records": 0, "encode_ms": 0.0,
+                                  "collate_ms": 0.0, "model_enqueue_ms": 0.0, "post_transfer_ms": 0.0,
+                                  "padded_tokens": 0}
+        start = time.perf_counter()
+        encoded = []
         for state in states:
-            record = {"state": state, "questions": questions}
-            encoded = self.jsm.encode_record(self.tokenizer, record, max_length=CLEF_MAX_LENGTH)
-            if len(encoded.input_ids) >= CLEF_MAX_LENGTH:
+            record = self.jsm.encode_record(self.tokenizer, {"state": state, "questions": questions},
+                                            max_length=CLEF_MAX_LENGTH)
+            if len(record.input_ids) >= CLEF_MAX_LENGTH:
                 log("state truncated to the model's %d-token context" % CLEF_MAX_LENGTH)
-            batch = self.jsm.collate_records([encoded], self.tokenizer.pad_token_id, self.reference().device)
-            with torch.inference_mode():
-                logits = self.model(batch)[0]
+            encoded.append(record)
+        self.batch_profile["encode_ms"] += (time.perf_counter() - start) * 1000
+        out = [None] * len(encoded)
+        # Execute records in stable encoded-length order so alternating short/long
+        # inputs do not degenerate into one forward per State. Restore caller order
+        # after each bounded model batch.
+        indexed = sorted(enumerate(encoded), key=lambda pair: len(pair[1].input_ids))
+        pending = []
+        for index, record in indexed:
+            length = len(record.input_ids)
+            if pending and (len(pending) >= 8 or
+                            max(max(len(r.input_ids) for _, r in pending), length) * (len(pending) + 1) > 8192 or
+                            length > 2 * min(len(r.input_ids) for _, r in pending) or
+                            2 * length < max(len(r.input_ids) for _, r in pending)):
+                batch = self._predict_batch([r for _, r in pending], torch)
+                for (original, _), result in zip(pending, batch):
+                    out[original] = result
+                pending = []
+            pending.append((index, record))
+        if pending:
+            batch = self._predict_batch([r for _, r in pending], torch)
+            for (original, _), result in zip(pending, batch):
+                out[original] = result
+        return out
+
+    def _predict_batch(self, records, torch):
+        self.batch_profile["padded_tokens"] += len(records) * max(len(r.input_ids) for r in records)
+        start = time.perf_counter()
+        batch = self.jsm.collate_records(records, self.tokenizer.pad_token_id, self.reference().device)
+        self.batch_profile["collate_ms"] += (time.perf_counter() - start) * 1000
+        with torch.inference_mode():
+            start = time.perf_counter()
+            all_logits = self.model(batch)
+            self.batch_profile["forwards"] += 1
+            self.batch_profile["records"] += len(records)
+            # On CUDA this is enqueue time, not synchronized GPU execution time.
+            self.batch_profile["model_enqueue_ms"] += (time.perf_counter() - start) * 1000
+            start = time.perf_counter()
+            # Ragged question sizes require separate softmaxes; concatenate
+            # the results before the sole host extraction for this forward.
+            flat = [qlogits.float().softmax(-1) for logits in all_logits for qlogits in logits]
+            values = torch.cat(flat).tolist()
+            self.batch_profile["post_transfer_ms"] += (time.perf_counter() - start) * 1000
+        offset = 0
+        out = []
+        for record, logits in zip(records, all_logits):
             answers = {}
-            for question, qlogits in zip(encoded.questions, logits):
-                probs = qlogits.float().softmax(-1).tolist()
-                by_option = dict(zip(question.option_ids, probs))
+            for question, _ in zip(record.questions, logits):
+                count = len(question.option_ids)
+                by_option = dict(zip(question.option_ids, values[offset:offset + count]))
+                offset += count
                 choice = max(question.option_ids, key=by_option.__getitem__)
                 answers[question.question_id] = {"choice": choice, "answer_confidence": by_option[choice],
                                                  "probabilities": by_option}

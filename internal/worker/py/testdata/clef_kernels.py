@@ -245,7 +245,9 @@ class KernelTests(unittest.TestCase):
             provider.quantized = 7
             provider.want_dtype = 'bfloat16'
             provider.variant = {'weights': {'scheme': 'W4A16', 'format': 'compressed-tensors/pack-quantized'}}
-            provider.torch = types.SimpleNamespace(inference_mode=nullcontext)
+            provider.torch = types.SimpleNamespace(inference_mode=nullcontext,
+                                                   cat=lambda tensors: types.SimpleNamespace(
+                                                       tolist=lambda: sum((t.tolist() for t in tensors), [])))
             question = types.SimpleNamespace(question_id='decision', option_ids=['no', 'yes'])
             encoded = types.SimpleNamespace(input_ids=[1, 2], questions=[question])
             seen = []

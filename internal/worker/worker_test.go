@@ -60,7 +60,11 @@ func TestHelperWorker(t *testing.T) {
 	for _, ph := range []string{"importing", "loading", "warming"} {
 		emit(map[string]any{"event": "phase", "phase": ph})
 	}
-	emit(map[string]any{"event": "ready", "info": map[string]any{"provider": "fake", "device": "cpu"}})
+	provider := "fake"
+	if strings.HasPrefix(mode, "clef") {
+		provider = "clef"
+	}
+	emit(map[string]any{"event": "ready", "info": map[string]any{"provider": provider, "device": "cpu"}})
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 1<<20), 16<<20)
 	for sc.Scan() {
@@ -104,21 +108,25 @@ func TestHelperWorker(t *testing.T) {
 		case req.Op == "shutdown":
 			emit(map[string]any{"id": req.ID, "ok": true})
 			os.Exit(0)
-		case mode == "crash_on_decide" && req.Op == "decide":
+		case (mode == "crash_on_decide" || mode == "clef_crash") && req.Op == "decide":
 			os.Exit(7)
 		case mode == "hang_on_decide" && req.Op == "decide":
 			time.Sleep(time.Minute)
 		case req.Op == "stats":
 			emit(map[string]any{"id": req.ID, "ok": true, "stats": map[string]any{"memory_total": 100}})
-		case req.Op == "decide" && req.Items[0].State == "invalid":
+		case req.Op == "decide" && (req.Items[0].State == "invalid" || mode == "clef_error"):
 			emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "bad"}})
 		case req.Op == "decide":
 			var results [][]api.Result
 			for _, it := range req.Items {
 				var rs []api.Result
 				for _, q := range it.Questions {
-					rs = append(rs, api.Result{ID: q.ID, Type: "choice", Choice: q.Choices[0], Confidence: 0.9,
-						Probabilities: map[string]float64{q.Choices[0]: 0.9, q.Choices[1]: 0.1}})
+					confidence := 0.9
+					if strings.HasPrefix(mode, "clef") && strings.HasSuffix(it.State, "-1") {
+						confidence = 0.8
+					}
+					rs = append(rs, api.Result{ID: q.ID, Type: "choice", Choice: q.Choices[0], Confidence: confidence,
+						Probabilities: map[string]float64{q.Choices[0]: confidence, q.Choices[1]: 1 - confidence}})
 				}
 				results = append(results, rs)
 			}
@@ -129,7 +137,7 @@ func TestHelperWorker(t *testing.T) {
 	os.Exit(0)
 }
 
-func fakeConfig(t *testing.T, mode string) Config {
+func fakeConfig(t testing.TB, mode string) Config {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
