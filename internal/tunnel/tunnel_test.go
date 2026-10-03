@@ -58,6 +58,19 @@ func fakeManager(t *testing.T, mode string) (*Manager, string) {
 	return m, argv
 }
 
+func TestLocalEndpointFromAddrRequiresConcreteLoopback(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:7843", "[::1]:9000", "localhost:7843"} {
+		if endpoint, err := LocalEndpointFromAddr(addr); err != nil || endpoint.Port == 0 {
+			t.Errorf("%q: endpoint %+v, error %v", addr, endpoint, err)
+		}
+	}
+	for _, addr := range []string{"0.0.0.0:7843", "192.0.2.1:7843", "127.0.0.1:0", "127.0.0.1:not-a-port", "not-an-address"} {
+		if endpoint, err := LocalEndpointFromAddr(addr); err == nil {
+			t.Errorf("%q accepted as %+v", addr, endpoint)
+		}
+	}
+}
+
 var spec = Spec{Destination: "dev@nixos", RemoteBind: "127.0.0.1", RemotePort: 7843, LocalPort: 7843}
 
 func waitFor(t *testing.T, m *Manager, state string) Status {

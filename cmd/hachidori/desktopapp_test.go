@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tunnel"
 )
 
 // The settings authority composes the existing desktop preferences (an existing
@@ -54,16 +56,52 @@ func TestSettingsStoreHostsDevelopmentConnections(t *testing.T) {
 	dir := t.TempDir()
 	prefs := filepath.Join(dir, "desktop.json")
 	var _ dashboard.Connections = settingsStore(prefs, nil)
-	c := settings.Connection{Name: "nixos-dev", Destination: "dev@nixos", RemoteBind: "127.0.0.1", RemotePort: 7843, LocalPort: 7843}
+	c := settings.Connection{Name: "nixos-dev", Destination: "dev@nixos", RemoteBind: "127.0.0.1", RemoteBindMode: settings.ConnectionPinned, RemotePort: 7843, RemotePortMode: settings.ConnectionPinned, LocalPort: 7843, LocalPortMode: settings.ConnectionPinned}
 	if err := settingsStore(prefs, nil).SaveConnection(c); err != nil {
 		t.Fatal(err)
 	}
 	got, err := settingsStore(prefs, nil).Connections()
-	if err != nil || len(got) != 1 || got[0] != c {
+	if err != nil || len(got) != 1 || got[0].Name != c.Name || got[0].Destination != c.Destination || got[0].RemoteBind != c.RemoteBind || got[0].RemoteBindMode != c.RemoteBindMode || got[0].RemotePort != c.RemotePort || got[0].RemotePortMode != c.RemotePortMode || got[0].LocalPort != c.LocalPort || got[0].LocalPortMode != c.LocalPortMode {
 		t.Fatalf("after restart: %+v %v", got, err)
 	}
 	if _, err := os.Stat(prefs); !os.IsNotExist(err) {
 		t.Fatalf("saving a profile wrote desktop.json: %v", err)
+	}
+}
+
+func TestSettingsStoreResolvesAutoFromBoundDesktopAPIEndpoint(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	endpoint, err := tunnel.LocalEndpointFromAddr(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := settingsStore(filepath.Join(t.TempDir(), "desktop.json"), nil)
+	if err := store.SetLocalEndpoint(endpoint); err != nil {
+		t.Fatal(err)
+	}
+	auto := settings.Connection{
+		Name: "auto-dev", Destination: "devhost",
+		RemoteBindMode: settings.ConnectionAuto, RemotePortMode: settings.ConnectionAuto, LocalPortMode: settings.ConnectionAuto,
+	}
+	if err := store.SaveConnection(auto); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := store.Connections()
+	if err != nil || len(profiles) != 1 {
+		t.Fatalf("saved connection: %+v %v", profiles, err)
+	}
+	got := profiles[0].Spec()
+	want := tunnel.Spec{Destination: "devhost", RemoteBind: "127.0.0.1", RemotePort: endpoint.Port, LocalPort: endpoint.Port}
+	if got != want {
+		t.Fatalf("managed API endpoint %q resolved to %+v, want %+v", ln.Addr(), got, want)
+	}
+	if profiles[0].RemotePort != 0 || profiles[0].LocalPort != 0 || profiles[0].RemotePortMode != settings.ConnectionAuto || profiles[0].LocalPortMode != settings.ConnectionAuto {
+		t.Fatalf("resolved values replaced stored intent: %+v", profiles[0])
 	}
 }
 

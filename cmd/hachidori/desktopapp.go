@@ -234,6 +234,7 @@ func (a *desktopApp) run() error {
 	// One form token for the whole process: every dashboard a runtime
 	// rebind creates accepts the pages the window already shows.
 	formToken := dashboard.NewToken()
+	apiAddr := a.APIAddr
 	open := func(root string) (app.Runtime, error) {
 		if a.Open != nil {
 			return a.Open(root)
@@ -250,7 +251,7 @@ func (a *desktopApp) run() error {
 		bind := func(status func() server.Status, lc dashboard.Lifecycle, dec server.Decider, info server.Runtime, started time.Time) {
 			h := home.Home{Root: root}
 			dash := dashboard.New(dashboard.Config{
-				APIAddr:   a.APIAddr,
+				APIAddr:   apiAddr,
 				Status:    status,
 				Lifecycle: lc,
 				Doctor:    func(out io.Writer) bool { return doctor.Run(root, out) },
@@ -307,6 +308,18 @@ func (a *desktopApp) run() error {
 	dashLn, err := net.Listen("tcp", a.DashAddr)
 	if err != nil {
 		apiLn.Close()
+		return err
+	}
+	apiAddr = apiLn.Addr().String()
+	localEndpoint, err := tunnel.LocalEndpointFromAddr(apiAddr)
+	if err != nil {
+		apiLn.Close()
+		dashLn.Close()
+		return err
+	}
+	if err := prefs.SetLocalEndpoint(localEndpoint); err != nil {
+		apiLn.Close()
+		dashLn.Close()
 		return err
 	}
 
