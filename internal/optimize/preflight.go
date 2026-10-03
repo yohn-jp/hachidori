@@ -144,7 +144,7 @@ func PreflightBindingOf(h home.Home, req PreflightRequest) setup.PreflightBindin
 	}
 	if err == nil {
 		b.Runtime = spec.ID()
-		b.RuntimeManifestSHA256 = manifestDigest(h.Path("runtime", spec.ID(), "manifest.json"))
+		b.RuntimeManifestSHA256 = manifestDigest(h.Path("runtime", setup.RuntimeDirFor(h, spec), "manifest.json"))
 	}
 	return b
 }
@@ -384,7 +384,7 @@ func (p *preflight) optimizerRuntime() {
 	facts := map[string]any{"runtime": spec.ID(), "python": spec.Python, "torch": spec.Torch, "engine": setup.OptimizerEngine, "engine_version": setup.OptimizerEngineVersion}
 	rt, err := setup.FindOptimizer(p.h)
 	if err != nil {
-		if _, serr := os.Stat(p.h.Path("runtime", spec.ID())); serr != nil {
+		if _, serr := os.Stat(p.h.Path("runtime", setup.RuntimeDirFor(p.h, spec))); serr != nil {
 			p.add("runtime.optimizer", setup.AreaRuntime, setup.FindingWarning,
 				fmt.Sprintf("the optimizer runtime %s is not materialized; `variant optimize` materializes it first, which needs network access once", spec.ID()), facts)
 			return
@@ -396,7 +396,7 @@ func (p *preflight) optimizerRuntime() {
 	facts["python_version"] = rt.Manifest.PythonVersion
 	facts["installed"] = installedVersions(rt.Manifest.Installed, relevantDists...)
 	p.add("runtime.optimizer", setup.AreaRuntime, setup.FindingPass,
-		fmt.Sprintf("optimizer runtime %s is materialized with its pinned worker script (python %s)", rt.ID, rt.Manifest.PythonVersion), facts)
+		fmt.Sprintf("optimizer runtime %s is materialized (python %s)", rt.ID, rt.Manifest.PythonVersion), facts)
 	have := installedVersions(rt.Manifest.Installed, "llmcompressor")["llmcompressor"]
 	if have != setup.OptimizerEngineVersion {
 		p.add("runtime.engine", setup.AreaRuntime, setup.FindingBlocker,
@@ -430,8 +430,9 @@ func (p *preflight) servingRuntime(required bool) {
 		return
 	}
 	var rm home.RuntimeManifest
-	dir := p.h.Path("runtime", spec.ID())
-	if err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &rm); err != nil || rm.Identity != spec.ID() || rm.Spec != spec {
+	name := setup.RuntimeDirFor(p.h, spec)
+	dir := p.h.Path("runtime", name)
+	if err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &rm); err != nil || setup.CheckRuntimeManifest(name, rm, spec) != nil {
 		st, why := setup.FindingWarning, "is not materialized; materialize it with `hachidori setup` first"
 		if required {
 			st = setup.FindingBlocker
@@ -442,11 +443,8 @@ func (p *preflight) servingRuntime(required bool) {
 		p.add("runtime.serving", setup.AreaRuntime, st, fmt.Sprintf("the %s runtime %s %s", p.req.Device, spec.ID(), why), facts)
 		return
 	}
-	if rm.Spec.Worker != setup.WorkerDigest() {
-		p.add("runtime.worker", setup.AreaRuntime, setup.FindingBlocker,
-			fmt.Sprintf("runtime %s was materialized by an older Hachidori (worker %.12s, this build %.12s); materialize the current runtime", spec.ID(), rm.Spec.Worker, setup.WorkerDigest()), facts)
-		return
-	}
+	facts["worker"] = setup.BuildWorker().SHA256
+	facts["worker_abi"] = setup.BuildWorker().ABI
 	p.rm, p.spec, p.rtOK = rm, spec, true
 	p.python = filepath.Join(dir, filepath.FromSlash(rm.PythonRelPath))
 	facts["python_version"] = rm.PythonVersion

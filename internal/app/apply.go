@@ -411,7 +411,7 @@ func (t *applyTx) validate(ctx context.Context) error {
 		return nil
 	}
 	have := func() (rt, src bool) {
-		_, e1 := os.Stat(h.Path("runtime", spec.ID()))
+		_, e1 := os.Stat(h.Path("runtime", setup.RuntimeDirFor(h, spec)))
 		_, e2 := os.Stat(h.Path("models", filepath.FromSlash(setup.ModelDirName(model))))
 		return e1 == nil, e2 == nil
 	}

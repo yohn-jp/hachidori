@@ -420,7 +420,7 @@ func missingRuntimes(h home.Home, blocked []setup.PreflightReport) []string {
 			if err != nil || f.ID != "runtime.serving" {
 				return nil
 			}
-			if _, err := os.Stat(h.Path("runtime", spec.ID())); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(h.Path("runtime", setup.RuntimeDirFor(h, spec))); !errors.Is(err, os.ErrNotExist) {
 				return nil
 			}
 		}

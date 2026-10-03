@@ -24,10 +24,15 @@ import (
 // Explicit model/runtime maintenance actions (Operation kinds).
 const (
 	OpMaterialize = "materialize"
-	OpRepair      = "repair"
-	OpActivate    = "activate"
-	OpVerify      = "verify"
-	OpRemove      = "remove"
+	// OpReconcile brings the active dependency runtime to the one the running
+	// build requires (see setup.ReconcileActive). The Controller starts it
+	// itself when it finds the active runtime stale; it is the normal upgrade
+	// path of a changed dependency contract and needs no operator action.
+	OpReconcile = "runtime_reconcile"
+	OpRepair    = "repair"
+	OpActivate  = "activate"
+	OpVerify    = "verify"
+	OpRemove    = "remove"
 	// The System One model forge: building a variant and certifying it.
 	OpOptimize = "optimize"
 	OpCertify  = "certify"
@@ -103,10 +108,17 @@ type Config struct {
 type Maintenance struct {
 	Inspect     func(root string, verify bool) setup.Inventory
 	Materialize func(root, device, model string, log io.Writer, obs *setup.Observer) error
-	Repair      func(root, device, model string, log io.Writer, obs *setup.Observer) error
-	Activate    func(root, device, model string, log io.Writer, obs *setup.Observer) (changed bool, err error)
-	Verify      func(root, kind, id string, obs *setup.Observer) error
-	Remove      func(root, kind, id string, obs *setup.Observer) error
+	// Assess reports the state of the active dependency runtime against what
+	// this build requires; ok is false when there is no readable activation.
+	Assess func(root string) (rec setup.Reconciliation, ok bool)
+	// Reconcile materializes the required dependency runtime beside the active
+	// one and activates it atomically once it and the active model and variant
+	// verify (setup.ReconcileActive).
+	Reconcile func(root string, log io.Writer, obs *setup.Observer) (rec setup.Reconciliation, changed bool, err error)
+	Repair    func(root, device, model string, log io.Writer, obs *setup.Observer) error
+	Activate  func(root, device, model string, log io.Writer, obs *setup.Observer) (changed bool, err error)
+	Verify    func(root, kind, id string, obs *setup.Observer) error
+	Remove    func(root, kind, id string, obs *setup.Observer) error
 	// ActivateVariant is Activate for a source model plus one of its variants.
 	ActivateVariant func(root, device, model, variant string, experimental bool, log io.Writer, obs *setup.Observer) (changed bool, err error)
 	// Optimize builds a variant of a catalog model with a canonical recipe.
@@ -156,6 +168,14 @@ func (m Maintenance) withDefaults() Maintenance {
 	if m.Materialize == nil {
 		m.Materialize = func(root, device, model string, log io.Writer, obs *setup.Observer) error {
 			return setup.Materialize(home.Home{Root: root}, device, model, log, obs)
+		}
+	}
+	if m.Assess == nil {
+		m.Assess = func(root string) (setup.Reconciliation, bool) { return setup.AssessHome(home.Home{Root: root}) }
+	}
+	if m.Reconcile == nil {
+		m.Reconcile = func(root string, log io.Writer, obs *setup.Observer) (setup.Reconciliation, bool, error) {
+			return setup.ReconcileActive(context.Background(), home.Home{Root: root}, log, obs)
 		}
 	}
 	if m.Repair == nil {
@@ -485,7 +505,7 @@ func (c *Controller) Snapshot() Snapshot {
 		lastFail = last.Failure
 	}
 	installed := false
-	if root != "" && kind != OpSetup && !running {
+	if root != "" && kind != OpSetup && kind != OpReconcile && !running {
 		installed = c.cfg.Installed(root)
 	}
 	s.State, s.Failure = project(root, projKind, running, proj, lastFail, installed)
@@ -777,6 +797,8 @@ func plan(kind, target string) []string {
 		return p(setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseModel, setup.PhaseActivation)
 	case OpMaterialize, OpRepair:
 		return p(setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseModel, setup.PhasePublish)
+	case OpReconcile:
+		return p(setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseModel, setup.PhasePublish, setup.PhaseActivation)
 	case OpActivate:
 		if strings.HasPrefix(target, setup.KindVariant+" ") {
 			return p(setup.PhaseRuntime, setup.PhaseModel, setup.PhaseVariant, setup.PhaseActivation)
@@ -1174,6 +1196,53 @@ func (c *Controller) Inventory(verify bool) (setup.Inventory, error) {
 	return c.cfg.Maintenance.Inspect(root, verify), nil
 }
 
+// reconcileNeededLocked reports whether the active dependency runtime is not
+// the one this build requires; c.mu must be held. A home without a readable
+// activation has nothing to reconcile.
+func (c *Controller) reconcileNeededLocked() bool {
+	if c.home == "" || c.cfg.Maintenance.Assess == nil {
+		return false
+	}
+	rec, ok := c.cfg.Maintenance.Assess(c.home)
+	return ok && rec.Needs()
+}
+
+// Reconcile brings the active dependency runtime to the one this build
+// requires, then binds the activation it produced. It is the explicit form of
+// what Bind, Start and Restart do on their own when they find the active
+// runtime stale. It is a no-op that leaves the activation exactly as it is when
+// the active runtime is already the required one.
+func (c *Controller) Reconcile() error { return c.reconcile(OpBind) }
+
+// reconcile runs the OpReconcile action and, when it succeeds, continues with
+// next: Bind binds the new activation (without starting the worker), Start and
+// Restart bind and start it. Nothing is activated until the required runtime
+// and the active model and variant verify, so a failure leaves the previous
+// activation, and the runtime it names, as they were; the failure is the
+// application's last failure and a later Bind, Start or Restart reconciles
+// again.
+func (c *Controller) reconcile(next string) error {
+	return c.async(SetupParams{}, action{kind: OpReconcile, needStopped: true,
+		run: func(root string, log io.Writer, obs *setup.Observer) error {
+			_, _, err := c.cfg.Maintenance.Reconcile(root, log, obs)
+			return err
+		},
+		after: func(err error) {
+			if err != nil {
+				return
+			}
+			c.rt = nil
+			go func() {
+				switch next {
+				case OpStart, OpRestart:
+					_ = c.run(OpStart)
+				default:
+					_ = c.Bind()
+				}
+			}()
+		}})
+}
+
 func isMaintenance(kind string) bool {
 	switch kind {
 	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpForgeBuildEvaluate, OpPreflight, OpProbe, OpExecute, OpApply, OpDesiredState:
@@ -1227,6 +1296,10 @@ func (c *Controller) Bind() error {
 		c.mu.Unlock()
 		return ErrNotInstalled
 	}
+	if c.reconcileNeededLocked() {
+		c.mu.Unlock()
+		return c.reconcile(OpBind)
+	}
 	op := c.begin(OpBind, "", "")
 	root := c.home
 	c.mu.Unlock()
@@ -1262,6 +1335,10 @@ func (c *Controller) run(kind string) error {
 	if kind == OpStart && rt != nil && rt.Running() {
 		c.mu.Unlock()
 		return nil
+	}
+	if (rt == nil || !rt.Running()) && c.reconcileNeededLocked() {
+		c.mu.Unlock()
+		return c.reconcile(kind)
 	}
 	rt, stale, err := c.planBinding(rt)
 	if err != nil {

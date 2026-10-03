@@ -16,7 +16,7 @@ type OptimizerRuntime struct {
 	ID       string
 	Dir      string
 	Python   string // absolute path of its private interpreter
-	Script   string // absolute path of hachidori_optimizer.py
+	Script   string // absolute path of the delivered hachidori_optimizer.py
 	Manifest home.RuntimeManifest
 }
 
@@ -27,29 +27,31 @@ func (o OptimizerRuntime) Env(h home.Home) []string { return h.Env(filepath.Dir(
 
 // FindOptimizer returns the optimizer runtime if it is already materialized,
 // checking its manifest identity (not re-verifying its packages). It never
-// materializes anything and never touches the network.
+// materializes anything and never touches the network. The optimizer script is
+// delivered by this build beside the runtime (DeliverOptimizer), so an
+// optimizer runtime survives a script-only change.
 func FindOptimizer(h home.Home) (OptimizerRuntime, error) {
 	spec, err := DesiredOptimizer()
 	if err != nil {
 		return OptimizerRuntime{}, err
 	}
-	dir := h.Path("runtime", spec.ID())
+	name := RuntimeDirFor(h, spec)
+	dir := h.Path("runtime", name)
 	var m home.RuntimeManifest
 	if err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &m); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return OptimizerRuntime{}, fmt.Errorf("the optimizer runtime %s is not materialized (run `hachidori variant optimize`, which materializes it)", spec.ID())
 		}
-		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: %w", spec.ID(), err)
+		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: %w", name, err)
 	}
-	if m.Identity != spec.ID() || m.Spec != spec {
-		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: manifest identity does not match its Runtime Spec", spec.ID())
+	if err := CheckRuntimeManifest(name, m, spec); err != nil {
+		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: %w", name, err)
 	}
-	rt := OptimizerRuntime{ID: spec.ID(), Dir: dir, Python: filepath.Join(dir, filepath.FromSlash(m.PythonRelPath)), Manifest: m,
-		Script: filepath.Join(dir, filepath.FromSlash(kindOf(spec).scriptRel))}
-	if got, err := FileSHA256(rt.Script); err != nil || got != spec.Worker {
-		return rt, fmt.Errorf("optimizer runtime %s: optimizer script does not match its pinned digest", spec.ID())
+	d, err := DeliverOptimizer(h)
+	if err != nil {
+		return OptimizerRuntime{}, err
 	}
-	return rt, nil
+	return OptimizerRuntime{ID: name, Dir: dir, Python: filepath.Join(dir, filepath.FromSlash(m.PythonRelPath)), Manifest: m, Script: d.Path}, nil
 }
 
 // EnsureOptimizer materializes the optimizer runtime if it is not present,
@@ -67,7 +69,7 @@ func EnsureOptimizer(h home.Home, log io.Writer, obs *Observer) (OptimizerRuntim
 	if err := h.Ensure(); err != nil {
 		return OptimizerRuntime{}, err
 	}
-	final := h.Path("runtime", spec.ID())
+	final := h.Path("runtime", RuntimeDirFor(h, spec))
 	if _, err := os.Stat(final); err == nil {
 		obs.step(StepVerify, "optimizer runtime "+spec.ID())
 		if err := verifyPublished(h, final, spec); err != nil {

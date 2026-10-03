@@ -180,7 +180,7 @@ func (t *applyTx) setResolvedDevice(device string) {
 
 func (t *applyTx) resolveAutoDevice() (home.Active, []byte, error) {
 	h := t.h()
-	a, _, _, err := h.LoadActive()
+	a, rm, _, err := h.LoadActive()
 	if err != nil {
 		return home.Active{}, nil, fmt.Errorf("resolving Auto device from the active activation: %w", err)
 	}
@@ -192,8 +192,14 @@ func (t *applyTx) resolveAutoDevice() (home.Active, []byte, error) {
 	if err != nil {
 		return home.Active{}, nil, fmt.Errorf("active activation has unsupported device %q: %w", a.Device, err)
 	}
-	if a.Runtime != spec.ID() {
-		return home.Active{}, nil, fmt.Errorf("active activation runtime %q does not match its %s device runtime %q", a.Runtime, a.Device, spec.ID())
+	// The activation is the baseline this transaction rolls back to, so it
+	// must be a runtime of its device. It need not be the dependency runtime
+	// this build requires: an older one stays valid until the transaction (or
+	// reconciliation) has materialized and activated the required one, and
+	// provisioning it is exactly what this transaction is for.
+	if env := rm.Environment(); env.Flavor != spec.Flavor || env.Platform != spec.Platform || env.Role != spec.Role {
+		return home.Active{}, nil, fmt.Errorf("active activation runtime %q is a %s %s runtime, not a runtime of its %s device (%s %s)",
+			a.Runtime, env.Platform, env.Flavor, a.Device, spec.Platform, spec.Flavor)
 	}
 	if model.ID != a.ModelID && a.ModelID != "" {
 		return home.Active{}, nil, fmt.Errorf("active activation model %q does not match catalog model %q", a.ModelID, model.ID)

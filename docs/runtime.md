@@ -347,9 +347,11 @@ subject to the host-local checks above.
 
 ```text
 hachidori serve
-  -> resolve state/active-runtime.json, verify worker digest
-  -> preflight: the runtime's worker script must be the one this build embeds
-     (older runtime => `preflight` failure, nothing is spawned)
+  -> resolve state/active-runtime.json, deliver this build's worker script
+     (workers/<digest>/hachidori_worker.py, content addressed)
+  -> preflight: the runtime must be the dependency runtime this build requires
+     for the device (or declare exactly that environment) and be derived for
+     this worker's ABI (otherwise `preflight` failure, nothing is spawned)
   -> spawn <home>/runtime/<ver>/python/... -I -X utf8 worker.py (explicit env)
   -> hello -> importing (torch, the provider of the active model: laya | opendecider)
   -> device check (cuda requested and unavailable => device_unavailable)
@@ -442,9 +444,9 @@ parsed or retried.
   successfully during inference/warmup; importing a package is insufficient.
   Unsupported combinations report unavailable optimization separately from
   active reference execution. An unknown Transformers dispatch contract is a
-  model load failure. The dependency project, lock and embedded worker digest
-  participate in runtime identity; materialize the current runtime before
-  launching it. The resident does not download Hub kernels. Physical Windows
+  model load failure. The dependency project and lock participate in runtime
+  identity; the worker script does not (see "Worker launch contract"), so a
+  worker-only update never invalidates the materialized runtime. The resident does not download Hub kernels. Physical Windows
   acceptance remains separate; see the #221 evidence in `certification.md`.
 
 Which model is the default is decided by recorded evidence, not by size or
@@ -853,20 +855,87 @@ replaced by a generic startup failure.
 
 ### Worker launch contract
 
-The worker script is half of the contract with the private Python process (its
-command line and protocol); the other half is the executable. An immutable
-runtime keeps the script it was materialized with, so a runtime from an older
-build can be internally consistent (identity, manifest and digests agree) and
-still not understand the arguments this build passes. `setup.CheckWorkerContract`
-therefore requires the activated runtime to carry the worker script this build
-embeds. The supervisor runs that check (`worker.Config.Preflight`) before every
-launch; a runtime that fails it is not started: the supervisor is `failed` with
-class `preflight`, phase `preflight` and the cause and the recovery as the
-message (Materialize the current runtime and Activate it, or
-`hachidori setup --device <device>`; installed models are reused). The binding
-and the dashboard still come up, so Models is available for that recovery.
-`doctor` fails its runtime check the same way, and `Inventory.ActiveProblem`
-reports it for the Models workspace and the Runtime page.
+Two things are kept apart. The **dependency runtime** is the immutable
+executable environment (CPython, torch/CUDA flavor, locked packages, kernels);
+its identity is derived only from that material contract (Runtime Spec,
+below). The **worker** is the Hachidori script an application build delivers
+and runs in it. A worker-only change changes the worker identity and leaves the
+dependency runtime identity, and so the materialized environment, as it is: the
+launch uses the existing environment, nothing is rematerialized or redownloaded,
+and model and variant artifacts are untouched.
+
+The worker is not stored in a runtime. Each launch delivers this build's script
+to `workers/<sha256 of the script>/hachidori_worker.py` (written atomically; an
+existing copy with that digest is reused, a damaged one is replaced; the
+optimizer script likewise as `hachidori_optimizer.py`). The digest is evidence
+(`runtime.worker_build.sha256` in status, `worker_sha256` in diagnostics and in
+recorded Forge runs); it is never compared for compatibility.
+
+Compatibility is explicit. The one worker/runtime boundary is the **worker
+ABI**: the version of the environment contract the worker requires of the
+interpreter and packages around it (`home.WorkerABIServing`,
+`home.WorkerABIOptimizer`). It is part of the Runtime Spec, so a runtime records
+the ABI it was derived for, and it is changed by hand, in the same change that
+makes a worker need an environment no existing runtime provides. The launch
+gate (`setup.CheckRuntimeCompatibility`, run by the supervisor as
+`worker.Config.Preflight` before every launch, by `doctor`, and by Forge Auto)
+requires the activated runtime to be the dependency runtime this build requires
+for the activation's device (the identity `setup.Desired(device)` derives), or a
+runtime of the previous identity scheme that declares exactly that environment.
+There are two refusals, with different causes, both before any process starts:
+`ErrWorkerABI` (the runtime was derived for another worker ABI) and
+`ErrRuntimeStale` (another dependency environment: the lock, a version, the
+flavor or the platform differs; the differing fields are listed). The
+supervisor is `failed` with class `preflight`, phase `preflight` and the cause
+as the message; the binding and the dashboard still come up.
+`Inventory.ActiveProblem` and `Inventory.Reconciliation` report it for the
+Models workspace and the Runtime page.
+
+#### Reconciliation
+
+A stale or ABI-incompatible active runtime is reconciled by the Controller, not
+by the operator. When Bind (opening Hachidori), Start or Restart finds
+`Maintenance.Assess` reporting `stale` or `incompatible` and no worker is
+running, it runs the `runtime_reconcile` operation (`setup.ReconcileActive`) and
+then continues with what was asked (bind, or bind and start):
+
+```text
+active record -> activation's device, catalog model, variant, experimental flag
+  -> required dependency runtime present (by identity, or a verified equivalent)? reuse
+     else materialize runtime/.staging-<identity> -> verify -> publish (atomic rename)
+  -> verify the active model (reused; nothing is downloaded when it verifies)
+  -> activate (same device, model and variant; variant artifacts and certification
+     verified, not rebuilt) = one atomic replacement of state/active-runtime.json
+```
+
+Nothing is activated until the runtime, the model and the variant verify, and
+the previous runtime is never modified or removed, so a failure or an
+interruption at any step leaves the previous activation (and the runtime it
+names), the models and the variants exactly as they were. The failure is the
+application's last failure with the real cause; the next Bind, Start or Restart
+reconciles again, and the staged runtime of an interrupted attempt is discarded
+and rebuilt, never activated. `hachidori setup --device <device>` does the same
+work explicitly.
+
+#### Runtimes of the previous identity scheme
+
+Runtimes materialized before this separation (Runtime Spec schema 1) have an
+identity that included the digest of the worker of the build that created them,
+and carry that script inside their directory. They are not renamed, copied or
+modified. A schema-1 runtime is used when, and only when, (1) its manifest is
+intact (the identity it carries is the one its own schema-1 spec derives),
+(2) the environment that spec declares, without the worker digest and under the
+ABI every earlier runtime carried, equals the required Runtime Spec exactly
+(Python, providers, torch, flavor, uv, platform, `pyproject.toml` and `uv.lock`
+digests), and (3) it passes the same full verification as any runtime (the
+private interpreter reports the exact Python, providers and torch, and lives
+under HACHIDORI_HOME). `setup.FindRuntime` finds it, `Run`, `Activate`, `Verify`,
+the launch and the inventory reuse it as the required runtime (`directory`
+in the inventory entry and `runtime_directory` in status name the directory;
+the identity is the required one). If any condition fails it is simply not the
+required runtime: it stays on disk untouched, is never reinterpreted as
+compatible, and the required runtime is materialized beside it. Operators never
+delete runtime directories as part of an upgrade.
 
 The controller serializes setup/start/stop/restart actions so UI retries cannot
 create duplicate runtime ownership. Setup accepts the same device and catalog
@@ -881,29 +950,30 @@ with one uv extra per PyTorch flavor: `cpu`, `cu128`). The spec records the
 schema, platform, CPython version, the model providers (`laya==0.3.21` and
 `opendecider==0.3.0`, one runtime carries both), exact torch build, flavor,
 pinned uv version and executable digest, the SHA-256 of both uv project files
-and of the worker script. The model is not part of it: selecting any catalog
-checkpoint reuses the same runtime. A runtime materialized before OpenDecider
-was carried has a different identity and a different worker script, so this
-build cannot start it (see "Worker launch contract"): after an upgrade the
-current runtime has to be materialized first (`hachidori setup`, or Materialize
-and Activate in the manager), which reuses already verified models.
+and the worker ABI. Neither the model nor the worker script is part of it:
+selecting any catalog checkpoint, or updating only the Hachidori worker, reuses
+the same runtime. When the dependency contract does change (for example
+OpenDecider was added to the providers), the new identity is materialized and
+activated by reconciliation (see "Worker launch contract"), which reuses
+already verified models and variants.
 
 The runtime identity is `<flavor>-<first 16 hex of sha256(canonical spec JSON)>`,
-for example `cu128-…` / `cpu-…`. Any semantic change (lock, versions, worker,
-uv, platform, flavor) yields a new identity and a new directory; an existing
-runtime is never modified.
+for example `cu128-…` / `cpu-…`. Any semantic change (lock, versions, worker
+ABI, uv, platform, flavor) yields a new identity and a new directory; an
+existing runtime is never modified. A change of the worker script alone yields
+none.
 
 ```text
 desired Runtime Spec (device -> flavor)
   -> private uv: tools/uv/<version>/uv[.exe]; archive and executable sha256 pinned,
      executable re-verified before every invocation, invoked by absolute path
   -> identity
-  -> runtime/<identity>/ present?  yes: verify (manifest identity, worker digest, interpreter probe) and reuse
+  -> runtime/<identity>/ present?  yes: verify (manifest identity, interpreter probe) and reuse
                                    no:  runtime/.staging-<identity>/ :
                                         uv python install <python> --no-bin --no-registry
                                         uv venv --relocatable --python <python> env
                                         uv sync --locked --no-build --no-install-project --extra <flavor>
-                                        write worker, verify, write manifest.json last
+                                        verify, write manifest.json last (no worker inside)
   -> model (catalog entry selected by --model): reuse if every file matches its pinned digest,
      else download to staging, verify, rename (a download that receives no data
      for 2 minutes, headers included, is abandoned and leaves nothing behind; the
@@ -1219,7 +1289,7 @@ preflight <materialize|optimize|probe|certify> [-json]` returns typed findings
 an outcome: `blocked`, `attention` (a warning or an unknown) or `ready` (everything
 passed). It checks the source manifest, revision and file digests, the variant
 manifest, its lineage to the pinned source and its artifact digests, the runtime
-for the requested device (provider, Runtime Spec, worker script, versions from the
+for the requested device (provider, Runtime Spec, versions from the
 runtime manifest), the optimizer runtime and engine pin, the recipe against the
 source (its preserved selectors are resolved against the module names of the
 source's pinned `model.safetensors.index.json`, the way the optimizer will, and a
@@ -1729,14 +1799,15 @@ HACHIDORI_HOME/
   runtime/<flavor>-<digest>/   immutable once published
     env/                       relocatable venv (bin/python, Scripts\python.exe on Windows)
     spec/pyproject.toml, spec/uv.lock   the exact spec files it was materialized from
-    worker/hachidori_worker.py (sha256 in spec and manifest)
-    manifest.json              identity, Runtime Spec, verified Python version, installed distributions, worker digest
+    manifest.json              identity, Runtime Spec, verified Python version, installed distributions
+  workers/<sha256>/hachidori_worker.py   the worker script of a build, delivered at launch, immutable
+  workers/<sha256>/hachidori_optimizer.py   likewise for the optimizer
   runtime/.staging-<identity>/ in-progress materialization, never activated
   packages/                    downloaded uv release archive
   models/<owner>--<repo>/<revision>/   one per materialized catalog model
     model.safetensors …        every file sha256 pinned
     hachidori-model.json       the catalog entry (id, provider, repo, revision, files)
-  runtime/optimizer-cpu-<digest>/   the optimizer runtime (same layout, worker/hachidori_optimizer.py; never serves)
+  runtime/optimizer-cpu-<digest>/   the optimizer runtime (same layout; never serves)
   variants/<model ID>/<variant ID>/   one per variant: the quantized artifact files, optimizer report and
                                hachidori-variant.json (written last); beside, never inside, models/
   variants/<model ID>/.staging-<build>/   an in-progress build, never listed or selectable

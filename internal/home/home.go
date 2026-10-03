@@ -17,7 +17,12 @@ import (
 // Subdirectories of HACHIDORI_HOME (architecture §6.2).
 // tools/ holds Hachidori-managed materializer tooling (the pinned private uv
 // and the CPython installations it manages).
-var Dirs = []string{"runtime", "tools", "packages", "models", "variants", "cache", "logs", "state"}
+//
+// workers/ holds the Hachidori worker scripts delivered by application builds,
+// each in a directory named by its own digest. A worker is delivered beside
+// the dependency runtimes, never inside one: a runtime is the immutable
+// executable environment and does not carry the worker that runs in it.
+var Dirs = []string{"runtime", "workers", "tools", "packages", "models", "variants", "cache", "logs", "state"}
 
 // Home is a resolved HACHIDORI_HOME.
 type Home struct{ Root string }
@@ -82,11 +87,18 @@ type Active struct {
 	Experimental bool `json:"experimental,omitempty"`
 }
 
-// RuntimeSpec is the declarative desired state of a private runtime. Its
-// canonical encoding determines the runtime identity: any semantic change
-// yields a different identity and therefore a different immutable runtime
-// directory. The locked package set is identified by the digests of the uv
-// project files it was materialized from.
+// RuntimeSpec is the declarative desired state of a private dependency
+// runtime: the immutable executable environment (interpreter, torch/CUDA
+// flavor, locked packages, kernels). Its canonical encoding determines the
+// runtime identity: any semantic change yields a different identity and
+// therefore a different immutable runtime directory. The locked package set
+// is identified by the digests of the uv project files it was materialized
+// from.
+//
+// The spec deliberately does not contain the Hachidori worker script. The
+// worker is delivered by the application build and is observed separately
+// (see WorkerABI): a worker-only change leaves the runtime identity, and so
+// the materialized environment, unchanged.
 type RuntimeSpec struct {
 	Schema   string `json:"schema"`
 	Role     string `json:"role,omitempty"` // "" serving runtime | optimizer runtime
@@ -99,12 +111,32 @@ type RuntimeSpec struct {
 	UVSHA256 string `json:"uv_sha256"`      // pinned uv executable digest for Platform
 	Project  string `json:"project_sha256"` // runtimespec/pyproject.toml
 	Lock     string `json:"lock_sha256"`    // runtimespec/uv.lock
-	Worker   string `json:"worker_sha256"`  // the embedded private script: hachidori_worker.py (optimizer: hachidori_optimizer.py)
+	// WorkerABI is the worker/runtime compatibility boundary: the version of
+	// the environment contract the worker scripts of this runtime role require
+	// of the interpreter and packages around them. It is bumped by hand when a
+	// worker needs an environment that no runtime of the previous contract
+	// provides, and only then; it is not derived from worker source.
+	WorkerABI string `json:"worker_abi"`
 }
 
 // RoleOptimizer is the Role of the optimizer runtime: the separate, bounded
 // environment that builds variants. It never serves.
 const RoleOptimizer = "optimizer"
+
+// Worker ABI contracts: one per runtime role. A build embeds the ABI its
+// worker requires; a runtime records the ABI it was derived for.
+const (
+	WorkerABIServing   = "hachidori.worker-runtime/1"
+	WorkerABIOptimizer = "hachidori.optimizer-runtime/1"
+)
+
+// WorkerABIFor is the ABI a build's worker requires of a runtime of role.
+func WorkerABIFor(role string) string {
+	if role == RoleOptimizer {
+		return WorkerABIOptimizer
+	}
+	return WorkerABIServing
+}
 
 // ProviderPins lists the pinned model providers (name==version) the runtime
 // carries.
@@ -127,24 +159,151 @@ func (s RuntimeSpec) ID() string {
 	if err != nil {
 		panic(err)
 	}
-	sum := sha256.Sum256(b)
-	prefix := s.Flavor
-	if s.Role != "" {
-		prefix = s.Role + "-" + s.Flavor
+	return idOf(s.Role, s.Flavor, b)
+}
+
+func idOf(role, flavor string, canonical []byte) string {
+	sum := sha256.Sum256(canonical)
+	prefix := flavor
+	if role != "" {
+		prefix = role + "-" + flavor
 	}
 	return prefix + "-" + hex.EncodeToString(sum[:8])
 }
 
+// Differences names, in field order, what differs between two specs. It is the
+// evidence behind a reconciliation: an empty result means the specs are the
+// same dependency environment.
+func (s RuntimeSpec) Differences(want RuntimeSpec) []string {
+	var d []string
+	add := func(name, have, need string) {
+		if have != need {
+			d = append(d, name)
+		}
+	}
+	add("schema", s.Schema, want.Schema)
+	add("role", s.Role, want.Role)
+	add("platform", s.Platform, want.Platform)
+	add("python", s.Python, want.Python)
+	add("provider", s.Provider, want.Provider)
+	add("torch", s.Torch, want.Torch)
+	add("flavor", s.Flavor, want.Flavor)
+	add("uv", s.UV, want.UV)
+	add("uv_sha256", s.UVSHA256, want.UVSHA256)
+	add("project_sha256", s.Project, want.Project)
+	add("lock_sha256", s.Lock, want.Lock)
+	add("worker_abi", s.WorkerABI, want.WorkerABI)
+	return d
+}
+
+// SchemaV1 is the Runtime Spec schema of runtimes materialized before the
+// dependency environment was separated from the worker. Their identity
+// included the digest of the worker script of the build that created them.
+const SchemaV1 = "hachidori.runtime-spec/1"
+
+// LegacyRuntimeSpec is the Runtime Spec of schema SchemaV1: today's RuntimeSpec
+// plus the worker script digest that was part of the identity. It exists only
+// to verify the integrity of such a runtime's manifest and to derive the
+// dependency environment it materially is; nothing is ever materialized from
+// it.
+type LegacyRuntimeSpec struct {
+	Schema   string `json:"schema"`
+	Role     string `json:"role,omitempty"`
+	Platform string `json:"platform"`
+	Python   string `json:"python"`
+	Provider string `json:"provider"`
+	Torch    string `json:"torch"`
+	Flavor   string `json:"flavor"`
+	UV       string `json:"uv"`
+	UVSHA256 string `json:"uv_sha256"`
+	Project  string `json:"project_sha256"`
+	Lock     string `json:"lock_sha256"`
+	Worker   string `json:"worker_sha256"`
+}
+
+// ID is the legacy runtime identity, derived exactly as it was when the
+// runtime was materialized.
+func (l LegacyRuntimeSpec) ID() string {
+	b, err := json.Marshal(l)
+	if err != nil {
+		panic(err)
+	}
+	return idOf(l.Role, l.Flavor, b)
+}
+
+// Environment is the dependency environment a legacy runtime materially is:
+// its spec without the worker digest, under the worker ABI every runtime of
+// its role carried before the ABI was declared. It is a statement about the
+// runtime's declared contract; whether the installed environment really is that
+// is established by verifying the runtime, never by this derivation.
+func (l LegacyRuntimeSpec) Environment() RuntimeSpec {
+	return RuntimeSpec{Schema: SpecSchema, Role: l.Role, Platform: l.Platform, Python: l.Python, Provider: l.Provider,
+		Torch: l.Torch, Flavor: l.Flavor, UV: l.UV, UVSHA256: l.UVSHA256, Project: l.Project, Lock: l.Lock,
+		WorkerABI: WorkerABIFor(l.Role)}
+}
+
+// SpecSchema versions the Runtime Spec contract and its identity derivation.
+const SpecSchema = "hachidori.runtime-spec/2"
+
 // RuntimeManifest is runtime/<identity>/manifest.json, written once when the
 // runtime is materialized and verified. Its presence marks a complete runtime.
 type RuntimeManifest struct {
-	Identity      string            `json:"identity"`
-	Spec          RuntimeSpec       `json:"spec"`
-	PythonVersion string            `json:"python_version"` // verified
-	PythonRelPath string            `json:"python"`         // relative to runtime dir, slash separated
-	BasePython    string            `json:"base_python"`    // uv-managed CPython prefix under tools/
-	Installed     []string          `json:"installed"`      // verified distributions, name==version
-	Worker        map[string]string `json:"worker"`         // relpath -> sha256
+	Identity      string      `json:"identity"`
+	Spec          RuntimeSpec `json:"spec"`
+	PythonVersion string      `json:"python_version"` // verified
+	PythonRelPath string      `json:"python"`         // relative to runtime dir, slash separated
+	BasePython    string      `json:"base_python"`    // uv-managed CPython prefix under tools/
+	Installed     []string    `json:"installed"`      // verified distributions, name==version
+	// Worker is the worker script a runtime of schema SchemaV1 carried inside
+	// itself (relpath -> sha256). Current runtimes carry none.
+	Worker map[string]string `json:"worker,omitempty"`
+	// Legacy is the schema-1 spec this manifest was read with, when it is one.
+	// It is never written.
+	Legacy *LegacyRuntimeSpec `json:"-"`
+}
+
+// UnmarshalJSON reads a manifest of either spec schema. A schema-1 manifest
+// keeps its own spec in Legacy so its identity can still be checked, and its
+// Spec holds the schema-1 fields (it never equals a desired spec: the desired
+// spec is of the current schema).
+func (m *RuntimeManifest) UnmarshalJSON(b []byte) error {
+	type plain RuntimeManifest
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*m = RuntimeManifest(p)
+	if m.Spec.Schema == SchemaV1 {
+		var raw struct {
+			Spec LegacyRuntimeSpec `json:"spec"`
+		}
+		if err := json.Unmarshal(b, &raw); err != nil {
+			return err
+		}
+		m.Legacy = &raw.Spec
+	}
+	return nil
+}
+
+// Environment is the dependency environment the manifest declares: its Spec,
+// or, for a schema-1 manifest, the environment its legacy spec materially is.
+func (m RuntimeManifest) Environment() RuntimeSpec {
+	if m.Legacy != nil {
+		return m.Legacy.Environment()
+	}
+	return m.Spec
+}
+
+// EnvironmentID is the dependency runtime identity of the manifest's
+// environment. For a current runtime it is the directory name; for a legacy
+// runtime it is the identity the same environment has under the current
+// scheme, which is what lets a worker-only upgrade recognise it.
+func (m RuntimeManifest) EnvironmentID() string { return m.Environment().ID() }
+
+// Satisfies reports whether the manifest declares exactly the dependency
+// environment spec describes.
+func (m RuntimeManifest) Satisfies(spec RuntimeSpec) bool {
+	return m.Environment() == spec
 }
 
 // ErrRuntimeIdentityMissing marks a runtime manifest that carries neither a
@@ -158,14 +317,19 @@ var ErrRuntimeIdentityMissing = errors.New("manifest has no declarative Runtime 
 
 // CheckIdentity is the runtime-validity authority for an activated runtime:
 // the manifest must carry the identity named by the activation record, and
-// that identity must be the one its own Runtime Spec derives. A missing
-// identity (with no Spec) is reported as ErrRuntimeIdentityMissing; any
-// other disagreement, including a non-empty wrong identity, is corruption.
+// that identity must be the one its own Runtime Spec derives (for a schema-1
+// manifest, the one its own legacy spec derives). A missing identity (with no
+// Spec) is reported as ErrRuntimeIdentityMissing; any other disagreement,
+// including a non-empty wrong identity, is corruption.
 func (m RuntimeManifest) CheckIdentity(runtime string) error {
 	if m.Identity == "" && m.Spec == (RuntimeSpec{}) {
 		return ErrRuntimeIdentityMissing
 	}
-	if m.Identity != runtime || m.Spec.ID() != m.Identity {
+	own := m.Spec.ID()
+	if m.Legacy != nil {
+		own = m.Legacy.ID()
+	}
+	if m.Identity != runtime || own != m.Identity {
 		return fmt.Errorf("manifest identity %q does not match its Runtime Spec (not materialized by declarative setup; run `hachidori setup`)", m.Identity)
 	}
 	return nil
@@ -254,10 +418,10 @@ func (h Home) PythonExe(a Active, rm RuntimeManifest) string {
 	return filepath.Join(h.RuntimeDir(a), filepath.FromSlash(rm.PythonRelPath))
 }
 
-// WorkerScript is the absolute path of the materialized worker.
-func (h Home) WorkerScript(a Active) string {
-	return filepath.Join(h.RuntimeDir(a), "worker", "hachidori_worker.py")
-}
+// WorkerDir is the directory a delivered worker script lives in: workers/
+// <digest of the script>/. A delivered worker is immutable and named by its
+// content.
+func (h Home) WorkerDir(digest string) string { return h.Path("workers", digest) }
 
 // Env constructs the complete environment for the private Python process.
 // Nothing from the parent environment is inherited except OS essentials

@@ -149,7 +149,7 @@ func project(home string, op string, running bool, st *server.Status, lastFail *
 		return Unconfigured, nil
 	}
 	switch op {
-	case OpSetup:
+	case OpSetup, OpReconcile:
 		return Installing, nil
 	case OpStop:
 		return Stopping, nil

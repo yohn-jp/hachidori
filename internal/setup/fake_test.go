@@ -391,11 +391,12 @@ func (f *fixture) legacyize(device string) string {
 	return name
 }
 
-// olderWorker rewrites the active runtime as an older build would have
-// materialized it: a self-consistent runtime (its identity is the one its own
-// Runtime Spec derives and its manifest agrees with its files) whose worker
-// script is not the one this build embeds. It returns the new runtime name.
-func (f *fixture) olderWorker(device string) string {
+// staleRuntime rewrites the active runtime as a runtime of another dependency
+// environment than this build requires (here: one that predates the Clef
+// provider). It is self-consistent: its identity is the one its own Runtime
+// Spec derives and its manifest agrees with its files. It returns the new
+// runtime name.
+func (f *fixture) staleRuntime(device string) string {
 	f.t.Helper()
 	spec, err := Desired(device)
 	if err != nil {
@@ -405,29 +406,69 @@ func (f *fixture) olderWorker(device string) string {
 	if err := home.ReadJSON(f.H.Path("runtime", spec.ID(), "manifest.json"), &rm); err != nil {
 		f.t.Fatal(err)
 	}
-	script := []byte("# worker of an older build: no --provider argument\n")
-	rm.Spec.Worker = digest(script)
 	rm.Spec.Provider = "laya==0.3.21"
 	rm.Identity = rm.Spec.ID()
-	rm.Worker = map[string]string{"worker/hachidori_worker.py": rm.Spec.Worker}
 	if err := os.Rename(f.H.Path("runtime", spec.ID()), f.H.Path("runtime", rm.Identity)); err != nil {
-		f.t.Fatal(err)
-	}
-	if err := os.WriteFile(f.H.Path("runtime", rm.Identity, "worker", "hachidori_worker.py"), script, 0o644); err != nil {
 		f.t.Fatal(err)
 	}
 	if err := home.WriteJSON(f.H.Path("runtime", rm.Identity, "manifest.json"), rm); err != nil {
 		f.t.Fatal(err)
 	}
+	f.activateRuntimeDir(rm.Identity)
+	return rm.Identity
+}
+
+// schemaV1Runtime rewrites the active runtime as a build before the dependency
+// environment was separated from the worker materialized it: a spec of schema
+// 1 that includes the digest of that build's worker script, the identity that
+// digest derives, and the worker script inside the runtime directory. The
+// environment itself is untouched. It returns the legacy runtime name and its
+// worker digest.
+func (f *fixture) schemaV1Runtime(device string) (name, worker string) {
+	f.t.Helper()
+	spec, err := Desired(device)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var rm home.RuntimeManifest
+	if err := home.ReadJSON(f.H.Path("runtime", spec.ID(), "manifest.json"), &rm); err != nil {
+		f.t.Fatal(err)
+	}
+	script := []byte("# worker of the build that materialized this runtime\n")
+	legacy := home.LegacyRuntimeSpec{Schema: home.SchemaV1, Role: spec.Role, Platform: spec.Platform, Python: spec.Python,
+		Provider: spec.Provider, Torch: spec.Torch, Flavor: spec.Flavor, UV: spec.UV, UVSHA256: spec.UVSHA256,
+		Project: spec.Project, Lock: spec.Lock, Worker: digest(script)}
+	name = legacy.ID()
+	if err := os.Rename(f.H.Path("runtime", spec.ID()), f.H.Path("runtime", name)); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.MkdirAll(f.H.Path("runtime", name, "worker"), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(f.H.Path("runtime", name, "worker", "hachidori_worker.py"), script, 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	m := map[string]any{"identity": name, "spec": legacy, "python_version": rm.PythonVersion, "python": rm.PythonRelPath,
+		"base_python": rm.BasePython, "installed": rm.Installed, "worker": map[string]string{"worker/hachidori_worker.py": legacy.Worker}}
+	if err := home.WriteJSON(f.H.Path("runtime", name, "manifest.json"), m); err != nil {
+		f.t.Fatal(err)
+	}
+	f.activateRuntimeDir(name)
+	return name, legacy.Worker
+}
+
+// activateRuntimeDir points the activation record at an existing runtime
+// directory without changing anything else in it.
+func (f *fixture) activateRuntimeDir(name string) {
+	f.t.Helper()
 	var a home.Active
 	if err := home.ReadJSON(f.H.Path("state", "active-runtime.json"), &a); err != nil {
 		f.t.Fatal(err)
 	}
-	a.Runtime = rm.Identity
+	a.Runtime = name
 	if err := home.WriteJSON(f.H.Path("state", "active-runtime.json"), a); err != nil {
 		f.t.Fatal(err)
 	}
-	return rm.Identity
 }
 
 // clefFixtureFiles are the files of the System One fixture model: the file

@@ -91,9 +91,9 @@ const legacyManifest = `{"version":"0.1.0","flavor":"cu128","platform":"windows/
 "installed":["laya==0.3.21","torch==2.11.0+cu128"],"worker":{"worker/hachidori_worker.py":"00"}}`
 
 func testSpec() RuntimeSpec {
-	return RuntimeSpec{Schema: "hachidori.runtime-spec/1", Platform: "linux/amd64", Python: "3.12.11",
+	return RuntimeSpec{Schema: SpecSchema, Platform: "linux/amd64", Python: "3.12.11",
 		Provider: "laya==0.3.21", Torch: "2.11.0+cu128", Flavor: "cu128", UV: "0.12.19",
-		UVSHA256: "a", Project: "b", Lock: "c", Worker: "d"}
+		UVSHA256: "a", Project: "b", Lock: "c", WorkerABI: WorkerABIServing}
 }
 
 // CheckIdentity is the one runtime-validity rule. Only an absent identity

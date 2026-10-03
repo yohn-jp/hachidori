@@ -662,21 +662,11 @@ func TestExecutionRequestTimeoutByDevice(t *testing.T) {
 	if err := home.ReadJSON(filepath.Join(rdir, "manifest.json"), &rm); err != nil {
 		t.Fatal(err)
 	}
-	script := h.WorkerScript(home.Active{Runtime: spec.ID(), ModelID: setup.ClefFlash})
-	for path, body := range map[string]string{filepath.Join(rdir, filepath.FromSlash(rm.PythonRelPath)): "", script: "# worker"} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	sum, err := setup.FileSHA256(script)
-	if err != nil {
+	python := filepath.Join(rdir, filepath.FromSlash(rm.PythonRelPath))
+	if err := os.MkdirAll(filepath.Dir(python), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	rm.Worker = map[string]string{"worker/hachidori_worker.py": sum}
-	if err := home.WriteJSON(filepath.Join(rdir, "manifest.json"), rm); err != nil {
+	if err := os.WriteFile(python, nil, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	serving, _, err := server.SourceConfig(h, "cpu", setup.ClefFlash, "bfloat16", io.Discard)

@@ -202,13 +202,13 @@ func resolveCandidateDevice(h home.Home, override string) (device, mode string, 
 	if _, _, err := h.LoadVariant(a); err != nil {
 		return "", "", fmt.Errorf("candidate device Auto requires a valid active activation: %w", err)
 	}
-	if err := setup.CheckWorkerContract(a, rm); err != nil {
+	if err := setup.CheckRuntimeCompatibility(a, rm); err != nil {
 		return "", "", fmt.Errorf("candidate device Auto requires a valid active activation: %w", err)
 	}
 	spec, err := setup.Desired(a.Device)
-	if err != nil || a.Runtime != spec.ID() || rm.Spec != spec {
+	if err != nil || !rm.Satisfies(spec) {
 		if err == nil {
-			err = fmt.Errorf("active runtime %s does not match device %s", a.Runtime, a.Device)
+			err = fmt.Errorf("active runtime %s is not the dependency runtime %s required for device %s", a.Runtime, spec.ID(), a.Device)
 		}
 		return "", "", fmt.Errorf("candidate device Auto requires a valid active activation: %w", err)
 	}

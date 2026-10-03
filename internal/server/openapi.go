@@ -334,8 +334,13 @@ func schemas() obj {
 		}, "model", "provider", "running", "status"),
 
 		"Runtime": object("The active runtime.", obj{
-			"home":     str("The HACHIDORI_HOME path."),
-			"runtime":  str("Active runtime version."),
+			"home":              str("The HACHIDORI_HOME path."),
+			"runtime":           str("Dependency runtime identity: the immutable dependency environment the worker runs in, derived only from its material contract. It does not change when only the Hachidori worker changes."),
+			"runtime_directory": str("Directory under runtime/ holding the dependency runtime, present only when it is not the identity (a runtime materialized before the identity excluded the worker)."),
+			"worker_build": object("The Hachidori worker implementation this build delivered to run in the runtime.", obj{
+				"sha256": str("Digest of the delivered worker script. Evidence only; it is not compared for compatibility."),
+				"abi":    str("Worker/runtime ABI the worker requires; the runtime is derived for the same ABI."),
+			}, "sha256", "abi"),
 			"model_id": str("Catalog model identity."),
 			"model":    str("Model directory: <repo>/<revision>."),
 			"device":   str("Requested device."),
