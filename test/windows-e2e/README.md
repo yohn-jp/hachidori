@@ -5,8 +5,10 @@ runners. It runs from `.github/workflows/windows-e2e.yml` on `push` to `main`
 and `workflow_dispatch`, never on `pull_request`.
 
 ```
-main push -> build candidate once -> parallel shards -> (aggregate -> development release)
+main push -> build candidate once -> parallel shards -> aggregate certification -> development release (on PASS)
 ```
+
+A `workflow_dispatch` run certifies and aggregates but never publishes a release.
 
 Everything proven here is **CI evidence**. It never becomes a physical Windows
 `PASS`; the assertions that need a human, a real desktop, a production model or
@@ -31,7 +33,10 @@ checks the executable bytes against the manifest **and** against the commit and
 SHA-256 the workflow passes outside the artifact
 (`HACHIDORI_E2E_SOURCE_SHA`, `HACHIDORI_E2E_CANDIDATE_SHA256`). A mismatch, a
 missing manifest or a missing expectation is a failure, not a skip. A shard
-never builds `hachidori.exe`.
+never builds `hachidori.exe`. The build recipe is the one the previous
+development release used (`go build -o hachidori.exe ./cmd/hachidori` for
+`windows/amd64`; no cgo is linked), preceded by the Windows `go test ./...` that
+release gate ran.
 
 ## Shard contract
 
@@ -61,8 +66,45 @@ Scenarios synchronize on observable state (ready/endpoint/pid/persisted-file
 conditions with a bounded deadline), never on a fixed sleep. They use
 disposable homes and never touch a real Hachidori home.
 
+The `runtime` and `recovery` shards build a fixture runtime from a host Python
+3.9 or newer (the workflow resolves it; nothing is downloaded).
+
 `candidate-identity` is the shared scenario every shard runs
 (`e2e.VerifyCandidateScenario`).
+
+## Aggregate certification and the release gate
+
+The `aggregate` job runs after the candidate and every shard, also when one of
+them failed or was cancelled (`if: always()`), and calls
+`e2e-aggregate aggregate`. It fails closed: the verdict is `PASS` only when
+
+- the `candidate` and `shard` jobs both report `success` (a missing or
+  cancelled result is a failure),
+- the candidate downloaded for the aggregate matches the candidate job's SHA-256
+  output and the commit,
+- every one of the six shards produced `evidence/windows-e2e-evidence-<shard>/result.json`,
+- each result is `PASS`, certifies exactly that commit/file/SHA-256/size, belongs
+  to this workflow run, is `CI_HOSTED` with `physical_pass: false`, and lists as
+  required exactly the scenarios in the repository's `required.json` (which must
+  contain `candidate-identity`),
+- every required scenario is `PASS` in the result.
+
+It always writes `certification.json` (`hachidori.windows-e2e.certification/v1`:
+status, candidate identity, per-shard verdicts, problems, `physical_checks:
+NOT_CHECKED`) and `certification.md` (appended to the job summary) and uploads
+them as the artifact `windows-e2e-certification`, for passing and failing runs.
+
+The `release` job needs `candidate` and `aggregate` with the implicit
+`success()` and runs only for a `push` to `main`. It downloads the certified
+candidate and `certification.json`, re-verifies the candidate identity,
+and runs `e2e-aggregate release-check` (PASS, same commit and SHA-256, all six
+shards). It then publishes **the certified candidate bytes** as
+`hachidori-windows-amd64.exe` (+ `.sha256`) with the existing development
+prerelease tag allocation, and finally downloads the published asset and checks
+its SHA-256 against the certified one. Nothing in the release job builds. A
+failed or missing required shard fails `aggregate`, which skips `release`: that
+commit gets no development release. `release.yml` keeps only the
+`pull_request` build/test path.
 
 ## Evidence
 
@@ -89,10 +131,16 @@ keeps the diagnostic secrecy contract.
 
 - `e2e`: candidate manifest/verification, evidence recorder, `Main`, `Begin`.
 - `cmd/e2e-candidate`: `write` and `verify`, used by the workflow.
-- `matrix`: validates that the checklist IDs are unique and every assertion has
-  exactly one classification.
+- `e2e` also holds the aggregate and release-gate logic; `cmd/e2e-aggregate`
+  is its CLI.
+- `desktopkit`, `runtime/harness`, `update/*` and `diagnostics/*`: shard-owned
+  fixtures and inspectors with portable unit tests.
+- `matrix`: validates that the checklist IDs are unique, every assertion has
+  exactly one classification, every `CI_AUTOMATED` assertion cites scenarios that
+  exist in a shard's `required.json`, and every scenario is cited.
 - `workflow`: validates the workflow contract (triggers, single build, shard
-  consumption of the candidate, pinned actions).
+  consumption of the candidate, aggregate fail-closed wiring, release gating
+  and ordering, pinned actions, no `continue-on-error`).
 
 Portable checks:
 

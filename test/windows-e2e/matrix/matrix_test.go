@@ -111,18 +111,47 @@ func checkAssertion(t *testing.T, r row) {
 		}
 		return
 	}
-	if shard, ok := strings.CutPrefix(proof, "shard:"); ok {
-		for _, s := range e2e.Shards {
-			if s == shard {
-				return
+	if strings.HasPrefix(proof, "shard:") {
+		for _, ref := range strings.Split(proof, "+") {
+			shard, scenario, ok := strings.Cut(strings.TrimPrefix(ref, "shard:"), "/")
+			if !strings.HasPrefix(ref, "shard:") || !ok || scenario == "" {
+				t.Errorf("line %d: %s proof %q is not shard:<name>/<scenario>", r.line, r.cells[0], ref)
+				continue
 			}
+			if !requiredScenarios(t, shard)[scenario] {
+				t.Errorf("line %d: %s cites %s/%s, which is not in that shard's required.json", r.line, r.cells[0], shard, scenario)
+				continue
+			}
+			cited[shard+"/"+scenario] = true
 		}
-		t.Errorf("line %d: %s names unknown shard %q", r.line, r.cells[0], shard)
 		return
 	}
 	if !goTestProof.MatchString(proof) {
-		t.Errorf("line %d: CI_AUTOMATED %s needs proof shard:<name> or go test <package>, got %q", r.line, r.cells[0], proof)
+		t.Errorf("line %d: CI_AUTOMATED %s needs proof shard:<name>/<scenario> or go test <package>, got %q", r.line, r.cells[0], proof)
 	}
+}
+
+// cited collects every shard/scenario some assertion names as its proof.
+var cited = map[string]bool{}
+
+func requiredScenarios(t *testing.T, shard string) map[string]bool {
+	t.Helper()
+	known := false
+	for _, s := range e2e.Shards {
+		known = known || s == shard
+	}
+	if !known {
+		return nil
+	}
+	ids, err := e2e.LoadRequired("../" + shard)
+	if err != nil {
+		t.Fatalf("shard %s: %v", shard, err)
+	}
+	out := map[string]bool{}
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out
 }
 
 func TestEveryShardProvesAtLeastOneAssertion(t *testing.T) {
@@ -131,8 +160,26 @@ func TestEveryShardProvesAtLeastOneAssertion(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range e2e.Shards {
-		if !strings.Contains(string(data), "| CI_AUTOMATED | shard:"+s+" |") {
+		if !strings.Contains(string(data), "| CI_AUTOMATED | shard:"+s+"/") {
 			t.Errorf("shard %s has no classified CI_AUTOMATED assertion", s)
+		}
+	}
+}
+
+func TestEveryRequiredScenarioIsCitedByAnAssertion(t *testing.T) {
+	for k := range cited {
+		delete(cited, k)
+	}
+	for _, r := range tableRows(t) {
+		if assertionRow.MatchString(r.cells[0]) {
+			checkAssertion(t, r)
+		}
+	}
+	for _, shard := range e2e.Shards {
+		for id := range requiredScenarios(t, shard) {
+			if id != "candidate-identity" && !cited[shard+"/"+id] {
+				t.Errorf("scenario %s/%s proves no classified assertion; map it in the checklist or remove it", shard, id)
+			}
 		}
 	}
 }

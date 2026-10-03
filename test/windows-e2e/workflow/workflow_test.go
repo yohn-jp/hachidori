@@ -89,6 +89,15 @@ func TestCandidateIsBuiltExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestArtifactUploadsAreRerunnable(t *testing.T) {
+	text := load(t)
+	uploads := strings.Count(text, "uses: actions/upload-artifact@")
+	overwrites := strings.Count(text, "overwrite: true")
+	if uploads == 0 || overwrites != uploads {
+		t.Fatalf("every artifact upload must be replaceable on a workflow rerun: uploads=%d overwrite=true=%d", uploads, overwrites)
+	}
+}
+
 func TestShardsConsumeAndVerifyTheSharedCandidate(t *testing.T) {
 	text := load(t)
 	shard := job(text, "shard")
@@ -146,7 +155,96 @@ func TestActionsArePinnedAndPermissionsMinimal(t *testing.T) {
 	if !regexp.MustCompile(`(?m)^permissions: \{\}\s*$`).MatchString(text) {
 		t.Error("top-level permissions must be empty")
 	}
-	if strings.Contains(text, "contents: write") {
-		t.Error("certification jobs must not have write permission")
+	for _, name := range []string{"candidate", "shard", "aggregate"} {
+		if strings.Contains(job(text, name), "contents: write") {
+			t.Errorf("job %s must not have write permission", name)
+		}
+	}
+	if got := strings.Count(text, "contents: write"); got != 1 || !strings.Contains(job(text, "release"), "contents: write") {
+		t.Errorf("only the release job may write contents, found %d grants", got)
+	}
+}
+
+func TestNoJobMasksFailure(t *testing.T) {
+	if strings.Contains(load(t), "continue-on-error") {
+		t.Error("no step or job may mask a failure with continue-on-error")
+	}
+}
+
+func TestAggregateFailsClosedOverEveryShard(t *testing.T) {
+	text := load(t)
+	agg := job(text, "aggregate")
+	for _, want := range []string{
+		"needs: [candidate, shard]",
+		"if: ${{ always() }}",
+		"pattern: windows-e2e-evidence-*",
+		"e2e-aggregate aggregate",
+		"candidate=${{ needs.candidate.result }},shard=${{ needs.shard.result }}",
+		"CANDIDATE_SHA256: ${{ needs.candidate.outputs.sha256 }}",
+		"name: windows-e2e-certification",
+	} {
+		if !strings.Contains(agg, want) {
+			t.Errorf("aggregate job lacks %q", want)
+		}
+	}
+	// The certification is uploaded also when the run failed.
+	if !regexp.MustCompile(`(?s)Upload certification\s+if: \$\{\{ always\(\) \}\}`).MatchString(agg) {
+		t.Error("certification evidence must be uploaded for failed runs too")
+	}
+}
+
+func TestReleaseCannotPrecedeCertification(t *testing.T) {
+	text := load(t)
+	rel := job(text, "release")
+	if rel == "" {
+		t.Fatal("no release job")
+	}
+	for _, want := range []string{
+		"needs: [candidate, aggregate]",
+		"success() && github.event_name == 'push' && github.ref == 'refs/heads/main'",
+		"name: windows-candidate",
+		"name: windows-e2e-certification",
+		"e2e-aggregate release-check",
+		"e2e-candidate verify",
+		"CANDIDATE_SHA256: ${{ needs.candidate.outputs.sha256 }}",
+		"gh release create",
+		"certified candidate",
+	} {
+		if !strings.Contains(rel, want) {
+			t.Errorf("release job lacks %q", want)
+		}
+	}
+	if strings.Contains(rel, "go build") {
+		t.Error("the release must publish the certified candidate, never a rebuild")
+	}
+	if strings.Contains(rel, "always()") || strings.Contains(rel, "failure()") || strings.Contains(rel, "cancelled()") {
+		t.Error("the release gate must not override the implicit success of its needs")
+	}
+	// gate order inside the job: verify, stage, publish, verify published.
+	order := []string{"release-check", "Stage the certified bytes", "gh release create", "Verify the published asset"}
+	last := -1
+	for _, m := range order {
+		i := strings.Index(rel, m)
+		if i < 0 || i < last {
+			t.Fatalf("release steps out of order around %q", m)
+		}
+		last = i
+	}
+	// Nothing but release may publish.
+	for _, name := range []string{"candidate", "shard", "aggregate"} {
+		if strings.Contains(job(text, name), "gh release") {
+			t.Errorf("job %s must not publish a release", name)
+		}
+	}
+}
+
+func TestReleaseWorkflowNoLongerPublishesOnPush(t *testing.T) {
+	data, err := os.ReadFile("../../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := section(string(data), "on")
+	if strings.Contains(on, "push") || strings.Contains(on, "workflow_dispatch") || !strings.Contains(on, "pull_request") {
+		t.Errorf("release.yml must be pull_request only so publication happens only after certification; on: %s", on)
 	}
 }
