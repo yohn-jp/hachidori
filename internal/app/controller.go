@@ -988,13 +988,8 @@ func tunedBuildRequest(h home.Home, source home.ModelManifest, profileID string)
 	if err != nil {
 		return optimize.Request{}, err
 	}
-	provenance := &home.TuningProvenance{
-		Schema: home.TuningProvenanceSchema, Source: profile.Source,
-		ProfileID: profile.ID(), ProfileSHA256: profile.SHA256(),
-		AnalysisID: analysis.ID(), AnalysisSHA256: analysis.SHA256(),
-		CompilerVersion: profile.CompilerVersion,
-	}
-	return optimize.Request{Model: source.ID, Recipe: compiled.Recipe.Name, CompiledRecipe: &compiled.Recipe, Tuning: provenance}, nil
+	provenance := tuning.Provenance(profile, analysis, compiled)
+	return optimize.Request{Model: source.ID, Recipe: compiled.Recipe.Name, CompiledRecipe: &compiled.Recipe, Tuning: &provenance, Plan: compiled.Plan}, nil
 }
 
 // Certify compares a reference run and a candidate run of a variant and

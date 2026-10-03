@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/tuning"
 )
 
@@ -27,10 +28,10 @@ func forgeProfileLabels(t *testing.T, e *env) []string {
 	return labels
 }
 
-// An all-Auto profile pins nothing yet the canonical compiler preserves
-// regions: Forge shows the compiled effective count, the one Tuning shows,
-// never the number of explicit pins.
-func TestForgeProfileLabelIsTheEffectivePreservedCount(t *testing.T) {
+// An all-AUTO profile overrides nothing yet the canonical compiler keeps the
+// required groups at source precision: Forge shows the resolved plan's count,
+// the one Tuning shows, never the number of explicit overrides.
+func TestForgeProfileLabelIsTheEffectiveGroupCount(t *testing.T) {
 	e, ft, _ := tuningEnv(t)
 	auto := expectedProfile(t, ft.analysis, "balanced")
 	if err := ft.SaveProfile(auto, ft.analysis); err != nil {
@@ -41,29 +42,29 @@ func TestForgeProfileLabelIsTheEffectivePreservedCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := 0
-	for _, m := range compiled.Evidence.Regions {
-		if m.Preserved {
+	for _, g := range compiled.Plan.Groups {
+		if g.Effective == home.PolicySourcePrecision {
 			want++
 		}
 	}
-	if pinnedCount(auto) != 0 || want == 0 {
-		t.Fatalf("fixture: %d pins, %d compiled preserved regions; the profile must preserve regions with no pin", pinnedCount(auto), want)
+	if overrideCount(auto) != 0 || want == 0 {
+		t.Fatalf("fixture: %d overrides, %d groups at source precision; the profile must preserve groups with no override", overrideCount(auto), want)
 	}
 	labels := forgeProfileLabels(t, e)
-	wantText := strconv.Itoa(want) + " / " + strconv.Itoa(len(ft.analysis.Regions)) + " preserved"
-	if len(labels) != 1 || !strings.HasSuffix(labels[0], wantText) || strings.Contains(labels[0], " 0 / ") {
+	wantText := strconv.Itoa(want) + " / " + strconv.Itoa(len(compiled.Plan.Groups)) + " groups at source precision · 0 overridden"
+	if len(labels) != 1 || !strings.HasSuffix(labels[0], wantText) {
 		t.Fatalf("labels %q, want one ending %q", labels, wantText)
 	}
 	// Tuning shows the same count for the same profile.
-	tv := e.d.tuningView(e.d.modelsView(e.d.view("Tuning", "tuning")), ft.analysis.Source.ID, auto.ID())
-	if tv.PreservedRegions != want {
-		t.Fatalf("Tuning shows %d preserved regions, Forge %d", tv.PreservedRegions, want)
+	tv := e.d.tuningView(e.d.modelsView(e.d.view("Tuning", "tuning")), ft.analysis.Source.ID, auto.ID(), nil)
+	if tv.Summary.AtSource != want || tv.Summary.Groups != len(compiled.Plan.Groups) {
+		t.Fatalf("Tuning shows %d / %d groups at source precision, Forge %d / %d", tv.Summary.AtSource, tv.Summary.Groups, want, len(compiled.Plan.Groups))
 	}
 }
 
-// The profile of the physical run: all Auto over the Clef-Flash layout, whose
+// The profile of the physical run: all AUTO over the Clef-Flash layout, whose
 // compiled recipe preserves lm_head, both linear-attention gates, the vision
-// tower and the carried joint head — five selectors — in five regions.
+// tower and the carried joint head: five selectors, five required groups.
 func TestForgeProfileLabelOfTheAllAutoClefProfileIsNotZero(t *testing.T) {
 	e, ft, _ := tuningEnv(t)
 	auto := expectedProfile(t, ft.analysis, "balanced")
@@ -78,8 +79,22 @@ func TestForgeProfileLabelOfTheAllAutoClefProfileIsNotZero(t *testing.T) {
 		t.Fatalf("recipe preserves %d selectors, want the canonical five", len(compiled.Recipe.Preserved))
 	}
 	labels := forgeProfileLabels(t, e)
-	if len(labels) != 1 || !strings.HasSuffix(labels[0], "5 / "+strconv.Itoa(len(ft.analysis.Regions))+" preserved") {
-		t.Fatalf("labels %q, want 5 effective preserved regions", labels)
+	if len(labels) != 1 || !strings.Contains(labels[0], "5 / "+strconv.Itoa(len(ft.analysis.Groups))+" groups at source precision") {
+		t.Fatalf("labels %q, want 5 required groups at source precision", labels)
+	}
+}
+
+// A saved legacy coarse profile is labelled as such with its own regional
+// count, never as a layer-wise plan.
+func TestForgeProfileLabelOfALegacyProfileSaysLegacy(t *testing.T) {
+	e, ft, _ := tuningEnv(t)
+	legacy, la := legacyProfile(t, ft, "balanced")
+	ft.legacyAnalysis = la
+	ft.profiles = map[string]tuning.Profile{legacy.ID(): legacy}
+	ft.order = []string{legacy.ID()}
+	labels := forgeProfileLabels(t, e)
+	if len(labels) != 1 || !strings.Contains(labels[0], "legacy · 5 / "+strconv.Itoa(len(la.Regions))+" regions preserved") {
+		t.Fatalf("labels %q, want the legacy regional count", labels)
 	}
 }
 

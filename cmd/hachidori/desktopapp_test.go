@@ -552,8 +552,14 @@ func pinnedProfile(t *testing.T, a tuning.Analysis, objective string, regions ..
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range regions {
-		p.Preservation[id] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
+	for _, region := range regions {
+		ids, err := tuning.Selection{Region: region, From: -1, To: -1}.Select(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p, err = tuning.SetPolicy(p, a, ids, home.PolicySourcePrecision); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return p
 }
@@ -710,8 +716,7 @@ func TestTuningStoreImpactIsEstimatedUntilACandidateIsMeasured(t *testing.T) {
 	v := home.VariantManifest{
 		Source: home.SourceOf(m), Provider: m.Provider,
 		Optimizer: home.Optimizer{Engine: recipe.Engine, Version: "1"}, Recipe: compiled.Recipe,
-		Tuning: &home.TuningProvenance{Schema: home.TuningProvenanceSchema, Source: home.SourceOf(m), ProfileID: pinned.ID(), ProfileSHA256: pinned.SHA256(),
-			AnalysisID: a.ID(), AnalysisSHA256: a.SHA256(), CompilerVersion: pinned.CompilerVersion},
+		Tuning:   func() *home.TuningProvenance { p := tuning.Provenance(pinned, a, compiled); return &p }(),
 		Weights:  home.WeightPrecision{Scheme: recipe.Scheme, Bits: 4, GroupSize: 128, Format: "compressed-tensors", DType: "bfloat16"},
 		Files:    map[string]string{"model.safetensors": strings.Repeat("ab", 32), "config.json": strings.Repeat("cd", 32)},
 		Creation: home.Creation{CreatedAt: "2026-10-03T00:00:00Z"},

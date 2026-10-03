@@ -75,13 +75,16 @@ func TestOptimizeProfileResolvesExactProfileAndRefusesAnotherSource(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.Model != source.ID || req.Recipe != optimize.RecipeClefFlashW4A16 || req.CompiledRecipe == nil || req.Tuning == nil {
+	if req.Model != source.ID || req.Recipe != optimize.RecipeClefFlashW4A16 || req.CompiledRecipe == nil || req.Tuning == nil || req.Plan == nil {
 		t.Fatalf("profile did not resolve to a tuned optimizer request: %+v", req)
 	}
 	if req.Tuning.ProfileID != profile.ID() || req.Tuning.ProfileSHA256 != profile.SHA256() ||
 		req.Tuning.AnalysisID != analysis.ID() || req.Tuning.AnalysisSHA256 != analysis.SHA256() ||
 		req.Tuning.CompilerVersion != profile.CompilerVersion {
 		t.Fatalf("optimizer request lost exact tuning provenance: %+v", req.Tuning)
+	}
+	if req.Tuning.PlanSHA256 != req.Plan.SHA256() || req.Plan.RecipeSHA256 != req.CompiledRecipe.SHA256() {
+		t.Fatalf("optimizer request does not bind its plan: %+v", req.Tuning)
 	}
 	var built optimize.Request
 	c := New(Config{Home: h.Root, Maintenance: Maintenance{Build: func(_ context.Context, _ home.Home, got optimize.Request, _ io.Writer, _ *setup.Observer) (optimize.Result, error) {

@@ -191,9 +191,9 @@ func TestBuildPublishesVerifiedVariant(t *testing.T) {
 	}
 }
 
-func TestTunedBuildIdentityAndProvenanceAreReproducible(t *testing.T) {
-	h, m := source(t)
-	analysis, err := tuning.Analyze(m, tuning.DeclaredLayout{
+// tunedLayout is the declared layout of the fake optimizer's module graph.
+func tunedLayout() tuning.DeclaredLayout {
+	return tuning.DeclaredLayout{
 		ModelType: "qwen3_5", TextModelType: "qwen3_5_text",
 		Architectures: []string{"Qwen3_5ForConditionalGeneration"},
 		LayerTypes:    []string{"linear_attention", "linear_attention", "linear_attention", "full_attention"},
@@ -204,7 +204,24 @@ func TestTunedBuildIdentityAndProvenanceAreReproducible(t *testing.T) {
 			"model.language_model.layers.3.self_attn.q_proj",
 		},
 		CarriedFiles: []string{"joint_head.safetensors"},
-	})
+	}
+}
+
+// tunedRequest compiles a layer-wise profile into the exact Forge request:
+// recipe, provenance and resolved plan.
+func tunedRequest(t *testing.T, m home.ModelManifest, analysis tuning.Analysis, profile tuning.Profile) optimize.Request {
+	t.Helper()
+	compiled, err := tuning.Compile(profile, analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenance := tuning.Provenance(profile, analysis, compiled)
+	return optimize.Request{Model: m.ID, Recipe: compiled.Recipe.Name, CompiledRecipe: &compiled.Recipe, Tuning: &provenance, Plan: compiled.Plan}
+}
+
+func TestTunedBuildIdentityAndProvenanceAreReproducible(t *testing.T) {
+	h, m := source(t)
+	analysis, err := tuning.Analyze(m, tunedLayout())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,27 +232,21 @@ func TestTunedBuildIdentityAndProvenanceAreReproducible(t *testing.T) {
 	if err := tuning.SaveProfile(h, profile, analysis); err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := tuning.Compile(profile, analysis)
-	if err != nil {
-		t.Fatal(err)
-	}
-	provenance := &home.TuningProvenance{
-		Schema: home.TuningProvenanceSchema, Source: profile.Source,
-		ProfileID: profile.ID(), ProfileSHA256: profile.SHA256(),
-		AnalysisID: analysis.ID(), AnalysisSHA256: analysis.SHA256(),
-		CompilerVersion: profile.CompilerVersion,
-	}
-	req := optimize.Request{Model: m.ID, Recipe: compiled.Recipe.Name, CompiledRecipe: &compiled.Recipe, Tuning: provenance}
+	req := tunedRequest(t, m, analysis, profile)
 	fixed := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
-	first, err := optimize.Build(context.Background(), h, req, optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test", Now: func() time.Time { return fixed }}, io.Discard, nil)
+	deps := func() optimize.Deps {
+		return optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test", Now: func() time.Time { return fixed }}
+	}
+	first, err := optimize.Build(context.Background(), h, req, deps(), io.Discard, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Variant.Tuning == nil || first.Variant.Tuning.ProfileID != profile.ID() ||
-		first.Variant.Tuning.AnalysisID != analysis.ID() || first.Variant.Tuning.CompilerVersion != profile.CompilerVersion {
+		first.Variant.Tuning.AnalysisID != analysis.ID() || first.Variant.Tuning.CompilerVersion != profile.CompilerVersion ||
+		first.Variant.Tuning.PlanSHA256 != req.Plan.SHA256() {
 		t.Fatalf("published variant lost tuning provenance: %+v", first.Variant.Tuning)
 	}
-	if first.Variant.RecipeSHA256 != compiled.Recipe.SHA256() {
+	if first.Variant.RecipeSHA256 != req.CompiledRecipe.SHA256() {
 		t.Fatal("published variant does not contain the recipe emitted by the tuning compiler")
 	}
 	legacyBuildID := home.DeriveBuildID(first.Variant.Source, first.Variant.Provider, first.Variant.Optimizer, first.Variant.RecipeSHA256, first.Variant.Calibration)
@@ -244,7 +255,7 @@ func TestTunedBuildIdentityAndProvenanceAreReproducible(t *testing.T) {
 	}
 
 	req.Reproduce = true
-	second, err := optimize.Build(context.Background(), h, req, optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test", Now: func() time.Time { return fixed }}, io.Discard, nil)
+	second, err := optimize.Build(context.Background(), h, req, deps(), io.Discard, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,29 +264,185 @@ func TestTunedBuildIdentityAndProvenanceAreReproducible(t *testing.T) {
 		t.Fatalf("same profile/source did not reproduce canonical variant provenance: first=%+v second=%+v", first.Variant, second.Variant)
 	}
 
-	pinned := profile
-	pinned.Objective = "preserve full attention"
-	pinned.Preservation = make(map[string]tuning.PreservationChoice, len(profile.Preservation))
-	for id, choice := range profile.Preservation {
-		pinned.Preservation[id] = choice
-	}
-	pinned.Preservation[tuning.RegionFullAttention] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
-	if err := tuning.SaveProfile(h, pinned, analysis); err != nil {
-		t.Fatal(err)
-	}
-	pinnedCompilation, err := tuning.Compile(pinned, analysis)
+	// A meaningful change of the layer-wise policy changes recipe, build and
+	// variant identity.
+	pinned, err := tuning.SetPolicy(profile, analysis, []string{"block.03.full-attn"}, home.PolicySourcePrecision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pinnedProvenance := *provenance
-	pinnedProvenance.ProfileID, pinnedProvenance.ProfileSHA256 = pinned.ID(), pinned.SHA256()
-	pinnedReq := optimize.Request{Model: m.ID, Recipe: pinnedCompilation.Recipe.Name, CompiledRecipe: &pinnedCompilation.Recipe, Tuning: &pinnedProvenance}
-	pinnedBuild, err := optimize.Build(context.Background(), h, pinnedReq, optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test", Now: func() time.Time { return fixed }}, io.Discard, nil)
+	if err := tuning.SaveProfile(h, pinned, analysis); err != nil {
+		t.Fatal(err)
+	}
+	pinnedBuild, err := optimize.Build(context.Background(), h, tunedRequest(t, m, analysis, pinned), deps(), io.Discard, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if pinnedBuild.Variant.RecipeSHA256 == first.Variant.RecipeSHA256 || pinnedBuild.Variant.BuildID == first.Variant.BuildID || pinnedBuild.Variant.ID == first.Variant.ID {
 		t.Fatal("semantic profile change did not change recipe, build and variant identity")
+	}
+
+	// An explicit override that equals what AUTO resolves to leaves the recipe
+	// as it is but is a different effective profile: the identity still changes.
+	explicit, err := tuning.SetPolicy(profile, analysis, []string{"block.00.mlp"}, home.PolicyW4A16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitBuild, err := optimize.Build(context.Background(), h, tunedRequest(t, m, analysis, explicit), deps(), io.Discard, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicitBuild.Variant.RecipeSHA256 != first.Variant.RecipeSHA256 || explicitBuild.Variant.Tuning.PlanSHA256 == first.Variant.Tuning.PlanSHA256 || explicitBuild.Variant.BuildID == first.Variant.BuildID {
+		t.Fatal("an explicit override equal to AUTO did not change the effective-plan identity")
+	}
+}
+
+// The published variant carries per-group evidence: requested and effective
+// policy, AUTO against OVERRIDDEN, the transformation actually applied.
+func TestLayerwiseBuildRecordsPerGroupEvidence(t *testing.T) {
+	h, m := source(t)
+	analysis, err := tuning.Analyze(m, tunedLayout())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := tuning.NewDefaultProfile(analysis, "balanced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile, err = tuning.SetPolicy(profile, analysis, []string{"block.00.mlp"}, home.PolicySourcePrecision); err != nil {
+		t.Fatal(err)
+	}
+	req := tunedRequest(t, m, analysis, profile)
+	res, err := optimize.Build(context.Background(), h, req, optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test"}, io.Discard, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Variant.Files[home.TuningEvidenceFile] == "" {
+		t.Fatal("the evidence file is not an artifact covered by the variant digests")
+	}
+	ev, err := home.ReadTuningEvidence(res.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.PlanSHA256 != req.Plan.SHA256() || ev.AutoPolicy != tuning.AutoPolicyVersion || len(ev.Groups) != len(req.Plan.Groups) {
+		t.Fatalf("evidence is not bound to the plan: %+v", ev)
+	}
+	by := map[string]home.TuningGroupApplied{}
+	for _, g := range ev.Groups {
+		by[g.ID] = g
+	}
+	for id, want := range map[string]home.TuningGroupApplied{
+		"block.00.mlp":                   {Selection: home.SelectionOverridden, Requested: home.PolicySourcePrecision, Effective: home.PolicySourcePrecision, Applied: home.PolicySourcePrecision, Preserved: true},
+		"block.03.full-attn":             {Selection: home.SelectionAuto, Requested: home.PolicyAuto, Effective: home.PolicyW4A16, Applied: home.PolicyW4A16},
+		"block.00.linear-attn":           {Selection: home.SelectionAuto, Requested: home.PolicyAuto, Effective: home.PolicyW4A16, Applied: home.PolicyW4A16},
+		"block.00.linear-attn.beta-gate": {Selection: home.SelectionAuto, Requested: home.PolicyAuto, Effective: home.PolicySourcePrecision, Applied: home.PolicySourcePrecision, Preserved: true, Required: true},
+		"output-embeddings":              {Selection: home.SelectionAuto, Requested: home.PolicyAuto, Effective: home.PolicySourcePrecision, Applied: home.PolicySourcePrecision, Preserved: true, Required: true},
+		"joint-schema-head":              {Selection: home.SelectionAuto, Requested: home.PolicyAuto, Effective: home.PolicySourcePrecision, Applied: home.PolicySourcePrecision, Preserved: true, Required: true},
+	} {
+		got := by[id]
+		got.ID, got.Modules, got.Files, got.WrittenDType = "", 0, 0, ""
+		if got != want {
+			t.Errorf("group %s evidence %+v, want %+v", id, got, want)
+		}
+	}
+	if by["block.00.mlp"].WrittenDType != "BF16" || by["block.03.full-attn"].WrittenDType != "" {
+		t.Errorf("written dtype evidence: %+v / %+v", by["block.00.mlp"], by["block.03.full-attn"])
+	}
+}
+
+// The build applies exactly the plan or is refused before anything is
+// published: a plan that disagrees with what the optimizer did, a plan the
+// provenance does not name, and a plan with no provenance are all refused.
+func TestLayerwiseBuildRefusesAPlanTheOptimizerDidNotApply(t *testing.T) {
+	h, m := source(t)
+	analysis, err := tuning.Analyze(m, tunedLayout())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := tuning.NewDefaultProfile(analysis, "balanced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := tunedRequest(t, m, analysis, profile)
+	deps := optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test"}
+
+	// the plan claims block.00.mlp is preserved, but the recipe quantizes it
+	lie := *req.Plan
+	lie.Groups = append([]home.TuningGroupPlan(nil), lie.Groups...)
+	for i := range lie.Groups {
+		if lie.Groups[i].ID == "block.00.mlp" {
+			lie.Groups[i].Selection, lie.Groups[i].Requested, lie.Groups[i].Effective = home.SelectionOverridden, home.PolicySourcePrecision, home.PolicySourcePrecision
+		}
+	}
+	liar := req
+	liar.Plan = &lie
+	prov := *req.Tuning
+	prov.PlanSHA256 = lie.SHA256()
+	liar.Tuning = &prov
+	if _, err := optimize.Build(context.Background(), h, liar, deps, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "block.00.mlp") || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("a plan the optimizer did not apply was published: %v", err)
+	}
+	if entries, _ := os.ReadDir(h.VariantsDir(m.ID)); len(entries) != 0 {
+		t.Fatalf("a refused build left %d entries", len(entries))
+	}
+
+	other := req
+	wrongDigest := *req.Tuning
+	wrongDigest.PlanSHA256 = strings.Repeat("a", 64)
+	other.Tuning = &wrongDigest
+	if _, err := optimize.Build(context.Background(), h, other, deps, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "not the one the provenance names") {
+		t.Fatalf("a plan the provenance does not name: %v", err)
+	}
+	noPlan := req
+	noPlan.Plan = nil
+	if _, err := optimize.Build(context.Background(), h, noPlan, deps, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "requires the resolved plan") {
+		t.Fatalf("layer-wise provenance without a plan: %v", err)
+	}
+	legacyPlan := req
+	legacyProv := *req.Tuning
+	legacyProv.Schema, legacyProv.PlanSHA256 = home.TuningProvenanceSchemaV1, ""
+	legacyPlan.Tuning = &legacyProv
+	if _, err := optimize.Build(context.Background(), h, legacyPlan, deps, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "legacy tuning provenance cannot carry") {
+		t.Fatalf("legacy provenance with a plan: %v", err)
+	}
+	if _, err := optimize.Build(context.Background(), h, optimize.Request{Model: m.ID, Recipe: req.Recipe, Plan: req.Plan}, deps, io.Discard, nil); err == nil {
+		t.Fatal("a plan without tuning provenance was accepted")
+	}
+}
+
+// A legacy coarse profile still builds exactly as before: no plan, no
+// per-group evidence file, schema 1 provenance.
+func TestLegacyCoarseProfileStillBuildsWithoutAPlan(t *testing.T) {
+	h, m := source(t)
+	analysis, err := tuning.AnalyzeLegacy(m, tunedLayout())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := tuning.NewLegacyProfile(analysis, "balanced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.Preservation[tuning.RegionFullAttention] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
+	if err := tuning.SaveProfile(h, profile, analysis); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := tuning.Compile(profile, analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compiled.Plan != nil {
+		t.Fatal("a legacy profile resolved a layer-wise plan")
+	}
+	prov := tuning.Provenance(profile, analysis, compiled)
+	if prov.Schema != home.TuningProvenanceSchemaV1 || prov.PlanSHA256 != "" {
+		t.Fatalf("legacy provenance %+v", prov)
+	}
+	res, err := optimize.Build(context.Background(), h, optimize.Request{Model: m.ID, Recipe: compiled.Recipe.Name, CompiledRecipe: &compiled.Recipe, Tuning: &prov},
+		optimize.Deps{Runner: &optimizetest.Runner{}, OptimizerRuntime: "optimizer-test"}, io.Discard, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.Variant.Files[home.TuningEvidenceFile]; ok || res.Variant.Tuning.Schema != home.TuningProvenanceSchemaV1 {
+		t.Fatalf("legacy build gained layer-wise artifacts: %+v", res.Variant.Tuning)
 	}
 }
 
@@ -296,7 +463,7 @@ func TestBuildRefusesTuningProvenanceForAnotherSourceBeforeOptimization(t *testi
 	_, err = optimize.Build(context.Background(), h, optimize.Request{
 		Model: model.ID, Recipe: recipe.Name, CompiledRecipe: &recipe,
 		Tuning: &home.TuningProvenance{
-			Schema: home.TuningProvenanceSchema, Source: wrongSource,
+			Schema: home.TuningProvenanceSchemaV1, Source: wrongSource,
 			ProfileID: strings.Repeat("a", 64), ProfileSHA256: strings.Repeat("a", 64),
 			AnalysisID: strings.Repeat("b", 64), AnalysisSHA256: strings.Repeat("b", 64), CompilerVersion: "home-recipe/1",
 		},

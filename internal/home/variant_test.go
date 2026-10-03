@@ -37,7 +37,7 @@ func testVariant(files map[string]string) VariantManifest {
 
 func testTuning() *TuningProvenance {
 	return &TuningProvenance{
-		Schema: TuningProvenanceSchema, Source: SourceOf(testSource()),
+		Schema: TuningProvenanceSchemaV1, Source: SourceOf(testSource()),
 		ProfileID: strings.Repeat("a", 64), ProfileSHA256: strings.Repeat("a", 64),
 		AnalysisID: strings.Repeat("b", 64), AnalysisSHA256: strings.Repeat("b", 64),
 		CompilerVersion: "home-recipe/1",

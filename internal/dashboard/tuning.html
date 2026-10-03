@@ -1,4 +1,4 @@
-{{/* Tuning edits and saves model-engineering intent and hands one exact saved profile to Forge. Regions come from backend analysis; generated mappings stay in Evidence; every impact value states MEASURED, ESTIMATED or NOT_CHECKED. */}}
+{{/* Tuning edits and saves model-engineering intent and hands one exact saved profile to Forge. The model is a stack of component families that expand into stable block-level groups, each AUTO or one named policy the optimizer executes; required groups carry no control. Generated mappings stay in Evidence; every figure states MEASURED, ESTIMATED, PRESERVED or NOT_CHECKED. */}}
 {{define "tuning"}}{{template "open" .Chrome}}
 <header class="ws-head">
   <div><h1>{{t "Tuning"}}</h1><p class="lede">{{t "Make this model usable on this machine at the quality you choose."}}</p></div>
@@ -80,13 +80,23 @@
     <h3>{{t "Profile difference"}}</h3>
     {{if .Delta.Identical}}
     <p class="note" id="tuning-compare-profiles-identical">{{t "Both candidates were built from the same profile; there is no profile difference."}}</p>
+    {{else if .Delta.SchemaChanged}}
+    <p class="note" id="tuning-compare-schema-changed">{{t "One candidate was built from a legacy coarse profile and the other from a layer-wise profile; no per-group difference is defined between them. Open either profile to see its layer-wise equivalent."}}</p>
     {{else}}
     <dl class="kv" id="tuning-compare-profile-delta">
       <dt>{{t "Objective"}}</dt><dd data-delta="objective">{{if .Delta.ObjectiveChanged}}{{t (objective .Delta.ObjectiveA)}} → {{t (objective .Delta.ObjectiveB)}}{{else}}{{t (objective .Delta.ObjectiveA)}} · {{t "unchanged"}}{{end}}</dd>
       <dt>{{t "Analysis"}}</dt><dd data-delta="analysis">{{if .Delta.AnalysisChanged}}{{.Delta.AnalysisA}} → {{.Delta.AnalysisB}}{{else}}{{t "unchanged"}}{{end}}</dd>
       <dt>{{t "Compiler"}}</dt><dd data-delta="compiler">{{if .Delta.CompilerChanged}}{{.Delta.CompilerA}} → {{.Delta.CompilerB}}{{else}}{{t "unchanged"}}{{end}}</dd>
     </dl>
-    {{if .Regions}}
+    {{if .Groups}}
+    <div class="table-wrap"><table class="data" id="tuning-compare-group-table">
+      <caption class="vh">{{t "Policy differences by group"}}</caption>
+      <thead><tr><th scope="col">{{t "Group"}}</th><th scope="col">{{t "Profile A"}}</th><th scope="col">{{t "Profile B"}}</th></tr></thead>
+      <tbody>{{range .Groups}}
+        <tr data-delta-group="{{.ID}}"><th scope="row" class="mono">{{.ID}}</th><td>{{t .A}}</td><td>{{t .B}}</td></tr>{{end}}
+      </tbody>
+    </table></div>
+    {{else if .Regions}}
     <div class="table-wrap"><table class="data" id="tuning-compare-region-table">
       <caption class="vh">{{t "Preservation differences by semantic region"}}</caption>
       <thead><tr><th scope="col">{{t "Region"}}</th><th scope="col">{{t "Profile A"}}</th><th scope="col">{{t "Profile B"}}</th></tr></thead>
@@ -94,8 +104,8 @@
         <tr data-delta-region="{{.ID}}"><th scope="row" class="strong">{{t .Label}}</th><td>{{t .A}}</td><td>{{t .B}}</td></tr>{{end}}
       </tbody>
     </table></div>
-    {{else}}
-    <p class="note" id="tuning-compare-no-region-change">{{t "No semantic region is preserved differently."}}</p>
+    {{else if not .Delta.SchemaChanged}}
+    <p class="note" id="tuning-compare-no-region-change">{{t "No group or semantic region is set differently."}}</p>
     {{end}}
     {{end}}
 
@@ -136,6 +146,20 @@
   </section>
   {{end}}
 
+  {{with .Legacy}}
+  <section class="region section" id="tuning-legacy" aria-labelledby="tl-h" data-legacy="{{.ID}}">
+    <div class="region-h"><h2 id="tl-h">{{t "Legacy profile"}}</h2><span class="sub">{{t "coarse per-region profile · still valid, still buildable"}}</span></div>
+    <p class="note prose">{{t "This profile was saved with one choice per semantic region. It is shown below as its exact layer-wise equivalent: every group of a pinned region is overridden to source precision, everything else is AUTO. The legacy profile is not changed; saving or building creates a new layer-wise profile."}}</p>
+    <dl class="kv">
+      <dt>{{t "Legacy profile"}}</dt><dd data-legacy-profile="{{.ID}}">{{.ID}}</dd>
+      <dt>{{t "Layer-wise equivalent"}}</dt><dd data-upgraded-profile="{{.UpgradedID}}">{{.UpgradedID}} · {{if .UpgradedSaved}}{{t "saved"}}{{else}}{{t "not saved yet"}}{{end}}</dd>
+      <dt>{{t "Pinned regions"}}</dt><dd>{{if .Pinned}}{{range .Pinned}}{{.}} {{end}}{{else}}{{t "none"}}{{end}}</dd>
+      {{if .Redundant}}<dt>{{t "Pins already required"}}</dt><dd>{{range .Redundant}}{{.}} {{end}}</dd>{{end}}
+    </dl>
+  </section>
+  {{end}}
+  {{with .Notice}}<p class="msg{{if $.Tuning.NoticeBad}} bad{{end}}" role="{{if $.Tuning.NoticeBad}}alert{{else}}status{{end}}" id="tuning-notice">{{.}}</p>{{end}}
+
   <dl class="intent" id="tuning-intent">
     <div><dt>{{t "Source"}}</dt><dd>
       <form method="get" action="/tuning" class="btn-row" id="tuning-source-form">
@@ -171,26 +195,53 @@
   </dl>
 
   <form method="post" action="/tuning/save" class="stack" id="tuning-form">
-    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="source" value="{{.Source}}">
+    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="source" value="{{.Source}}">{{with .Legacy}}<input type="hidden" name="legacy_profile" value="{{.ID}}">{{end}}
     <dl class="intent">
       <div id="tuning-objective"><dt><label for="tuning-objective-select">{{t "Quality objective"}}</label></dt><dd>
         <select id="tuning-objective-select" name="objective" aria-label="{{t "Quality objective"}}">{{range .Objectives}}<option value="{{.}}"{{if eq . $.Tuning.Objective}} selected{{end}}>{{t (objective .)}}</option>{{end}}</select>
       </dd></div>
       <div id="tuning-plan"><dt>{{t "Current plan"}}</dt><dd>
-        <span class="value">{{t "4-bit weights"}} · {{.PreservedRegions}} / {{len .Regions}} {{t "semantic regions kept at source precision"}}</span>
-        <span class="note">{{if .Saved}}{{t "Saved profile"}} <span class="mono" title="{{.ProfileID}}">{{short .ProfileID}}</span>{{else}}{{t "Hachidori's analyzed default; it is saved when you build."}}{{end}}</span>
+        <span class="value" id="tuning-summary" data-groups="{{.Summary.Groups}}" data-overridden="{{.Summary.Overridden}}" data-auto="{{.Summary.Auto}}" data-quantized="{{.Summary.Quantized}}" data-at-source="{{.Summary.AtSource}}">{{.Summary.Quantized}} / {{.Summary.Groups}} {{t "groups W4A16"}} · {{.Summary.AtSource}} {{t "at source precision"}} ({{.Summary.Required}} {{t "required"}})</span>
+        <span class="note">{{.Summary.Auto}} {{t "tunable groups follow AUTO"}} · {{.Summary.Overridden}} {{t "overridden by you"}}</span>
+        <span class="note">{{if .Saved}}{{t "Saved profile"}} <span class="mono" title="{{.ProfileID}}">{{short .ProfileID}}</span>{{else}}{{t "Unsaved: Hachidori's analyzed default or your draft; it is saved when you save or build."}}{{end}}</span>
         {{template "operator-advanced-open" .AdvancedDisclosure}}
-        <div id="tuning-regions"><div class="table-wrap"><table class="data" id="tuning-region-table">
-          <caption class="vh">{{t "Preservation by semantic region"}}</caption>
-          <thead><tr><th scope="col">{{t "Region"}}</th><th scope="col">{{t "Preservation"}}</th><th scope="col">{{t "Result"}}</th></tr></thead>
-          <tbody>{{range .Regions}}
-            <tr data-region="{{.ID}}" data-effective="{{.Effective}}"{{if .Recommended}} data-recommended="true"{{end}}>
-              <th scope="row" class="strong"><label for="region-{{.ID}}">{{t .Label}}</label>{{with .Purpose}}<div class="note">{{t .}}</div>{{end}}</th>
-              <td><select id="region-{{.ID}}" name="region.{{.ID}}"><option value="auto"{{if not .Pinned}} selected{{end}}>{{t "Auto"}}</option><option value="pinned"{{if .Pinned}} selected{{end}}>{{t "Preserved at source precision"}}</option></select></td>
-              <td>{{template "semantic-state" .Effective}}{{if .Recommended}} <span class="badge">{{t "Recommended by evidence"}}</span>{{end}}</td>
-            </tr>{{end}}
-          </tbody>
-        </table></div></div>
+        <p class="note prose">{{t "Every group is AUTO (Hachidori's canonical policy) or carries one named policy. Policies are ordered by compression, only transformations the optimizer executes are offered, and groups the canonical contract always preserves have no control."}}</p>
+        <ol class="note" id="tuning-policies">{{range .Policies}}<li data-policy="{{.ID}}" data-rank="{{.Rank}}"><strong>{{t .Label}}</strong> · {{.Transformation}}</li>{{end}}</ol>
+        <fieldset id="tuning-bulk"><legend>{{t "Bulk override"}}</legend>
+          <div class="btn-row">
+            <label>{{t "Family"}} <select name="bulk_region" aria-label="{{t "Family"}}"><option value="">{{t "All tunable families"}}</option>{{range .Families}}{{if not .Locked}}<option value="{{.ID}}">{{t .Label}}</option>{{end}}{{end}}</select></label>
+            <label>{{t "Blocks from"}} <input type="number" name="bulk_from" min="0"{{with .Bulk.Blocks}} max="{{.}}"{{end}} inputmode="numeric" aria-label="{{t "First block"}}"></label>
+            <label>{{t "to"}} <input type="number" name="bulk_to" min="0"{{with .Bulk.Blocks}} max="{{.}}"{{end}} inputmode="numeric" aria-label="{{t "Last block"}}"></label>
+            <label>{{t "Policy"}} <select name="bulk_policy" aria-label="{{t "Bulk policy"}}"><option value="auto">{{t "AUTO"}}</option>{{range .Policies}}<option value="{{.ID}}"{{if eq .ID $.Tuning.Bulk.Policy}} selected{{end}}>{{t .Label}}</option>{{end}}</select></label>
+            <button type="submit" class="btn" formaction="/tuning/edit" name="op" value="bulk">{{t "Apply to selection"}}</button>
+            <button type="submit" class="btn quiet" formaction="/tuning/edit" name="op" value="reset_all">{{t "Reset every group to AUTO"}}</button>
+          </div>
+          <span class="note">{{t "Leave the blocks empty to address every block. Applying shows an unsaved draft; nothing is saved or built."}}</span>
+        </fieldset>
+        <div id="tuning-families">{{range .Families}}
+          <details class="inline" id="family-{{.ID}}" data-family="{{.ID}}" data-state="{{.State}}"{{if .Recommended}} data-recommended="true"{{end}}>
+            <summary><strong>{{t .Label}}</strong> · {{.Total}} {{t "groups"}}{{with .Blocks}} · {{t "blocks"}} {{.}}{{end}} · {{.Quantized}} W4A16 · {{.AtSource}} {{t "source precision"}} {{template "semantic-state" .State}}{{if .Recommended}} <span class="badge">{{t "Recommended by evidence"}}</span>{{end}}</summary>
+            <p class="note">{{t .Purpose}}</p>
+            {{if .Locked}}
+            <p class="note" data-locked="{{.ID}}">{{t "Required at source precision; not tunable."}} {{.Basis}}</p>
+            {{else}}
+            {{if .Required}}<p class="note">{{.Required}} {{t "groups of this family are required at source precision and have no control."}} {{.Basis}}</p>{{end}}
+            <div class="btn-row"><button type="submit" class="btn quiet" formaction="/tuning/edit" name="op" value="reset:{{.ID}}">{{t "Reset family to AUTO"}}</button></div>
+            <div class="table-wrap"><table class="data" id="family-table-{{.ID}}">
+              <caption class="vh">{{t .Label}}</caption>
+              <thead><tr><th scope="col">{{t "Group"}}</th><th scope="col">{{t "Policy"}}</th><th scope="col">{{t "Effective"}}</th><th scope="col">{{t "Choice"}}</th></tr></thead>
+              <tbody>{{range .Groups}}{{$sel := .Selected}}
+                <tr data-group="{{.ID}}" data-state="{{.State}}" data-effective="{{.Effective}}">
+                  <th scope="row" class="strong"><label for="group-{{.ID}}">{{.Label}}</label>{{with .LayerType}}<div class="note">{{.}}</div>{{end}}</th>
+                  <td><select id="group-{{.ID}}" name="group.{{.ID}}"><option value="auto"{{if eq .Selected "auto"}} selected{{end}}>{{t "AUTO"}}</option>{{range $.Tuning.Policies}}<option value="{{.ID}}" title="{{.Transformation}}"{{if eq .ID $sel}} selected{{end}}>{{t .Label}}</option>{{end}}</select></td>
+                  <td>{{t (policyLabel .Effective)}}</td>
+                  <td>{{template "semantic-state" .State}}</td>
+                </tr>{{end}}
+              </tbody>
+            </table></div>
+            {{end}}
+          </details>{{end}}
+        </div>
         <div class="btn-row"><button type="submit" class="btn">{{t "Save profile only"}}</button></div>
         {{template "operator-disclosure-close"}}
       </dd></div>
@@ -211,6 +262,39 @@
           </tbody>
         </table></div>
       </dd></div>
+      <div id="tuning-changes" data-changes="{{len .Changes}}"><dt>{{t "Change from baseline"}}</dt><dd>
+        {{if .ChangesNote}}<span class="note"><span class="semantic-state tone-bad" data-state="NOT_CHECKED">{{t "NOT_CHECKED"}}</span> {{.ChangesNote}}</span>{{end}}
+        {{if .ChangesBasis}}
+        <span class="note">{{t "Baseline"}}: {{.ChangesBasis}}</span>
+        {{if .Changes}}
+        <div class="table-wrap"><table class="data" id="tuning-changes-table">
+          <caption class="vh">{{t "Groups whose policy differs from the baseline"}}</caption>
+          <thead><tr><th scope="col">{{t "Family"}}</th><th scope="col">{{t "Blocks"}}</th><th scope="col">{{t "Baseline"}}</th><th scope="col">{{t "This profile"}}</th><th scope="col">{{t "Groups"}}</th></tr></thead>
+          <tbody>{{range .Changes}}<tr data-change="{{.Family}}"><th scope="row" class="strong">{{t .Family}}</th><td>{{.Blocks}}</td><td>{{t (policyLabel .From)}}</td><td>{{t (policyLabel .To)}}</td><td class="num">{{.Groups}}</td></tr>{{end}}</tbody>
+        </table></div>
+        {{else}}<span class="value" id="tuning-no-changes">{{t "No group differs from the baseline."}}</span>{{end}}
+        {{end}}
+      </dd></div>
+      {{with .Candidate}}
+      <div id="tuning-baseline-compare" data-candidate="{{.Variant}}"><dt>{{t "Candidate and accepted baseline"}}</dt><dd>
+        <span class="note">{{t "Candidate"}} <span class="mono">{{.Variant}}</span> · {{if .Baseline}}{{t "accepted baseline"}} <span class="mono">{{.Baseline}}</span>{{else}}{{t "no accepted baseline:"}} {{.BaselineWhy}}{{end}}</span>
+        {{if .Figures}}
+        {{if not .Comparable}}<span class="msg bad" role="status" id="tuning-not-comparable">{{.ComparableWhy}}</span>{{end}}
+        <div class="table-wrap"><table class="data" id="tuning-baseline-table">
+          <caption class="vh">{{t "Candidate against the accepted baseline"}}</caption>
+          <thead><tr><th scope="col">{{t "Measure"}}</th><th scope="col">{{t "Accepted baseline"}}</th><th scope="col">{{t "Candidate"}}</th></tr></thead>
+          <tbody>{{range .Figures}}
+            <tr data-figure="{{.Key}}" data-baseline-state="{{.Baseline.State}}" data-candidate-state="{{.Candidate.State}}">
+              <th scope="row" class="strong">{{t .Label}}</th>
+              <td>{{template "semantic-state" .Baseline.State}} {{if .Baseline.Value}}{{.Baseline.Value}}{{else}}<span class="muted">{{t "No valid evidence"}}</span>{{end}}{{with .Baseline.Basis}} <span class="note">{{.}}</span>{{end}}</td>
+              <td>{{template "semantic-state" .Candidate.State}} {{if .Candidate.Value}}{{.Candidate.Value}}{{else}}<span class="muted">{{t "No valid evidence"}}</span>{{end}}{{with .Candidate.Basis}} <span class="note">{{.}}</span>{{end}}</td>
+            </tr>{{end}}
+          </tbody>
+        </table></div>
+        <span class="note">{{t "Figures come from the artifact, a probe of the exact manifest or a certification record. Evaluated figures are compared only for the same dataset and questions; nothing is estimated."}}</span>
+        {{end}}
+      </dd></div>
+      {{end}}
     </dl>
 
     <div class="intent-action">
@@ -240,11 +324,11 @@
     <h3 id="tp-h">{{t "Saved profiles"}}</h3>
     <div class="table-wrap"><table class="data">
       <caption class="vh">{{t "Saved profiles"}}</caption>
-      <thead><tr><th scope="col">{{t "Profile"}}</th><th scope="col">{{t "Objective"}}</th><th scope="col">{{t "Preserved regions"}}</th></tr></thead>
+      <thead><tr><th scope="col">{{t "Profile"}}</th><th scope="col">{{t "Objective"}}</th><th scope="col">{{t "Schema"}}</th><th scope="col">{{t "Overrides"}}</th></tr></thead>
       <tbody>{{range .}}
         <tr data-profile="{{.ID}}"{{if .Current}} aria-current="true"{{end}}>
           <td class="mono"><a href="/tuning?source={{$.Tuning.Source}}&amp;profile={{.ID}}" title="{{.ID}}">{{short .ID}}</a></td>
-          <td>{{t (objective .Objective)}}</td><td class="num">{{.Pinned}}</td>
+          <td>{{t (objective .Objective)}}</td><td>{{if .Legacy}}{{t "legacy coarse"}}{{else}}{{t "layer-wise"}}{{end}}</td><td class="num">{{.Overrides}}</td>
         </tr>{{end}}
       </tbody>
     </table></div>
@@ -257,7 +341,18 @@
       <dt>{{t "Recipe"}}</dt><dd>{{.Recipe}}</dd>
       <dt>{{t "Recipe SHA-256"}}</dt><dd>{{.RecipeSHA256}}</dd>
       <dt>{{t "Compiler"}}</dt><dd>{{.CompilerVersion}}</dd>
+      {{with .PlanSHA256}}<dt>{{t "Effective plan SHA-256"}}</dt><dd data-plan-sha256="{{.}}">{{.}}</dd>{{end}}
+      {{with .AutoPolicy}}<dt>{{t "AUTO policy"}}</dt><dd>{{.}}</dd>{{end}}
     </dl>
+    {{with .Plan}}
+    <h3>{{t "Resolved policy per group"}}</h3>
+    <p class="note prose">{{t "Requested is what the profile asks; effective is what the build applies. AUTO is resolved by Hachidori, OVERRIDDEN is your choice, and required groups are fixed by the canonical optimizer contract."}}</p>
+    <div class="table-wrap"><table class="data" id="tuning-plan-table">
+      <caption class="vh">{{t "Resolved policy per group"}}</caption>
+      <thead><tr><th scope="col">{{t "Group"}}</th><th scope="col">{{t "Selection"}}</th><th scope="col">{{t "Requested"}}</th><th scope="col">{{t "Effective"}}</th><th scope="col">{{t "Modules"}}</th></tr></thead>
+      <tbody>{{range .}}<tr data-plan-group="{{.ID}}" data-selection="{{.Selection}}" data-effective="{{.Effective}}"{{if .Required}} data-required="true"{{end}}><th scope="row" class="mono">{{.ID}}</th><td>{{.Selection}}{{if .Required}} · {{t "required"}}{{end}}</td><td>{{t (policyLabel .Requested)}}</td><td>{{t (policyLabel .Effective)}}</td><td class="num">{{if .Modules}}{{len .Modules}}{{else}}{{len .Files}} {{t "files"}}{{end}}</td></tr>{{end}}</tbody>
+    </table></div>
+    {{end}}
     <h3>{{t "Region mapping"}}</h3>
     {{range .Regions}}
     <details class="inline" id="evidence-region-{{.RegionID}}" data-evidence-region="{{.RegionID}}"><summary><span class="mono">{{.RegionID}}</span> · {{.Mode}}{{if .Preserved}} · {{.Precision}}{{end}}</summary>
@@ -274,6 +369,20 @@
       <thead><tr><th scope="col">{{t "Pattern"}}</th><th scope="col">{{t "Scope"}}</th><th scope="col">{{t "Precision"}}</th><th scope="col">{{t "Regions"}}</th></tr></thead>
       <tbody>{{range .Preserved}}<tr><td class="mono">{{.Pattern}}</td><td>{{.Scope}}</td><td class="mono">{{.Precision}}</td><td class="mono">{{range .Regions}}{{.}} {{end}}</td></tr>{{end}}</tbody>
     </table></div>
+  </section>
+  {{end}}
+  {{with .Candidate}}
+  <section id="tuning-applied" aria-labelledby="ta-h" data-applied-candidate="{{.Variant}}">
+    <h3 id="ta-h">{{t "Applied per group"}}</h3>
+    {{with .AppliedNote}}<p class="note" id="tuning-applied-note">{{.}}</p>{{end}}
+    {{with .Applied}}
+    <p class="note prose">{{t "What the optimizer verifiably applied to each group of the built candidate. A build whose applied transformation differs from the resolved plan is refused, so these always match."}}</p>
+    <div class="table-wrap"><table class="data" id="tuning-applied-table">
+      <caption class="vh">{{t "Applied per group"}}</caption>
+      <thead><tr><th scope="col">{{t "Group"}}</th><th scope="col">{{t "Selection"}}</th><th scope="col">{{t "Requested"}}</th><th scope="col">{{t "Effective"}}</th><th scope="col">{{t "Applied"}}</th></tr></thead>
+      <tbody>{{range .}}<tr data-applied-group="{{.ID}}" data-selection="{{.Selection}}" data-applied="{{.Applied}}"><th scope="row" class="mono">{{.ID}}</th><td>{{template "semantic-state" .Selection}}{{if .Required}} · {{t "required"}}{{end}}</td><td>{{t (policyLabel .Requested)}}</td><td>{{t (policyLabel .Effective)}}</td><td>{{t (policyLabel .Applied)}}</td></tr>{{end}}</tbody>
+    </table></div>
+    {{end}}
   </section>
   {{end}}
   {{template "operator-disclosure-close"}}

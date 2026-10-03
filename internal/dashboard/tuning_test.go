@@ -31,6 +31,10 @@ type fakeTuning struct {
 	order       []string // newest last
 	impact      TuningImpact
 	impactErr   error
+	// legacyAnalysis is the schema 1 analysis legacy profiles are bound to.
+	legacyAnalysis tuning.Analysis
+	candidate      TuningCandidate
+	candidateErr   error
 }
 
 func (f *fakeTuning) Analysis(source string) (tuning.Analysis, error) {
@@ -62,6 +66,9 @@ func (f *fakeTuning) LoadProfile(id string) (tuning.Profile, tuning.Analysis, er
 	if !ok {
 		return tuning.Profile{}, tuning.Analysis{}, errors.New("no such profile")
 	}
+	if p.Schema == tuning.ProfileSchemaV1 {
+		return p, f.legacyAnalysis, nil
+	}
 	return p, f.analysis, nil
 }
 
@@ -85,13 +92,14 @@ func (f *fakeTuning) Impact(tuning.Profile, tuning.Analysis, tuning.Compilation)
 	return f.impact, f.impactErr
 }
 
-func tuningAnalysis(t testing.TB) tuning.Analysis {
-	t.Helper()
-	source, err := setup.LookupModel(setup.ClefFlash)
-	if err != nil {
-		t.Fatal(err)
-	}
-	analysis, err := tuning.Analyze(source, tuning.DeclaredLayout{
+func (f *fakeTuning) Candidate(tuning.Profile) (TuningCandidate, error) {
+	return f.candidate, f.candidateErr
+}
+
+// tuningLayout is the declared layout the fixtures analyze: four blocks
+// (three linear-attention, one full-attention) with a subset of Linear modules.
+func tuningLayout() tuning.DeclaredLayout {
+	return tuning.DeclaredLayout{
 		ModelType: "qwen3_5", TextModelType: "qwen3_5_text",
 		Architectures: []string{"Qwen3_5ForConditionalGeneration"},
 		LayerTypes:    []string{"linear_attention", "linear_attention", "linear_attention", "full_attention"},
@@ -99,14 +107,46 @@ func tuningAnalysis(t testing.TB) tuning.Analysis {
 			"lm_head", "model.visual.blocks.0.attn.qkv", "model.visual.merger.linear_fc1",
 			"model.language_model.layers.0.linear_attn.in_proj_a", "model.language_model.layers.0.linear_attn.in_proj_b",
 			"model.language_model.layers.0.linear_attn.in_proj_qkv", "model.language_model.layers.0.mlp.gate_proj",
-			"model.language_model.layers.3.self_attn.q_proj",
+			"model.language_model.layers.1.linear_attn.in_proj_qkv", "model.language_model.layers.1.mlp.gate_proj",
+			"model.language_model.layers.3.self_attn.q_proj", "model.language_model.layers.3.mlp.gate_proj",
 		},
 		CarriedFiles: []string{"joint_head.safetensors"},
-	})
+	}
+}
+
+func tuningAnalysis(t testing.TB) tuning.Analysis {
+	t.Helper()
+	source, err := setup.LookupModel(setup.ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis, err := tuning.Analyze(source, tuningLayout())
 	if err != nil {
 		t.Fatal(err)
 	}
 	return analysis
+}
+
+// legacyProfile is a stored legacy coarse profile of the fixture layout, with
+// the given regions pinned, and the schema 1 analysis it is bound to.
+func legacyProfile(t testing.TB, ft *fakeTuning, objective string, pinned ...string) (tuning.Profile, tuning.Analysis) {
+	t.Helper()
+	source, err := setup.LookupModel(setup.ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := tuning.AnalyzeLegacy(source, tuningLayout())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := tuning.NewLegacyProfile(a, objective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range pinned {
+		p.Preservation[id] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
+	}
+	return p, a
 }
 
 func withTuning(e *env, ft Tuning) {
@@ -123,16 +163,32 @@ func tuningEnv(t *testing.T) (*env, *fakeTuning, *fakeVariants) {
 	return e, ft, fv
 }
 
-// expectedProfile is the profile the form of a test pins, built independently
-// of the handler from the backend analysis.
-func expectedProfile(t *testing.T, a tuning.Analysis, objective string, pinned ...string) tuning.Profile {
+// expectedProfile is the profile the form of a test describes, built
+// independently of the handler from the backend analysis. Each name is a group
+// ID, or a semantic region whose every tunable group is meant; those groups are
+// overridden to source precision and every other group is AUTO.
+func expectedProfile(t *testing.T, a tuning.Analysis, objective string, overridden ...string) tuning.Profile {
 	t.Helper()
 	p, err := tuning.NewDefaultProfile(a, objective)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range pinned {
-		p.Preservation[id] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
+	var ids []string
+	for _, name := range overridden {
+		if _, ok := a.GroupByID(name); ok {
+			ids = append(ids, name)
+			continue
+		}
+		sel, err := tuning.Selection{Region: name, From: -1, To: -1}.Select(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, sel...)
+	}
+	if len(ids) > 0 {
+		if p, err = tuning.SetPolicy(p, a, ids, home.PolicySourcePrecision); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return p
 }
@@ -146,14 +202,28 @@ func workspace(body string) string {
 	return body[i : i+strings.Index(body[i:], "</main>")]
 }
 
-func tuningRow(t *testing.T, body, region string) string {
+// tuningFamily is the expandable block of one component family.
+func tuningFamily(t *testing.T, body, region string) string {
 	t.Helper()
-	i := strings.Index(body, `data-region="`+region+`"`)
+	i := strings.Index(body, `data-family="`+region+`"`)
 	if i < 0 {
-		t.Fatalf("no row for region %s", region)
+		t.Fatalf("no family %s", region)
+	}
+	return body[i : i+strings.Index(body[i:], "</details>")]
+}
+
+// tuningGroup is the editor row of one tunable group.
+func tuningGroup(t *testing.T, body, group string) string {
+	t.Helper()
+	i := strings.Index(body, `data-group="`+group+`"`)
+	if i < 0 {
+		t.Fatalf("no editor row for group %s", group)
 	}
 	return body[i : i+strings.Index(body[i:], "</tr>")]
 }
+
+// groupForm names a group's field in the editor form.
+func groupForm(group string) string { return "group." + group }
 
 func impactRow(t *testing.T, body, key string) string {
 	t.Helper()
@@ -234,7 +304,7 @@ func TestTuningInitialStateIsTruthfulAutoNotCheckedAndUnsaved(t *testing.T) {
 	body := e.get(t, "/tuning").Body.String()
 	// exact source and analysis identity; the profile is shown as unsaved
 	for _, want := range []string{"clef-flash", "Cloudflare/clef-flash@17f0b0ad64efb65d273590632833508766b2aae6", tuning.ClefAnalyzerVersion,
-		`data-tuning-analysis="` + ft.analysis.SHA256() + `"`, tuning.RecipeCompilerVersion, tuning.ProfileSchema, "Hachidori&#39;s analyzed default; it is saved when you build.", `data-unsaved="true"`} {
+		`data-tuning-analysis="` + ft.analysis.SHA256() + `"`, tuning.RecipeCompilerVersion, tuning.ProfileSchema, "Unsaved: Hachidori&#39;s analyzed default or your draft", `data-unsaved="true"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("identity lacks %q", want)
 		}
@@ -243,12 +313,19 @@ func TestTuningInitialStateIsTruthfulAutoNotCheckedAndUnsaved(t *testing.T) {
 	if !strings.Contains(body, `data-tuning-profile="`+initial.ID()+`"`) {
 		t.Error("the initial profile does not show the identity it would be saved under")
 	}
-	// every region is Auto and nothing is invented as evidence
-	for _, r := range ft.analysis.Regions {
-		row := tuningRow(t, body, r.ID)
-		if !strings.Contains(row, `<option value="auto" selected>`) || strings.Contains(row, `<option value="pinned" selected>`) {
-			t.Errorf("region %s is not Auto: %s", r.ID, row)
+	// every tunable group is AUTO, none is overridden, and nothing is invented as evidence
+	tunable, err := tuning.Tunable(ft.analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range tunable {
+		row := tuningGroup(t, body, id)
+		if !strings.Contains(row, `<option value="auto" selected>`) || strings.Contains(row, ` selected>Source precision (bfloat16)</option>`) || !strings.Contains(row, `data-state="AUTO"`) {
+			t.Errorf("group %s is not AUTO: %s", id, row)
 		}
+	}
+	if !strings.Contains(body, `data-overridden="0"`) {
+		t.Error("the summary counts overrides of an all-AUTO profile")
 	}
 	for _, key := range []string{"size", "memory", "latency", "fidelity"} {
 		row := impactRow(t, body, key)
@@ -261,31 +338,49 @@ func TestTuningInitialStateIsTruthfulAutoNotCheckedAndUnsaved(t *testing.T) {
 	}
 }
 
-func TestTuningRegionsComeFromBackendAnalysisAndRawMappingsAreEvidenceOnly(t *testing.T) {
+func TestTuningFamiliesAndGroupsComeFromBackendAnalysisAndRawMappingsAreEvidenceOnly(t *testing.T) {
 	e, ft, _ := tuningEnv(t)
 	body := e.get(t, "/tuning").Body.String()
+	tunable, err := tuning.Tunable(ft.analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isTunable := map[string]bool{}
+	for _, id := range tunable {
+		isTunable[id] = true
+		if row := tuningGroup(t, body, id); !strings.Contains(row, `name="group.`+id+`"`) {
+			t.Errorf("group %s has no control", id)
+		}
+	}
 	for _, r := range ft.analysis.Regions {
-		row := tuningRow(t, body, r.ID)
+		fam := tuningFamily(t, body, r.ID)
 		if r.ID == tuning.RegionJointSchemaHead && !strings.Contains(regionEvidence(t, body, r.ID), "1 files") {
-			t.Errorf("file count missing: %s", row)
+			t.Errorf("file count missing: %s", fam)
 		}
 		if r.ID == tuning.RegionVision && !strings.Contains(regionEvidence(t, body, r.ID), "2 modules") {
-			t.Errorf("module count missing: %s", row)
-		}
-		if !strings.Contains(row, `name="region.`+r.ID+`"`) {
-			t.Errorf("region %s has no control", r.ID)
+			t.Errorf("module count missing: %s", fam)
 		}
 	}
-	if n := strings.Count(body, "data-region="); n != len(ft.analysis.Regions) {
-		t.Errorf("%d region rows, analysis has %d", n, len(ft.analysis.Regions))
+	if n := strings.Count(body, "data-family="); n != len(ft.analysis.Regions) {
+		t.Errorf("%d families, analysis has %d regions", n, len(ft.analysis.Regions))
 	}
-	// The canonical policy is stated per region: the gates stay preserved
-	// under Auto, the backbone projections are quantized.
-	if row := tuningRow(t, body, tuning.RegionLinearAttentionDecay); !strings.Contains(row, `data-effective="PRESERVED"`) || !strings.Contains(regionEvidence(t, body, tuning.RegionLinearAttentionDecay), "already preserves") {
-		t.Errorf("decay gate under Auto: %s", row)
+	if n := strings.Count(body, "data-group="); n != len(tunable) {
+		t.Errorf("%d group rows, %d groups are tunable", n, len(tunable))
 	}
-	if row := tuningRow(t, body, tuning.RegionFeedForward); !strings.Contains(row, `data-effective="AUTO"`) || !strings.Contains(regionEvidence(t, body, tuning.RegionFeedForward), "quantizes") {
-		t.Errorf("feed-forward under Auto: %s", row)
+	// The canonical policy is stated per family: the gates, output embeddings,
+	// vision tower and joint head are required and have no control; the
+	// backbone projections are tunable and AUTO quantizes them.
+	for _, region := range []string{tuning.RegionLinearAttentionDecay, tuning.RegionLinearAttentionBeta, tuning.RegionOutputEmbeddings, tuning.RegionVision, tuning.RegionJointSchemaHead} {
+		fam := tuningFamily(t, body, region)
+		if !strings.Contains(fam, `data-locked="`+region+`"`) || !strings.Contains(fam, `data-state="PRESERVED"`) || strings.Contains(fam, "<select") {
+			t.Errorf("required family %s offers a control or is not PRESERVED: %s", region, fam)
+		}
+		if !strings.Contains(regionEvidence(t, body, region), "Required") {
+			t.Errorf("required family %s is not stated as required in Evidence", region)
+		}
+	}
+	if fam := tuningFamily(t, body, tuning.RegionFeedForward); !strings.Contains(fam, `data-state="AUTO"`) || !strings.Contains(regionEvidence(t, body, tuning.RegionFeedForward), "quantizes") {
+		t.Errorf("feed-forward under AUTO: %s", fam)
 	}
 	// Raw module names, recipe patterns and the recipe digest exist only in
 	// the Evidence disclosure, after every operator control and impact value.
@@ -300,24 +395,35 @@ func TestTuningRegionsComeFromBackendAnalysisAndRawMappingsAreEvidenceOnly(t *te
 		}
 	}
 	evidence := body[ev:]
-	for _, want := range []string{"model.language_model.layers.0.linear_attn.in_proj_a", "model.visual.blocks.0.attn.qkv", "re:.*linear_attn", "clef-flash-w4a16-rtn-g128", "Recipe SHA-256", `data-evidence-region="` + tuning.RegionFeedForward + `"`} {
+	for _, want := range []string{"model.language_model.layers.0.linear_attn.in_proj_a", "model.visual.blocks.0.attn.qkv", "re:.*linear_attn", "clef-flash-w4a16-rtn-g128", "Recipe SHA-256",
+		`data-evidence-region="` + tuning.RegionFeedForward + `"`, "Effective plan SHA-256", `data-plan-group="block.00.mlp"`} {
 		if !strings.Contains(evidence, want) {
 			t.Errorf("Evidence lacks %q", want)
 		}
 	}
-	// No control accepts a pattern: the only editable region input is the
-	// choice between Auto and Preserved.
+	// No control accepts a pattern: the only editable inputs are named policies
+	// and a block range.
 	if strings.Contains(normal, `name="pattern"`) || strings.Contains(normal, `name="regex"`) || strings.Contains(normal, `type="text"`) {
 		t.Error("a free-form module/pattern control is offered")
+	}
+	// Policy controls are discrete: only two named policies exist, so no slider
+	// or numeric strength control is offered.
+	if strings.Contains(normal, `type="range"`) {
+		t.Error("a slider is offered for a two-policy set")
+	}
+	for _, want := range []string{`data-policy="source-precision" data-rank="0"`, `data-policy="w4a16" data-rank="1"`} {
+		if !strings.Contains(normal, want) {
+			t.Errorf("the ordered policy set lacks %q", want)
+		}
 	}
 }
 
 func TestTuningSavesAVersionedProfileWithoutBuilding(t *testing.T) {
 	e, ft, fv := tuningEnv(t)
 	form := url.Values{"source": {"clef-flash"}, "objective": {"maximum-fidelity"},
-		"region." + tuning.RegionFeedForward: {"pinned"}, "region." + tuning.RegionFullAttention: {"pinned"}, "region." + tuning.RegionVision: {"auto"}}
+		groupForm("block.00.mlp"): {"source-precision"}, groupForm("block.03.full-attn"): {"source-precision"}, groupForm("block.00.linear-attn"): {"auto"}}
 	rec := e.post(t, "/tuning/save", form)
-	want := expectedProfile(t, ft.analysis, "maximum-fidelity", tuning.RegionFeedForward, tuning.RegionFullAttention)
+	want := expectedProfile(t, ft.analysis, "maximum-fidelity", "block.00.mlp", "block.03.full-attn")
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/tuning?profile="+want.ID()+"&source=clef-flash" {
 		t.Fatalf("save: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
@@ -333,7 +439,7 @@ func TestTuningSavesAVersionedProfileWithoutBuilding(t *testing.T) {
 	}
 
 	body := e.get(t, rec.Header().Get("Location")).Body.String()
-	for _, want := range []string{`data-tuning-profile="` + want.ID() + `"`, "Saved profile", `<option value="maximum-fidelity" selected>Maximum fidelity</option>`} {
+	for _, want := range []string{`data-tuning-profile="` + want.ID() + `"`, "Saved profile", `<option value="maximum-fidelity" selected>Maximum fidelity</option>`, `data-overridden="2"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("saved profile page lacks %q", want)
 		}
@@ -341,14 +447,14 @@ func TestTuningSavesAVersionedProfileWithoutBuilding(t *testing.T) {
 	if strings.Contains(body, `data-unsaved="true"`) {
 		t.Error("a saved profile is shown as unsaved")
 	}
-	for _, region := range []string{tuning.RegionFeedForward, tuning.RegionFullAttention} {
-		row := tuningRow(t, body, region)
-		if !strings.Contains(row, `<option value="pinned" selected>`) || !strings.Contains(row, `data-effective="PRESERVED"`) || !strings.Contains(regionEvidence(t, body, region), "Pinned by this profile") {
-			t.Errorf("%s is not pinned/preserved: %s", region, row)
+	for _, group := range []string{"block.00.mlp", "block.03.full-attn"} {
+		row := tuningGroup(t, body, group)
+		if !strings.Contains(row, ` selected>Source precision (bfloat16)</option>`) || !strings.Contains(row, `data-state="OVERRIDDEN"`) || !strings.Contains(row, `data-effective="source-precision"`) {
+			t.Errorf("%s is not an override to source precision: %s", group, row)
 		}
 	}
-	if row := tuningRow(t, body, tuning.RegionLinearAttention); !strings.Contains(row, `<option value="auto" selected>`) {
-		t.Errorf("an unpinned region is not Auto: %s", row)
+	if row := tuningGroup(t, body, "block.00.linear-attn"); !strings.Contains(row, `<option value="auto" selected>`) || !strings.Contains(row, `data-state="AUTO"`) {
+		t.Errorf("an unset group is not AUTO: %s", row)
 	}
 	// without a profile in the URL the newest saved profile of the source is shown
 	if latest := e.get(t, "/tuning").Body.String(); !strings.Contains(latest, `data-tuning-profile="`+want.ID()+`"`) {
@@ -358,19 +464,31 @@ func TestTuningSavesAVersionedProfileWithoutBuilding(t *testing.T) {
 		t.Error("saved profile is not listed")
 	}
 	// A different intent is a distinct profile identity; the first is kept.
-	e.post(t, "/tuning/save", url.Values{"source": {"clef-flash"}, "objective": {"balanced"}, "region." + tuning.RegionFeedForward: {"pinned"}})
+	e.post(t, "/tuning/save", url.Values{"source": {"clef-flash"}, "objective": {"balanced"}, groupForm("block.00.mlp"): {"source-precision"}})
 	if len(ft.profiles) != 2 {
 		t.Errorf("a changed profile did not create a new version: %d", len(ft.profiles))
 	}
 }
 
-func TestTuningRefusesIntentThatIsNotAnObjectiveAndRegionChoice(t *testing.T) {
+func TestTuningRefusesIntentThatIsNotAnObjectiveAndGroupPolicy(t *testing.T) {
 	e, ft, _ := tuningEnv(t)
+	allSource := url.Values{"source": {"clef-flash"}, "objective": {"balanced"}}
+	tunable, err := tuning.Tunable(ft.analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range tunable {
+		allSource.Set(groupForm(id), "source-precision")
+	}
 	for name, form := range map[string]url.Values{
 		"unknown objective": {"source": {"clef-flash"}, "objective": {"fastest"}},
-		"unknown region":    {"source": {"clef-flash"}, "objective": {"balanced"}, "region.model.language_model.layers.0.mlp.gate_proj": {"pinned"}},
-		"raw pattern":       {"source": {"clef-flash"}, "objective": {"balanced"}, "region." + `re:.*`: {"pinned"}},
-		"unknown level":     {"source": {"clef-flash"}, "objective": {"balanced"}, "region." + tuning.RegionFeedForward: {"quantize-more"}},
+		"unknown group":     {"source": {"clef-flash"}, "objective": {"balanced"}, groupForm("model.language_model.layers.0.mlp.gate_proj"): {"source-precision"}},
+		"raw pattern":       {"source": {"clef-flash"}, "objective": {"balanced"}, groupForm(`re:.*`): {"source-precision"}},
+		"unknown policy":    {"source": {"clef-flash"}, "objective": {"balanced"}, groupForm("block.00.mlp"): {"quantize-more"}},
+		"unsupported W8A16": {"source": {"clef-flash"}, "objective": {"balanced"}, groupForm("block.00.mlp"): {"w8a16"}},
+		"required group":    {"source": {"clef-flash"}, "objective": {"balanced"}, groupForm(tuning.RegionOutputEmbeddings): {"w4a16"}},
+		"required gate":     {"source": {"clef-flash"}, "objective": {"balanced"}, groupForm("block.00.linear-attn.decay-gate"): {"source-precision"}},
+		"nothing quantized": allSource,
 		"no source":         {"objective": {"balanced"}},
 	} {
 		rec := e.post(t, "/tuning/save", form)
@@ -395,9 +513,13 @@ func TestTuningRefusesIntentThatIsNotAnObjectiveAndRegionChoice(t *testing.T) {
 
 func TestTuningHandsTheExactSavedProfileToForgesOneOperation(t *testing.T) {
 	e, ft, fv := tuningEnv(t)
-	form := url.Values{"source": {"clef-flash"}, "objective": {"minimum-size"}, "region." + tuning.RegionOutputEmbeddings: {"pinned"}, "region." + tuning.RegionFeedForward: {"pinned"}}
+	form := url.Values{"source": {"clef-flash"}, "objective": {"minimum-size"}, groupForm("block.00.linear-attn"): {"source-precision"}, groupForm("block.00.mlp"): {"w4a16"}}
 	rec := e.post(t, "/tuning/build", form)
-	want := expectedProfile(t, ft.analysis, "minimum-size", tuning.RegionOutputEmbeddings, tuning.RegionFeedForward)
+	want := expectedProfile(t, ft.analysis, "minimum-size", "block.00.linear-attn")
+	want, err := tuning.SetPolicy(want, ft.analysis, []string{"block.00.mlp"}, home.PolicyW4A16)
+	if err != nil {
+		t.Fatal(err)
+	}
 	loc := "/forge?profile=tuning%3A" + want.ID() + "&source=clef-flash#forge-intent-form"
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != loc {
 		t.Fatalf("handoff: %d %q", rec.Code, rec.Header().Get("Location"))
@@ -438,7 +560,7 @@ func TestTuningPageOffersNoOptimizerLifecycleAndRunsNoClientCode(t *testing.T) {
 	}
 	actions := regexp.MustCompile(`(?:form)?action="([^"]+)"`).FindAllStringSubmatch(main, -1)
 	for _, a := range actions {
-		if a[1] != "/tuning" && a[1] != "/tuning/save" && a[1] != "/tuning/build" && a[1] != "/tuning/budget" {
+		if a[1] != "/tuning" && a[1] != "/tuning/save" && a[1] != "/tuning/build" && a[1] != "/tuning/budget" && a[1] != "/tuning/edit" {
 			t.Errorf("Tuning posts to %s", a[1])
 		}
 	}
@@ -517,13 +639,23 @@ func TestTuningResponsiveAccessibleAndLocalized(t *testing.T) {
 	if strings.Count(en, `<div class="table-wrap"><table class="data"`) < 3 || !strings.Contains(en, "@media (max-width: 42rem)") {
 		t.Error("tables are not contained for narrow widths")
 	}
-	// accessible: every region control is labelled, tables have captions and row headers, the error is an alert
-	for _, r := range ft.analysis.Regions {
-		if !strings.Contains(en, `<label for="region-`+r.ID+`">`) || !strings.Contains(en, `id="region-`+r.ID+`"`) {
-			t.Errorf("region %s control is not labelled", r.ID)
+	// accessible: every group control is labelled, tables have captions and row headers, the error is an alert
+	tunable, err := tuning.Tunable(ft.analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range tunable {
+		if !strings.Contains(en, `<label for="group-`+id+`">`) || !strings.Contains(en, `id="group-`+id+`"`) {
+			t.Errorf("group %s control is not labelled", id)
 		}
 	}
-	if strings.Count(en, "<caption") < 3 || !strings.Contains(en, `<th scope="row" class="strong"><label`) || !strings.Contains(en, `<th scope="col">Preservation</th>`) {
+	for _, name := range []string{"bulk_region", "bulk_from", "bulk_to", "bulk_policy"} {
+		i := strings.Index(en, `name="`+name+`"`)
+		if i < 0 || !strings.Contains(en[max(0, i-200):i+120], "aria-label=") {
+			t.Errorf("bulk control %s is not labelled", name)
+		}
+	}
+	if strings.Count(en, "<caption") < 3 || !strings.Contains(en, `<th scope="row" class="strong"><label`) || !strings.Contains(en, `<th scope="col">Policy</th>`) {
 		t.Error("tables lack captions or headers")
 	}
 	if w := workspace(en); strings.Contains(w, "tabindex=") || strings.Contains(w, `onclick=`) || strings.Contains(w, "<script") {
@@ -534,7 +666,7 @@ func TestTuningResponsiveAccessibleAndLocalized(t *testing.T) {
 		t.Fatalf("select ja: %d", rec.Code)
 	}
 	ja := e.get(t, "/tuning").Body.String()
-	for _, want := range []string{`<html lang="ja">`, `<h1>チューニング</h1>`, "Forge で続ける", "プロファイルのみを保存", "意味的リージョン", "推定", "未確認", "保持", "最大の忠実度", `<a href="/tuning" aria-current="page">チューニング</a>`} {
+	for _, want := range []string{`<html lang="ja">`, `<h1>チューニング</h1>`, "Forge で続ける", "プロファイルのみを保存", "一括上書き", "推定", "未確認", "保持", "最大の忠実度", `<a href="/tuning" aria-current="page">チューニング</a>`} {
 		if !strings.Contains(ja, want) {
 			t.Errorf("Japanese Tuning lacks %q", want)
 		}
@@ -543,7 +675,7 @@ func TestTuningResponsiveAccessibleAndLocalized(t *testing.T) {
 	if a, b := machineAttrRe.FindAllString(en, -1), machineAttrRe.FindAllString(ja, -1); strings.Join(a, "\n") != strings.Join(b, "\n") {
 		t.Error("forms, identifiers or routes differ between locales")
 	}
-	for _, id := range []string{ft.analysis.SHA256(), "model.language_model.layers.0.linear_attn.in_proj_a", "clef-flash-w4a16-rtn-g128"} {
+	for _, id := range []string{ft.analysis.SHA256(), "model.language_model.layers.0.linear_attn.in_proj_a", "clef-flash-w4a16-rtn-g128", "block.00.mlp"} {
 		if !strings.Contains(ja, id) {
 			t.Errorf("Japanese Tuning lacks machine identity %q", id)
 		}
@@ -565,7 +697,8 @@ func TestTuningCopyIsInTheJapaneseCatalog(t *testing.T) {
 		}
 	}
 	for _, m := range []string{"Model size", "Memory (VRAM/RAM)", "Latency", "Fidelity", "Generated mappings and recipe",
-		"Pinned by this profile at source precision.", "Auto: the canonical policy already preserves this region.", "Auto: the canonical policy quantizes this region."} {
+		"Every tunable group is overridden to source precision.", "Required: the canonical policy preserves this region.", "Some groups are overridden; the rest follow AUTO.",
+		"AUTO: the canonical policy quantizes this region.", "Source precision (bfloat16)", "W4A16 (4-bit weights)", "AUTO"} {
 		if !i18n.Japanese.Has(m) {
 			t.Errorf("%q has no Japanese entry", m)
 		}
@@ -587,6 +720,11 @@ func TestTuningCopyIsInTheJapaneseCatalog(t *testing.T) {
 	}
 	if n < 50 {
 		t.Errorf("only %d catalogued Tuning messages", n)
+	}
+	for _, o := range tuningPolicies() {
+		if !i18n.Japanese.Has(o.Label) {
+			t.Errorf("policy %s has no Japanese entry", o.ID)
+		}
 	}
 	// Every region the backend can name has operator copy.
 	a := tuningAnalysis(t)
@@ -610,13 +748,8 @@ func TestTuningSourceSelectionUsesTheModelsInventory(t *testing.T) {
 // feedbackAnalysis has three linear-attention projection modules against one
 // full-attention module, so the smallest unpreserved supported region is
 // unique: full-attention-projections.
-func feedbackAnalysis(t testing.TB) tuning.Analysis {
-	t.Helper()
-	source, err := setup.LookupModel(setup.ClefFlash)
-	if err != nil {
-		t.Fatal(err)
-	}
-	analysis, err := tuning.Analyze(source, tuning.DeclaredLayout{
+func feedbackLayout() tuning.DeclaredLayout {
+	return tuning.DeclaredLayout{
 		ModelType: "qwen3_5", TextModelType: "qwen3_5_text",
 		Architectures: []string{"Qwen3_5ForConditionalGeneration"},
 		LayerTypes:    []string{"linear_attention", "linear_attention", "linear_attention", "full_attention"},
@@ -628,7 +761,22 @@ func feedbackAnalysis(t testing.TB) tuning.Analysis {
 			"model.language_model.layers.3.self_attn.q_proj",
 		},
 		CarriedFiles: []string{"joint_head.safetensors"},
-	})
+	}
+}
+
+func tuningSourceManifest(t testing.TB) (home.ModelManifest, error) {
+	t.Helper()
+	m, err := setup.LookupModel(setup.ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m, nil
+}
+
+func feedbackAnalysis(t testing.TB) tuning.Analysis {
+	t.Helper()
+	source, _ := tuningSourceManifest(t)
+	analysis, err := tuning.Analyze(source, feedbackLayout())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,8 +797,8 @@ func writeTunedVariant(t *testing.T, root string, p tuning.Profile, a tuning.Ana
 		Files:    map[string]string{"model.safetensors": strings.Repeat("4", 64)},
 		Creation: home.Creation{CreatedAt: "2026-01-01T00:00:00Z", Platform: "linux/amd64", Command: "hachidori variant optimize"}}
 	if tuned {
-		v.Tuning = &home.TuningProvenance{Schema: home.TuningProvenanceSchema, Source: p.Source, ProfileID: p.ID(), ProfileSHA256: p.ID(),
-			AnalysisID: a.ID(), AnalysisSHA256: a.SHA256(), CompilerVersion: tuning.RecipeCompilerVersion}
+		prov := tuning.Provenance(p, a, c)
+		v.Tuning = &prov
 	}
 	v.Seal()
 	h := home.Home{Root: root}
@@ -811,7 +959,7 @@ func TestTuningReceivesTheExactExperimentContext(t *testing.T) {
 			t.Errorf("regression lacks %q:\n%s", want, reg)
 		}
 	}
-	if strings.Index(body, `id="tuning-regression-table"`) > strings.Index(body, `id="tuning-region-table"`) {
+	if strings.Index(body, `id="tuning-regression-table"`) > strings.Index(body, `id="tuning-families"`) {
 		t.Error("the regression is not projected before the preservation controls")
 	}
 }
@@ -834,11 +982,11 @@ func TestTuningRecommendationStatesEvidenceBasisAndRegionChange(t *testing.T) {
 	if strings.Contains(strings.ToLower(rec), "confidence") {
 		t.Error("the recommendation invents a confidence")
 	}
-	if row := tuningRow(t, body, tuning.RegionFullAttention); !strings.Contains(row, `data-recommended="true"`) {
-		t.Errorf("the recommended region is not marked beside its control:\n%s", row)
+	if fam := tuningFamily(t, body, tuning.RegionFullAttention); !strings.Contains(fam, `data-recommended="true"`) {
+		t.Errorf("the recommended family is not marked beside its controls:\n%s", fam)
 	}
-	if row := tuningRow(t, body, tuning.RegionFeedForward); strings.Contains(row, "data-recommended") {
-		t.Error("an unrelated region is marked recommended")
+	if fam := tuningFamily(t, body, tuning.RegionFeedForward); strings.Contains(fam, "data-recommended") {
+		t.Error("an unrelated family is marked recommended")
 	}
 }
 
@@ -977,7 +1125,7 @@ func TestTuningAcceptanceIsExplicitAndCreatesADistinctProfile(t *testing.T) {
 	if loc := rec.Header().Get("Location"); loc != tuningLocation(f.profile.Source.ID, next.ID()) {
 		t.Errorf("redirect %q", loc)
 	}
-	if got := f.ft.profiles[f.profile.ID()]; got.ID() != f.profile.ID() || got.Preservation[tuning.RegionFullAttention].Mode != tuning.PreservationAuto {
+	if got := f.ft.profiles[f.profile.ID()]; got.ID() != f.profile.ID() || got.Groups["block.03.full-attn"].Mode != tuning.GroupAuto {
 		t.Error("the original profile changed")
 	}
 	// Evidence is byte-for-byte immutable across viewing, refusals and acceptance.
@@ -985,7 +1133,7 @@ func TestTuningAcceptanceIsExplicitAndCreatesADistinctProfile(t *testing.T) {
 		t.Error("stored evidence changed")
 	}
 	shown := f.page(t, rec.Header().Get("Location"))
-	if !strings.Contains(shown, `data-tuning-profile="`+next.ID()+`"`) || !strings.Contains(tuningRow(t, shown, tuning.RegionFullAttention), `data-effective="PRESERVED"`) {
+	if !strings.Contains(shown, `data-tuning-profile="`+next.ID()+`"`) || !strings.Contains(tuningGroup(t, shown, "block.03.full-attn"), `data-effective="source-precision"`) {
 		t.Errorf("the new profile is not shown pinned:\n%s", shown)
 	}
 	// Accepting the same recommendation again names the same distinct profile:
@@ -1001,7 +1149,7 @@ func TestTuningWithoutContextAndExistingDeepLinksAreUnchanged(t *testing.T) {
 	f := feedbackEnv(t)
 	for _, link := range []string{"/tuning", "/tuning?source=clef-flash", "/tuning?source=clef-flash&profile=" + f.profile.ID()} {
 		body := f.page(t, link)
-		if strings.Contains(body, `id="tuning-context"`) || !strings.Contains(body, `id="tuning-regions"`) {
+		if strings.Contains(body, `id="tuning-context"`) || !strings.Contains(body, `id="tuning-families"`) {
 			t.Errorf("%s changed without a context", link)
 		}
 	}
@@ -1098,12 +1246,12 @@ func TestTuningComparesTwoTunedCandidatesWithExactIdentities(t *testing.T) {
 			t.Errorf("profile difference lacks %q", want)
 		}
 	}
-	row := compareRow(t, body, "data-delta-region", tuning.RegionFullAttention)
-	if !strings.Contains(row, "Auto") || !strings.Contains(row, "Preserved") {
-		t.Errorf("region difference row: %s", row)
+	row := compareRow(t, body, "data-delta-group", "block.03.full-attn")
+	if !strings.Contains(row, "AUTO") || !strings.Contains(row, "Source precision (bfloat16)") {
+		t.Errorf("group difference row: %s", row)
 	}
-	if strings.Contains(body, `data-delta-region="`+tuning.RegionLinearAttention+`"`) {
-		t.Error("an unchanged region is listed as a difference")
+	if strings.Contains(body, `data-delta-group="block.00.linear-attn"`) {
+		t.Error("an unchanged group is listed as a difference")
 	}
 
 	// Measured quality, identity-aligned question slice and resource deltas.
