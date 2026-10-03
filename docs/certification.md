@@ -469,6 +469,19 @@ CPython (the uv-managed python-build-standalone build, glibc) need a dynamic loa
 FHS environment) and `LD_LIBRARY_PATH` must include the driver libraries
 (`/run/opengl-driver/lib`).
 
+## Hosted Windows E2E certification (CI evidence, not physical)
+
+Every commit on `main` is additionally certified by the Windows appliance E2E
+workflow (`.github/workflows/windows-e2e.yml`, `test/windows-e2e`): one
+candidate `hachidori.exe` is built once and certified by parallel shards
+(bootstrap, runtime, recovery, single-instance, update, diagnostics). This is
+hosted-runner CI evidence about the exact candidate executable and is never a
+physical Windows `PASS`. The checklist classifies every assertion of every
+Windows item as `CI_AUTOMATED`, `PHYSICAL_REQUIRED` or `OPTIONAL_HARDWARE`
+([Assertion classification](windows-certification-checklist.md#assertion-classification));
+the manual sections below remain the procedures for the physical and hardware
+assertions, and #66 remains their authority.
+
 ## Windows desktop shell (manual, real Windows only)
 
 Generic CI and cross-compilation cannot open a WebView2 window; report these
