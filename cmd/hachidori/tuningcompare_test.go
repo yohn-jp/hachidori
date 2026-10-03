@@ -88,7 +88,7 @@ func TestTuningStoreReportsTheCandidateItsEvidenceAndTheAcceptedBaseline(t *test
 	}
 
 	// Nothing built, nothing active: nothing is invented.
-	got, err := store.Candidate(p)
+	got, err := store.Candidate(p, compiled)
 	if err != nil || got.Variant != "" || got.Baseline != "" || !strings.Contains(got.BaselineWhy, "no runtime is active") || len(got.Figures) != 0 {
 		t.Fatalf("empty home: %+v %v", got, err)
 	}
@@ -104,14 +104,14 @@ func TestTuningStoreReportsTheCandidateItsEvidenceAndTheAcceptedBaseline(t *test
 	if err := os.WriteFile(filepath.Join(cdir, home.TuningEvidenceFile), ev.Canonical(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err = store.Candidate(p)
+	got, err = store.Candidate(p, compiled)
 	if err != nil || got.Variant != cand.ID || got.Evidence == nil || got.Evidence.PlanSHA256 != compiled.Plan.SHA256() || got.EvidenceErr != "" || len(got.Figures) != 0 {
 		t.Fatalf("candidate without a baseline: %+v %v", got, err)
 	}
 	if err := os.WriteFile(filepath.Join(cdir, home.TuningEvidenceFile), []byte("{broken"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ = store.Candidate(p); got.Evidence != nil || got.EvidenceErr == "" {
+	if got, _ = store.Candidate(p, compiled); got.Evidence != nil || got.EvidenceErr == "" {
 		t.Errorf("unreadable evidence is not reported: %+v", got)
 	}
 	if err := os.WriteFile(filepath.Join(cdir, home.TuningEvidenceFile), ev.Canonical(), 0o644); err != nil {
@@ -121,11 +121,11 @@ func TestTuningStoreReportsTheCandidateItsEvidenceAndTheAcceptedBaseline(t *test
 	// The active variant is the baseline only once its certification is accepted.
 	base, bdir := storeVariant(t, h, m, canonical, nil, 5<<20)
 	activate(t, h, m, base.ID)
-	if got, _ = store.Candidate(p); got.Baseline != "" || !strings.Contains(got.BaselineWhy, "not certified accepted") || len(got.Figures) != 0 {
+	if got, _ = store.Candidate(p, compiled); got.Baseline != "" || !strings.Contains(got.BaselineWhy, "not certified accepted") || len(got.Figures) != 0 {
 		t.Fatalf("uncertified active variant: %+v", got)
 	}
 	certify(t, h, m, base, "dataset", 0.95, 11, 6<<30)
-	got, err = store.Candidate(p)
+	got, err = store.Candidate(p, compiled)
 	if err != nil || got.Baseline != base.ID || !got.BaselineCanonical || got.BaselineEvidence != nil || got.BaselineWhy != "" {
 		t.Fatalf("accepted baseline: %+v %v", got, err)
 	}
@@ -163,7 +163,7 @@ func TestTuningStoreReportsTheCandidateItsEvidenceAndTheAcceptedBaseline(t *test
 
 	// Both certified on the same dataset and questions: comparable, measured.
 	certify(t, h, m, cand, "dataset", 0.90, 12, 5<<30)
-	got, _ = store.Candidate(p)
+	got, _ = store.Candidate(p, compiled)
 	figs = byKey(got)
 	if !got.Comparable || got.ComparableWhy != "" {
 		t.Errorf("same evaluation is not comparable: %+v", got)
@@ -182,13 +182,13 @@ func TestTuningStoreReportsTheCandidateItsEvidenceAndTheAcceptedBaseline(t *test
 		t.Fatal(err)
 	}
 	certify(t, h, m, cand, "another-dataset", 0.90, 12, 5<<30)
-	if got, _ = store.Candidate(p); got.Comparable || !strings.Contains(got.ComparableWhy, "different datasets or questions") {
+	if got, _ = store.Candidate(p, compiled); got.Comparable || !strings.Contains(got.ComparableWhy, "different datasets or questions") {
 		t.Errorf("different evaluations were compared: %+v", got)
 	}
 
 	// The candidate itself active and accepted is the baseline: no self comparison.
 	activate(t, h, m, cand.ID)
-	if got, _ = store.Candidate(p); got.Baseline != cand.ID || !strings.Contains(got.BaselineWhy, "is the accepted baseline") || len(got.Figures) != 0 {
+	if got, _ = store.Candidate(p, compiled); got.Baseline != cand.ID || !strings.Contains(got.BaselineWhy, "is the accepted baseline") || len(got.Figures) != 0 {
 		t.Errorf("self comparison: %+v", got)
 	}
 
@@ -198,12 +198,12 @@ func TestTuningStoreReportsTheCandidateItsEvidenceAndTheAcceptedBaseline(t *test
 	}
 	activate(t, h, m, base.ID)
 	certify(t, h, m, base, "dataset", 0.95, 11, 6<<30)
-	if got, _ = store.Candidate(p); got.BaselineEvidence == nil || !got.BaselineCanonical {
+	if got, _ = store.Candidate(p, compiled); got.BaselineEvidence == nil || !got.BaselineCanonical {
 		t.Errorf("baseline evidence: %+v", got)
 	}
 	// A variant of another source, or one not of this exact source, is no baseline.
 	activate(t, h, home.ModelManifest{ID: "laya-base"}, "")
-	if got, _ = store.Candidate(p); got.Baseline != "" || !strings.Contains(got.BaselineWhy, "not a variant of") {
+	if got, _ = store.Candidate(p, compiled); got.Baseline != "" || !strings.Contains(got.BaselineWhy, "not a variant of") {
 		t.Errorf("another model active: %+v", got)
 	}
 }
