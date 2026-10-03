@@ -1,16 +1,55 @@
 package setup
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/home"
 	optpy "github.com/yohn-jp/hachidori/internal/optimize/py"
 	"github.com/yohn-jp/hachidori/internal/worker/py"
 )
+
+// A read-only interpreter probe is safely bounded; timing out must leave the
+// active record and runtime reusable. Materialization/activation have no such
+// deadline because interrupting their external work is not proven safe.
+func TestRuntimeProbeDeadlinePreservesActivation(t *testing.T) {
+	f := newFixture(t)
+	f.mustRun("cpu")
+	spec, _ := Desired("cpu")
+	dir := f.H.Path("runtime", spec.ID())
+	active := f.H.Path("state", "active-runtime.json")
+	before, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "env", "stall-probe")
+	if err := os.WriteFile(marker, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err = verifyRuntimeContext(ctx, f.H, dir, spec)
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > 7*time.Second {
+		t.Fatalf("unbounded or undiagnosable probe: %v", err)
+	}
+	after, err := os.ReadFile(active)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("timeout altered activation")
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyRuntime(f.H, dir, spec); err != nil {
+		t.Fatalf("runtime no longer reusable: %v", err)
+	}
+}
 
 // swapScripts replaces the embedded worker and optimizer sources for the
 // duration of the test, as an application update that changed only them.

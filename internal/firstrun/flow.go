@@ -85,6 +85,7 @@ type Controller interface {
 	SetHome(root string) error
 	Setup(app.SetupParams) error
 	Start() error
+	Bind() error
 	Restart() error
 	Subscribe() (<-chan struct{}, func())
 }
@@ -340,6 +341,11 @@ func (f *Flow) Retry() error {
 		return ErrNotRetry
 	}
 	if f.cfg.Env.IsInstalled(snap.Home) {
+		// Normal desktop launch binds without starting serving, including a
+		// retry after reconciliation or the asynchronous Bind hand-off failed.
+		if f.cfg.Plan.Mode == ModeLaunch {
+			return f.cfg.Ctl.Bind()
+		}
 		if snap.Status != nil {
 			return f.cfg.Ctl.Restart()
 		}
@@ -424,17 +430,22 @@ type Identity struct {
 
 // View is everything the first-run screen renders.
 type View struct {
-	Mode       Mode        `json:"mode"`
-	Notice     string      `json:"notice,omitempty"`
-	StoredHome string      `json:"stored_home,omitempty"`
-	Stage      string      `json:"stage"`
-	State      app.State   `json:"state"`
-	Selection  *Validation `json:"selection,omitempty"`
-	Device     string      `json:"device"`
-	Model      string      `json:"model"`
-	Phases     []PhaseView `json:"phases,omitempty"`
-	Step       *StepView   `json:"step,omitempty"`
-	Worker     string      `json:"worker,omitempty"`
+	Mode           Mode           `json:"mode"`
+	Notice         string         `json:"notice,omitempty"`
+	StoredHome     string         `json:"stored_home,omitempty"`
+	Stage          string         `json:"stage"`
+	State          app.State      `json:"state"`
+	Operation      *app.Operation `json:"operation,omitempty"`
+	Dashboard      bool           `json:"dashboard"`
+	ElapsedSeconds float64        `json:"elapsed_seconds,omitempty"`
+	IdleSeconds    float64        `json:"idle_seconds,omitempty"`
+	Stale          bool           `json:"stale"`
+	Selection      *Validation    `json:"selection,omitempty"`
+	Device         string         `json:"device"`
+	Model          string         `json:"model"`
+	Phases         []PhaseView    `json:"phases,omitempty"`
+	Step           *StepView      `json:"step,omitempty"`
+	Worker         string         `json:"worker,omitempty"`
 	// WorkerPhase is the worker's own phase (spawning, importing, loading,
 	// warming) while the stage is starting.
 	WorkerPhase string       `json:"worker_phase,omitempty"`
@@ -484,8 +495,19 @@ func (f *Flow) View() View {
 		v.Stage = StageFailed
 		v.Failure = &app.Failure{Source: "bootstrap", Message: remErr.Error()}
 	}
+	v.Dashboard = f.cfg.Plan.Mode == ModeLaunch && f.Done()
+	v.Operation = snap.Operation
+	if v.Operation == nil {
+		v.Operation = setupOperation(snap)
+	}
+	if v.Operation != nil && v.Operation.Kind == app.OpReconcile {
+		v.SetupLog = app.SetupLogPath(snap.Home)
+	}
+	if op := v.Operation; op != nil {
+		v.ElapsedSeconds, v.IdleSeconds, v.Stale = operationTiming(op, time.Now())
+	}
 	v.Phases = phaseViews(snap)
-	if op := snap.Operation; op != nil && op.Kind == app.OpSetup && op.Progress != nil {
+	if op := setupOperation(snap); op != nil && op.Progress != nil {
 		p := op.Progress
 		v.Step = &StepView{Step: string(p.Step), Detail: p.Detail, Done: p.Done, Total: p.Total, Item: p.Item, Items: p.Items}
 	}
@@ -510,12 +532,39 @@ func (f *Flow) View() View {
 	return v
 }
 
-func phaseViews(snap app.Snapshot) []PhaseView {
+// setupOperation keeps setup and reconciliation observer evidence, including
+// the failed operation, but never substitutes old setup for an active Bind.
+func setupOperation(snap app.Snapshot) *app.Operation {
 	op := snap.Operation
-	if op == nil || op.Kind != app.OpSetup {
+	if op == nil {
 		op = snap.Last
 	}
-	if op == nil || op.Kind != app.OpSetup {
+	if op != nil && (op.Kind == app.OpSetup || op.Kind == app.OpReconcile) {
+		return op
+	}
+	return nil
+}
+
+// No watchdog interrupts materialization or atomic publication/activation.
+// Lack of observer activity is evidence of silence, not proof of a hang.
+// Report it explicitly after two minutes instead of inventing progress.
+func operationTiming(op *app.Operation, now time.Time) (elapsed, idle float64, stale bool) {
+	end := now
+	if !op.Finished.IsZero() {
+		end = op.Finished
+	}
+	activity := op.Activity
+	if activity.IsZero() {
+		activity = op.Started
+	}
+	elapsed = max(0, end.Sub(op.Started).Seconds())
+	idle = max(0, end.Sub(activity).Seconds())
+	return elapsed, idle, op.Finished.IsZero() && idle >= 120
+}
+
+func phaseViews(snap app.Snapshot) []PhaseView {
+	op := setupOperation(snap)
+	if op == nil {
 		return nil
 	}
 	entered := map[string]int{}
@@ -523,10 +572,16 @@ func phaseViews(snap app.Snapshot) []PhaseView {
 		entered[p] = i
 	}
 	inFlight := snap.Operation != nil
-	out := make([]PhaseView, 0, len(SetupPhases))
-	for _, p := range SetupPhases {
-		i, ok := entered[string(p)]
-		pv := PhaseView{Name: string(p), Status: "pending"}
+	phases := op.Plan
+	if len(phases) == 0 {
+		for _, p := range SetupPhases {
+			phases = append(phases, string(p))
+		}
+	}
+	out := make([]PhaseView, 0, len(phases))
+	for _, p := range phases {
+		i, ok := entered[p]
+		pv := PhaseView{Name: p, Status: "pending"}
 		switch {
 		case !ok:
 		case i < len(op.Phases)-1:

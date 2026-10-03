@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/home"
 )
@@ -121,6 +122,9 @@ func fakeUV(args []string) int {
 func fakePython() int {
 	self, _ := os.Executable()
 	env := filepath.Dir(filepath.Dir(self))
+	if _, err := os.Stat(filepath.Join(env, "stall-probe")); err == nil {
+		time.Sleep(time.Hour)
+	}
 	cfg, _ := os.ReadFile(filepath.Join(env, "pyvenv.cfg"))
 	base := strings.TrimSpace(strings.TrimPrefix(string(cfg), "home = "))
 	ver, _ := os.ReadFile(filepath.Join(base, "version"))

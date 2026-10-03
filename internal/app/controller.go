@@ -806,7 +806,9 @@ func plan(kind, target string) []string {
 	case OpMaterialize, OpRepair:
 		return p(setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseModel, setup.PhasePublish)
 	case OpReconcile:
-		return p(setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseModel, setup.PhasePublish, setup.PhaseActivation)
+		// Variant verification is conditional, but must remain observable when
+		// the existing activation selects one. Pending does not claim it ran.
+		return p(setup.PhasePreparing, setup.PhaseRuntime, setup.PhaseModel, setup.PhasePublish, setup.PhaseVariant, setup.PhaseActivation)
 	case OpActivate:
 		if strings.HasPrefix(target, setup.KindVariant+" ") {
 			return p(setup.PhaseRuntime, setup.PhaseModel, setup.PhaseVariant, setup.PhaseActivation)
