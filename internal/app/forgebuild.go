@@ -46,6 +46,11 @@ type ForgeBuildEvaluateResolution struct {
 type ForgeBuildEvaluateParams struct {
 	Source       string
 	Optimization optimize.Request
+	// TuningProfile, when set, names the saved semantic tuning profile the
+	// candidate is built from instead of Optimization's canonical recipe. The
+	// profile is compiled by the tuning authority and bound into the variant's
+	// provenance exactly as a Tuning build is.
+	TuningProfile string
 
 	// Device is the candidate device override; empty resolves it from the
 	// validated active activation. A non-empty value is never substituted.
@@ -138,8 +143,14 @@ func resolveForgeBuildPlan(h home.Home, p ForgeBuildEvaluateParams) (forgeBuildP
 	if p.Optimization.Reproduce {
 		return plan, errors.New("a Build & evaluate operation requires a publishing optimization request, not reproduction")
 	}
-	recipe, err := optimize.LookupRecipe(model.ID, p.Optimization.Recipe)
-	if err != nil {
+	optimization := optimize.Request{Model: model.ID, Recipe: p.Optimization.Recipe}
+	var recipe home.Recipe
+	if p.TuningProfile != "" {
+		if optimization, err = tunedBuildRequest(h, model, p.TuningProfile); err != nil {
+			return plan, err
+		}
+		recipe = *optimization.CompiledRecipe
+	} else if recipe, err = optimize.LookupRecipe(model.ID, p.Optimization.Recipe); err != nil {
 		return plan, err
 	}
 	device, mode, err := resolveCandidateDevice(h, p.Device)
@@ -158,7 +169,7 @@ func resolveForgeBuildPlan(h home.Home, p ForgeBuildEvaluateParams) (forgeBuildP
 	refDeviceMode := selectionMode(p.ReferenceDevice)
 	refDTypeMode := selectionMode(p.ReferenceDType)
 	plan = forgeBuildPlan{
-		source: model, optimization: optimize.Request{Model: model.ID, Recipe: recipe.Name}, recipe: recipe,
+		source: model, optimization: optimization, recipe: recipe,
 		certify: certify, certInputs: certInputs,
 		resolution: ForgeBuildEvaluateResolution{
 			Source: model.ID, Recipe: recipe.Name,

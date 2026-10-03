@@ -53,7 +53,7 @@
             {{with $qv.Identity}}<p class="note mono">{{t "current"}} {{.ID}}@{{.Version}} · {{.Digest}}</p>{{else}}<p class="note bad-t">{{t "not exportable:"}} {{$qv.DefErr}}</p>{{end}}
             <div class="fields">
               <label class="field">{{t "Definition version (export only)"}}<input name="q{{$i}}.version" value="{{$q.Version}}" inputmode="numeric"></label>
-              {{template "resource-selection" (resourceInput $.PathPicker "New file (absolute path; never overwritten)" (printf "q%d.export_path" $i) $q.ExportPath "/path/to/my.question.json" false false "" "op" (printf "pick-export:%d" $i) "Choose file")}}
+              {{template "resource-selection" (resourceInput $.PathPicker "New file (absolute path; never overwritten)" (printf "q%d.export_path" $i) $q.ExportPath "/path/to/my.question.json" false false "" "op" (printf "pick-export:%d" $i) "Choose destination…")}}
               <div class="btn-row"><button type="submit" class="btn" name="op" value="export:{{$i}}">{{t "Export"}}</button></div>
             </div>
             {{with $.Export}}{{if eq .Index $i}}
@@ -98,7 +98,7 @@
 
       <details class="disclosure"{{if or .LoadErr .LoadMsg}} open{{end}}><summary>{{t "Load Question Definition"}}<span class="sub">{{t "one hachidori.question.v1 file"}}</span></summary>
         <div class="body">
-          {{template "resource-selection" (resourceInput .PathPicker "Definition file (absolute path)" "load_path" .W.LoadPath "/path/to/my.question.json" false false "" "op" "pick-load" "Choose file")}}
+          {{template "resource-selection" (resourceInput .PathPicker "Definition file (absolute path)" "load_path" .W.LoadPath "/path/to/my.question.json" false false "" "op" "pick-load" "Open definition…")}}
           <div class="btn-row"><button type="submit" class="btn" name="op" value="load">{{t "Load into editor"}}</button></div>
           {{with .LoadErr}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
           {{with .LoadMsg}}<p class="msg ok" role="status">{{.}}</p>{{end}}

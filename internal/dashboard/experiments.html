@@ -13,8 +13,8 @@
   <div class="region-h"><h2 id="setup-h">{{if .Exp}}{{t "New experiment"}}{{else}}{{t "Set up an experiment"}}{{end}}</h2><span class="sub">{{t "one experiment at a time · nothing is stored except the reports you export or save to history"}}</span></div>
   <form method="post" action="/experiments/run" class="stack" id="exp-form">
     <input type="hidden" name="token" value="{{.Token}}">
-    {{template "resource-selection" (resourceInput .PathPicker "Dataset (JSONL, absolute path)" "dataset" .Form.Dataset "/path/to/dataset.jsonl" true false "/experiments/pick" "pick" "dataset" "Choose file")}}
-    {{template "resource-selection" (resourceInput .PathPicker "Question Definition files or directories (optional, absolute paths, one per line)" "definitions" .Form.Definitions "" false true "/experiments/pick" "pick" "definition-file" "Choose file" "definition-folder" "Choose folder")}}
+    {{template "resource-selection" .DatasetInput}}
+    {{template "resource-selection" .QuestionsInput}}
     <div class="fields">
       <label class="field">{{t "Warmup requests (excluded from latency)"}}<input name="warmup" value="{{.Form.Warmup}}" inputmode="numeric"></label>
       <label class="field">{{t "Passes (accuracy uses pass 1)"}}<input name="passes" value="{{.Form.Passes}}" inputmode="numeric"></label>
@@ -23,7 +23,7 @@
       <button type="submit" data-run class="btn{{if not (and .Exp .Exp.Report)}} primary{{end}}"{{with .Exp}}{{if eq .State "running"}} disabled{{end}}{{end}}>{{t "Run experiment"}}</button>
       <button type="submit" class="btn" formaction="/experiments/preflight">{{t "Preflight only"}}</button>
     </div>
-    <p class="note">{{t "The dataset and definitions are read on this machine from the paths you enter. Only each case's state and compiled questions are sent to"}} <code>POST /v1/decide</code>.</p>
+    <p class="note">{{t "The dataset and questions are read on this machine. Only each case's state and compiled questions are sent to"}} <code>POST /v1/decide</code>.</p>
   </form>
   {{with .Pre}}
   <dl class="kv" aria-label="{{t "Preflight only"}}">
@@ -39,7 +39,7 @@
 
 {{if .HistoryOn}}
 <section class="region section" aria-labelledby="hist-h">
-  <div class="region-h"><h2 id="hist-h">{{t "History"}}</h2><span class="sub mono">{{.HistoryRoot}} {{t "· saved only when you choose to"}}</span></div>
+  <div class="region-h"><h2 id="hist-h">{{t "History"}}</h2><span class="sub" title="{{.HistoryRoot}}">{{t "saved only when you choose to"}}</span></div>
   {{with .HistoryErr}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   {{if .History}}
   {{if or (ge .HistoryPrev 0) (ge .HistoryNext 0)}}<nav class="btn-row" aria-label="{{t "History"}}">
@@ -139,7 +139,7 @@
     <form method="post" action="/experiments/export" class="path-form">
       <input type="hidden" name="token" value="{{$.Token}}">
       <input type="hidden" name="seq" value="{{.Seq}}">
-      {{template "resource-selection" (resourceInput $.PathPicker "Export path" "export_path" $.Form.ExportPath "/path/to/report.json" false false "/experiments/pick" "pick" "export" "Choose file")}}
+      {{template "resource-selection" (resourceInput $.PathPicker "Export path" "export_path" $.Form.ExportPath "/path/to/report.json" false false "/experiments/pick" "pick" "export" "Choose destination…")}}
       <button type="submit" class="btn">{{t "Export report"}}</button>
     </form>
   </div>

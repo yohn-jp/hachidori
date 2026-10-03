@@ -131,6 +131,19 @@ code, pre, .mono { font-family: var(--mono); font-size: .92em; }
 .spec dt { font-size: var(--fs-label); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
 .spec dd { margin: .1rem 0 0; font-weight: 560; overflow-wrap: break-word; }
 .spec dd .sub { display: block; font-weight: 400; }
+/* .intent    the operator's decisions in one aligned column: an uppercase
+              label, then the value and its one-line consequence; rows are
+              separated by hairlines. A workspace has one, above its one
+              dominant action. */
+.intent { display: grid; grid-template-columns: minmax(8rem, 13rem) minmax(0, 1fr); margin: 0; max-width: var(--ws-max); }
+.intent > div { display: contents; }
+.intent dt { padding: var(--sp-3) var(--sp-4) var(--sp-3) 0; border-top: 1px solid var(--line); font-size: var(--fs-label); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+.intent dd { display: grid; gap: var(--sp-1); align-content: start; min-width: 0; margin: 0; padding: var(--sp-3) 0; border-top: 1px solid var(--line); }
+.intent dd > .value { font-size: var(--fs-value); font-weight: 600; overflow-wrap: break-word; }
+.intent dd > .value.tone-ok, .intent dd > .value.tone-warn, .intent dd > .value.tone-bad { color: var(--tone); }
+.intent dd select, .intent dd input { max-width: 28rem; }
+.intent-action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+@media (max-width: 40rem) { .intent { grid-template-columns: minmax(0, 1fr); } .intent dd { border-top: 0; padding-top: 0; } }
 
 /* ---- controls ------------------------------------------------------------- */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: var(--ctl-h); padding: .3rem .85rem; border-radius: var(--r); border: 1px solid var(--line-2);

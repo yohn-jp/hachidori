@@ -104,3 +104,23 @@ func TestResidentSelectionIsAdditiveAndValidatedOnRead(t *testing.T) {
 		t.Fatal("reading modified the file")
 	}
 }
+
+// The tuning memory budget persists as an explicit override; 0 is Auto.
+func TestMemoryBudgetPersistsAndClearsToAuto(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if b, err := (&Store{Path: path}).MemoryBudget(); err != nil || b != 0 {
+		t.Fatalf("no file: %d %v", b, err)
+	}
+	if err := (&Store{Path: path}).SetMemoryBudget(6 << 30); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := (&Store{Path: path}).MemoryBudget(); err != nil || b != 6<<30 {
+		t.Fatalf("after relaunch: %d %v", b, err)
+	}
+	if err := (&Store{Path: path}).SetMemoryBudget(0); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(path); strings.Contains(string(raw), "memory_budget_bytes") {
+		t.Fatalf("Auto must not be stored as a value: %s", raw)
+	}
+}

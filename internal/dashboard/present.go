@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/yohn-jp/hachidori/internal/tuning"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -55,6 +56,9 @@ type ControlProjection struct {
 // operator-evidence-open, followed by operator-disclosure-close. No raw HTML is passed as data.
 type DisclosureProjection struct {
 	ID, Label string
+	// Open renders the disclosure expanded: only when the operator has a
+	// reason to act inside it.
+	Open bool
 }
 
 // SectionProjection supplies the heading of a document/instrument section.
@@ -104,8 +108,15 @@ func alerts(v view) []alert {
 		warn = append(warn, alert{"warn", t("Inference queue is full"),
 			t("%d of %d slots in use.", w.QueueDepth, w.QueueLimit)})
 	}
-	if m := gpuMem(w.Accelerator); m != nil && m.Used >= 95 {
-		warn = append(warn, alert{"warn", t("GPU memory pressure"), t("%.1f%% of device memory in use.", m.Used)})
+	if p := memPressureOf(w.Accelerator); p != nil && p.Level != "ok" {
+		a := alert{"warn", t("GPU memory pressure"), t("%.1f%% of device memory in use.", p.Pct)}
+		if p.Level == "bad" {
+			a = alert{"bad", t("GPU memory is above the safe budget"),
+				t("%.1f%% of device memory in use; the Auto budget keeps %s free. Requests can fail or slow down. Plan a smaller candidate in Tuning.", p.Pct, p.Margin)}
+			bad = append(bad, a)
+		} else {
+			warn = append(warn, a)
+		}
 	}
 	switch tn := v.Tunnel; {
 	case tn.State == tunnel.StateExited:
@@ -119,18 +130,72 @@ func alerts(v view) []alert {
 	return append(bad, warn...)
 }
 
+// memPressure is device memory occupancy as its own axis, independent of
+// READY: a ready worker on a full device is still an attention state. Level
+// is bad above the Auto budget (inside the safety margin tuning keeps free),
+// warn from 80%, else ok.
+type memPressure struct {
+	Used, Total, Margin string
+	Pct                 float64
+	Level               string // ok | warn | bad
+	Word                string // catalog message ID
+}
+
+func memPressureOf(m map[string]any) *memPressure {
+	total, ok1 := num(m, "memory_total")
+	free, ok2 := num(m, "memory_free")
+	if !ok1 || !ok2 || total <= 0 {
+		return nil
+	}
+	used := max(total-free, 0)
+	p := &memPressure{Used: tuning.Bytes(uint64(used)), Total: tuning.Bytes(uint64(total)), Pct: max(0, min(100, 100*used/total)), Level: "ok", Word: "Normal"}
+	budget := tuning.AutoBudget(uint64(total))
+	p.Margin = tuning.Bytes(uint64(total) - budget)
+	switch {
+	case budget > 0 && uint64(used) > budget:
+		p.Level, p.Word = "bad", "Above safe budget"
+	case p.Pct >= 80:
+		p.Level, p.Word = "warn", "High"
+	}
+	return p
+}
+
+// runtimeAction is the one primary Runtime action the current state makes
+// valid: Start a stopped runtime, Restart a failed one or one whose next
+// start differs, open the Workbench when it is ready, nothing while it
+// starts. Kind is start | restart | workbench | "".
+type runtimeAction struct {
+	Kind, Label, Reason string
+}
+
+func runtimeActionOf(v view) runtimeAction {
+	w := v.S.Worker
+	switch {
+	case !v.Running:
+		return runtimeAction{"start", "Start", ""}
+	case w.State == worker.StateFailed:
+		return runtimeAction{"restart", "Restart", "The worker failed."}
+	case v.Next != nil && v.Next.Model != "" && (v.Next.Differs || v.Next.VariantDiffers) && v.Next.Problem == "":
+		return runtimeAction{"restart", "Restart to apply", "The next start differs from what serves now."}
+	case w.Ready:
+		return runtimeAction{"workbench", "Open Workbench", ""}
+	}
+	return runtimeAction{}
+}
+
 // shellStatus is the compact runtime identity the workstation shell shows on
 // every page. It restates the /v1/status document and the attention list; it
 // is not a second readiness authority.
 type shellStatus struct {
-	Word      string // "READY", else the worker state
-	Tone      string // ok | warn | bad | idle
-	Model     string // selected model id
-	Provider  string // provider and version
-	Device    string // device and dtype
-	GPU       string // accelerator name
-	Memory    string // GPU memory in use, when the device reports it
-	Attention int    // items in the needs-attention list
+	Word       string // "READY", else the worker state
+	Tone       string // ok | warn | bad | idle
+	Model      string // selected model id
+	Provider   string // provider and version
+	Device     string // device and dtype
+	GPU        string // accelerator name
+	Memory     string // GPU memory in use, when the device reports it
+	MemoryTone string // ok | warn | bad: memory pressure, independent of Tone
+	Attention  int    // items in the needs-attention list
 	// Artifact is the execution artifact the running worker serves: SOURCE or
 	// VARIANT <exact id>; empty while no worker runs.
 	Artifact string
@@ -151,8 +216,8 @@ func shellOf(v view) shellStatus {
 	case v.S.Runtime.ModelID != "":
 		s.Artifact = "SOURCE"
 	}
-	if m := gpuMem(w.Accelerator); m != nil {
-		s.Memory = fmt.Sprintf("%.0f%% GPU memory used", m.Used)
+	if p := memPressureOf(w.Accelerator); p != nil {
+		s.Memory, s.MemoryTone = fmt.Sprintf("%.0f%% GPU memory used", p.Pct), p.Level
 	}
 	return s
 }

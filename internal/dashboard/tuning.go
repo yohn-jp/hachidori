@@ -39,10 +39,6 @@ type Tuning interface {
 	// say about the exact profile. It is advisory: every value carries its
 	// state, and the dashboard shows nothing it does not state.
 	Impact(tuning.Profile, tuning.Analysis, tuning.Compilation) (TuningImpact, error)
-	// BuildCandidate hands the exact saved profile to the Forge build
-	// (app.Controller.OptimizeProfile): one accepted background operation
-	// whose phases, candidate and evidence are Forge's. Nothing is applied.
-	BuildCandidate(source, profileID string) error
 }
 
 // ImpactValue is one projected consequence of a profile. State is Measured
@@ -70,6 +66,10 @@ func (v ImpactValue) normalized() ImpactValue {
 // TuningImpact is the size, memory, latency and fidelity of a profile.
 type TuningImpact struct {
 	Size, Memory, Latency, Fidelity ImpactValue
+	// MemoryUsage is the device-memory figure behind Memory: measured device
+	// memory of a probe, or a lower bound (the weights) when nothing was
+	// measured. Zero bytes means no figure exists.
+	MemoryUsage tuning.Usage
 }
 
 // TuningObjectives is the objective vocabulary. The objective is recorded
@@ -158,11 +158,25 @@ type TuningView struct {
 	ProfileSchema, ProfileID                         string
 	Saved                                            bool
 
-	Regions  []TuningRegionRow
-	Pinned   int
-	Impact   []TuningImpactRow
-	Profiles []TuningProfileRow
-	Evidence *TuningEvidenceView
+	Regions []TuningRegionRow
+	Pinned  int
+	// PreservedRegions counts the regions the compiled profile keeps at
+	// source precision (pinned or preserved by the canonical policy).
+	PreservedRegions int
+	Impact           []TuningImpactRow
+	// Envelope is the target device and memory budget; Fit places the
+	// profile's memory figure against it.
+	Envelope    EnvelopeView
+	Fit         FitView
+	memoryUsage tuning.Usage
+	// AdvancedOpen opens the semantic preservation editor: only when the
+	// operator has a reason to intervene (a recommendation to review or an
+	// out-of-envelope plan).
+	AdvancedOpen bool
+	// AdvancedDisclosure holds the semantic preservation editor.
+	AdvancedDisclosure DisclosureProjection
+	Profiles           []TuningProfileRow
+	Evidence           *TuningEvidenceView
 	// EvidenceDisclosure is the shared Details/Evidence primitive that holds
 	// every generated mapping.
 	EvidenceDisclosure DisclosureProjection
@@ -247,13 +261,21 @@ func (d *Dashboard) tuningPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	v.Tuning = d.tuningView(mv, source, profileID)
+	v.Tuning.Envelope = d.envelopeOf(v)
+	if len(v.Tuning.Impact) > 1 {
+		v.Tuning.Fit = fitOfTuning(v.Tuning)
+		v.Tuning.AdvancedOpen = v.Tuning.Fit.Blocked()
+	}
+	defer func() {
+		v.Tuning.AdvancedDisclosure = DisclosureProjection{ID: "tuning-advanced", Label: "Semantic preservation", Open: v.Tuning.AdvancedOpen}
+		d.renderView(w, "tuning", v)
+	}()
 	switch {
 	case compared:
 		v.Tuning.Compare = d.tuningCompareView(v.Tuning, cmp, cmpErr)
 	case handedOver:
 		v.Tuning.Context = d.tuningContextView(v.Tuning, q, ctx, ctxErr)
 	}
-	d.renderView(w, "tuning", v)
 }
 
 // tuningContextView binds a resolved context to the profile the page shows and
@@ -280,6 +302,7 @@ func (d *Dashboard) tuningContextView(tv *TuningView, q url.Values, ctx tuning.E
 	}
 	cv.Recommendation, cv.NoRecommendation = tuning.Recommend(ctx, profile, analysis)
 	if cv.Recommendation != nil {
+		tv.AdvancedOpen = true
 		for i := range tv.Regions {
 			tv.Regions[i].Recommended = tv.Regions[i].ID == cv.Recommendation.RegionID
 		}
@@ -386,12 +409,15 @@ func (d *Dashboard) tuningView(mv *ModelsView, source, profileID string) *Tuning
 		default:
 			row.Note = "Auto: the canonical policy quantizes this region."
 		}
+		if row.Effective == Preserved {
+			tv.PreservedRegions++
+		}
 		tv.Regions = append(tv.Regions, row)
 	}
 	for _, p := range saved {
 		tv.Profiles = append(tv.Profiles, TuningProfileRow{ID: p.ID(), Objective: p.Objective, Pinned: pinnedCount(p), Current: tv.Saved && p.ID() == profile.ID()})
 	}
-	tv.Impact = d.tuningImpact(profile, analysis, compiled)
+	tv.Impact, tv.memoryUsage = d.tuningImpact(profile, analysis, compiled)
 	tv.Evidence = &TuningEvidenceView{Recipe: compiled.Recipe.Name, RecipeSHA256: compiled.Recipe.SHA256(), CompilerVersion: compiled.Evidence.CompilerVersion,
 		Regions: compiled.Evidence.Regions, Preserved: compiled.Evidence.Preserved}
 	return tv
@@ -399,8 +425,12 @@ func (d *Dashboard) tuningView(mv *ModelsView, source, profileID string) *Tuning
 
 // tuningImpact normalizes the authority's projection. An authority that
 // cannot say anything leaves every value NOT_CHECKED.
-func (d *Dashboard) tuningImpact(p tuning.Profile, a tuning.Analysis, c tuning.Compilation) []TuningImpactRow {
+func (d *Dashboard) tuningImpact(p tuning.Profile, a tuning.Analysis, c tuning.Compilation) ([]TuningImpactRow, tuning.Usage) {
 	imp, err := d.cfg.Tuning.Impact(p, a, c)
+	usage := imp.MemoryUsage
+	if err != nil {
+		usage = tuning.Usage{}
+	}
 	rows := []TuningImpactRow{
 		{Key: "size", Label: "Model size", ImpactValue: imp.Size},
 		{Key: "memory", Label: "Memory (VRAM/RAM)", ImpactValue: imp.Memory},
@@ -413,7 +443,18 @@ func (d *Dashboard) tuningImpact(p tuning.Profile, a tuning.Analysis, c tuning.C
 		}
 		rows[i].ImpactValue = rows[i].ImpactValue.normalized()
 	}
-	return rows
+	// A memory figure is used only when its value is stated: a NOT_CHECKED
+	// memory row has no figure, whatever the authority returned.
+	if rows[1].State == NotChecked {
+		usage = tuning.Usage{}
+	}
+	return rows, usage
+}
+
+// fitOfTuning places the shown profile's memory figure against the envelope.
+func fitOfTuning(tv *TuningView) FitView {
+	mem := tv.Impact[1]
+	return fitOf(tv.Envelope.Envelope, tv.memoryUsage, mem.State, mem.Basis)
 }
 
 func short12(s string) string { return s[:min(len(s), 12)] }
@@ -492,8 +533,9 @@ func (d *Dashboard) tuningSave(w http.ResponseWriter, r *http.Request) {
 }
 
 // tuningBuild saves the described profile, reads it back by its identity and
-// hands exactly that saved profile to the Forge build. The candidate, its
-// progress and its evidence are then Forge's; Apply stays explicit there.
+// selects exactly that saved profile in Forge, whose one build/evaluate
+// operation builds, evaluates and records the candidate. Tuning starts no
+// build of its own; Apply stays explicit in Forge.
 func (d *Dashboard) tuningBuild(w http.ResponseWriter, r *http.Request) {
 	source, profile, analysis, err := d.tuningProfile(r)
 	if err == nil {
@@ -510,16 +552,14 @@ func (d *Dashboard) tuningBuild(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err == nil {
-		err = d.cfg.Tuning.BuildCandidate(source, savedID)
-	}
 	if err != nil {
 		d.remember("build candidate "+source, err, "")
 		http.Redirect(w, r, tuningLocation(source, savedID), http.StatusSeeOther)
 		return
 	}
-	d.remember("build candidate "+source, nil, "handed profile "+saved.ID()+" to Forge. The build, its evidence and any Apply are Forge's; nothing is applied")
-	http.Redirect(w, r, "/forge", http.StatusSeeOther)
+	d.remember("build candidate "+source, nil, "saved profile "+saved.ID()+" and selected it in Forge. Build candidate there builds and evaluates it in one operation; nothing was built and nothing is applied")
+	q := url.Values{"source": {source}, "profile": {tuningProfilePrefix + saved.ID()}}
+	http.Redirect(w, r, "/forge?"+q.Encode()+"#forge-intent-form", http.StatusSeeOther)
 }
 
 // The Experiment/Evidence context travels in the query string as identities

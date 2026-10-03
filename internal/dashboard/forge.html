@@ -1,7 +1,7 @@
-{{/* Forge collects semantic build/evaluation intent and renders the backend-owned operation and candidate evidence. */}}
+{{/* Forge collects build intent (source, tuning profile, evaluation) and renders the backend-owned operation and its candidates. Preflight, provisioning, build, probe, evaluation, certification and evidence recording are progress of one operation, never operator steps; Apply stays explicit. */}}
 {{define "forge"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>{{t "Forge"}}</h1><p class="lede">{{t "Choose a source, optimization profile and evaluation suite. One Build & evaluate operation produces a candidate with evidence; Apply is always explicit."}}</p></div>
+  <div><h1>{{t "Forge"}}</h1><p class="lede">{{t "Build a candidate from a tuning profile. Hachidori checks, builds and evaluates it; you decide whether to apply it."}}</p></div>
 </header>
 {{template "last" .Last}}
 {{with .Forge}}
@@ -19,9 +19,130 @@
   {{template "op-refresh" "forge-workspace"}}
   {{end}}
   {{with .Last}}{{template "op-last" .}}{{end}}
+
+  <section id="forge-build" aria-labelledby="fb-h">
+    <h2 class="vh" id="fb-h">{{t "Build candidate"}}</h2>
+    {{if .Controls}}
+    <form method="post" action="/forge/build-evaluate" class="stack" id="forge-intent-form">
+      <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge">
+      {{with .Form.Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+      <dl class="intent">
+        <div><dt><label for="forge-source">{{t "Source"}}</label></dt><dd>
+          <select id="forge-source" name="source" aria-label="{{t "Source"}}" required>{{range .Sources}}<option value="{{.ID}}"{{if eq .ID $.Forge.Form.Source}} selected{{end}}>{{.ID}}{{if not .Materialized}} · {{t "not materialized"}}{{end}}</option>{{end}}</select>
+        </dd></div>
+        <div><dt><label for="forge-profile">{{t "Tuning profile"}}</label></dt><dd>
+          <select id="forge-profile" name="profile" aria-label="{{t "Tuning profile"}}" required>{{range .Sources}}{{$src := .ID}}<optgroup label="{{.ID}}">{{range $.Forge.Profiles}}{{if eq .Source $src}}<option value="{{.Value}}"{{if eq .Value $.Forge.Form.Profile}} selected{{end}}>{{if .Tuned}}{{t "Tuned"}}{{else}}{{t "Built-in"}}{{end}} · {{.Label}}</option>{{end}}{{end}}</optgroup>{{end}}</select>
+          <span class="note"><a href="/tuning">{{t "Plan a profile in Tuning"}}</a></span>
+        </dd></div>
+        <div id="forge-target"><dt>{{t "Memory budget"}}</dt><dd>
+          {{with .Envelope}}<span class="value">{{if .Device}}{{.Device}}{{else}}{{t "Unknown device"}}{{end}}{{with .Budget}} · {{.}}{{else}} · {{t "unknown"}}{{end}}</span>
+          <span class="note">{{if .Auto}}{{t "Auto"}}{{else}}{{t "Override"}}{{end}} · <a href="/tuning">{{t "Change in Tuning"}}</a></span>{{end}}
+        </dd></div>
+        <div id="forge-evaluation"><dt>{{t "Evaluation"}}</dt><dd class="stack">
+          {{template "resource-selection" .DatasetInput}}
+          {{template "resource-selection" .QuestionsInput}}
+          {{template "resource-selection" .PolicyInput}}
+        </dd></div>
+      </dl>
+      {{template "operator-advanced-open" (disclosure "forge-execution-overrides" "Execution")}}
+        <p class="note">{{t "Auto uses the backend's validated defaults. Overrides are pinned for this operation and are never silently replaced."}}</p>
+        <div class="fields">
+          <label class="field">{{t "Candidate device"}}<select name="device"><option value=""{{if eq .Form.Device ""}} selected{{end}}>{{t "Auto"}}</option>{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $.Forge.Form.Device}} selected{{end}}>{{t "Override"}}: {{.}}</option>{{end}}</select></label>
+          <label class="field">{{t "Reference device"}}<select name="reference_device"><option value=""{{if eq .Form.ReferenceDevice ""}} selected{{end}}>{{t "Auto"}}</option>{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $.Forge.Form.ReferenceDevice}} selected{{end}}>{{t "Override"}}: {{.}}</option>{{end}}</select></label>
+          <label class="field">{{t "Reference precision"}}<select name="reference_dtype"><option value=""{{if eq .Form.ReferenceDType ""}} selected{{end}}>{{t "Auto"}}</option><option value="bfloat16"{{if eq .Form.ReferenceDType "bfloat16"}} selected{{end}}>{{t "Override"}}: bfloat16</option><option value="float32"{{if eq .Form.ReferenceDType "float32"}} selected{{end}}>{{t "Override"}}: float32</option></select></label>
+          <label class="field">{{t "Provisioning"}}<select name="provisioning"><option value="auto"{{if eq .Form.Provisioning "auto"}} selected{{end}}>{{t "Auto · materialize missing prerequisites when required"}}</option><option value="never"{{if eq .Form.Provisioning "never"}} selected{{end}}>{{t "Do not provision"}}</option></select></label>
+        </div>
+      {{template "operator-disclosure-close"}}
+      <div class="intent-action">
+        <button type="submit" class="btn primary" data-pending="{{t "Building and evaluating…"}}">{{t "Build candidate"}}</button>
+        <span class="note">{{t "Checks, build, evaluation and evidence recording run as one operation. Nothing is applied."}}</span>
+      </div>
+    </form>
+    {{else}}<p class="muted">{{t "Forge actions are unavailable."}}</p>{{end}}
+  </section>
+
+  <section class="section" id="forge-variants" aria-labelledby="fv-h">
+    <h2 id="fv-h">{{t "Candidates"}}</h2>
+    {{range .Items}}{{$st := .Status}}
+    <article class="candidate" data-variant="{{.ID}}" id="variant-{{.ID}}" data-fit="{{.Fit.Fit}}"{{if .Active}} aria-current="true"{{end}} aria-labelledby="vh-{{.ID}}">
+      <div class="candidate-head">
+        <h3 class="id" id="vh-{{.ID}}">{{.ID}}</h3>
+        <span class="badge tone-{{$st.Tone}}" data-status>{{t $st.Word}}</span>
+      </div>
+      <dl class="spec">
+        <div><dt>{{t "Source"}}</dt><dd class="id">{{.SourceID}}</dd></div>
+        <div data-fit-memory><dt>{{t "Memory"}}</dt><dd>{{with .Fit.Value}}{{.}}{{else}}<span class="muted">{{t "No valid evidence"}}</span>{{end}}{{with $.Forge.Envelope.Budget}} / {{.}}{{end}}<span class="sub">{{template "semantic-state" .Fit.State}} {{.Fit.Basis}}</span></dd></div>
+        <div><dt>{{t "Evaluation"}}</dt><dd>{{if eq .Certification "accepted"}}<span class="badge tone-ok">{{t "accepted"}}</span>{{else if eq .Certification "rejected"}}<span class="badge tone-bad">{{t "rejected"}}</span>{{else}}<span class="badge">{{t "uncertified"}}</span>{{end}}{{with .CertificationNote}}<span class="sub bad-t">{{.}}</span>{{end}}</dd></div>
+      </dl>
+
+      {{if .Fit.Blocked}}
+      <p class="msg bad" role="alert" data-envelope-blocked>{{t "This candidate exceeds the memory budget, so it is not offered for Apply. Change the plan or the budget in Tuning; nothing is changed for you."}} <a href="{{.Tuning}}" data-return-tuning>{{t "Return to Tuning"}}</a></p>
+      {{else if $.Forge.Controls}}{{if and (not .Problem) .SourceMaterialized}}
+      {{$vid := .ID}}{{$src := .SourceID}}
+      <div id="apply-{{$vid}}">
+        {{if $.Forge.RestartRequired}}<p class="muted">{{t "Restart the runtime in Models before applying a variant."}}</p>
+        {{else if .CanApply}}
+        <form method="post" action="/forge/apply" class="btn-row" data-confirm="{{t "Apply this certified variant? The runtime is rebound to it and verified; if anything fails, the previous serving target is restored."}}">
+          <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="variant" value="{{$vid}}"><input type="hidden" name="model" value="{{$src}}">
+          <button type="submit" class="btn primary" data-pending="{{t "Applying…"}}">{{t "Apply certified variant"}}</button>
+          <label class="field">{{t "Serving device"}}<select name="device">{{$ad := $.Forge.ActiveDevice}}{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+          <label class="check"><input type="checkbox" name="materialize" value="1"> {{t "Materialize a missing runtime or source model first"}}</label>
+        </form>
+        {{end}}
+      </div>
+      {{end}}{{end}}
+      {{if not (or .CanApply .Running .Fit.Blocked)}}{{with .NextStep}}<p class="note" data-next-step>{{t .}}</p>{{end}}{{end}}
+
+      {{template "operator-details-open" (disclosure (print "variant-details-" .ID) "Provenance and lifecycle")}}
+      <dl class="kv">
+        <dt>{{t "Source"}}</dt><dd class="mono">{{.SourceID}}@{{.SourceRevision}}{{if not .SourceMaterialized}} <span class="bad-t">{{t "source not materialized"}}</span>{{end}}</dd>
+        <dt>{{t "Recipe"}}</dt><dd class="mono">{{.Recipe}} · {{.Engine}} {{.EngineVersion}}</dd>
+        <dt>{{t "Precision"}}</dt><dd class="mono">{{.Scheme}} · {{.Bits}}-bit g{{.GroupSize}} · {{t "compute"}} {{.DType}} · {{t "preserved at higher precision"}}: {{len .Preserved}}</dd>
+        <dt>{{t "Manifest"}}</dt><dd class="mono" title="{{.ManifestSHA256}}">{{short .ManifestSHA256}}</dd>
+      </dl>
+      <ol class="stages lifecycle" aria-label="{{t "Lifecycle"}}">{{range .Stages}}
+        <li class="{{.Class}}" data-stage="{{.Name}}" data-state="{{.State}}"{{if eq .State "current"}} aria-current="step"{{end}}><strong>{{t .Label}}</strong> <span class="stage-detail">{{t .Detail}}</span>{{with .Fact}} <span class="mono">{{.}}</span>{{end}}</li>{{end}}
+      </ol>
+      {{with .Check}}<p class="muted">{{.}}</p>{{end}}
+      <div class="btn-row">
+        <form method="post" action="/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="kind" value="variant"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
+        {{if not .Active}}<form method="post" action="/models/remove" class="inline" data-confirm="{{t "Remove this variant from HACHIDORI_HOME? Its source model is not touched."}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="kind" value="variant"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
+      </div>
+      {{range .Preflights}}{{template "forge-preflight" .}}{{end}}
+      {{with .Diagnostics}}
+      <h4>{{t "Failure diagnostics"}}</h4>
+      <ul class="diagnostics-list">{{range .}}<li><a class="mono" href="/forge/diagnostics/{{.ID}}" download>{{.ID}}</a> · {{.Kind}}{{with .Phase}} · {{t "phase"}} {{.}}{{end}} · {{.Created}}<div class="muted">{{.Error}}</div></li>{{end}}</ul>
+      {{end}}
+      <p class="note">{{t "Certification evidence:"}} <span class="mono">hachidori certify show {{.ID}}</span></p>
+      {{template "operator-disclosure-close"}}
+    </article>
+    {{else}}<p class="muted">{{t "No candidates yet."}}</p>{{end}}
+  </section>
+
+  {{if and .Controls .Items}}
+  {{template "operator-advanced-open" (disclosure "forge-advanced" "Low-level and experimental activation")}}
+    <p class="note warn-t">{{t "These actions are not steps of the lifecycle above. They only change the activation record: a running worker keeps what it started with until you restart it, and nothing proves the variant serves. Use Apply for a certified variant."}}</p>
+    <div class="table-wrap"><table class="data" id="advanced-activation">
+      <thead><tr><th scope="col">{{t "Variant"}}</th><th scope="col">{{t "Certification"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
+      <tbody>{{range .Items}}{{if and (not .Problem) .SourceMaterialized}}
+        <tr data-variant="{{.ID}}"><td class="mono">{{.ID}}</td><td>{{.Certification}}</td>
+        <td class="nowrap">{{if .Fit.Blocked}}<span class="bad-t">{{t "Over memory budget"}}</span>
+        {{else if .CanActivate}}<form method="post" action="/forge/activate" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="device" value="{{$.Forge.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><button type="submit" class="btn">{{t "Activate without applying"}}</button></form>
+        {{else if .CanExperiment}}<form method="post" action="/forge/activate" class="inline" data-confirm="{{t "Activate this variant as experimental/uncertified? It has no certification record. It is marked as such in status and is never promoted automatically."}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="device" value="{{$.Forge.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><input type="hidden" name="experimental" value="1"><button type="submit" class="btn danger">{{t "Activate as experimental"}}</button></form>{{else}}<span class="muted">-</span>{{end}}</td></tr>
+      {{end}}{{end}}</tbody>
+    </table></div>
+  {{template "operator-disclosure-close"}}
+  {{end}}
+
+  {{template "operator-details-open" (disclosure "forge-diagnostics-details" "Serving artifact, readiness and diagnostics")}}
+  <section id="forge-artifact" aria-labelledby="fa-h">
+    <h3 id="fa-h">{{t "Execution artifact"}}</h3>
+    {{template "artifacts" $.Art}}
+  </section>
   {{with .Forge.Resolution}}
-  <section class="region section" id="forge-resolution" aria-labelledby="frp-h">
-    <div class="region-h"><h2 id="frp-h">{{t "Resolved execution choices"}}</h2><span class="sub mono">{{.Source}} · {{.Recipe}}{{with .Variant}} · {{.}}{{end}}</span></div>
+  <section id="forge-resolution" aria-labelledby="frp-h">
+    <h3 id="frp-h">{{t "Resolved execution choices"}}</h3>
+    <p class="sub mono">{{.Source}} · {{.Recipe}}{{with .Variant}} · {{.}}{{end}}</p>
     <dl class="kv">
       <dt>{{t "Candidate device"}}</dt><dd>{{t .CandidateDevice.Mode}} → <span class="mono">{{.CandidateDevice.Value}}</span></dd>
       <dt>{{t "Reference device"}}</dt><dd>{{t .ReferenceDevice.Mode}} → <span class="mono">{{.ReferenceDevice.Value}}</span></dd>
@@ -30,151 +151,30 @@
     </dl>
   </section>
   {{end}}
-
-  <section class="region section" id="forge-artifact" aria-labelledby="fa-h">
-    <div class="region-h"><h2 id="fa-h">{{t "Execution artifact"}}</h2><span class="sub">{{t "what serves now and what the next start serves"}}</span></div>
-    {{template "artifacts" $.Art}}
-  </section>
-
-  <section class="region section" id="forge-flow" aria-labelledby="ff-h">
-    <div class="region-h"><h2 id="ff-h">{{t "Lifecycle"}}</h2><span class="sub">{{t "the normal path, in order"}}</span></div>
-    <ol class="forge-flow">
-      <li><strong>{{t "Source"}}</strong></li>
-      <li><strong>{{t "Optimization profile"}}</strong></li>
-      <li><strong>{{t "Evaluation suite"}}</strong></li>
-      <li><strong>{{t "Build & evaluate"}}</strong></li>
-      <li><strong>{{t "Candidate"}}</strong> {{t "with exact evidence"}}</li>
-      <li><strong>{{t "Apply"}}</strong> {{t "explicitly"}}</li>
-    </ol>
-  </section>
-
-  <section class="region section" id="forge-build" aria-labelledby="fb-h">
-    <div class="region-h"><h2 id="fb-h">{{t "Build & evaluate"}}</h2><span class="sub">{{t "one backend operation"}}</span></div>
-    <p class="note">{{t "The source remains unchanged. Hachidori runs readiness checks, builds the selected profile, evaluates the exact candidate and records its certification evidence. An accepted candidate is never applied automatically."}}</p>
-    {{if .Controls}}
-    <form method="post" action="/forge/build-evaluate" class="stack" id="forge-intent-form">
-      <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge">
-      {{with .Form.Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
-      <div class="region" role="group" aria-labelledby="forge-source-profile-h">
-        <div class="region-h"><h3 id="forge-source-profile-h">{{t "Source"}} → {{t "Optimization profile"}}</h3></div>
-        <div class="fields">
-          <label class="field">{{t "Source"}}<select name="source" required>{{range .Sources}}<option value="{{.ID}}"{{if eq .ID $.Forge.Form.Source}} selected{{end}}>{{.ID}}{{if not .Materialized}} · {{t "not materialized"}}{{end}}</option>{{end}}</select></label>
-          <label class="field">{{t "Optimization profile"}}<select name="profile" required>{{range .Sources}}{{range .Recipes}}<option value="{{.}}"{{if eq . $.Forge.Form.Profile}} selected{{end}}>{{.}}</option>{{end}}{{end}}</select></label>
-        </div>
-      </div>
-      <div class="region" role="group" aria-labelledby="forge-evaluation-h">
-        <div class="region-h"><h3 id="forge-evaluation-h">{{t "Evaluation suite"}}</h3></div>
-        {{template "resource-selection" (resourceInput .PathPicker "Evaluation dataset (JSONL, absolute path)" "dataset" .Form.Dataset "/path/to/dataset.jsonl" true false "/forge/pick" "pick" "dataset" "Choose file")}}
-        {{template "resource-selection" (resourceInput .PathPicker "Question Definition files or directories (absolute paths, one per line)" "questions" .Form.Questions "" false true "/forge/pick" "pick" "question-file" "Choose file" "question-folder" "Choose folder")}}
-        {{template "resource-selection" (resourceInput .PathPicker "Policy file (optional; default is the built-in profile)" "policy" .Form.Policy "" false false "/forge/pick" "pick" "policy" "Choose file")}}
-      </div>
-      <details class="region" id="forge-execution-overrides" data-keep="forge-execution-overrides">
-        <summary>{{t "Execution overrides"}}</summary>
-        <p class="note">{{t "Auto uses the backend's validated defaults. Overrides are pinned for this operation and are never silently replaced."}}</p>
-        <div class="fields">
-          <label class="field">{{t "Candidate device"}}<select name="device"><option value=""{{if eq .Form.Device ""}} selected{{end}}>{{t "Auto"}}</option>{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $.Forge.Form.Device}} selected{{end}}>{{t "Override"}}: {{.}}</option>{{end}}</select><span class="sub">{{t "Auto uses the device from a valid active runtime/model activation; pin a device when none is active."}}</span></label>
-          <label class="field">{{t "Reference device"}}<select name="reference_device"><option value=""{{if eq .Form.ReferenceDevice ""}} selected{{end}}>{{t "Auto"}}</option>{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $.Forge.Form.ReferenceDevice}} selected{{end}}>{{t "Override"}}: {{.}}</option>{{end}}</select></label>
-          <label class="field">{{t "Reference precision"}}<select name="reference_dtype"><option value=""{{if eq .Form.ReferenceDType ""}} selected{{end}}>{{t "Auto"}}</option><option value="bfloat16"{{if eq .Form.ReferenceDType "bfloat16"}} selected{{end}}>{{t "Override"}}: bfloat16</option><option value="float32"{{if eq .Form.ReferenceDType "float32"}} selected{{end}}>{{t "Override"}}: float32</option></select></label>
-          <label class="field">{{t "Provisioning"}}<select name="provisioning"><option value="auto"{{if eq .Form.Provisioning "auto"}} selected{{end}}>{{t "Auto · materialize missing prerequisites when required"}}</option><option value="never"{{if eq .Form.Provisioning "never"}} selected{{end}}>{{t "Do not provision"}}</option></select></label>
-        </div>
-      </details>
-      <div class="btn-row"><button type="submit" class="btn primary" data-pending="{{t "Building and evaluating…"}}">{{t "Build & evaluate"}}</button></div>
-    </form>
-    {{else}}<p class="muted">{{t "Forge actions are unavailable."}}</p>{{end}}
-    <p class="note">{{t "Preflight, provisioning, build, probe, reference execution, candidate execution, certification and evidence recording run as progress phases of the one operation. Apply remains a separate explicit action."}}</p>
-    {{with .Inventory.Optimizer}}<dl class="kv" id="optimizer-runtime"><dt>{{t "Optimizer runtime"}}</dt><dd class="mono">{{.ID}} · {{if .Materialized}}{{t "materialized"}}{{else}}{{t "not materialized (the first optimization materializes it)"}}{{end}}{{if .Verified}} · {{t "verified"}}{{end}}{{with .Problem}} <span class="bad-t">{{.}}</span>{{end}}</dd></dl>{{end}}
-    <div class="table-wrap"><table class="data" id="forge-sources">
-      <thead><tr><th scope="col">{{t "Source"}}</th><th scope="col">{{t "Revision"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Recipes"}}</th><th scope="col">{{t "Variants"}}</th></tr></thead>
-      <tbody>{{range .Sources}}
-        <tr data-source="{{.ID}}"><td class="strong mono">{{.ID}}</td><td class="mono">{{.Revision}}</td>
-          <td>{{if .Materialized}}<span class="badge tone-ok">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}</td>
-          <td class="mono">{{range .Recipes}}{{.}} {{else}}-{{end}}</td><td>{{.Variants}}</td></tr>{{else}}
-        <tr><td colspan="5" class="muted">{{t "No source model supports variants."}}</td></tr>{{end}}
-      </tbody>
-    </table></div>
-  </section>
-
-  <section class="region section" id="forge-variants" aria-labelledby="fv-h">
-    <div class="region-h"><h2 id="fv-h">{{t "Candidates"}}</h2><span class="sub">{{t "exact provenance, certification and serving state from backend records"}}</span></div>
-    {{range .Items}}
-    <article class="region variant-card" data-variant="{{.ID}}" id="variant-{{.ID}}"{{if .Active}} aria-current="true"{{end}} aria-labelledby="vh-{{.ID}}">
-      <div class="region-h"><h3 class="mono" id="vh-{{.ID}}">{{.ID}}</h3>
-        <span>{{if .Running}}<span class="badge tone-ok">{{t "running"}}</span>{{end}}{{if .Active}}<span class="badge tone-ok">{{if .Pending}}{{t "active · applies on restart"}}{{else}}{{t "active"}}{{end}}</span>{{if .Experimental}}<span class="badge tone-bad">{{t "experimental/uncertified"}}</span>{{end}}{{end}}</span></div>
-      <dl class="kv">
-        <dt>{{t "Source"}}</dt><dd class="mono">{{.SourceID}}@{{.SourceRevision}}{{if not .SourceMaterialized}} <span class="bad-t">{{t "source not materialized"}}</span>{{end}}</dd>
-        <dt>{{t "Recipe"}}</dt><dd class="mono">{{.Recipe}} · {{.Engine}} {{.EngineVersion}}</dd>
-        <dt>{{t "Precision"}}</dt><dd class="mono">{{.Scheme}} · {{.Bits}}-bit g{{.GroupSize}} · {{t "compute"}} {{.DType}} · {{t "preserved at higher precision"}}: {{len .Preserved}}</dd>
-        <dt>{{t "Manifest"}}</dt><dd class="mono" title="{{.ManifestSHA256}}">{{short .ManifestSHA256}}</dd>
-        <dt>{{t "Certification"}}</dt><dd>{{if eq .Certification "accepted"}}<span class="badge tone-ok">{{t "accepted"}}</span>{{else if eq .Certification "rejected"}}<span class="badge tone-bad">{{t "rejected"}}</span>{{else}}<span class="badge">{{t "uncertified"}}</span>{{end}}{{with .CertificationNote}} <span class="bad-t">{{.}}</span>{{end}}</dd>
-      </dl>
-      <ol class="stages lifecycle" aria-label="{{t "Lifecycle"}}">{{range .Stages}}
-        <li class="{{.Class}}" data-stage="{{.Name}}" data-state="{{.State}}"{{if eq .State "current"}} aria-current="step"{{end}}><strong>{{t .Label}}</strong> <span class="stage-detail">{{t .Detail}}</span>{{with .Fact}} <span class="mono">{{.}}</span>{{end}}</li>{{end}}
-      </ol>
-      {{with .NextStep}}<p class="note next-step" data-next-step>{{t .}}</p>{{end}}
-      {{with .Check}}<p class="muted">{{.}}</p>{{end}}
-      <div class="btn-row">
-        <form method="post" action="/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="kind" value="variant"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
-        {{if not .Active}}<form method="post" action="/models/remove" class="inline" data-confirm="{{t "Remove this variant from HACHIDORI_HOME? Its source model is not touched."}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="kind" value="variant"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
-      </div>
-
-      {{if $.Forge.Controls}}{{if and (not .Problem) .SourceMaterialized}}
-      {{$vid := .ID}}{{$src := .SourceID}}
-      <div class="region step" id="apply-{{$vid}}" role="group" aria-labelledby="sa-{{$vid}}">
-        <h4 id="sa-{{$vid}}">{{t "6 · Apply"}}</h4>
-        {{if $.Forge.RestartRequired}}<p class="muted">{{t "Restart the runtime in Models before applying a variant."}}</p>
-        {{else if .CanApply}}
-        <form method="post" action="/forge/apply" data-confirm="{{t "Apply this certified variant? The runtime is rebound to it and verified; if anything fails, the previous serving target is restored."}}">
-          <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="variant" value="{{$vid}}"><input type="hidden" name="model" value="{{$src}}">
-          <div class="fields"><label class="field">{{t "Serving device"}}<select name="device">{{$ad := $.Forge.ActiveDevice}}{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label></div>
-          <label class="check"><input type="checkbox" name="materialize" value="1"> {{t "Materialize a missing runtime or source model first"}}</label>
-          <div class="btn-row"><button type="submit" class="btn primary" data-pending="{{t "Applying…"}}">{{t "Apply certified variant"}}</button></div>
-        </form>
-        <p class="note">{{t "One backend transaction: it activates the variant, rebinds and starts the runtime, waits until this exact variant is READY on the requested device with its quantized execution, answers one typed decision, and otherwise restores the previous serving target. There is no fallback to the source, another variant or another device."}}</p>
-        {{else if .Running}}<p class="muted">{{t "This variant is serving now."}}</p>
-        {{else}}<p class="muted">{{t "Apply is available once the variant is certified (accepted) and verifies."}}</p>{{end}}
-      </div>
-      {{end}}{{end}}
-
-      {{range .Preflights}}{{template "forge-preflight" .}}{{end}}
-      {{with .Diagnostics}}
-      <h4>{{t "Failure diagnostics"}}</h4>
-      <ul class="diagnostics-list">{{range .}}<li><a class="mono" href="/forge/diagnostics/{{.ID}}" download>{{.ID}}</a> · {{.Kind}}{{with .Phase}} · {{t "phase"}} {{.}}{{end}} · {{.Created}}<div class="muted">{{.Error}}</div></li>{{end}}</ul>
-      {{end}}
-      <p class="note">{{t "Certification evidence:"}} <span class="mono">hachidori certify show {{.ID}}</span></p>
-    </article>
-    {{else}}<p class="muted">{{t "No variants yet."}}</p>{{end}}
-  </section>
-
-  {{if and .Controls .Items}}
-  <section class="region section advanced" id="forge-advanced" aria-labelledby="fx-h">
-    <div class="region-h"><h2 id="fx-h">{{t "Advanced"}}</h2><span class="sub">{{t "outside the certified workflow"}}</span></div>
-    <details data-keep="forge-advanced">
-      <summary>{{t "Low-level and experimental activation"}}</summary>
-      <p class="note warn-t">{{t "These actions are not steps of the lifecycle above. They only change the activation record: a running worker keeps what it started with until you restart it, and nothing proves the variant serves. Use Apply for a certified variant."}}</p>
-      <div class="table-wrap"><table class="data" id="advanced-activation">
-        <thead><tr><th scope="col">{{t "Variant"}}</th><th scope="col">{{t "Certification"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
-        <tbody>{{range .Items}}{{if and (not .Problem) .SourceMaterialized}}
-          <tr data-variant="{{.ID}}"><td class="mono">{{.ID}}</td><td>{{.Certification}}</td>
-          <td class="nowrap">{{if .CanActivate}}<form method="post" action="/forge/activate" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="device" value="{{$.Forge.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><button type="submit" class="btn">{{t "Activate without applying"}}</button></form>
-          {{else if .CanExperiment}}<form method="post" action="/forge/activate" class="inline" data-confirm="{{t "Activate this variant as experimental/uncertified? It has no certification record. It is marked as such in status and is never promoted automatically."}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="device" value="{{$.Forge.ActiveDevice}}"><input type="hidden" name="model" value="{{.SourceID}}"><input type="hidden" name="variant" value="{{.ID}}"><input type="hidden" name="experimental" value="1"><button type="submit" class="btn danger">{{t "Activate as experimental"}}</button></form>{{else}}<span class="muted">-</span>{{end}}</td></tr>
-        {{end}}{{end}}</tbody>
-      </table></div>
-    </details>
-  </section>
-  {{end}}
-
-  <section class="region section" id="forge-readiness-region" aria-labelledby="fr-h">
-    <div class="region-h"><h2 id="fr-h">{{t "Forge readiness"}}</h2><span class="sub">{{t "reports that belong to no variant"}}</span></div>
+  {{with .Inventory.Optimizer}}<dl class="kv" id="optimizer-runtime"><dt>{{t "Optimizer runtime"}}</dt><dd class="mono">{{.ID}} · {{if .Materialized}}{{t "materialized"}}{{else}}{{t "not materialized (the first optimization materializes it)"}}{{end}}{{if .Verified}} · {{t "verified"}}{{end}}{{with .Problem}} <span class="bad-t">{{.}}</span>{{end}}</dd></dl>{{end}}
+  <div class="table-wrap"><table class="data" id="forge-sources">
+    <thead><tr><th scope="col">{{t "Source"}}</th><th scope="col">{{t "Revision"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Recipes"}}</th><th scope="col">{{t "Variants"}}</th></tr></thead>
+    <tbody>{{range .Sources}}
+      <tr data-source="{{.ID}}"><td class="strong mono">{{.ID}}</td><td class="mono">{{.Revision}}</td>
+        <td>{{if .Materialized}}<span class="badge tone-ok">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}</td>
+        <td class="mono">{{range .Recipes}}{{.}} {{else}}-{{end}}</td><td>{{.Variants}}</td></tr>{{else}}
+      <tr><td colspan="5" class="muted">{{t "No source model supports variants."}}</td></tr>{{end}}
+    </tbody>
+  </table></div>
+  <section id="forge-readiness-region" aria-labelledby="fr-h">
+    <h3 id="fr-h">{{t "Forge readiness"}}</h3>
     <p class="note">{{t "A preflight reports what Hachidori can know before an expensive operation: integrity, runtime, recipe, disk, RAM and the requested device. It never claims that a model fits: an unknown stays unknown. A probe loads one persisted variant in its own worker and asks one typed decision; it is not a certification and changes no resident, activation or route."}}</p>
     <div id="forge-readiness">
     {{range .Preflights}}{{template "forge-preflight" .}}{{else}}<p class="muted">{{t "No preflight recorded yet."}}</p>{{end}}
     {{if .Diagnostics}}
-    <h3>{{t "Failure diagnostics"}}</h3>
+    <h4>{{t "Failure diagnostics"}}</h4>
     <ul class="diagnostics-list" id="forge-diagnostics">{{range .Diagnostics}}<li><a class="mono" href="/forge/diagnostics/{{.ID}}" download>{{.ID}}</a> · {{.Kind}}{{with .Phase}} · {{t "phase"}} {{.}}{{end}} · {{.Created}}<div class="muted">{{.Error}}</div></li>{{end}}</ul>
     <p class="note">{{t "A diagnostic holds identities, versions, resource observations and a bounded, redacted error and log tail. It never holds weights, datasets or credentials. CLI:"}} <span class="mono">hachidori forge diagnostics list|show|export</span></p>
     {{end}}
     </div>
   </section>
+  {{template "operator-disclosure-close"}}
+
 </div>
 {{end}}
 {{template "close" .Chrome}}{{end}}

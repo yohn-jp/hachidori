@@ -501,7 +501,7 @@ func TestPageFormsAreWiredToActionRoutes(t *testing.T) {
 	for page, want := range map[string]struct {
 		got  map[string]string
 		want []string
-	}{"/": {root, []string{"/runtime/start", "/runtime/stop", "/runtime/restart"}},
+	}{"/": {root, []string{"/runtime/stop", "/runtime/restart"}},
 		"/diagnostics": {diag, []string{"/doctor", "/diagnostics/export", "/tunnel/connect", "/tunnel/disconnect"}}} {
 		if len(want.got) != len(want.want) {
 			t.Errorf("%s forms %v, want %v", page, want.got, want.want)
@@ -928,7 +928,7 @@ func TestPathPickerButtonsOnlyInDesktopComposition(t *testing.T) {
 		if strings.Contains(body, "/pick") || strings.Contains(body, "pick-load") || strings.Contains(body, `C:\`) {
 			t.Errorf("browser %s shows native picker actions or a Windows example path", p)
 		}
-		if !strings.Contains(body, "absolute path") {
+		if !strings.Contains(body, `type="text"`) || strings.Contains(body, "Choose file") {
 			t.Errorf("browser %s lost typed path entry", p)
 		}
 	}
@@ -940,8 +940,8 @@ func TestPathPickerButtonsOnlyInDesktopComposition(t *testing.T) {
 	withPathPicker(e, &fakePathPicker{})
 	for _, p := range pages {
 		body := e.get(t, p).Body.String()
-		if !strings.Contains(body, "Choose file") || !strings.Contains(body, "formnovalidate") {
-			t.Errorf("desktop %s lacks native picker actions", p)
+		if !strings.Contains(body, "…</button>") || !strings.Contains(body, "formnovalidate") || strings.Contains(body, "Choose file") {
+			t.Errorf("desktop %s lacks semantically named native picker actions", p)
 		}
 	}
 	if body := e.post(t, "/experiments/pick", url.Values{"token": {"stale"}, "pick": {"dataset"}}); body.Code != http.StatusForbidden {
@@ -963,28 +963,28 @@ func TestExperimentsPickKeepsTheForm(t *testing.T) {
 	}
 
 	body := e.post(t, "/experiments/pick", posted("dataset")).Body.String()
-	for _, s := range []string{`name="dataset" value="/data/chosen"`, "/defs/a.json</textarea>", `name="warmup" value="2"`, `name="passes" value="3"`} {
+	for _, s := range []string{`<option value="/data/chosen" selected>chosen</option>`, `<option value="/defs/a.json" selected>a.json</option>`, `name="warmup" value="2"`, `name="passes" value="3"`} {
 		if !strings.Contains(body, s) {
 			t.Errorf("dataset pick: form lacks %q", s)
 		}
 	}
 	body = e.post(t, "/experiments/pick", posted("definition-file")).Body.String()
-	if !strings.Contains(body, "/defs/a.json\n/data/chosen</textarea>") {
+	if !strings.Contains(body, "<option value=\"/defs/a.json\n/data/chosen\" selected>a.json, chosen</option>") {
 		t.Error("definition file pick replaced the definitions already entered")
 	}
 	body = e.post(t, "/experiments/pick", posted("definition-folder")).Body.String()
-	if !strings.Contains(body, "/defs/a.json\n/data/chosen</textarea>") || p.calls[len(p.calls)-1] != "folder" {
+	if !strings.Contains(body, "<option value=\"/defs/a.json\n/data/chosen\" selected>") || p.calls[len(p.calls)-1] != "folder" {
 		t.Error("definition folder pick did not append a folder")
 	}
 
 	p.err = ErrPickCancelled
 	body = e.post(t, "/experiments/pick", posted("dataset")).Body.String()
-	if !strings.Contains(body, `name="dataset" value="/data/typed.jsonl"`) || strings.Contains(body, "choosing a path") {
+	if !strings.Contains(body, `<option value="/data/typed.jsonl" selected>`) || strings.Contains(body, "choosing a path") {
 		t.Error("cancellation changed the form or reported a failure")
 	}
 	p.err = errors.New("dialog broke")
 	body = e.post(t, "/experiments/pick", posted("dataset")).Body.String()
-	if !strings.Contains(body, `name="dataset" value="/data/typed.jsonl"`) || !strings.Contains(body, "choosing a path: dialog broke") {
+	if !strings.Contains(body, `<option value="/data/typed.jsonl" selected>`) || !strings.Contains(body, "choosing a path: dialog broke") {
 		t.Error("picker failure lost the form or its error")
 	}
 }

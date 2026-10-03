@@ -320,6 +320,21 @@ type expView struct {
 	CompareA, CompareB string
 	Compare            *compareView
 	PathPicker         bool
+	// knownDatasets and knownQuestions are the known-resource catalogs the
+	// run form offers by name.
+	knownDatasets, knownQuestions []string
+}
+
+// DatasetInput and QuestionsInput are the run form's resources, named by
+// their meaning; a native picker only adds a new one.
+func (v expView) DatasetInput() resourceSelection {
+	return semanticResource(v.knownDatasets, v.PathPicker, "Dataset", "dataset", v.Form.Dataset, "", false,
+		"/experiments/pick", "dataset", "Add dataset…")
+}
+
+func (v expView) QuestionsInput() resourceSelection {
+	return semanticResource(v.knownQuestions, v.PathPicker, "Evaluation questions", "definitions", v.Form.Definitions, "Questions in the dataset", true,
+		"/experiments/pick", "definition-file", "Add question file…", "definition-folder", "Add question folder…")
 }
 
 // expForm is the run form as typed (kept on errors).
@@ -356,7 +371,8 @@ func formOf(in ExperimentInput) expForm {
 func (d *Dashboard) expView() expView {
 	v := expView{Chrome: d.chrome("Experiments", "experiments"),
 		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr, Exp: d.exp.snapshot(), PathPicker: d.cfg.PathPicker != nil,
-		Form: expForm{Warmup: "0", Passes: "1"}, HistoryOn: d.hist != nil}
+		Form: expForm{Warmup: "0", Passes: "1"}, HistoryOn: d.hist != nil,
+		knownDatasets: d.resourceCatalog(resDataset), knownQuestions: d.resourceCatalog(resQuestions)}
 	if v.Exp != nil {
 		v.Form = formOf(v.Exp.Pre.Input)
 	}
@@ -461,7 +477,7 @@ func (d *Dashboard) experimentsLive(w http.ResponseWriter, r *http.Request) {
 }
 
 func postedForm(r *http.Request) expForm {
-	return expForm{Dataset: r.PostFormValue("dataset"), Definitions: nl(r.PostFormValue("definitions")),
+	return expForm{Dataset: resourceValue(r, "dataset"), Definitions: nl(resourceValue(r, "definitions")),
 		Warmup: r.PostFormValue("warmup"), Passes: r.PostFormValue("passes"), ExportPath: strings.TrimSpace(r.PostFormValue("export_path"))}
 }
 
@@ -505,6 +521,8 @@ func (d *Dashboard) experimentsRun(w http.ResponseWriter, r *http.Request) {
 		fail(fmt.Errorf("preflight failed: %w", err))
 		return
 	}
+	d.rememberResource(resDataset, in.Dataset)
+	d.rememberResource(resQuestions, strings.Join(in.Definitions, "\n"))
 	c := d.endpoint()
 	if h, err := c.Health(); err != nil || !h.Ready {
 		fail(fmt.Errorf("endpoint %s not ready (state %q): %v", c.Endpoint, h.State, err))

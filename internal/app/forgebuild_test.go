@@ -15,6 +15,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tuning"
 )
 
 func buildEvaluateParams(e *certEnv) ForgeBuildEvaluateParams {
@@ -283,5 +284,44 @@ func TestForgeBuildEvaluateSourceProvisionRequiresAuthorization(t *testing.T) {
 	_, err = RunForgeBuildEvaluate(context.Background(), e.h, p, deps, io.Discard, nil)
 	if !errors.As(err, &stageErr) || stageErr.Phase != string(ForgeBuildPhaseProvision) || builds != 0 || materializations != 1 {
 		t.Fatalf("authorized provisioning: error = %v, builds = %d, materializations = %d", err, builds, materializations)
+	}
+}
+
+// A saved tuning profile is built by the same one operation: the plan carries
+// the profile's compiled recipe and exact provenance, and an unknown profile
+// is refused before anything runs.
+func TestForgeBuildEvaluatePlansASavedTuningProfile(t *testing.T) {
+	e := newCertEnv(t)
+	setValidActive(t, e.h, "cuda")
+	source, err := setup.LookupModel(setup.ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis := clefAnalysis(t, source)
+	profile, err := tuning.NewDefaultProfile(analysis, "maximum-fidelity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.Preservation[tuning.RegionFeedForward] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
+	if err := tuning.SaveProfile(e.h, profile, analysis); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := tuning.Compile(profile, analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := buildEvaluateParams(e)
+	p.Optimization.Recipe, p.TuningProfile = "", profile.ID()
+	plan, err := resolveForgeBuildPlan(e.h, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.optimization.Tuning == nil || plan.optimization.Tuning.ProfileID != profile.ID() || plan.optimization.CompiledRecipe == nil ||
+		plan.recipe.SHA256() != compiled.Recipe.SHA256() || plan.resolution.Recipe != compiled.Recipe.Name {
+		t.Fatalf("plan does not build the exact profile: %+v", plan.optimization)
+	}
+	p.TuningProfile = strings.Repeat("a", 64)
+	if _, err := resolveForgeBuildPlan(e.h, p); err == nil {
+		t.Fatal("an unknown tuning profile was planned")
 	}
 }

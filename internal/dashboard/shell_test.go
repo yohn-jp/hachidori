@@ -158,12 +158,12 @@ func TestRuntimeSummarySeparatesDiagnosticEvidence(t *testing.T) {
 	rt := e.get(t, "/").Body.String()
 	ov := rt[strings.Index(rt, `class="readiness-panel`):strings.Index(rt, `</main>`)]
 	for _, want := range []string{"laya-base", "NVIDIA GeForce RTX 3060", "laya 0.3.21", "0.1.0-cu128", `id="load-h"`,
-		"p95 latency", "0 / 64", "GPU memory", "of 12288 MiB", `href="/diagnostics#runtime-evidence"`} {
+		"p95 latency", "0 / 64", "GPU memory", "/ 12.00 GiB", `href="/diagnostics#runtime-evidence"`} {
 		if !strings.Contains(ov, want) {
 			t.Errorf("runtime summary lacks %q", want)
 		}
 	}
-	for _, h := range []string{`id="rd-h"`, `id="load-h"`, "<dt>Model</dt>", "<dt>Accelerator</dt>", "<dt>Provider</dt>", "p50 latency"} {
+	for _, h := range []string{`id="rd-h"`, `id="load-h"`, "<dt>Model</dt>", "<dt>Device</dt>", "<dt>GPU memory</dt>", "<dt>Provider</dt>", "p50 latency"} {
 		if n := strings.Count(ov, h); n != 1 {
 			t.Errorf("runtime summary shows %q %d times", h, n)
 		}
@@ -744,7 +744,7 @@ func TestOperatorLocaleRendering(t *testing.T) {
 	}
 	// Native path selection goes through the same handler in Japanese.
 	body := e.post(t, "/experiments/pick", url.Values{"pick": {"dataset"}}).Body.String()
-	if !strings.Contains(body, `name="dataset" value="/data/chosen"`) || !strings.Contains(body, "ファイルを選択") {
+	if !strings.Contains(body, `<option value="/data/chosen" selected>chosen</option>`) || !strings.Contains(body, "データセットを追加…") || strings.Contains(body, "ファイルを選択") {
 		t.Error("native picker does not fill the form in Japanese")
 	}
 	// A message without a Japanese entry falls back to its English text.
