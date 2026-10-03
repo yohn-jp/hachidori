@@ -8,6 +8,35 @@ import (
 	"testing"
 )
 
+func TestResourceSelectionSharesNativePatternAndBrowserPathFallback(t *testing.T) {
+	e, _, _ := forgeEnv(t, variantInventory())
+	pages := []struct {
+		path string
+		name string
+	}{
+		{path: "/forge", name: "dataset"},
+		{path: "/workbench", name: "load_path"},
+		{path: "/experiments", name: "dataset"},
+		{path: "/errors", name: "path"},
+	}
+	for _, page := range pages {
+		body := e.get(t, page.path).Body.String()
+		if !strings.Contains(body, `name="`+page.name+`"`) || strings.Contains(body, `aria-label="Choose resource"`) {
+			t.Errorf("browser %s lacks its typed path fallback or exposes a native picker", page.path)
+		}
+	}
+
+	withPathPicker(e, &fakePathPicker{path: "/resources/chosen"})
+	for _, page := range pages {
+		body := e.get(t, page.path).Body.String()
+		if !strings.Contains(body, `name="`+page.name+`"`) ||
+			!strings.Contains(body, `aria-label="Choose resource"`) ||
+			!strings.Contains(body, `<summary>Exact path`) {
+			t.Errorf("desktop %s lacks the shared picker and exact-path disclosure", page.path)
+		}
+	}
+}
+
 // Models and Forge are first-class workspaces beside Runtime, the others and
 // Settings: they are in the navigation on every page, the current page is
 // marked, and they exist only where the maintenance authority is hosted.

@@ -366,9 +366,13 @@ type Connections interface {
 // ConnectionItem is one saved profile with its relation to the live tunnel.
 type ConnectionItem struct {
 	settings.Connection
-	Endpoint string // the HACHIDORI_ENDPOINT value for the development host
-	Current  bool   // the manager's current/last spec is this profile
-	Running  bool   // ... and its ssh child is alive
+	Endpoint       string // the HACHIDORI_ENDPOINT value for the development host
+	Resolved       tunnel.Spec
+	BindEdit       string
+	RemotePortEdit int
+	LocalPortEdit  int
+	Current        bool // the manager's current/last spec is this profile
+	Running        bool // ... and its ssh child is alive
 }
 
 // ConnectionsView is the Development Connections view model.
@@ -458,28 +462,29 @@ var pageFS embed.FS
 // pageBase parses the workstation templates once; "t" is the catalog lookup,
 // bound per locale in pages.
 var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
-	"t":         i18n.English.T,
-	"get":       get,
-	"mib":       mib,
-	"ms":        func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) + " ms" },
-	"when":      when,
-	"alerts":    alerts,
-	"tone":      stateTone,
-	"gpuMem":    gpuMem,
-	"ratio":     ratio,
-	"errTotal":  errTotal,
-	"uptime":    uptime,
-	"doctorOut": doctorOut,
-	"pct":       func(p float64) string { return strconv.FormatFloat(100*p, 'f', 1, 64) + "%" },
-	"prob":      func(p float64) string { return strconv.FormatFloat(p, 'f', 4, 64) },
-	"distOf":    distOf,
-	"perQ":      perQuestion,
-	"f4":        func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) },
-	"sd":        func(v float64) string { return signed(v, "") },
-	"sms":       func(v float64) string { return signed(v, "ms") },
-	"short":     func(s string) string { return s[:min(len(s), 12)] },
-	"systemCSS": ui.CSS,
-	"add":       func(a, b int) int { return a + b },
+	"t":             i18n.English.T,
+	"get":           get,
+	"resourceInput": resourceInput,
+	"mib":           mib,
+	"ms":            func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) + " ms" },
+	"when":          when,
+	"alerts":        alerts,
+	"tone":          stateTone,
+	"gpuMem":        gpuMem,
+	"ratio":         ratio,
+	"errTotal":      errTotal,
+	"uptime":        uptime,
+	"doctorOut":     doctorOut,
+	"pct":           func(p float64) string { return strconv.FormatFloat(100*p, 'f', 1, 64) + "%" },
+	"prob":          func(p float64) string { return strconv.FormatFloat(p, 'f', 4, 64) },
+	"distOf":        distOf,
+	"perQ":          perQuestion,
+	"f4":            func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) },
+	"sd":            func(v float64) string { return signed(v, "") },
+	"sms":           func(v float64) string { return signed(v, "ms") },
+	"short":         func(s string) string { return s[:min(len(s), 12)] },
+	"systemCSS":     ui.CSS,
+	"add":           func(a, b int) int { return a + b },
 	// long-running work (ops.go)
 	"opStages":        opStages,
 	"phasePosition":   phasePosition,
@@ -1108,14 +1113,32 @@ func (d *Dashboard) modelsOp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Dashboard) connectionsView(st tunnel.Status) *ConnectionsView {
-	cv := &ConnectionsView{New: d.formDefaults()}
+	newProfile := d.formDefaults()
+	newProfile.RemoteBind = tunnel.DefaultRemoteBind
+	if endpoint, err := tunnel.LocalEndpointFromAddr(d.cfg.APIAddr); err == nil {
+		newProfile.RemotePort, newProfile.LocalPort = endpoint.Port, endpoint.Port
+	}
+	cv := &ConnectionsView{New: newProfile}
 	cs, err := d.cfg.Connections.Connections()
 	if err != nil {
 		cv.Err = err.Error()
 	}
 	for _, c := range cs {
 		cur := st.Spec != nil && *st.Spec == c.Spec()
-		cv.Items = append(cv.Items, ConnectionItem{Connection: c, Endpoint: c.Endpoint(), Current: cur, Running: cur && st.State == tunnel.StateRunning})
+		resolved := c.Spec()
+		bindEdit, remotePortEdit, localPortEdit := c.RemoteBind, c.RemotePort, c.LocalPort
+		if c.RemoteBindMode == settings.ConnectionAuto {
+			bindEdit = resolved.RemoteBind
+		}
+		if c.RemotePortMode == settings.ConnectionAuto {
+			remotePortEdit = resolved.RemotePort
+		}
+		if c.LocalPortMode == settings.ConnectionAuto {
+			localPortEdit = resolved.LocalPort
+		}
+		cv.Items = append(cv.Items, ConnectionItem{Connection: c, Endpoint: c.Endpoint(), Resolved: resolved,
+			BindEdit: bindEdit, RemotePortEdit: remotePortEdit, LocalPortEdit: localPortEdit,
+			Current: cur, Running: cur && st.State == tunnel.StateRunning})
 	}
 	return cv
 }
@@ -1186,6 +1209,47 @@ func parseSpec(r *http.Request) (tunnel.Spec, error) {
 	return s, nil
 }
 
+func parseConnection(r *http.Request) (settings.Connection, error) {
+	c := settings.Connection{
+		Name:        strings.TrimSpace(r.PostFormValue("name")),
+		Destination: strings.TrimSpace(r.PostFormValue("destination")),
+	}
+	mode := strings.TrimSpace(r.PostFormValue("remote_bind_mode"))
+	switch mode {
+	case "", string(settings.ConnectionPinned): // Empty mode preserves older explicit forms.
+		c.RemoteBindMode = settings.ConnectionPinned
+		c.RemoteBind = strings.TrimSpace(r.PostFormValue("remote_bind"))
+	case string(settings.ConnectionAuto):
+		c.RemoteBindMode = settings.ConnectionAuto
+	default:
+		return c, fmt.Errorf("remote bind mode: expected auto or pinned")
+	}
+	var err error
+	if c.RemotePort, c.RemotePortMode, err = parseConnectionPort(r, "remote port", "remote_port_mode", "remote_port"); err != nil {
+		return c, err
+	}
+	if c.LocalPort, c.LocalPortMode, err = parseConnectionPort(r, "local port", "local_port_mode", "local_port"); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+func parseConnectionPort(r *http.Request, field, modeField, valueField string) (int, settings.TransportMode, error) {
+	mode := strings.TrimSpace(r.PostFormValue(modeField))
+	switch mode {
+	case string(settings.ConnectionAuto):
+		return 0, settings.ConnectionAuto, nil
+	case "", string(settings.ConnectionPinned): // Empty mode preserves older explicit forms.
+		port, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue(valueField)))
+		if err != nil {
+			return 0, "", fmt.Errorf("%s: not a number", field)
+		}
+		return port, settings.ConnectionPinned, nil
+	default:
+		return 0, "", fmt.Errorf("%s mode: expected auto or pinned", field)
+	}
+}
+
 func namedConnection(name string, s tunnel.Spec) settings.Connection {
 	return settings.Connection{Name: strings.TrimSpace(name), Destination: s.Destination,
 		RemoteBind: s.RemoteBind, RemotePort: s.RemotePort, LocalPort: s.LocalPort}
@@ -1252,9 +1316,9 @@ func (d *Dashboard) profile(r *http.Request) (settings.Connection, error) {
 }
 
 func (d *Dashboard) connectionSave(w http.ResponseWriter, r *http.Request) {
-	s, err := parseSpec(r)
+	c, err := parseConnection(r)
 	if err == nil {
-		err = d.cfg.Connections.SaveConnection(namedConnection(r.PostFormValue("name"), s))
+		err = d.cfg.Connections.SaveConnection(c)
 	}
 	d.done(w, r, "save connection", err, "saved; nothing was connected")
 }

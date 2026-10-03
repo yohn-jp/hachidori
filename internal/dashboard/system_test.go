@@ -11,8 +11,90 @@ import (
 	"testing"
 
 	"github.com/yohn-jp/hachidori/internal/history"
+	"github.com/yohn-jp/hachidori/internal/settings"
+	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/ui"
 )
+
+func TestDevelopmentConnectionsAutoIntentAndProjection(t *testing.T) {
+	e := newEnv(t)
+	store := withConnections(e, filepath.Join(t.TempDir(), "settings.json"))
+	endpoint := tunnel.LocalEndpoint{Host: "127.0.0.1", Port: 9123}
+	if err := store.SetLocalEndpoint(endpoint); err != nil {
+		t.Fatal(err)
+	}
+	cfg := e.d.cfg
+	cfg.APIAddr = "127.0.0.1:9123"
+	e.d = New(cfg)
+
+	form := url.Values{
+		"name": {"auto-dev"}, "destination": {"dev@example"},
+		"remote_bind_mode": {string(settings.ConnectionAuto)}, "remote_bind": {"0.0.0.0"},
+		"remote_port_mode": {string(settings.ConnectionAuto)}, "remote_port": {"7900"},
+		"local_port_mode": {string(settings.ConnectionAuto)}, "local_port": {"7901"},
+	}
+	e.post(t, "/settings/connections/save", form)
+	if action := e.lastAction(t); !action.OK {
+		t.Fatalf("save Auto connection: %+v", action)
+	}
+	connections, err := store.Connections()
+	if err != nil || len(connections) != 1 {
+		t.Fatalf("saved connections: %+v, %v", connections, err)
+	}
+	connection := connections[0]
+	if connection.RemoteBindMode != settings.ConnectionAuto || connection.RemoteBind != "" ||
+		connection.RemotePortMode != settings.ConnectionAuto || connection.RemotePort != 0 ||
+		connection.LocalPortMode != settings.ConnectionAuto || connection.LocalPort != 0 {
+		t.Fatalf("Auto intent retained override values: %+v", connection)
+	}
+	if got := connection.Spec(); got.RemoteBind != "127.0.0.1" || got.RemotePort != endpoint.Port || got.LocalPort != endpoint.Port {
+		t.Fatalf("Auto resolved spec: %+v", got)
+	}
+
+	page := e.get(t, "/settings").Body.String()
+	for _, want := range []string{
+		`<dt>Remote bind</dt><dd>Auto → 127.0.0.1</dd>`,
+		`<dt>Remote port</dt><dd>Auto → 9123</dd>`,
+		`<dt>Local Hachidori port</dt><dd>Auto → 9123</dd>`,
+		`name="remote_bind_mode"><option value="auto" selected>Auto → 127.0.0.1</option>`,
+		`name="remote_port_mode"><option value="auto" selected>Auto → 9123</option>`,
+		`name="local_port_mode"><option value="auto" selected>Auto → 9123</option>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("Settings lacks Auto intent projection %q", want)
+		}
+	}
+
+	start := strings.Index(page, `id="connection-new"`)
+	if start < 0 {
+		t.Fatal("Settings lacks the new connection form")
+	}
+	newForm := page[start:]
+	if name, dest, advanced := strings.Index(newForm, `name="name"`), strings.Index(newForm, `name="destination"`), strings.Index(newForm, `<summary>Advanced</summary>`); name < 0 || dest <= name || advanced <= dest {
+		t.Fatalf("connection name and destination are not primary fields before Advanced: %s", newForm[:min(len(newForm), 1200)])
+	}
+
+	pinnedForm := url.Values{
+		"name": {"auto-dev"}, "destination": {"dev@example"},
+		"remote_bind_mode": {string(settings.ConnectionPinned)}, "remote_bind": {"127.0.0.1"},
+		"remote_port_mode": {string(settings.ConnectionPinned)}, "remote_port": {"9200"},
+		"local_port_mode": {string(settings.ConnectionPinned)}, "local_port": {"9300"},
+	}
+	e.post(t, "/settings/connections/save", pinnedForm)
+	if action := e.lastAction(t); !action.OK {
+		t.Fatalf("save pinned connection: %+v", action)
+	}
+	connections, err = store.Connections()
+	if err != nil || len(connections) != 1 {
+		t.Fatalf("saved pinned connections: %+v, %v", connections, err)
+	}
+	connection = connections[0]
+	if connection.RemoteBindMode != settings.ConnectionPinned || connection.RemoteBind != "127.0.0.1" ||
+		connection.RemotePortMode != settings.ConnectionPinned || connection.RemotePort != 9200 ||
+		connection.LocalPortMode != settings.ConnectionPinned || connection.LocalPort != 9300 {
+		t.Fatalf("pinned intent was not retained: %+v", connection)
+	}
+}
 
 // Every workstation workspace renders with the one visual system
 // (docs/desktop.md): the shared token and primitive stylesheet is inlined

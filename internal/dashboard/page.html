@@ -170,6 +170,10 @@ details.inline > summary:hover { color: var(--text); }
 details.inline[open] > summary { margin-bottom: var(--sp-2); }
 form.inline { display: inline-flex; margin: 0; }
 .path-form { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem; align-items: end; }
+.resource-selection { display: grid; gap: var(--sp-2); min-width: 0; }
+.resource-selection-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.resource-path-value { display: inline-block; max-width: min(65vw, 48rem); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resource-path-entry { display: grid; gap: var(--sp-2); padding-top: var(--sp-2); min-width: 0; }
 pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: var(--bad); font-weight: 600; } pre .skip { color: var(--text-3); }
 
 /* a list of like objects: rows divided by rules, not nested boxes */
@@ -659,7 +663,9 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <div class="region-h"><h3>{{.Name}}</h3>{{if .Running}}<span class="badge tone-ok">{{t "connected"}}</span>{{else if .Current}}<span class="badge">{{$.Tunnel.State}}</span>{{end}}</div>
     <dl class="kv">
       <dt>{{t "destination"}}</dt><dd>{{.Destination}}</dd>
-      <dt>{{t "forward"}}</dt><dd>{{.RemoteBind}}:{{.RemotePort}} → 127.0.0.1:{{.LocalPort}}</dd>
+      <dt>{{t "Remote bind"}}</dt><dd>{{if eq .RemoteBindMode "auto"}}{{t "Auto"}} → {{.Resolved.RemoteBind}}{{else}}{{t "Override"}}: {{.RemoteBind}}{{end}}</dd>
+      <dt>{{t "Remote port"}}</dt><dd>{{if eq .RemotePortMode "auto"}}{{t "Auto"}} → {{.Resolved.RemotePort}}{{else}}{{t "Override"}}: {{.RemotePort}}{{end}}</dd>
+      <dt>{{t "Local Hachidori port"}}</dt><dd>{{if eq .LocalPortMode "auto"}}{{t "Auto"}} → {{.Resolved.LocalPort}}{{else}}{{t "Override"}}: {{.LocalPort}}{{end}}</dd>
     </dl>
     <p class="note">{{t "Set on the development host:"}}</p>
     <code class="endpoint-box">HACHIDORI_ENDPOINT={{.Endpoint}}</code>
@@ -672,12 +678,18 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
       <form method="post" action="/settings/connections/save">
         <input type="hidden" name="token" value="{{$.Token}}">
         <input type="hidden" name="name" value="{{.Name}}">
-        <div class="fields">
-          <label class="field wide">{{t "SSH destination"}}<input name="destination" value="{{.Destination}}" required autocomplete="off" spellcheck="false"></label>
-          <label class="field">{{t "Remote bind"}}<input name="remote_bind" value="{{.RemoteBind}}" required spellcheck="false"></label>
-          <label class="field">{{t "Remote port"}}<input name="remote_port" value="{{.RemotePort}}" inputmode="numeric" required></label>
-          <label class="field">{{t "Local Hachidori port"}}<input name="local_port" value="{{.LocalPort}}" inputmode="numeric" required></label>
-        </div>
+        <label class="field wide">{{t "SSH destination"}}<input name="destination" value="{{.Destination}}" required autocomplete="off" spellcheck="false"></label>
+        <details class="inline"><summary>{{t "Advanced"}}</summary>
+          <p class="note">{{t "Auto resolves each value for the current API endpoint. Select Override to save the value shown."}}</p>
+          <div class="fields">
+            <label class="field">{{t "Remote bind"}}<select name="remote_bind_mode"><option value="auto"{{if eq .RemoteBindMode "auto"}} selected{{end}}>{{t "Auto"}} → {{.Resolved.RemoteBind}}</option><option value="pinned"{{if eq .RemoteBindMode "pinned"}} selected{{end}}>{{t "Override"}}</option></select></label>
+            <label class="field">{{t "Remote bind override"}}<input name="remote_bind" value="{{.BindEdit}}" spellcheck="false"></label>
+            <label class="field">{{t "Remote port"}}<select name="remote_port_mode"><option value="auto"{{if eq .RemotePortMode "auto"}} selected{{end}}>{{t "Auto"}} → {{.Resolved.RemotePort}}</option><option value="pinned"{{if eq .RemotePortMode "pinned"}} selected{{end}}>{{t "Override"}}</option></select></label>
+            <label class="field">{{t "Remote port override"}}<input name="remote_port" value="{{.RemotePortEdit}}" inputmode="numeric"></label>
+            <label class="field">{{t "Local Hachidori port"}}<select name="local_port_mode"><option value="auto"{{if eq .LocalPortMode "auto"}} selected{{end}}>{{t "Auto"}} → {{.Resolved.LocalPort}}</option><option value="pinned"{{if eq .LocalPortMode "pinned"}} selected{{end}}>{{t "Override"}}</option></select></label>
+            <label class="field">{{t "Local port override"}}<input name="local_port" value="{{.LocalPortEdit}}" inputmode="numeric"></label>
+          </div>
+        </details>
         <div class="btn-row"><button type="submit" class="btn">{{t "Save changes"}}</button></div>
       </form>
     </details>
@@ -689,10 +701,18 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <div class="fields">
       <label class="field">{{t "Name"}}<input name="name" placeholder="connection-name" required autocomplete="off" spellcheck="false"></label>
       <label class="field wide">{{t "SSH destination"}}<input name="destination" value="{{.New.Destination}}" placeholder="user@host" required autocomplete="off" spellcheck="false"></label>
-      <label class="field">{{t "Remote bind"}}<input name="remote_bind" value="{{.New.RemoteBind}}" required spellcheck="false"></label>
-      <label class="field">{{t "Remote port"}}<input name="remote_port" value="{{.New.RemotePort}}" inputmode="numeric" required></label>
-      <label class="field">{{t "Local Hachidori port"}}<input name="local_port" value="{{.New.LocalPort}}" inputmode="numeric" required></label>
     </div>
+    <details class="inline"><summary>{{t "Advanced"}}</summary>
+      <p class="note">{{t "Auto resolves each value for the current API endpoint. Select Override to save the value shown."}}</p>
+      <div class="fields">
+        <label class="field">{{t "Remote bind"}}<select name="remote_bind_mode"><option value="auto" selected>{{t "Auto"}} → {{.New.RemoteBind}}</option><option value="pinned">{{t "Override"}}</option></select></label>
+        <label class="field">{{t "Remote bind override"}}<input name="remote_bind" value="{{.New.RemoteBind}}" spellcheck="false"></label>
+        <label class="field">{{t "Remote port"}}<select name="remote_port_mode"><option value="auto" selected>{{t "Auto"}} → {{.New.RemotePort}}</option><option value="pinned">{{t "Override"}}</option></select></label>
+        <label class="field">{{t "Remote port override"}}<input name="remote_port" value="{{.New.RemotePort}}" inputmode="numeric"></label>
+        <label class="field">{{t "Local Hachidori port"}}<select name="local_port_mode"><option value="auto" selected>{{t "Auto"}} → {{.New.LocalPort}}</option><option value="pinned">{{t "Override"}}</option></select></label>
+        <label class="field">{{t "Local port override"}}<input name="local_port" value="{{.New.LocalPort}}" inputmode="numeric"></label>
+      </div>
+    </details>
     <div class="btn-row"><button type="submit" class="btn">{{t "Save connection"}}</button></div>
   </form>
 </section>
@@ -868,15 +888,19 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <dt>{{t "state"}}</dt><dd><span class="badge {{if eq .State "running"}}tone-ok{{else if eq .State "exited"}}tone-bad{{end}}">{{.State}}</span></dd>
   <dt>{{t "destination"}}</dt><dd>{{with .Spec}}{{.Destination}}{{else}}-{{end}}</dd>
   {{with .Spec}}<dt>{{t "forward"}}</dt><dd>{{.RemoteBind}}:{{.RemotePort}} → 127.0.0.1:{{.LocalPort}}</dd>{{end}}
+</dl>
+{{with .Endpoint}}<div><p class="note">{{t "Caller endpoint (set on the SSH destination host)"}}</p><code class="endpoint-box">HACHIDORI_ENDPOINT={{.}}</code></div>{{end}}
+<details class="inline" data-keep="tunnel-details"{{if or .LastError (eq .State "exited")}} open{{end}}><summary>{{t "Details"}}</summary>
+<dl class="kv">
   <dt>ssh PID</dt><dd>{{if .PID}}{{.PID}}{{else}}-{{end}}</dd>
   <dt>{{t "started"}}</dt><dd>{{when .Started}}</dd>
   <dt>{{t "exited"}}</dt><dd>{{when .Exited}}</dd>
   <dt>{{t "last error"}}</dt><dd>{{with .LastError}}<span class="bad-t">{{.}}</span>{{else}}-{{end}}</dd>
 </dl>
-{{with .Endpoint}}<div><p class="note">{{t "Caller endpoint (set on the SSH destination host)"}}</p><code class="endpoint-box">HACHIDORI_ENDPOINT={{.}}</code></div>{{end}}
 {{if .Stderr}}<details class="inline" data-keep="tunnel-stderr"{{if eq .State "exited"}} open{{end}}><summary>ssh stderr</summary><pre>{{range .Stderr}}{{.}}
 {{end}}</pre></details>{{end}}
 {{with .Argv}}<details class="inline" data-keep="tunnel-argv"><summary>ssh argv</summary><pre>{{range .}}{{.}} {{end}}</pre></details>{{end}}
+</details>
 </div>{{end}}{{end}}
 
 {{/* Shared producer templates. Disclosure and section pairs let callers compose
@@ -897,3 +921,18 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 {{define "instrument-section-open"}}<section class="instrument-section" aria-labelledby="{{.ID}}-heading"><div class="instrument-heading"><h2 id="{{.ID}}-heading">{{t .Label}}</h2>{{with .Description}}<p class="note">{{t .}}</p>{{end}}</div>{{end}}
 {{define "instrument-section-close"}}</section>{{end}}
+
+{{define "resource-selection"}}<div class="resource-selection">
+  {{if .Native}}
+  <div class="resource-selection-actions" role="group" aria-label="{{t "Choose resource"}}">
+    {{range .Choices}}<button type="submit" class="btn primary"{{if .FormAction}} formaction="{{.FormAction}}"{{end}} name="{{.Name}}" value="{{.Value}}" formnovalidate>{{t .Label}}</button>{{end}}
+  </div>
+  <details class="inline resource-path"><summary>{{t "Exact path"}}{{if .Value}} <span class="resource-path-value mono">{{.Value}}</span>{{else}} <span class="sub">{{t "No path selected"}}</span>{{end}}</summary>
+    <div class="resource-path-entry">{{template "resource-path-entry" .}}</div>
+  </details>
+  {{else}}
+    {{template "resource-path-entry" .}}
+  {{end}}
+</div>{{end}}
+
+{{define "resource-path-entry"}}<label class="field wide">{{t .Label}}{{if .Multiline}}<textarea name="{{.Name}}" rows="2" spellcheck="false"{{if and .Required (not .Native)}} required{{end}}>{{.Value}}</textarea>{{else}}<input type="text" name="{{.Name}}" value="{{.Value}}" spellcheck="false" autocomplete="off" placeholder="{{.Placeholder}}"{{if and .Required (not .Native)}} required{{end}}>{{end}}</label>{{end}}

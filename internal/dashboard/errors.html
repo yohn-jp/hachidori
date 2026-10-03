@@ -84,8 +84,7 @@
     <form method="post" action="/errors/export" class="path-form">
       <input type="hidden" name="token" value="{{$.Token}}">
       {{range $k, $vs := $.C.Values}}{{range $vs}}<input type="hidden" name="{{$k}}" value="{{.}}">{{end}}{{end}}
-      <label class="field">{{t "Export the selection as"}} {{"hachidori.evidence-analysis.v1"}} {{t "data to a new file (absolute path; never overwritten)"}}<input name="export_path" value="{{$.Export}}" spellcheck="false" autocomplete="off" placeholder="/path/to/errors.json"></label>
-      {{if $.PathPicker}}<button type="submit" class="btn" formaction="/errors/pick" name="pick" value="export" formnovalidate>{{t "Choose file"}}</button>{{end}}
+      {{template "resource-selection" (resourceInput $.PathPicker "Export path" "export_path" $.Export "/path/to/errors.json" false false "/errors/pick" "pick" "export" "Choose file")}}
       <button type="submit" class="btn">{{t "Export selection"}}</button>
     </form>
   </section>
@@ -145,9 +144,8 @@
     <button type="submit" class="btn{{if not .Src}} primary{{end}}">{{t "Use experiment #"}}{{.ExpSeq}} {{t "report"}}</button>
   </form>
 </div>{{end}}
-<form method="post" action="/errors/open" class="path-form">
+<form method="post" action="/errors/open" class="stack">
   <input type="hidden" name="token" value="{{.Token}}">
-  <label class="field">{{t "Evidence report file (absolute path)"}}<input name="path" value="{{.OpenPath}}" spellcheck="false" autocomplete="off" placeholder="/path/to/report.json"></label>
-  {{if .PathPicker}}<button type="submit" class="btn" formaction="/errors/pick" name="pick" value="open" formnovalidate>{{t "Choose file"}}</button>{{end}}
-  <button type="submit" class="btn">{{t "Open report"}}</button>
+  {{template "resource-selection" (resourceInput .PathPicker "Evidence report file (absolute path)" "path" .OpenPath "/path/to/report.json" false false "/errors/pick" "pick" "open" "Choose file")}}
+  <div class="btn-row"><button type="submit" class="btn">{{t "Open report"}}</button></div>
 </form>{{end}}
