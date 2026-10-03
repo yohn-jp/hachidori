@@ -402,6 +402,8 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{define "op-busy"}}
 <div class="last op" role="status" aria-live="polite" id="models-busy">
   <div class="op-head"><strong>{{t "RUNNING"}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}</span>{{with since .Started}}<time>{{t "running for"}} {{.}}</time>{{end}}</div>
+  {{if .DeviceMode}}<p class="op-line" data-device-mode="{{.DeviceMode}}">{{if eq .DeviceMode "auto"}}{{t "Auto"}}{{with .ResolvedDevice}} · {{t "resolved to"}} {{.}}{{else}} · {{t "waiting for resolution"}}{{end}}{{else}}{{t "Pinned override"}} · {{.RequestedDevice}}{{end}}{{with .ActualDevice}} · {{t "worker reported"}} {{.}}{{end}}</p>{{end}}
+  {{if eq .Kind "desired_state"}}<p class="op-line">{{t "Additional residents"}}: {{range $i, $id := .Residents}}{{if $i}}, {{end}}{{$id}}{{else}}{{t "none"}}{{end}}</p>{{end}}
   {{template "operation-phases" .}}
   {{if .Step}}
   <p class="op-line">{{with phasePosition .}}{{t "phase"}} {{.}} · {{end}}{{t (stepLabel .Step)}} <span class="mono">{{.Detail}}</span>{{if .Items}} ({{.Item}} {{t "of"}} {{.Items}}){{end}}{{if .Determinate}} · {{bytesIn .Done}} {{t "of"}} {{bytesIn .Total}} ({{printf "%.0f" .Percent}}%){{else if and (eq .Step "downloading") .Done}} · {{bytesIn .Done}} {{t "received (the server did not state a total size)"}}{{end}}{{if .Resumed}} · <strong class="resumed">{{t "resuming"}}</strong>: {{bytesIn .Resumed}} {{t "were already held; the whole file is verified against its pinned digest once it is complete"}}{{end}}</p>
@@ -417,10 +419,13 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{define "op-last"}}
 <div class="last op {{if .Failure}}tone-bad failure{{else}}tone-ok{{end}}" role="status" id="models-last">
   <div class="op-head"><strong>{{if .Failure}}{{t "FAILED"}}{{else}}{{t "DONE"}}{{end}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}</span>{{with took .}}<time>{{t "took"}} {{.}}</time>{{end}}</div>
+  {{if .DeviceMode}}<p class="op-line" data-device-mode="{{.DeviceMode}}">{{if eq .DeviceMode "auto"}}{{t "Auto"}}{{with .ResolvedDevice}} · {{t "resolved to"}} {{.}}{{end}}{{else}}{{t "Pinned override"}} · {{.RequestedDevice}}{{end}}{{with .ActualDevice}} · {{t "worker reported"}} {{.}}{{end}}</p>{{end}}
+  {{if eq .Kind "desired_state"}}<p class="op-line">{{t "Additional residents"}}: {{range $i, $id := .Residents}}{{if $i}}, {{end}}{{$id}}{{else}}{{t "none"}}{{end}}</p>{{end}}
   {{template "operation-phases" .}}
   {{with .Failure}}
   <p class="op-line"><span class="bad-t">{{t "Failed in phase"}} {{with $.FailurePhase}}<strong>{{t (opPhase $.Kind .)}}</strong>{{end}}{{with $.FailureStep}} · {{t (stepLabel .)}}{{end}}</span>: <span class="mono">{{.}}</span></p>
   {{if eq $.Kind "update"}}<p class="note">{{t "The installed executable was not changed."}}</p>
+  {{else if eq $.Kind "desired_state"}}<p class="note">{{t "The operation details report whether the previous serving and resident state was restored."}}</p>
   {{else}}<p class="note">{{t "The active runtime and model were not changed."}} <a href="/diagnostics">{{t "Open Diagnostics"}}</a>{{with $.Log}} · {{t "action output:"}} <span class="mono">{{.}}</span>{{end}}</p>
   {{with $.Diagnostic}}<p class="note" id="forge-diagnostic-last">{{t "A bounded, redacted diagnostic was recorded for this failure:"}} <a class="mono" href="/forge/diagnostics/{{.}}" download>{{.}}</a> · <span class="mono">hachidori forge diagnostics show {{.}}</span> · <span class="mono">hachidori forge diagnostics export -out DIR {{.}}</span></p>{{end}}{{end}}
   {{end}}

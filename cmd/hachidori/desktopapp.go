@@ -329,9 +329,11 @@ func (a *desktopApp) run() error {
 		selected = plan.Home
 	}
 	ctl = app.New(app.Config{Home: selected, Open: open, Setup: a.Setup, Installed: a.Env.IsInstalled,
-		// The controller compares the desired residents with the bound set
-		// to tell the operator a restart is required; it keeps no copy.
-		Residents: func() []string { r, _ := prefs.Residents(); return r }})
+		// Residents are read from and written to the settings authority. The
+		// Controller keeps no copy; desired-state operations reconcile the
+		// submitted set through these callbacks.
+		Residents:    func() []string { r, _ := prefs.Residents(); return r },
+		SetResidents: func(ids []string) error { return prefs.SetResidents(ids) }})
 	flow := firstrun.New(firstrun.Config{Ctl: ctl, Plan: plan, Picker: a.Picker, Env: a.Env, Remember: a.Remember})
 	startFailed := false
 	if plan.Mode == firstrun.ModeLaunch {
@@ -554,7 +556,8 @@ func modelOp(o *app.Operation, root string) *dashboard.ModelOp {
 		return nil
 	}
 	op := &dashboard.ModelOp{Kind: o.Kind, Device: o.Device, Model: o.Model, Target: o.Target, Phase: o.Phase,
-		Plan: o.Plan, Phases: o.Phases, Started: o.Started, Finished: o.Finished}
+		DeviceMode: o.DeviceMode, RequestedDevice: o.RequestedDevice, ResolvedDevice: o.ResolvedDevice, ActualDevice: o.ActualDevice,
+		Residents: o.Residents, Plan: o.Plan, Phases: o.Phases, Started: o.Started, Finished: o.Finished}
 	if p := o.Progress; p != nil {
 		op.Step, op.Detail, op.Done, op.Total, op.Item, op.Items, op.Resumed = string(p.Step), p.Detail, p.Done, p.Total, p.Item, p.Items, p.Resumed
 	}
@@ -565,6 +568,14 @@ func modelOp(o *app.Operation, root string) *dashboard.ModelOp {
 		op.Log = app.SetupLogPath(root)
 	}
 	return op
+}
+
+func (m modelManager) StartDesiredState(r dashboard.DesiredStateRequest) error {
+	return m.ctl().StartDesiredState(app.DesiredStateParams{
+		Model: r.Model, Variant: r.Variant,
+		Device:    app.DeviceIntent{Mode: app.DeviceMode(r.DeviceMode), Value: r.Device},
+		Residents: r.Residents, AllowProvision: r.AllowProvision,
+	})
 }
 
 func (m modelManager) Verify(kind, id string) error { return m.ctl().Verify(kind, id) }
