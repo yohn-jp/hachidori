@@ -718,8 +718,13 @@ same composition, including the resident tray lifecycle above), plus:
 1. `home.Discover("")` (explicit env `HACHIDORI_HOME` > bootstrap locator >
    unconfigured) and `firstrun.Decide`:
    - no locator: first-run wizard, no runtime, no home, nothing written;
-   - locator naming an installed home: normal startup (`app.Controller.Start`),
-     the window shows the dashboard;
+   - locator naming an installed home: normal startup (`app.Controller.Bind`),
+     the window shows the dashboard. The desktop process and the serving runtime
+     are separate lifetimes: Bind binds the runtime, the API and the dashboard
+     without starting the worker, so opening Hachidori never loads the source
+     model onto the accelerator. The runtime is STOPPED (a stable, non-failing
+     state) until the operator chooses Start; planning, Tuning and Forge work
+     meanwhile;
    - locator naming a home without a valid activation record: the wizard with
      that home pre-selected;
    - locator naming a missing/unavailable home, or a malformed locator: a
@@ -1242,8 +1247,11 @@ RAM/VRAM observations and the worker's stderr tail, and shuts the worker down. I
 fails when the worker reports another variant (no source fallback) or another
 device (no cpu fallback). The record (`state/forge/probe/`) says
 `certification_effect: none`: a probe writes no certification record, never
-changes the activation record or the default route, never binds or replaces a
-resident and runs beside a running runtime without touching it.
+changes the activation record or the default route and never binds or replaces
+a resident. A probe on the accelerator is model-engineering work and owns the
+accelerator exclusively (the serving residents on it are stopped for it and
+restored after it); a probe on the cpu runs beside a running runtime without
+touching it.
 
 **Forge execution sessions** (`app.RunExecution`, `server.SourceConfig`,
 `Controller.Execute`). `hachidori forge execute --device D [--variant ID | --model
@@ -1283,6 +1291,27 @@ is `ExecutionError.Restore`, reported beside the primary failure and never
 instead of it; an execution that succeeded but could not restore is a failure. A
 GPU held by a process Hachidori does not own makes the worker fail to load; that
 is reported, not worked around.
+
+**Model-engineering ownership.** Serving and GPU model-engineering execution are
+mutually exclusive on one accelerator, and the controller owns that exclusion as
+one transaction boundary (`Controller.transact`). It records the serving state,
+takes the exclusive ownership, stops the Hachidori-owned residents that occupy
+the accelerator and waits for them, holds the ownership for the *whole* composed
+operation, and on every exit (success, failure, cancellation) releases it and
+starts exactly the residents it stopped. `Execute`, a probe on the accelerator,
+`CertifyVariant` and the composed `BuildAndEvaluate` are such transactions; the
+probe, reference and candidate executions nested in a composed operation only
+extend the ownership to their device and never restore serving, so serving
+stays down from the first GPU phase until the operation ends. A runtime the
+operator had already stopped is not running, so nothing is stopped and nothing
+is started afterwards. The ownership never touches the operator's stop intent.
+While it has stopped serving, `Snapshot.State` is `paused` and `Snapshot.Paused`
+names the owner: an intentional pause, distinct from an operator Stop
+(`OperatorStopped`) and from a failure. Device capacity for planning does not
+need a resident model: with no worker reporting the accelerator the controller
+observes the device once with the active runtime's private torch
+(`Controller.Accelerator`, no worker, no model load); that is capacity, never a
+candidate's measured memory.
 
 **Forge certification** (`app.RunForgeCertification`, `Controller.CertifyVariant`,
 `hachidori forge certify [--device D] [--reference-device D] [--reference-dtype T]

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/home"
@@ -60,10 +61,13 @@ func (s servingState) changed(then servingState) error {
 	return nil
 }
 
-// lease is the set of Hachidori-owned residents a session stopped so that its
-// worker could have the accelerator, and how to bring them back.
+// lease is the set of Hachidori-owned residents a model-engineering transaction
+// stopped so that its workers could have the accelerator, and how to bring them
+// back. It is written by the transaction's goroutine and read by Snapshot.
 type lease struct {
-	rt       Runtime
+	rt Runtime
+
+	mu       sync.Mutex
 	models   []string // residents of a resident set, in the order they were stopped
 	whole    bool     // a single worker binding was stopped
 	restored []string
@@ -72,15 +76,17 @@ type lease struct {
 // occupies reports whether a runtime on device holds the accelerator.
 func occupies(device string) bool { return device != "cpu" }
 
-// quiesce stops exactly the running Hachidori-owned residents that occupy the
-// accelerator the target needs, through the resident lifecycle authority. A
-// CPU target, a runtime that is not running and residents on the CPU are left
-// alone; no process Hachidori does not own is ever looked at. The returned
-// lease records what was stopped even when quiescing fails part way.
-func (c *Controller) quiesce(rt Runtime, device string) (*lease, error) {
-	l := &lease{rt: rt}
+// quiesceInto stops exactly the running Hachidori-owned residents that occupy
+// the accelerator device needs, through the resident lifecycle authority, and
+// records them in l. A CPU target, a runtime that is not running and residents
+// on the CPU are left alone; no process Hachidori does not own is ever looked
+// at. l records what was stopped even when quiescing fails part way, and a
+// resident l already stopped is not running any more, so covering a second
+// device never stops anything twice.
+func (l *lease) quiesceInto(device string) error {
+	rt := l.rt
 	if rt == nil || !rt.Running() || !occupies(device) {
-		return l, nil
+		return nil
 	}
 	if rr, ok := rt.(ResidentRuntime); ok {
 		for _, s := range rr.ResidentStatuses() {
@@ -88,20 +94,33 @@ func (c *Controller) quiesce(rt Runtime, device string) (*lease, error) {
 				continue
 			}
 			if err := rr.StopResident(s.Model); err != nil {
-				return l, fmt.Errorf("quiescing resident %s: %w", s.Model, err)
+				return fmt.Errorf("quiescing resident %s: %w", s.Model, err)
 			}
+			l.mu.Lock()
 			l.models = append(l.models, s.Model)
+			l.mu.Unlock()
 		}
-		return l, nil
+		return nil
 	}
 	if occupies(rt.Status().Runtime.Device) {
 		rt.Stop()
+		l.mu.Lock()
 		l.whole = true
+		l.mu.Unlock()
 	}
-	return l, nil
+	return nil
+}
+
+// stopped reports whether the lease holds anything serving would need back.
+func (l *lease) stopped() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.whole || len(l.models) > 0
 }
 
 func (l *lease) names() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.whole {
 		return []string{"runtime"}
 	}
@@ -219,42 +238,19 @@ func (c *Controller) execute(ctx context.Context, op *Operation, root string, rt
 	return res, err
 }
 
-// leased runs fn as maintenance work on device under the maintenance lease:
-// it records the serving state, stops only the Hachidori-owned residents that
-// occupy the accelerator device needs, runs fn, and in every outcome starts
-// them again, waits for them to be READY and compares the serving state with
-// what it recorded. A failure to restore is returned beside fn's own failure
-// (ExecutionError), never instead of it. report, when set, is told each lease
-// phase as it is entered.
+// leased runs fn as model-engineering work on device. It is the one entry the
+// execution, probe and composed Forge operations use for GPU work.
+//
+// Inside a transaction that already owns the accelerator (transact) it only
+// makes sure device is covered and runs fn: the serving residents stay down
+// until the owning transaction ends, so a nested probe, reference or candidate
+// execution can never bring them back in the middle of it. Standalone it is a
+// transaction of its own: it records the serving state, stops only the
+// Hachidori-owned residents that occupy the accelerator device needs, runs fn,
+// and in every outcome starts them again, waits for them to be READY and
+// compares the serving state with what it recorded. A failure to restore is
+// returned beside fn's own failure (ExecutionError), never instead of it.
+// report, when set, is told each phase as it is entered.
 func (c *Controller) leased(ctx context.Context, root string, rt Runtime, device string, report func(string), fn func() error) (quiesced, restored []string, err error) {
-	h := home.Home{Root: root}
-	phase := func(ph string) {
-		if report != nil {
-			report(ph)
-		}
-	}
-	before := c.servingState(h, rt)
-
-	phase(PhaseExecQuiesce)
-	l, err := c.quiesce(rt, device)
-	if err == nil {
-		phase(PhaseExecRun)
-		err = fn()
-	}
-
-	phase(PhaseExecRestore)
-	timeout := c.cfg.RestoreTimeout
-	if timeout <= 0 {
-		timeout = defaultRestoreTimeout
-	}
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
-	defer cancel()
-	rerr := l.restore(rctx)
-	if rerr == nil {
-		rerr = before.changed(c.servingState(h, rt))
-	}
-	if rerr != nil {
-		return l.names(), l.restored, &ExecutionError{Primary: err, Restore: rerr}
-	}
-	return l.names(), l.restored, err
+	return c.transact(ctx, root, rt, report, []string{device}, fn)
 }

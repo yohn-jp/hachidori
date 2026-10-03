@@ -105,6 +105,8 @@ code, pre, .mono { font-family: var(--mono); font-size: .92em; }
 .prose { max-width: var(--measure); text-wrap: pretty; }
 .empty { color: var(--text-3); max-width: var(--measure); }
 h1, h2 { text-wrap: balance; }
+/* A secondary line under a value: a block, never a hard break. */
+.under { display: block; }
 .sub { color: var(--text-3); font-size: var(--fs-small); font-weight: 400; }
 .stack { display: grid; gap: var(--sp-3); align-content: start; min-width: 0; }
 

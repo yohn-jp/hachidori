@@ -23,6 +23,7 @@ html, body { height: 100%; }
 .readiness { display: inline-flex; align-items: center; gap: .45rem; font-size: var(--fs-label); font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--tone); white-space: nowrap; }
 .attention-link { color: var(--warn); font-weight: 600; white-space: nowrap; text-decoration: none; }
 .attention-link:hover { text-decoration: underline; }
+.op-headline { color: var(--accent); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 .sidenav { grid-area: nav; display: flex; flex-direction: column; gap: var(--sp-4); padding: var(--sp-4) .6rem; background: var(--chrome); border-right: 1px solid var(--line); overflow: auto; }
 .sidenav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
@@ -42,8 +43,8 @@ html, body { height: 100%; }
 
 /* Shared intent-first primitives: the existing visual-system tokens remain authoritative. */
 .instrument-section { display: grid; gap: var(--sp-3); padding-block: var(--sp-4); border-top: 1px solid var(--line); min-width: 0; }
-.instrument-heading { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr); gap: var(--sp-3) var(--sp-5); align-items: baseline; }
-.operator-row { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr); gap: var(--sp-2) var(--sp-5); padding-block: var(--sp-2); border-bottom: 1px solid var(--line); min-width: 0; }
+.instrument-heading { display: grid; grid-template-columns: minmax(8rem, 13rem) minmax(0, 1fr); gap: var(--sp-3) var(--sp-5); align-items: baseline; }
+.operator-row { display: grid; grid-template-columns: minmax(8rem, 13rem) minmax(0, 1fr); gap: var(--sp-2) var(--sp-5); padding-block: var(--sp-2); border-bottom: 1px solid var(--line); min-width: 0; }
 .operator-label { color: var(--text-2); }
 .operator-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); min-width: 0; overflow-wrap: anywhere; }
 .operator-reason { flex-basis: 100%; }
@@ -501,7 +502,7 @@ hachidoriUI.install(document);
 <section class="readiness-panel tone-{{.Rt.Tone}}" aria-labelledby="rd-h">{{$act := runtimeAction .}}{{$mp := memPressure $a}}
   <div>
     <h2 class="vh" id="rd-h">{{t "Inference runtime"}}</h2>
-    <p class="state-word"><span class="dot"></span>{{if $w.Ready}}READY{{else if not .Running}}{{t "STOPPED"}}{{else}}{{$w.State}}{{end}}</p>
+    <p class="state-word"><span class="dot"></span>{{if $w.Ready}}READY{{else if .Rt.Paused}}{{t "PAUSED"}}{{else if not .Running}}{{t "STOPPED"}}{{else}}{{$w.State}}{{end}}</p>
     {{if and (not $w.Ready) (or .Running (eq $w.State "failed"))}}
     {{with workerStages $w}}
     <ol class="stages" id="worker-stages" aria-label="{{t "Worker lifecycle"}}">{{range .}}<li class="{{.Status}}"{{if eq .Status "current"}} aria-current="step"{{end}}>{{t .Label}}</li>{{end}}</ol>
@@ -515,12 +516,10 @@ hachidoriUI.install(document);
     {{else if eq $act.Kind "start"}}<form method="post" action="/runtime/start" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn primary">{{t $act.Label}}</button></form>
     {{else if eq $act.Kind "restart"}}<form method="post" action="/runtime/restart" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn primary">{{t $act.Label}}</button></form>{{end}}
     {{if .Running}}
-    <details class="inline runtime-controls" id="runtime-controls"><summary>{{t "Runtime controls"}}</summary>
-      <div class="btn-row">
-        {{if ne $act.Kind "restart"}}<form method="post" action="/runtime/restart" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn quiet">{{t "Restart"}}</button></form>{{end}}
-        <form method="post" action="/runtime/stop" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Stop"}}</button></form>
-      </div>
-    </details>
+    <div class="btn-row runtime-controls" id="runtime-controls">
+      {{if ne $act.Kind "restart"}}<form method="post" action="/runtime/restart" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn quiet">{{t "Restart"}}</button></form>{{end}}
+      <form method="post" action="/runtime/stop" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Stop"}}</button></form>
+    </div>
     {{end}}
   </div>
   <dl class="spec">
@@ -600,7 +599,7 @@ hachidoriUI.install(document);
 <section class="attention tone-bad failure" id="worker-failure" aria-labelledby="wf-h">
   <h2 id="wf-h">{{t "Worker failed while:"}} {{t .PhaseWord}}</h2>
   <p class="mono">{{.Class}}: {{.Message}}</p>
-  <p>{{t .Hint}}</p>
+  <p class="prose">{{t .Hint}}</p>
   <p class="note">{{t "Materialized models are unaffected. To run a different pair, Activate it in Models and choose Restart."}}</p>
   {{if .Stderr}}<pre>{{range .Stderr}}{{.}}
 {{end}}</pre>{{end}}

@@ -49,9 +49,9 @@
   </nav>{{end}}
   <div class="table-wrap"><table class="data" aria-label="{{t "History"}}"><thead><tr><th>{{t "saved"}}</th><th>{{t "label"}}</th><th>{{t "dataset"}}</th><th>{{t "served model"}}</th><th class="num">{{t "accuracy"}}</th><th class="num">ECE</th><th class="num">p50 / p95</th><th class="num">{{t "errors"}}</th><th><span class="vh">{{t "Actions"}}</span></th></tr></thead><tbody>
   {{range .HistoryRows}}<tr>
-    <td>{{.SavedAt}}</td><td>{{.Label}}{{with .Note}}<br><span class="note">{{.}}</span>{{end}}</td>
-    <td class="mono">{{.Dataset}}<br><span class="faint">sha256 {{short .DatasetSHA256}}</span></td>
-    <td class="mono">{{.ServedModel}}{{with .ServedIdentity}}<br><span class="faint">{{short .}}</span>{{end}}{{if not .ServedConsistent}}<br><span class="bad-t">{{t "inconsistent"}}</span>{{end}}</td>
+    <td>{{.SavedAt}}</td><td>{{.Label}}{{with .Note}}<span class="note under">{{.}}</span>{{end}}</td>
+    <td class="mono">{{.Dataset}}<span class="faint under">sha256 {{short .DatasetSHA256}}</span></td>
+    <td class="mono">{{.ServedModel}}{{with .ServedIdentity}}<span class="faint under">{{short .}}</span>{{end}}{{if not .ServedConsistent}}<span class="bad-t under">{{t "inconsistent"}}</span>{{end}}</td>
     <td class="num strong">{{f4 .Accuracy}}</td><td class="num">{{f4 .ECE}}</td><td class="num">{{ms .RequestP50MS}} / {{ms .RequestP95MS}}</td>
     <td class="num{{if .RequestErrors}} bad-t{{end}}">{{.RequestErrors}}</td>
     <td>

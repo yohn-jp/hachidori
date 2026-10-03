@@ -210,8 +210,12 @@ func TestConfiguredLaunchIsResidentOnOneController(t *testing.T) {
 		if res == nil || w.StartHidden {
 			t.Fatalf("resident=%v hidden=%v", res != nil, w.StartHidden)
 		}
-		if got := res.Summary().Label; got != "Ready" {
+		// Opening the desktop binds the runtime but does not start serving.
+		if got := res.Summary().Label; got != "Stopped" {
 			t.Errorf("summary %q", got)
+		}
+		if starts, _, _ := rt.counts(); starts != 0 {
+			t.Errorf("opening the desktop started the worker %d times", starts)
 		}
 		if act := res.OnClose(); act != desktop.ActionHideWithNotice {
 			t.Errorf("first close = %v, want hide with notice", act)
@@ -234,9 +238,35 @@ func TestConfiguredLaunchIsResidentOnOneController(t *testing.T) {
 	if err := a.launch(); err != nil {
 		t.Fatal(err)
 	}
+	// One binding; the only start is the operator's Restart from the tray (the
+	// launch itself starts nothing); one stop when the application ends.
 	starts, stops, restarts := rt.counts()
-	if opens.Load() != 1 || starts != 1 || restarts != 1 || stops != 1 {
+	if opens.Load() != 1 || starts != 0 || restarts != 1 || stops != 1 {
 		t.Fatalf("runtimes %d starts %d restarts %d stops %d", opens.Load(), starts, restarts, stops)
+	}
+}
+
+// The desktop process and the serving runtime are separate lifetimes: a
+// configured launch binds the runtime and leaves the worker stopped, so Hachidori
+// opens without the source model occupying the accelerator. Explicit Start and
+// Stop through the controller's dashboard authority remain the operator's.
+func TestConfiguredLaunchDoesNotStartServing(t *testing.T) {
+	f := &fakeDesktop{}
+	a, rt, opens := installedApp(t, f, false)
+	f.open = func(_ context.Context, w desktop.Window) error {
+		if starts, _, _ := rt.counts(); starts != 0 || rt.Running() || opens.Load() != 1 {
+			t.Errorf("fresh launch: runtimes %d starts %d running %v", opens.Load(), starts, rt.Running())
+		}
+		if got := w.Resident.Summary(); got.Label != "Stopped" || got.Level == desktop.LevelAttention {
+			t.Errorf("a fresh launch is presented as %+v", got)
+		}
+		return nil
+	}
+	if err := a.launch(); err != nil {
+		t.Fatal(err)
+	}
+	if starts, _, _ := rt.counts(); starts != 0 {
+		t.Fatalf("the worker was started %d times without an operator Start", starts)
 	}
 }
 

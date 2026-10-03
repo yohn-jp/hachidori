@@ -574,7 +574,9 @@ func TestAttentionSummarizesOperationalProblems(t *testing.T) {
 	e.rt.mu.Unlock()
 	v := e.d.view("Runtime", "runtime")
 	a := alerts(v)
-	if len(a) < 2 || a[0].Title != "Runtime is not running" || a[0].Level != "bad" || a[1].Level != "bad" {
+	// A stopped runtime is a stable state, not an alert; only the worker's own
+	// unrecovered failure is.
+	if len(a) != 1 || a[0].Title != "Last worker failure: worker_crash" || a[0].Level != "bad" {
 		t.Fatalf("alerts %+v", a)
 	}
 	e.rt.mu.Lock()

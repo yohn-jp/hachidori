@@ -343,9 +343,10 @@ func TestProbeRecordFailureNeverReplacesThePrimaryError(t *testing.T) {
 	}
 }
 
-// The probe is not a certification and not an activation, and the resident
-// runtime it runs beside is untouched: same worker process, same status, the
-// activation record and the certification records byte for byte.
+// The probe is not a certification and not an activation: the activation record
+// and the certification records stay byte for byte. A probe on the accelerator
+// owns it exclusively, so the serving worker is stopped for it and restored
+// (once); a probe on the cpu leaves the resident runtime untouched.
 func TestProbeLeavesResidentsActivationAndCertificationUntouched(t *testing.T) {
 	h, v := forgeHome(t)
 	active := home.Active{Runtime: "rt", ModelID: setup.ClefFlash, Model: "m", Device: "cpu"}
@@ -382,12 +383,15 @@ func TestProbeLeavesResidentsActivationAndCertificationUntouched(t *testing.T) {
 		strings.Join(m.Phases, ",") != "preflight,probing" || m.Cancellable {
 		t.Fatalf("probe operation %+v", m)
 	}
-	if st := s.Status.Worker; st.PID != before.Status.Worker.PID || st.Starts != before.Status.Worker.Starts || st.State != before.Status.Worker.State || !st.Ready {
-		t.Fatalf("the resident worker changed: before %+v after %+v", before.Status.Worker, st)
+	// A probe on the accelerator is model-engineering work: serving is stopped
+	// for it and comes back (a fresh READY worker), exactly once.
+	if st := s.Status.Worker; st.PID == before.Status.Worker.PID || st.Starts != before.Status.Worker.Starts+1 || !st.Ready {
+		t.Fatalf("the resident worker was not restored once after the probe: before %+v after %+v", before.Status.Worker, st)
 	}
 	if s.State != Ready || s.RestartRequired || s.ResidencyChanged || opens.n() != 1 {
 		t.Fatalf("state %s restart=%v residency=%v opens=%d", s.State, s.RestartRequired, s.ResidencyChanged, opens.n())
 	}
+	restored := s.Status.Worker
 	if after, _ := os.ReadFile(h.Path("state", "active-runtime.json")); !bytes.Equal(after, activeBefore) {
 		t.Fatal("the activation record changed")
 	}
@@ -399,8 +403,9 @@ func TestProbeLeavesResidentsActivationAndCertificationUntouched(t *testing.T) {
 		t.Fatalf("forge state %+v", st)
 	}
 
-	// A failing probe is the operation's failure, leaves a diagnostic, and the
-	// resident is still untouched.
+	// A failing probe is the operation's failure, leaves a diagnostic, and a
+	// probe on the cpu shares nothing with the accelerator: the resident is
+	// untouched.
 	c.cfg.Maintenance.Probe = func(ctx context.Context, root string, p ProbeParams, log io.Writer, obs *setup.Observer) (ProbeRecord, error) {
 		return Probe(ctx, h, p, probeDeps(t, "crash_on_decide", t.TempDir(), "uncertified"), log, obs)
 	}
@@ -408,7 +413,7 @@ func TestProbeLeavesResidentsActivationAndCertificationUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = waitIdle(t, c)
-	if f := s.Maintenance.Failure; f == nil || f.Diagnostic == "" || s.State != Ready || s.Status.Worker.PID != before.Status.Worker.PID {
+	if f := s.Maintenance.Failure; f == nil || f.Diagnostic == "" || s.State != Ready || s.Status.Worker.PID != restored.PID || s.Status.Worker.Starts != restored.Starts {
 		t.Fatalf("failed probe: %+v state %s", s.Maintenance.Failure, s.State)
 	}
 	if err := c.Close(ctx); err != nil {

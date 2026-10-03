@@ -16,12 +16,12 @@ import (
 // completed or carries the failure of the phase it failed in. A front end only
 // projects it.
 //
-// The probe and both runs are maintenance work under the maintenance lease: only
-// the Hachidori-owned residents that occupy the accelerator are stopped, and
-// they are restored (and waited for) after each of them, on success, failure
-// and cancellation alike. The activation record, desired residents, routing
-// policy and default model are never written; the verdict, accepted or rejected,
-// is evidence only.
+// The whole certification is one model-engineering transaction: only the
+// Hachidori-owned residents that occupy the accelerator are stopped, before the
+// probe, and they stay down through both runs; they are restored (and waited
+// for) once, when the operation ends, on success, failure and cancellation
+// alike. The activation record, desired residents, routing policy and default
+// model are never written; the verdict, accepted or rejected, is evidence only.
 func (c *Controller) CertifyVariant(p ForgeCertifyParams) error {
 	return c.async(SetupParams{Device: p.Device}, action{kind: OpForgeCertify, device: p.Device, target: setup.KindVariant + " " + p.Variant, needDevice: true,
 		plan:  certifyPlan(p.Materialize),
@@ -51,8 +51,17 @@ func (c *Controller) CertifyVariant(p ForgeCertifyParams) error {
 					return res, err
 				},
 			}
-			_, err := RunForgeCertification(ctx, home.Home{Root: root}, p, deps, log, obs)
-			return err
+			// The certification is one model-engineering transaction: it owns
+			// the accelerator from before the probe until the last run is
+			// done, and the probe and both runs nest in that ownership.
+			reference := p.ReferenceDevice
+			if reference == "" {
+				reference = DefaultReferenceDevice
+			}
+			return c.engineer(ctx, root, rt, []string{p.Device, reference}, func() error {
+				_, err := RunForgeCertification(ctx, home.Home{Root: root}, p, deps, log, obs)
+				return err
+			})
 		}})
 }
 

@@ -80,11 +80,11 @@ type alert struct {
 func alerts(v view) []alert {
 	var bad, warn []alert
 	w, t := v.S.Worker, v.Lang.T
-	switch {
-	case !v.Running:
-		bad = append(bad, alert{"bad", t("Runtime is not running"),
-			t("The inference API stays bound and reports not ready until the runtime is started.")})
-	case w.State == worker.StateFailed:
+	// A runtime that is not running is not a problem by itself: stopped is a
+	// stable state the operator chose (or the desktop opened in), and a pause
+	// for model engineering is intentional. Only failures need attention, and a
+	// worker the supervisor gave up on is listed through its last failure.
+	if v.Running && w.State == worker.StateFailed {
 		bad = append(bad, alert{"bad", t("Worker failed"), t("Phase %s.", w.Phase)})
 	}
 	// Another resident that failed is named; the default resident's own
@@ -172,8 +172,12 @@ type runtimeAction struct {
 func runtimeActionOf(v view) runtimeAction {
 	w := v.S.Worker
 	switch {
+	case v.pause() != nil && !v.Running:
+		// Serving resumes by itself when the operation ends; Start would be
+		// refused while it owns the accelerator, so none is offered.
+		return runtimeAction{"", "", pauseReason(v.pause())}
 	case !v.Running:
-		return runtimeAction{"start", "Start", ""}
+		return runtimeAction{"start", "Start", "Serving is stopped. Planning, Tuning and Forge stay available; Start loads the active model."}
 	case w.State == worker.StateFailed:
 		return runtimeAction{"restart", "Restart", "The worker failed."}
 	case v.Next != nil && v.Next.Model != "" && (v.Next.Differs || v.Next.VariantDiffers) && v.Next.Problem == "":
@@ -182,6 +186,23 @@ func runtimeActionOf(v view) runtimeAction {
 		return runtimeAction{"workbench", "Open Workbench", ""}
 	}
 	return runtimeAction{}
+}
+
+// pause is the intentional pause of serving this render read, nil when none.
+func (v view) pause() *ModelPause {
+	if v.models == nil {
+		return nil
+	}
+	return v.models.Pause
+}
+
+// pauseReason is the operator's statement of why serving is paused (a catalog
+// message ID): who owns the accelerator, and that serving returns by itself.
+func pauseReason(p *ModelPause) string {
+	if opOwner(p.Owner) == "forge" {
+		return "Paused — Forge is using the GPU. Serving resumes automatically when it finishes."
+	}
+	return "Paused — model engineering is using the GPU. Serving resumes automatically when it finishes."
 }
 
 // shellStatus is the compact runtime identity the workstation shell shows on
@@ -197,6 +218,9 @@ type shellStatus struct {
 	Memory     string // GPU memory in use, when the device reports it
 	MemoryTone string // ok | warn | bad: memory pressure, independent of Tone
 	Attention  int    // items in the needs-attention list
+	// Paused: serving is intentionally down while model engineering owns the
+	// accelerator (Word is then PAUSED).
+	Paused bool
 	// Artifact is the execution artifact the running worker serves: SOURCE or
 	// VARIANT <exact id>; empty while no worker runs.
 	Artifact string
@@ -209,6 +233,9 @@ func shellOf(v view) shellStatus {
 		Device:   join(opt(w.Info, "device"), opt(w.Info, "dtype")), GPU: opt(w.Info, "device_name")}
 	if w.Ready {
 		s.Word = "READY"
+	}
+	if v.pause() != nil && !v.Running {
+		s.Word, s.Tone, s.Paused = "PAUSED", "active", true
 	}
 	switch {
 	case !v.Running:

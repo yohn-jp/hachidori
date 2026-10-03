@@ -355,11 +355,16 @@ func (a *desktopApp) run() error {
 	flow := firstrun.New(firstrun.Config{Ctl: ctl, Plan: plan, Picker: a.Picker, Env: a.Env, Remember: a.Remember})
 	startFailed := false
 	if plan.Mode == firstrun.ModeLaunch {
-		// A configured, installed home: normal startup. A failure is kept by
-		// the controller and shown with Retry, never as an opaque exit.
-		if err := ctl.Start(); err != nil {
+		// A configured, installed home: normal startup. The desktop process
+		// and the serving runtime are separate lifetimes: opening Hachidori
+		// binds the runtime (API and dashboard) but does not load the source
+		// model onto the accelerator. Planning, Tuning and Forge work with
+		// serving stopped; serving starts only on the operator's explicit
+		// Start. A failure to bind is kept by the controller and shown with
+		// Retry, never as an opaque exit.
+		if err := ctl.Bind(); err != nil {
 			startFailed = true
-			fmt.Fprintln(a.Stderr, "hachidori: start:", err)
+			fmt.Fprintln(a.Stderr, "hachidori: bind:", err)
 		}
 	}
 
@@ -483,6 +488,9 @@ func (m modelManager) State() dashboard.ModelsState {
 	c := m.ctl()
 	snap := c.Snapshot()
 	st := dashboard.ModelsState{RestartRequired: snap.RestartRequired, ResidencyChanged: snap.ResidencyChanged, Busy: modelOp(snap.Operation, snap.Home), Last: modelOp(snap.Maintenance, snap.Home)}
+	if p := snap.Paused; p != nil {
+		st.Pause = &dashboard.ModelPause{Owner: p.Owner}
+	}
 	if len(snap.Checks) > 0 {
 		st.Checks = make(map[string]dashboard.ModelCheck, len(snap.Checks))
 		for k, c := range snap.Checks {
@@ -501,6 +509,13 @@ func (m modelManager) State() dashboard.ModelsState {
 		st.Forge.Resolution = forgeResolution(snap.Maintenance.ForgeResolution)
 	}
 	return st
+}
+
+// Device is the device capacity observed without a serving worker (the
+// controller's own observation; see app.Controller.Accelerator).
+func (m modelManager) Device() dashboard.DeviceObservation {
+	o := m.ctl().Accelerator()
+	return dashboard.DeviceObservation{Pending: o.Pending, Name: o.Name, TotalBytes: o.TotalBytes, Err: o.Err}
 }
 
 func forgeResolution(r *app.ForgeBuildEvaluateResolution) *dashboard.ForgeResolution {

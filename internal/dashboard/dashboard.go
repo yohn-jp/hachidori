@@ -232,6 +232,31 @@ type ModelsState struct {
 	ResidencyChanged bool
 	// Forge is the recorded Forge readiness: preflights, probes, diagnostics.
 	Forge ForgeState
+	// Pause is set while model engineering owns the accelerator and serving is
+	// intentionally down for it: neither an operator Stop nor a failure.
+	Pause *ModelPause
+}
+
+// ModelPause restates the controller's intentional pause of serving. Owner is
+// the kind of the operation that owns the accelerator.
+type ModelPause struct {
+	Owner string
+}
+
+// DeviceObserver is the optional capability of a Models manager that can state
+// the device capacity without a serving worker (and without loading a model).
+// It is consulted only while no worker reports the accelerator itself.
+type DeviceObserver interface {
+	Device() DeviceObservation
+}
+
+// DeviceObservation is device capacity observed without a worker. It is not a
+// measurement of any candidate.
+type DeviceObservation struct {
+	Pending    bool
+	Name       string
+	TotalBytes uint64
+	Err        string
 }
 
 // Residency reads and stores the desired additional resident models (catalog
@@ -757,11 +782,11 @@ func (d *Dashboard) statusView(title, nav string) view {
 	d.mu.Unlock()
 	v := view{Chrome: Chrome{Title: title, Nav: nav, Lang: d.locale(), APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings(), HasModels: d.cfg.Models != nil, HasTuning: d.cfg.hasTuning()},
 		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
-	v.Rt = shellOf(v)
 	if d.cfg.Models != nil {
 		st := d.cfg.Models.State()
 		v.models, v.Op = &st, headlineOf(st.Busy)
 	}
+	v.Rt = shellOf(v)
 	return v
 }
 

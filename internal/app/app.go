@@ -51,6 +51,11 @@ const (
 	// Failed: the last application action failed, or the supervisor gave up
 	// on the worker. Snapshot.Failure carries the structured cause.
 	Failed State = "failed"
+	// Paused: serving is intentionally down because model engineering owns
+	// the accelerator (Snapshot.Paused names the owner). It is neither an
+	// operator Stop nor a failure, and the controller brings serving back by
+	// itself when the owning operation ends.
+	Paused State = "paused"
 )
 
 // Operation kinds.
@@ -59,6 +64,9 @@ const (
 	OpStart   = "start"
 	OpStop    = "stop"
 	OpRestart = "restart"
+	// OpBind binds the serving runtime (its worker, API and dashboard) without
+	// starting the worker: the desktop being open does not request serving.
+	OpBind = "bind"
 )
 
 // Failure sources.
