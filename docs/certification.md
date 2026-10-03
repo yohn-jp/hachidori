@@ -621,15 +621,16 @@ and portable tests never produce `PASS` for a physical item.
 
 ## Clef Gated DeltaNet kernels (#221)
 
-The selected CUDA path uses `fla-core==0.5.2` for both convolution and chunk
-Gated DeltaNet. Linux uses `triton==3.6.0`; Windows amd64 uses
-`triton-windows==3.6.0.post26`. These are wheel-only dependencies in the serving
-Runtime Spec/uv lock, not user-site packages or worker-time Hub downloads.
-The kernels require CUDA compute capability >= 8.0 and the Clef `bfloat16`
-compute path. CPU, older CUDA capabilities and `float32` explicitly execute
-references. Supported CUDA startup/inference errors propagate without a
-reference or CPU retry. This does not change the W4A16 recipe, artifact identity,
-question encoding, joint head, or preservation policy.
+The optimized path is intentionally a native Windows amd64 CUDA product
+contract. It uses `fla-core==0.5.2` for both convolution and chunk Gated
+DeltaNet with `triton-windows==3.6.0.post26`. These are wheel-only dependencies
+in the Windows CUDA serving Runtime Spec/uv lock, not user-site packages or
+worker-time Hub downloads. The kernels require CUDA compute capability >= 8.0
+and the Clef `bfloat16` compute path. CPU, non-Windows CUDA, older CUDA
+capabilities and `float32` explicitly execute references. Supported Windows
+CUDA startup/inference errors propagate without a reference or CPU retry. This
+does not change the W4A16 recipe, artifact identity, question encoding, joint
+head, or preservation policy.
 
 Investigation on 2026-10-03 used the exact locked `transformers==5.17.0` wheel
 (SHA-256 `78ec1ce21579b38dfb83950a0658cd119f87212a2fcfdff478096ce9d6c03801`).
