@@ -230,10 +230,11 @@ func TestDesktopResidentSelectionPersistsAndIsRestoredOnLaunch(t *testing.T) {
 	})
 }
 
-// Changing the selection under a running desktop is next-start intent: nothing
-// is opened, started or stopped until the explicit Restart, which opens exactly
-// the saved set and retires the old one.
-func TestDesktopResidencyChangeRequiresExplicitRestart(t *testing.T) {
+// Changing the stored selection under a running desktop is desired state, not
+// a restart request: the Models workspace shows it as pending, offers no
+// Restart for it (the one desired-state Apply reconciles it), and nothing is
+// opened, started or stopped by storing it.
+func TestDesktopResidencyChangeIsPendingDesiredState(t *testing.T) {
 	prefs := filepath.Join(t.TempDir(), "desktop.json")
 	if err := settingsStore(prefs, nil).SetResidents([]string{nanoID}); err != nil {
 		t.Fatal(err)
@@ -245,30 +246,19 @@ func TestDesktopResidencyChangeRequiresExplicitRestart(t *testing.T) {
 
 		post(t, origin, "/models/residents", url.Values{}) // deselect everything
 		body := page(t, origin, "/models")
-		if !strings.Contains(body, `id="restart-required"`) || !strings.Contains(body, "The resident selection changed") ||
-			!strings.Contains(rowOf(t, body, nanoID), "resident · removed on restart") {
-			t.Errorf("a selection change is not shown as restart-required:\n%s", body)
+		if !strings.Contains(body, `id="restart-required"`) || !strings.Contains(body, "DESIRED STATE PENDING") ||
+			!strings.Contains(body, "The selected resident set differs from the running workers.") ||
+			!strings.Contains(rowOf(t, body, nanoID), "resident · removed when applied") {
+			t.Errorf("a selection change is not shown as pending desired state:\n%s", body)
+		}
+		if strings.Contains(body, `action="/models/restart"`) {
+			t.Error("a pending resident selection offers Restart instead of the desired-state Apply")
 		}
 		if reads, rts := d.opens(); len(reads) != 1 || len(rts) != 1 {
 			t.Errorf("the change opened a runtime: %v", reads)
 		}
 		if starts, stops := old.counts(); starts != 1 || stops != 0 || !old.Running() {
 			t.Errorf("the change touched the running runtime: starts %d stops %d", starts, stops)
-		}
-
-		post(t, origin, "/models/restart", url.Values{})
-		reads, rts := d.opens()
-		if len(reads) != 2 || len(reads[1]) != 0 || !slices.Equal(rts[1].models, []string{layaBase}) {
-			t.Fatalf("restart did not apply the selection: reads %v", reads)
-		}
-		if _, stops := old.counts(); stops != 1 || old.Running() {
-			t.Errorf("the old set was not retired: stops %d", stops)
-		}
-		if starts, _ := rts[1].counts(); starts != 1 || !rts[1].Running() {
-			t.Errorf("the new set was not started once: %d", starts)
-		}
-		if body := page(t, origin, "/models"); strings.Contains(body, `id="restart-required"`) {
-			t.Error("restart-required remains after the restart applied the selection")
 		}
 	})
 	if got, _ := settingsStore(prefs, nil).Residents(); len(got) != 0 {
