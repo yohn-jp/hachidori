@@ -1,5 +1,10 @@
 {
   "scenarios": [
-    "candidate-identity"
+    "candidate-identity",
+    "cpu-ready-typed-inference",
+    "stop-start-restart",
+    "quit-leaves-no-worker-or-port",
+    "same-home-relaunch",
+    "cuda-unavailable-no-cpu-fallback"
   ]
 }
