@@ -243,13 +243,17 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	if err = os.Chmod(tmp, perm); err != nil {
 		return err
 	}
-	const attempts = 10
+	// Windows readers may retain a sharing lock for longer than a scheduler
+	// tick while the locator is being replaced. Keep the retry bounded, but
+	// allow a realistic lock-release window before treating it as permanent.
+	const attempts = 50
+	const retryDelay = 10 * time.Millisecond
 	for i := 0; i < attempts; i++ {
 		err = os.Rename(tmp, path)
 		if err == nil || !retryableBootstrapReplaceError(err) {
 			return err
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(retryDelay)
 	}
 	return err
 }
