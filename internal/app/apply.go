@@ -20,6 +20,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/redact"
 	"github.com/yohn-jp/hachidori/internal/server"
+	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -263,16 +264,22 @@ func (c *Controller) runApply(ctx context.Context, tx *applyTx) (ApplyResult, er
 
 // applyTx is the state of one apply transaction.
 type applyTx struct {
-	c     *Controller
-	op    *Operation
-	p     ApplyParams
-	root  string
-	log   io.Writer
-	obs   *setup.Observer
-	scrub redact.Scrubber
+	c       *Controller
+	op      *Operation
+	p       ApplyParams
+	desired *DesiredStateParams
+	root    string
+	log     io.Writer
+	obs     *setup.Observer
+	scrub   redact.Scrubber
 
-	model   home.ModelManifest
-	variant home.VariantManifest
+	model            home.ModelManifest
+	variant          home.VariantManifest
+	hasVariant       bool
+	autoRecord       []byte
+	desiredResidents []string
+	prevResidents    []string
+	repairModels     []string
 
 	// The snapshot: everything needed to restore the previous serving target.
 	prevRT        Runtime
@@ -283,28 +290,45 @@ type applyTx struct {
 	prevDefault   string   // model of the default member of the previous binding
 	before        servingState
 
-	mutated      bool // the activation record was changed
-	rebound      bool // the previous binding was stopped
-	materialized bool
+	mutated          bool // the activation record was changed
+	rebound          bool // the previous binding was stopped
+	residentsMutated bool
+	materialized     bool
+	needsRepair      bool
+}
+
+func (t *applyTx) variantID() string {
+	if t.hasVariant {
+		return t.variant.ID
+	}
+	return ""
 }
 
 func (t *applyTx) h() home.Home { return home.Home{Root: t.root} }
 
 func (t *applyTx) run(ctx context.Context) (ApplyResult, error) {
 	if err := t.validate(ctx); err != nil {
-		return ApplyResult{}, &ApplyError{Phase: PhaseApplyValidate, Primary: err}
+		phase := t.op.Phase
+		if phase == "" {
+			phase = PhaseApplyValidate
+		}
+		return ApplyResult{}, &ApplyError{Phase: phase, Primary: err}
 	}
 	if err := t.snapshot(); err != nil {
 		return ApplyResult{}, &ApplyError{Phase: PhaseApplySnapshot, Primary: err}
 	}
 	res, phase, err := t.transact(ctx)
 	if err == nil {
-		fmt.Fprintf(t.log, "apply: variant %s serves on %s and answered a typed decision\n", t.variant.ID, t.p.Device)
+		if t.desired != nil {
+			fmt.Fprintf(t.log, "desired state: model %s variant %q serves on %s and answered a typed decision\n", t.model.ID, t.variantID(), t.p.Device)
+		} else {
+			fmt.Fprintf(t.log, "apply: variant %s serves on %s and answered a typed decision\n", t.variant.ID, t.p.Device)
+		}
 		return res, nil
 	}
 	fmt.Fprintf(t.log, "apply: failed in %s: %v\n", phase, err)
 	ae := &ApplyError{Phase: phase, Primary: err, Mutated: t.mutated}
-	if t.mutated || t.rebound {
+	if t.mutated || t.rebound || t.residentsMutated {
 		if rerr := t.rollback(ctx); rerr != nil {
 			ae.Rollback = rerr
 			fmt.Fprintf(t.log, "apply: rollback failed: %v\n", rerr)
@@ -322,32 +346,69 @@ func (t *applyTx) run(ctx context.Context) (ApplyResult, error) {
 // is not materialized. The artifacts' digests are verified by the activation
 // authority before it writes the record (a refusal there leaves it untouched).
 func (t *applyTx) validate(ctx context.Context) error {
+	if t.desired != nil {
+		t.c.phase(t.op, PhaseDesiredResolve)
+		if t.desired.Device.Mode == DeviceModeAuto {
+			a, _, err := t.resolveAutoDevice()
+			if err != nil {
+				return err
+			}
+			t.setResolvedDevice(a.Device)
+		}
+	}
 	t.c.phase(t.op, PhaseApplyValidate)
 	h := t.h()
-	model, v, err := setup.FindVariant(h, t.p.Variant)
-	if err != nil {
-		return err
-	}
-	if t.p.Model != "" && t.p.Model != model.ID {
-		return fmt.Errorf("variant %s is a variant of %s, not %s", v.ID, model.ID, t.p.Model)
+	var model home.ModelManifest
+	var v home.VariantManifest
+	var err error
+	if t.desired == nil || t.desired.Variant != "" {
+		model, v, err = setup.FindVariant(h, t.p.Variant)
+		if err != nil {
+			return err
+		}
+		if t.p.Model != "" && t.p.Model != model.ID {
+			return fmt.Errorf("variant %s is a variant of %s, not %s", v.ID, model.ID, t.p.Model)
+		}
+		t.hasVariant = true
+	} else {
+		model, err = setup.LookupModel(t.desired.Model)
+		if err != nil {
+			return err
+		}
 	}
 	t.model, t.variant = model, v
+	if t.desired != nil {
+		t.c.mu.Lock()
+		t.op.Model = model.ID
+		t.c.notify()
+		t.c.mu.Unlock()
+	}
 	spec, err := setup.Desired(t.p.Device)
 	if err != nil {
 		return err
 	}
-	if !spec.Provides(v.Provider) {
-		return fmt.Errorf("the %s runtime %s does not carry provider %s needed by variant %s", t.p.Device, spec.ID(), v.Provider, v.ID)
-	}
-	if err := setup.RequireAccepted(h, v); err != nil {
-		return err
-	}
-	st := eval.ResolveCertification(h, v)
-	if st.State != eval.StateAccepted || st.Record == nil || st.Record.VariantManifestSHA256 != v.ManifestSHA256() {
-		return fmt.Errorf("%w: variant %s has no accepted certification bound to its manifest", setup.ErrVariantNotCertified, v.ID)
+	if t.hasVariant {
+		if !spec.Provides(v.Provider) {
+			return fmt.Errorf("the %s runtime %s does not carry provider %s needed by variant %s", t.p.Device, spec.ID(), v.Provider, v.ID)
+		}
+		if err := setup.RequireAccepted(h, v); err != nil {
+			return err
+		}
+		st := eval.ResolveCertification(h, v)
+		if st.State != eval.StateAccepted || st.Record == nil || st.Record.VariantManifestSHA256 != v.ManifestSHA256() {
+			return fmt.Errorf("%w: variant %s has no accepted certification bound to its manifest", setup.ErrVariantNotCertified, v.ID)
+		}
+	} else if !spec.Provides(model.Provider) {
+		return fmt.Errorf("the %s runtime %s does not carry provider %s needed by source model %s", t.p.Device, spec.ID(), model.Provider, model.ID)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if t.desired != nil {
+		if err := t.validateDesiredPrerequisites(spec.ID()); err != nil {
+			return err
+		}
+		return nil
 	}
 	have := func() (rt, src bool) {
 		_, e1 := os.Stat(h.Path("runtime", spec.ID()))
@@ -384,6 +445,19 @@ func (t *applyTx) snapshot() error {
 		return fmt.Errorf("the activation record is unreadable and could not be restored: %w", err)
 	}
 	t.prevRecord = raw
+	if t.desired != nil {
+		if t.desired.Device.Mode == DeviceModeAuto && !bytes.Equal(raw, t.autoRecord) {
+			return errors.New("the active activation changed while Auto device resolution was being recorded")
+		}
+		if t.c.cfg.Residents == nil {
+			return errors.New("the current desired resident selection cannot be read by this Controller")
+		}
+		var err error
+		t.prevResidents, err = settings.NormalizeResidents(t.c.cfg.Residents())
+		if err != nil {
+			return fmt.Errorf("the current desired resident selection is invalid: %w", err)
+		}
+	}
 	if t.prevRT != nil {
 		for _, m := range viewOf(t.prevRT) {
 			if m.Default {
@@ -401,6 +475,9 @@ func (t *applyTx) snapshot() error {
 // transact is everything that follows the snapshot. phase names where it
 // stopped.
 func (t *applyTx) transact(ctx context.Context) (res ApplyResult, phase string, err error) {
+	if t.desired != nil {
+		return t.transactDesired(ctx)
+	}
 	c, h, p := t.c, t.h(), t.p
 
 	// Activate through the existing activation authority.
@@ -737,6 +814,19 @@ func (t *applyTx) rollback(parent context.Context) error {
 			fail("restoring the activation record", err)
 		} else if got, err := h.ReadActiveRecord(); err != nil || !bytes.Equal(got, t.prevRecord) {
 			fail("verifying the restored activation record", errors.New("it is not byte for byte the previous record"))
+		}
+	}
+	if t.residentsMutated {
+		if c.cfg.SetResidents == nil {
+			fail("restoring the desired resident selection", errors.New("the settings authority has no resident setter"))
+		} else if err := c.cfg.SetResidents(slices.Clone(t.prevResidents)); err != nil {
+			fail("restoring the desired resident selection", err)
+		} else if c.cfg.Residents == nil {
+			fail("verifying the restored desired resident selection", errors.New("the settings authority has no resident reader"))
+		} else if got, err := settings.NormalizeResidents(c.cfg.Residents()); err != nil {
+			fail("verifying the restored desired resident selection", err)
+		} else if !slices.Equal(got, t.prevResidents) {
+			fail("verifying the restored desired resident selection", fmt.Errorf("got %v, wanted %v", got, t.prevResidents))
 		}
 	}
 	rt := t.prevRT
