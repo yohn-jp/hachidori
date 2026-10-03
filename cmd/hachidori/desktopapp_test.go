@@ -684,7 +684,12 @@ func TestTuningStoreImpactIsEstimatedUntilACandidateIsMeasured(t *testing.T) {
 	if imp.Size.State != dashboard.Estimated || imp.Size.Value != want(quantizable) || !strings.Contains(imp.Size.Basis, "Not a measurement") {
 		t.Errorf("Auto size %+v, want ESTIMATED %s", imp.Size, want(quantizable))
 	}
-	notChecked("memory", imp.Memory)
+	// Without a candidate the memory figure is the estimated weights: a lower
+	// bound, never a measurement.
+	if imp.Memory.State != dashboard.Estimated || !strings.Contains(imp.Memory.Value, "weights only") || !strings.Contains(imp.Memory.Basis, "lower bound") ||
+		!imp.MemoryUsage.LowerBound || imp.MemoryUsage.Bytes == 0 {
+		t.Errorf("Auto memory %+v / %+v, want an ESTIMATED lower bound", imp.Memory, imp.MemoryUsage)
+	}
 	notChecked("latency", imp.Latency)
 	notChecked("fidelity", imp.Fidelity)
 	pinned := pinnedProfile(t, a, "maximum-fidelity", tuning.RegionFeedForward)
@@ -721,7 +726,9 @@ func TestTuningStoreImpactIsEstimatedUntilACandidateIsMeasured(t *testing.T) {
 	if imp.Size.State != dashboard.Measured || imp.Size.Value != gib(3<<20) || !strings.Contains(imp.Size.Basis, v.ID) {
 		t.Errorf("measured size %+v", imp.Size)
 	}
-	notChecked("memory without a probe", imp.Memory)
+	if imp.Memory.State != dashboard.Estimated || imp.MemoryUsage != (tuning.Usage{Bytes: 3 << 20, LowerBound: true}) {
+		t.Errorf("memory without a probe %+v / %+v, want the candidate's weights as an ESTIMATED lower bound", imp.Memory, imp.MemoryUsage)
+	}
 	notChecked("latency without a probe", imp.Latency)
 	notChecked("fidelity without a certification", imp.Fidelity)
 	if other := impact(auto).Size; other.State != dashboard.Estimated {
@@ -735,14 +742,16 @@ func TestTuningStoreImpactIsEstimatedUntilACandidateIsMeasured(t *testing.T) {
 	}
 	imp = impact(pinned)
 	notChecked("latency from a probe of another manifest", imp.Latency)
-	notChecked("memory from a probe of another manifest", imp.Memory)
+	if imp.Memory.State == dashboard.Measured || !imp.MemoryUsage.LowerBound {
+		t.Errorf("memory from a probe of another manifest is measured: %+v", imp.Memory)
+	}
 	probe.VariantManifestSHA256 = v.ManifestSHA256()
 	if err := app.SaveProbe(h, probe); err != nil {
 		t.Fatal(err)
 	}
 	imp = impact(pinned)
 	if imp.Latency.State != dashboard.Measured || imp.Latency.Value != "12.5 ms per request" || !strings.Contains(imp.Latency.Basis, "cuda") ||
-		imp.Memory.State != dashboard.Measured || imp.Memory.Value != "VRAM allocated 3.00 GiB" {
+		imp.Memory.State != dashboard.Measured || imp.Memory.Value != "VRAM reserved 3.00 GiB" || imp.MemoryUsage != (tuning.Usage{Bytes: 3 << 30}) {
 		t.Errorf("probe measurements: %+v / %+v", imp.Latency, imp.Memory)
 	}
 	notChecked("fidelity without a certification", imp.Fidelity)

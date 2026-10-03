@@ -438,6 +438,9 @@ type Dashboard struct {
 	errs    explorer
 	hist    *history.Store // nil when Config.HistoryDir is empty or unusable
 	histErr string
+	// recent is the in-process catalog of resources the operator used, by
+	// kind (rememberResource); guarded by mu.
+	recent map[string][]string
 }
 
 // Action is the visible outcome of the last state-changing request.
@@ -472,12 +475,15 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"t":             i18n.English.T,
 	"get":           get,
 	"resourceInput": resourceInput,
+	"disclosure":    func(id, label string) DisclosureProjection { return DisclosureProjection{ID: id, Label: label} },
 	"mib":           mib,
 	"ms":            func(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) + " ms" },
 	"when":          when,
 	"alerts":        alerts,
 	"tone":          stateTone,
 	"gpuMem":        gpuMem,
+	"memPressure":   memPressureOf,
+	"runtimeAction": runtimeActionOf,
 	"ratio":         ratio,
 	"errTotal":      errTotal,
 	"uptime":        uptime,
@@ -608,6 +614,7 @@ func New(cfg Config) *Dashboard {
 	if cfg.hasTuning() {
 		d.mux.HandleFunc("GET /tuning", d.tuningPage)
 		d.mux.HandleFunc("POST /tuning/save", d.tuningSave)
+		d.mux.HandleFunc("POST /tuning/budget", d.tuningBudget)
 		d.mux.HandleFunc("POST /tuning/build", d.tuningBuild)
 	}
 	if cfg.Models != nil && cfg.Residency != nil {
@@ -1007,9 +1014,18 @@ func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			err = va.BuildAndEvaluate(req)
 		}
+		if err == nil {
+			d.rememberResource(resDataset, req.Dataset)
+			d.rememberResource(resQuestions, strings.Join(req.Questions, "\n"))
+			d.rememberResource(resPolicy, req.Policy)
+		}
 		d.done(w, r, "build and evaluate "+f("source"), err,
 			"started; the backend builds the selected profile, evaluates that candidate and records its evidence. Nothing is applied")
 	case "activate":
+		if d.forgeBlocked(f("variant")) {
+			d.done(w, r, "activate variant "+f("variant"), errOutsideEnvelope, "")
+			return
+		}
 		d.done(w, r, "activate variant "+f("variant"), va.ActivateVariant(f("device"), f("model"), f("variant"), f("experimental") == "1"),
 			"started; once it finishes, a running worker keeps what it started with until you restart it")
 	case "optimize":
@@ -1023,6 +1039,10 @@ func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 		d.done(w, r, "certify "+f("variant"), err,
 			"started; the backend runs the reference and the variant itself, and the evidence is recorded whatever the verdict. Nothing is activated")
 	case "apply":
+		if d.forgeBlocked(f("variant")) {
+			d.done(w, r, "apply "+f("variant"), errOutsideEnvelope, "")
+			return
+		}
 		d.done(w, r, "apply "+f("variant"), va.Apply(f("device"), f("model"), f("variant"), f("materialize") == "1"),
 			"started; one transaction activates the certified variant, rebinds the runtime and proves it serves, and restores the previous target if anything fails")
 	case "preflight":

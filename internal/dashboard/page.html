@@ -171,6 +171,11 @@ details.inline[open] > summary { margin-bottom: var(--sp-2); }
 form.inline { display: inline-flex; margin: 0; }
 .path-form { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem; align-items: end; }
 .resource-selection { display: grid; gap: var(--sp-2); min-width: 0; }
+/* Forge candidates: one hairline-separated entry each; the status badge and the
+   one valid action carry the hierarchy, provenance stays in Details. */
+.candidate { display: grid; gap: var(--sp-3); padding: var(--sp-4) 0; border-top: 1px solid var(--line); min-width: 0; }
+.candidate-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.candidate-head h3 { font-size: var(--fs-body); text-transform: none; letter-spacing: 0; color: var(--text); margin: 0; }
 .resource-selection-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
 .resource-path-value { display: inline-block; max-width: min(65vw, 48rem); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .resource-path-entry { display: grid; gap: var(--sp-2); padding-top: var(--sp-2); min-width: 0; }
@@ -375,6 +380,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 {{define "shell"}}{{with .Rt}}<span class="readiness tone-{{.Tone}}" aria-label="{{t "Runtime"}} {{.Word}}"><span class="dot"></span>{{.Word}}</span>
 {{with .GPU}}<span class="appbar-fact">{{.}}</span>{{end}}
+{{if and .Memory (ne .MemoryTone "ok")}}<span class="readiness tone-{{.MemoryTone}}" id="shell-memory"><span class="dot"></span>{{.Memory}}</span>{{end}}
 {{if .Attention}}<a class="attention-link" href="/diagnostics">{{.Attention}} {{t "needs attention"}}</a>{{end}}{{end}}{{end}}
 
 {{define "statusbar"}}{{with .Rt}}{{with .Provider}}<span>{{.}}</span>{{end}}{{with .Model}}<span class="mono">{{.}}</span>{{end}}{{with .Artifact}}<span class="mono" id="statusbar-artifact">{{.}}</span>{{end}}
@@ -391,7 +397,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{define "page"}}{{template "open" .Chrome}}
 <script>if (location.hash === "#diagnostics") location.replace("/diagnostics");</script>
 <header class="ws-head">
-  <div><h1>{{t "Runtime"}}</h1><p class="lede">{{t "The resident inference runtime on this host."}}</p></div>
+  <div><h1>{{t "Runtime"}}</h1></div>
   {{template "sync"}}
 </header>
 <div class="slot" data-live="overview">{{template "overview" .}}</div>
@@ -447,29 +453,49 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{template "last" .Last}}
 {{with .Next}}{{template "op-panels" .}}{{end}}
 
-<section class="readiness-panel tone-{{.Rt.Tone}}" aria-labelledby="rd-h">
+<section class="readiness-panel tone-{{.Rt.Tone}}" aria-labelledby="rd-h">{{$act := runtimeAction .}}{{$mp := memPressure $a}}
   <div>
     <h2 class="vh" id="rd-h">{{t "Inference runtime"}}</h2>
-    <p class="state-word"><span class="dot"></span>{{if $w.Ready}}READY{{else}}{{$w.State}}{{end}}</p>
-    <p class="state-sub">{{t "phase"}} {{$w.Phase}}{{with $w.ReadySince}} {{t "· ready since"}} {{.}}{{end}}</p>
+    <p class="state-word"><span class="dot"></span>{{if $w.Ready}}READY{{else if not .Running}}{{t "STOPPED"}}{{else}}{{$w.State}}{{end}}</p>
+    {{if and (not $w.Ready) (or .Running (eq $w.State "failed"))}}
     {{with workerStages $w}}
     <ol class="stages" id="worker-stages" aria-label="{{t "Worker lifecycle"}}">{{range .}}<li class="{{.Status}}"{{if eq .Status "current"}} aria-current="step"{{end}}>{{t .Label}}</li>{{end}}</ol>
-    {{if and (not $w.Ready) (ne $w.State "failed")}}<div class="bar progress indeterminate" role="progressbar" aria-label="{{t (workerPhaseWord $w.Phase)}}"><span></span></div>{{end}}
+    {{if ne $w.State "failed"}}<div class="bar progress indeterminate" role="progressbar" aria-label="{{t (workerPhaseWord $w.Phase)}}"><span></span></div>{{end}}
+    {{end}}
+    {{end}}
+    {{with $act.Reason}}<p class="state-sub">{{t .}}</p>{{end}}
+  </div>
+  <div class="actions" data-primary-action="{{$act.Kind}}">
+    {{if eq $act.Kind "workbench"}}<a class="btn primary" href="/workbench">{{t $act.Label}}</a>
+    {{else if eq $act.Kind "start"}}<form method="post" action="/runtime/start" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn primary">{{t $act.Label}}</button></form>
+    {{else if eq $act.Kind "restart"}}<form method="post" action="/runtime/restart" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn primary">{{t $act.Label}}</button></form>{{end}}
+    {{if .Running}}
+    <details class="inline runtime-controls" id="runtime-controls"><summary>{{t "Runtime controls"}}</summary>
+      <div class="btn-row">
+        {{if ne $act.Kind "restart"}}<form method="post" action="/runtime/restart" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn quiet">{{t "Restart"}}</button></form>{{end}}
+        <form method="post" action="/runtime/stop" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Stop"}}</button></form>
+      </div>
+    </details>
     {{end}}
   </div>
-  <div class="actions">
-    {{if $w.Ready}}<a class="btn primary" href="/workbench">{{t "Open Workbench"}}</a>{{end}}
-    <form method="post" action="/runtime/start" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn{{if not .Running}} primary{{end}}">{{t "Start"}}</button></form>
-    <form method="post" action="/runtime/restart" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn{{if and .Running (eq $w.State "failed")}} primary{{end}}">{{t "Restart"}}</button></form>
-    <form method="post" action="/runtime/stop" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Stop"}}</button></form>
-  </div>
   <dl class="spec">
-    <div><dt>{{t "Model"}}</dt><dd class="id">{{.S.Runtime.ModelID}}<span class="sub">{{if $w.Ready}}{{t "serving now"}}{{else}}{{t "configured for this runtime, not serving"}}{{end}}</span>{{with .S.Runtime.Variant}}<span class="sub" id="runtime-variant">VARIANT {{.ID}} · {{.Scheme}} · {{.Certification}}</span>{{else}}<span class="sub" id="runtime-source">SOURCE · {{t "the upstream source artifact (no variant)"}}</span>{{end}}</dd></div>
-    {{with .Next}}{{if .Model}}<div id="next-start"><dt>{{t "Next start"}}</dt><dd class="id">{{.Model}} · {{.Device}}<span class="sub">{{with .Variant}}VARIANT {{.}}{{else}}SOURCE{{end}} · </span><span class="sub">{{if .Problem}}<span class="bad-t">{{t "cannot start"}}</span>{{else if .Differs}}<span class="warn-t">{{t "differs from this runtime: choose Restart to apply it"}}</span>{{else}}{{t "the active model and device"}}{{end}}</span></dd></div>{{end}}{{end}}
-    <div><dt>{{t "Accelerator"}}</dt><dd>{{get $i "device_name"}}<span class="sub">{{with .Rt.Device}}{{.}} · {{end}}{{t "requested"}} {{.S.Runtime.Device}}</span></dd></div>
-    <div><dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd></div>
-    <div><dt>{{t "Runtime"}}</dt><dd class="id">{{.S.Runtime.Runtime}}<span class="sub">{{t "supervision"}} {{if .Running}}{{t "running"}}{{else}}<span class="bad-t">{{t "not running"}}</span>{{end}} {{t "· API up"}} <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></span></dd></div>
+    <div><dt>{{t "Model"}}</dt><dd class="id">{{.S.Runtime.ModelID}}{{if not $w.Ready}}<span class="sub">{{t "configured for this runtime, not serving"}}</span>{{end}}{{with .S.Runtime.Variant}}<span class="sub" id="runtime-variant">VARIANT {{.ID}} · {{.Scheme}} · {{.Certification}}</span>{{else}}<span class="sub" id="runtime-source">SOURCE · {{t "the upstream source artifact (no variant)"}}</span>{{end}}</dd></div>
+    <div><dt>{{t "Device"}}</dt><dd>{{with get $i "device_name"}}{{.}}{{else}}{{.S.Runtime.Device}}{{end}}{{with .Rt.Device}}<span class="sub">{{.}}</span>{{end}}</dd></div>
+    <div id="runtime-memory" data-pressure="{{if $mp}}{{$mp.Level}}{{else}}unknown{{end}}"><dt>{{t "GPU memory"}}</dt><dd>{{with $mp}}<span class="tone-{{.Level}}"><span class="{{if ne .Level "ok"}}bad-t{{end}}">{{.Used}} / {{.Total}}</span> <span class="badge tone-{{.Level}}">{{t .Word}}</span></span>{{if $w.AcceleratorStale}}<span class="sub">{{t "last known"}}</span>{{end}}
+      {{with $m := gpuMem $a}}<div class="bar" role="img" aria-label="{{t "GPU memory"}} {{printf "%.1f" .Used}}%"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>{{end}}
+      {{else}}<span class="muted">{{t "no device stats"}}</span>{{end}}</dd></div>
+    {{with .Next}}{{if and .Model (or .Differs .VariantDiffers .Problem)}}<div id="next-start"><dt>{{t "Next start"}}</dt><dd class="id">{{.Model}} · {{.Device}}<span class="sub">{{with .Variant}}VARIANT {{.}}{{else}}SOURCE{{end}} · {{if .Problem}}<span class="bad-t">{{t "cannot start"}}</span>{{else}}<span class="warn-t">{{t "differs from this runtime"}}</span>{{end}}</span></dd></div>{{end}}{{end}}
   </dl>
+  {{template "operator-details-open" (disclosure "runtime-identity" "Runtime details")}}
+  <dl class="kv">
+    <dt>{{t "State"}}</dt><dd>{{$w.State}} · {{t "phase"}} {{$w.Phase}}{{with $w.ReadySince}} {{t "· ready since"}} {{.}}{{end}}</dd>
+    <dt>{{t "Requested device"}}</dt><dd class="mono">{{.S.Runtime.Device}}</dd>
+    <dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd>
+    <dt>{{t "Runtime"}}</dt><dd class="mono">{{.S.Runtime.Runtime}}</dd>
+    <dt>{{t "Supervision"}}</dt><dd>{{if .Running}}{{t "running"}}{{else}}<span class="bad-t">{{t "not running"}}</span>{{end}} {{t "· API up"}} <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></dd>
+    <dt>{{t "Device memory"}}</dt><dd class="mono">{{mib $a "memory_total"}}</dd>
+  </dl>
+  {{template "operator-disclosure-close"}}
 </section>
 
 {{with .S.Residents}}
@@ -549,7 +575,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 <section class="region section" aria-labelledby="load-h">
   <div class="region-h"><h2 id="load-h">{{t "Load"}}</h2><span class="sub">{{t "worker since start"}}</span></div>
-  {{$q := ratio $w.QueueDepth $w.QueueLimit}}{{$m := gpuMem $a}}
+  {{$q := ratio $w.QueueDepth $w.QueueLimit}}
   <dl class="metrics">
     <div class="metric"><dt>{{t "p50 latency"}}</dt><dd>{{ms $w.LatencyP50MS}}</dd></div>
     <div class="metric"><dt>{{t "p95 latency"}}</dt><dd>{{ms $w.LatencyP95MS}}</dd></div>
@@ -557,8 +583,6 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <div class="metric"><dt>{{t "Errors"}}</dt><dd class="{{if errTotal $w.Errors}}warn-t{{end}}">{{errTotal $w.Errors}}</dd></div>
     <div class="metric meter"><dt>{{t "Queue"}}</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
       <div class="bar" role="img" aria-label="{{t "Queue"}} {{$w.QueueDepth}} / {{$w.QueueLimit}}"><span class="{{if ge $q 100.0}}bad{{else if ge $q 75.0}}warn{{end}}" style="width:{{printf "%.1f" $q}}%"></span></div></div>
-    <div class="metric meter"><dt>{{t "GPU memory"}}</dt><dd>{{with $m}}{{printf "%.0f" .Used}}%<small>{{t "of"}} {{mib $a "memory_total"}}</small>{{else}}-<small>{{t "no device stats"}}</small>{{end}}{{if and $m $w.AcceleratorStale}}<small>{{t "last known"}}</small>{{end}}</dd>
-      {{with $m}}<div class="bar" role="img" aria-label="{{t "GPU memory"}} {{printf "%.1f" .Used}}%"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>{{end}}</div>
   </dl>
   {{with $w.Errors}}<p class="note">{{t "errors by class:"}} {{range $k, $v := .}}<span class="mono">{{$k}} {{$v}}</span> {{end}}</p>{{end}}
 </section>
@@ -915,18 +939,29 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 
 {{define "operation-phases"}}<ol class="stages" aria-label="{{t "Operation phases"}}">{{range opStages .}}<li class="{{.Status}}"{{if eq .Status "current"}} aria-current="step"{{end}}>{{t .Label}}</li>{{end}}</ol>{{end}}
 
-{{define "operator-advanced-open"}}<details class="operator-disclosure" data-disclosure="advanced"{{with .ID}} id="{{.}}"{{end}}><summary>{{t "Advanced"}}{{with .Label}} · {{t .}}{{end}}</summary><div class="operator-disclosure-body">{{end}}
-{{define "operator-details-open"}}<details class="operator-disclosure" data-disclosure="details"{{with .ID}} id="{{.}}"{{end}}><summary>{{t "Details"}}{{with .Label}} · {{t .}}{{end}}</summary><div class="operator-disclosure-body">{{end}}
-{{define "operator-evidence-open"}}<details class="operator-disclosure" data-disclosure="evidence"{{with .ID}} id="{{.}}"{{end}}><summary>{{t "Evidence"}}{{with .Label}} · {{t .}}{{end}}</summary><div class="operator-disclosure-body">{{end}}
+{{define "operator-advanced-open"}}<details class="operator-disclosure" data-disclosure="advanced"{{with .ID}} id="{{.}}"{{end}}{{if .Open}} open{{end}}><summary>{{t "Advanced"}}{{with .Label}} · {{t .}}{{end}}</summary><div class="operator-disclosure-body">{{end}}
+{{define "operator-details-open"}}<details class="operator-disclosure" data-disclosure="details"{{with .ID}} id="{{.}}"{{end}}{{if .Open}} open{{end}}><summary>{{t "Details"}}{{with .Label}} · {{t .}}{{end}}</summary><div class="operator-disclosure-body">{{end}}
+{{define "operator-evidence-open"}}<details class="operator-disclosure" data-disclosure="evidence"{{with .ID}} id="{{.}}"{{end}}{{if .Open}} open{{end}}><summary>{{t "Evidence"}}{{with .Label}} · {{t .}}{{end}}</summary><div class="operator-disclosure-body">{{end}}
 {{define "operator-disclosure-close"}}</div></details>{{end}}
 
 {{define "instrument-section-open"}}<section class="instrument-section" aria-labelledby="{{.ID}}-heading"><div class="instrument-heading"><h2 id="{{.ID}}-heading">{{t .Label}}</h2>{{with .Description}}<p class="note">{{t .}}</p>{{end}}</div>{{end}}
 {{define "instrument-section-close"}}</section>{{end}}
 
-{{define "resource-selection"}}<div class="resource-selection">
-  {{if .Native}}
-  <div class="resource-selection-actions" role="group" aria-label="{{t "Choose resource"}}">
-    {{range .Choices}}<button type="submit" class="btn primary"{{if .FormAction}} formaction="{{.FormAction}}"{{end}} name="{{.Name}}" value="{{.Value}}" formnovalidate>{{t .Label}}</button>{{end}}
+{{define "resource-selection"}}<div class="resource-selection" data-resource="{{.Name}}">
+  {{if .Known}}
+  <label class="field">{{t .Label}}
+    <select name="{{.Name}}"{{if .Required}} required{{end}}>{{if .None}}<option value=""{{if not .Value}} selected{{end}}>{{t .None}}</option>{{else if not .Value}}<option value="" selected disabled>{{t "Not chosen"}}</option>{{end}}{{range .Known}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+  </label>
+  {{if .Native}}<div class="resource-selection-actions" role="group" aria-label="{{t "Choose resource"}}">{{range .Choices}}<button type="submit" class="btn quiet"{{if .FormAction}} formaction="{{.FormAction}}"{{end}} name="{{.Name}}" value="{{.Value}}" formnovalidate>{{t .Label}}</button>{{end}}</div>{{end}}
+  <details class="inline resource-path"><summary>{{t "Exact path"}}</summary>
+    {{if .Native}}{{with .Value}}<p class="resource-path-value mono">{{.}}</p>{{else}}<p class="sub">{{t "No path selected"}}</p>{{end}}
+    {{else}}<label class="field wide">{{t "Another path"}}{{if .Multiline}}<textarea name="{{.Name}}_path" rows="2" spellcheck="false"></textarea>{{else}}<input type="text" name="{{.Name}}_path" spellcheck="false" autocomplete="off">{{end}}</label>{{end}}
+  </details>
+  {{else if .Native}}
+  <div class="field"><span>{{t .Label}}</span>
+    <div class="resource-selection-actions" role="group" aria-label="{{t "Choose resource"}}">
+      {{range .Choices}}<button type="submit" class="btn"{{if .FormAction}} formaction="{{.FormAction}}"{{end}} name="{{.Name}}" value="{{.Value}}" formnovalidate>{{t .Label}}</button>{{end}}
+    </div>
   </div>
   <details class="inline resource-path"><summary>{{t "Exact path"}}{{if .Value}} <span class="resource-path-value mono">{{.Value}}</span>{{else}} <span class="sub">{{t "No path selected"}}</span>{{end}}</summary>
     <div class="resource-path-entry">{{template "resource-path-entry" .}}</div>

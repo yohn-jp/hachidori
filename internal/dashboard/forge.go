@@ -3,6 +3,7 @@ package dashboard
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/diagnostics"
@@ -10,6 +11,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tuning"
 )
 
 // The Forge readiness projection: the latest preflights, the latest probe of
@@ -50,10 +52,12 @@ type ForgeIntentForm struct {
 	Provisioning, Err                           string
 }
 
-// ForgeBuildEvaluateRequest is one normal Forge intent. Profile is the
-// canonical optimization recipe name for Source.
+// ForgeBuildEvaluateRequest is one normal Forge intent. TuningProfile names a
+// saved semantic tuning profile of Source; otherwise Profile is the canonical
+// optimization recipe name for Source.
 type ForgeBuildEvaluateRequest struct {
 	Source, Profile, Device string
+	TuningProfile           string
 	ReferenceDevice         string
 	ReferenceDType          string
 	Dataset                 string
@@ -86,6 +90,9 @@ type ProbeRow struct {
 	Choice                                 string
 	Confidence                             float64
 	StartupMS, LoadMS, WarmupMS, RequestMS float64
+	// VRAMBytes is the device memory the probe measured (the larger of
+	// allocated and reserved); 0 when it measured none.
+	VRAMBytes uint64
 }
 
 // DiagnosticRow is one stored failure diagnostic.
@@ -152,10 +159,42 @@ type ForgeVariant struct {
 	// NextStep is a catalog message ID: what the records say comes next ("" when
 	// there is nothing to say).
 	NextStep string
-	// CanApply: an accepted, verifying variant that is not already serving.
-	CanApply    bool
+	// CanApply: an accepted, verifying variant that is not already serving
+	// and is not outside the resource envelope.
+	CanApply bool
+	// Fit places the variant's measured device memory against the envelope;
+	// a blocked fit rules it out of normal Apply and activation.
+	Fit FitView
+	// Tuning is the Tuning page of the profile the variant was built from (or
+	// of its source when no profile is recorded): the route back.
+	Tuning      string
 	Preflights  []PreflightRow
 	Diagnostics []DiagnosticRow
+}
+
+// Status is the candidate's one operator-facing state: a catalog message ID
+// and its tone. It restates the records; it decides nothing.
+func (v ForgeVariant) Status() struct{ Word, Tone string } {
+	type st = struct{ Word, Tone string }
+	switch {
+	case v.Problem != "":
+		return st{"Artifact problem", "bad"}
+	case v.Running && v.Fit.Blocked():
+		return st{"Serving · over memory budget", "bad"}
+	case v.Running:
+		return st{"Serving", "ok"}
+	case v.Fit.Blocked():
+		return st{"Over memory budget", "bad"}
+	case v.Certification == eval.StateRejected:
+		return st{"Rejected by evaluation", "bad"}
+	case v.Active && v.Pending:
+		return st{"Applies on restart", "warn"}
+	case v.CanApply:
+		return st{"Ready to apply", "ok"}
+	case v.Certification != eval.StateAccepted:
+		return st{"Not evaluated", "idle"}
+	}
+	return st{"Evaluated", "idle"}
 }
 
 // ForgeSource is a catalog model a variant can be built from.
@@ -181,7 +220,40 @@ type ForgeView struct {
 	// optimize reports, failed builds); the others are listed on their variant.
 	Preflights  []PreflightRow
 	Diagnostics []DiagnosticRow
+	// Envelope is the target device and memory budget candidates are applied
+	// against.
+	Envelope EnvelopeView
+	// Profiles are the build choices: saved tuning profiles first, then the
+	// canonical recipes.
+	Profiles []ForgeProfileOption
+
+	knownDatasets, knownQuestions, knownPolicies []string
 }
+
+// DatasetInput, QuestionsInput and PolicyInput are the evaluation resources
+// of a build, named by their meaning.
+func (fv *ForgeView) DatasetInput() resourceSelection {
+	return semanticResource(fv.knownDatasets, fv.PathPicker, "Dataset", "dataset", fv.Form.Dataset, "", false, "/forge/pick", "dataset", "Add dataset…")
+}
+
+func (fv *ForgeView) QuestionsInput() resourceSelection {
+	return semanticResource(fv.knownQuestions, fv.PathPicker, "Evaluation questions", "questions", fv.Form.Questions, "Questions in the dataset", true,
+		"/forge/pick", "question-file", "Add question file…", "question-folder", "Add question folder…")
+}
+
+func (fv *ForgeView) PolicyInput() resourceSelection {
+	return semanticResource(fv.knownPolicies, fv.PathPicker, "Certification policy", "policy", fv.Form.Policy, "Built-in policy", false, "/forge/pick", "policy", "Add policy…")
+}
+
+// ForgeProfileOption is one build choice of a source. Value is
+// "tuning:<profile id>" for a saved tuning profile, else a recipe name.
+type ForgeProfileOption struct {
+	Source, Value, Label string
+	Tuned                bool
+}
+
+// tuningProfilePrefix marks a saved tuning profile in the build choice.
+const tuningProfilePrefix = "tuning:"
 
 // lifecycleOf projects the stages BUILT, PROBED, CERTIFIED and ACTIVE of one
 // variant from its row.
@@ -226,9 +298,9 @@ func nextStepOf(r VariantRow) string {
 	case r.Problem != "":
 		return "Verify the variant: its artifact reports a problem."
 	case r.Certification == eval.StateRejected:
-		return "Rejected: use Build & evaluate to produce another candidate. A rejected variant is never applied."
+		return "Rejected: build another candidate. A rejected variant is never applied."
 	case r.Certification != eval.StateAccepted:
-		return "Use Build & evaluate to produce a candidate with evaluation evidence."
+		return "Not evaluated: build a candidate to produce evaluation evidence."
 	case r.Running:
 		return "Serving: this certified variant is the execution artifact."
 	case r.Active && r.Pending:
@@ -281,24 +353,91 @@ func (d *Dashboard) forgePage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Dashboard) renderForgePage(w http.ResponseWriter, r *http.Request, form *ForgeIntentForm) {
+	v := d.forgeView()
+	v.Forge.PathPicker = d.cfg.PathPicker != nil
+	if form == nil {
+		form = &ForgeIntentForm{Provisioning: "auto"}
+		if len(v.Forge.Sources) > 0 {
+			form.Source = v.Forge.Sources[0].ID
+			for _, p := range v.Forge.Profiles {
+				if p.Source == form.Source {
+					form.Profile = p.Value
+					break
+				}
+			}
+		}
+	}
+	v.Forge.Form = *form
+	d.renderView(w, "forge", v)
+}
+
+// forgeView is the Forge workspace: the candidates with their fit against
+// the envelope and the build choices.
+func (d *Dashboard) forgeView() view {
 	v := d.view("Forge", "forge")
 	v.Live = false
 	mv := d.modelsView(v)
 	v.Models = mv
 	v.Art = artifactsOf(v, mv)
 	v.Forge = forgeOf(mv)
-	v.Forge.PathPicker = d.cfg.PathPicker != nil
-	if form == nil {
-		form = &ForgeIntentForm{Provisioning: "auto"}
-		if len(v.Forge.Sources) > 0 {
-			form.Source = v.Forge.Sources[0].ID
-			if len(v.Forge.Sources[0].Recipes) > 0 {
-				form.Profile = v.Forge.Sources[0].Recipes[0]
+	v.Forge.Envelope = d.envelopeOf(v)
+	v.Forge.knownDatasets, v.Forge.knownQuestions, v.Forge.knownPolicies = d.resourceCatalog(resDataset), d.resourceCatalog(resQuestions), d.resourceCatalog(resPolicy)
+	for i := range v.Forge.Items {
+		it := &v.Forge.Items[i]
+		it.Fit = variantFit(v, v.Forge.Envelope, it.VariantRow)
+		it.CanApply = it.CanApply && !it.Fit.Blocked()
+		it.Tuning = tuningLocation(it.SourceID, "")
+		if d.cfg.Tuning != nil {
+			if id, err := d.variantProfile(it.SourceID, it.ID); err == nil {
+				it.Tuning = tuningLocation(it.SourceID, id)
 			}
 		}
 	}
-	v.Forge.Form = *form
-	d.renderView(w, "forge", v)
+	for _, src := range v.Forge.Sources {
+		if d.cfg.Tuning != nil {
+			if ps, err := d.cfg.Tuning.Profiles(src.ID); err == nil {
+				for _, p := range ps {
+					v.Forge.Profiles = append(v.Forge.Profiles, ForgeProfileOption{Source: src.ID, Value: tuningProfilePrefix + p.ID(), Tuned: true,
+						Label: short12(p.ID()) + " · " + objectiveLabel(p.Objective) + " · " + strconv.Itoa(pinnedCount(p)) + " preserved"})
+				}
+			}
+		}
+		for _, rc := range src.Recipes {
+			v.Forge.Profiles = append(v.Forge.Profiles, ForgeProfileOption{Source: src.ID, Value: rc, Label: rc})
+		}
+	}
+	return v
+}
+
+// variantFit is the variant's device memory against the envelope: measured
+// on the device while it serves, else by its latest probe of this exact
+// manifest, else NOT_CHECKED. Nothing is estimated here.
+func variantFit(v view, e EnvelopeView, row VariantRow) FitView {
+	if row.Running {
+		total, ok1 := num(v.S.Worker.Accelerator, "memory_total")
+		free, ok2 := num(v.S.Worker.Accelerator, "memory_free")
+		if ok1 && ok2 && total > free {
+			return fitOf(e.Envelope, tuning.Usage{Bytes: uint64(total - free)}, Measured, "device memory in use while this candidate serves")
+		}
+	}
+	if p := row.Probe; p != nil && !row.ProbeStale && p.Result == "passed" && p.VRAMBytes > 0 {
+		return fitOf(e.Envelope, tuning.Usage{Bytes: p.VRAMBytes}, Measured, "probe on "+p.Device)
+	}
+	return fitOf(e.Envelope, tuning.Usage{}, NotChecked, "no measurement of this candidate's device memory")
+}
+
+// errOutsideEnvelope refuses a normal Apply or activation of a candidate whose
+// measured memory exceeds the budget.
+var errOutsideEnvelope = errors.New("the candidate exceeds the memory budget and is not applied; return to Tuning to change the plan or the budget")
+
+// forgeBlocked reports whether the variant is outside the envelope.
+func (d *Dashboard) forgeBlocked(variant string) bool {
+	for _, it := range d.forgeView().Forge.Items {
+		if it.ID == variant {
+			return it.Fit.Blocked()
+		}
+	}
+	return false
 }
 
 // forgePick uses the desktop's existing native picker capability for semantic
@@ -347,7 +486,8 @@ func (d *Dashboard) forgePick(w http.ResponseWriter, r *http.Request) {
 func forgeIntentForm(r *http.Request) ForgeIntentForm {
 	f := func(k string) string { return strings.TrimSpace(r.PostFormValue(k)) }
 	return ForgeIntentForm{
-		Source: f("source"), Profile: f("profile"), Dataset: f("dataset"), Questions: r.PostFormValue("questions"), Policy: f("policy"),
+		Source: f("source"), Profile: f("profile"), Dataset: strings.TrimSpace(resourceValue(r, "dataset")), Questions: resourceValue(r, "questions"),
+		Policy: strings.TrimSpace(resourceValue(r, "policy")),
 		Device: f("device"), ReferenceDevice: f("reference_device"), ReferenceDType: f("reference_dtype"), Provisioning: f("provisioning"),
 	}
 }
@@ -360,6 +500,9 @@ func forgeBuildEvaluateRequest(r *http.Request) (ForgeBuildEvaluateRequest, erro
 		Source: form.Source, Profile: form.Profile, Device: form.Device,
 		ReferenceDevice: form.ReferenceDevice, ReferenceDType: form.ReferenceDType,
 		Materialize: form.Provisioning == "auto",
+	}
+	if id, ok := strings.CutPrefix(form.Profile, tuningProfilePrefix); ok {
+		req.Profile, req.TuningProfile = "", id
 	}
 	var err error
 	if req.Dataset, err = absPath(form.Dataset, "evaluation dataset"); err != nil {

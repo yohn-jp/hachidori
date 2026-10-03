@@ -158,10 +158,10 @@ func TestForgeVariantsProjection(t *testing.T) {
 	if c := card(t, body, "clef-flash--r--aaaaaaaaaaaa"); !has(c, `action="/forge/apply"`, `>Apply certified variant<`, `name="device"`) || has(c, `name="experimental"`) || has(c, `action="/models/remove"`) {
 		t.Errorf("accepted active variant card:\n%s", c)
 	}
-	if c := card(t, body, "clef-flash--r--bbbbbbbbbbbb"); has(c, `action="/forge/apply"`, `name="experimental"`) || has(c, `action="/forge/apply"`, `action="/forge/certify"`) || !has(c, "Use Build &amp; evaluate to produce a candidate with evaluation evidence.") {
+	if c := card(t, body, "clef-flash--r--bbbbbbbbbbbb"); has(c, `action="/forge/apply"`, `name="experimental"`) || has(c, `action="/forge/apply"`, `action="/forge/certify"`) || !has(c, "Not evaluated: build a candidate to produce evaluation evidence.") {
 		t.Errorf("uncertified variant card:\n%s", c)
 	}
-	if c := card(t, body, "clef-flash--r--cccccccccccc"); has(c, `action="/forge/apply"`) || !has(c, `action="/models/remove"`, `name="kind" value="variant"`) || !has(c, "Rejected: use Build &amp; evaluate to produce another candidate.") {
+	if c := card(t, body, "clef-flash--r--cccccccccccc"); has(c, `action="/forge/apply"`) || !has(c, `action="/models/remove"`, `name="kind" value="variant"`) || !has(c, "Rejected: build another candidate.") {
 		t.Errorf("rejected variant card:\n%s", c)
 	}
 	if c := card(t, body, "clef-flash--r--dddddddddddd"); has(c, `action="/forge/apply"`, `action="/forge/certify"`, `action="/forge/probe"`) || !has(c, "Verify the variant: its artifact reports a problem.") {
@@ -186,7 +186,7 @@ func TestForgeIntentFormHasNoResidentRunInputs(t *testing.T) {
 	e, _, _ := forgeEnv(t, variantInventory())
 	body := e.get(t, "/forge").Body.String()
 	form := section(body, `<form method="post" action="/forge/build-evaluate"`, `</form>`)
-	for _, want := range []string{`name="source"`, `name="profile"`, `name="dataset"`, `name="questions"`, `name="policy"`, `name="device"`, `name="reference_device"`, `name="reference_dtype"`, `name="provisioning"`, "Evaluation suite", "Build &amp; evaluate"} {
+	for _, want := range []string{`name="source"`, `name="profile"`, `name="dataset"`, `name="questions"`, `name="policy"`, `name="device"`, `name="reference_device"`, `name="reference_dtype"`, `name="provisioning"`, "Evaluation", "Build candidate"} {
 		if !strings.Contains(form, want) {
 			t.Errorf("intent form lacks %q:\n%s", want, form)
 		}
@@ -224,28 +224,28 @@ func TestLifecycleOfProjectsBackendRecords(t *testing.T) {
 		next string
 	}{
 		"built only": {row("uncertified"), map[string]string{"built": StageDone, "probed": StagePending, "certified": StagePending, "active": StagePending},
-			"Use Build & evaluate to produce a candidate with evaluation evidence."},
+			"Not evaluated: build a candidate to produce evaluation evidence."},
 		"probed": {func() VariantRow {
 			r := row("uncertified")
 			r.Probe = &ProbeRow{Result: "passed", Device: "cuda"}
 			return r
 		}(),
-			map[string]string{"built": StageDone, "probed": StageDone, "certified": StagePending, "active": StagePending}, "Use Build & evaluate to produce a candidate with evaluation evidence."},
+			map[string]string{"built": StageDone, "probed": StageDone, "certified": StagePending, "active": StagePending}, "Not evaluated: build a candidate to produce evaluation evidence."},
 		"stale probe": {func() VariantRow {
 			r := row("uncertified")
 			r.Probe, r.ProbeStale = &ProbeRow{Result: "passed"}, true
 			return r
 		}(),
-			map[string]string{"built": StageDone, "probed": StageStale, "certified": StagePending, "active": StagePending}, "Use Build & evaluate to produce a candidate with evaluation evidence."},
+			map[string]string{"built": StageDone, "probed": StageStale, "certified": StagePending, "active": StagePending}, "Not evaluated: build a candidate to produce evaluation evidence."},
 		"failed probe": {func() VariantRow {
 			r := row("uncertified")
 			r.Probe = &ProbeRow{Result: "failed", Phase: "provenance"}
 			return r
 		}(),
-			map[string]string{"built": StageDone, "probed": StageBad, "certified": StagePending, "active": StagePending}, "Use Build & evaluate to produce a candidate with evaluation evidence."},
+			map[string]string{"built": StageDone, "probed": StageBad, "certified": StagePending, "active": StagePending}, "Not evaluated: build a candidate to produce evaluation evidence."},
 		"accepted": {row("accepted"), map[string]string{"built": StageDone, "probed": StagePending, "certified": StageDone, "active": StagePending}, "Next: apply the certified variant."},
 		"rejected": {row("rejected"), map[string]string{"built": StageDone, "probed": StagePending, "certified": StageBad, "active": StagePending},
-			"Rejected: use Build & evaluate to produce another candidate. A rejected variant is never applied."},
+			"Rejected: build another candidate. A rejected variant is never applied."},
 		"active, applies on restart": {func() VariantRow { r := row("accepted"); r.Active, r.Pending = true, true; return r }(),
 			map[string]string{"built": StageDone, "probed": StagePending, "certified": StageDone, "active": StageCurrent}, "Applies on restart: restart the runtime in Models."},
 		"serving": {func() VariantRow { r := row("accepted"); r.Active, r.Running = true, true; return r }(),
@@ -391,7 +391,7 @@ func TestForgeExperimentalActivationIsSeparated(t *testing.T) {
 	fm.state.RestartRequired = false
 	body := e.get(t, "/forge").Body.String()
 	adv := section(body, `id="forge-advanced"`, `id="forge-readiness-region"`)
-	if !has(adv, `<details data-keep="forge-advanced">`, `name="experimental" value="1"`, "Activate as experimental", "Activate without applying", "not steps of the lifecycle above") {
+	if !has(adv, `id="forge-advanced"><summary>Advanced`, `name="experimental" value="1"`, "Activate as experimental", "Activate without applying", "not steps of the lifecycle above") {
 		t.Fatalf("advanced section:\n%s", adv)
 	}
 	if strings.Contains(adv, "open>") || strings.Contains(adv, "<details open") {
@@ -410,8 +410,8 @@ func TestForgeExperimentalActivationIsSeparated(t *testing.T) {
 			t.Errorf("a variant card has a primary Activate button:\n%s", cd)
 		}
 	}
-	if !has(card(t, body, "clef-flash--r--bbbbbbbbbbbb"), "Use Build &amp; evaluate to produce a candidate with evaluation evidence.") {
-		t.Error("the next step of an uncertified variant does not use Build & evaluate")
+	if !has(card(t, body, "clef-flash--r--bbbbbbbbbbbb"), "Not evaluated: build a candidate to produce evaluation evidence.") {
+		t.Error("the next step of an uncertified variant does not lead to Build candidate")
 	}
 	// An accepted variant's activation without apply is also only advanced.
 	if !has(adv, `data-variant="clef-flash--r--aaaaaaaaaaaa"`) || !has(section(adv, `data-variant="clef-flash--r--aaaaaaaaaaaa"`, `</tr>`), "Activate without applying") {
@@ -823,7 +823,7 @@ func TestForgeBuildEvaluateResolutionIsVisible(t *testing.T) {
 func TestForgeIntentPickerKeepsResourcesAndBrowserFallback(t *testing.T) {
 	e, _, _ := forgeEnv(t, variantInventory())
 	body := e.get(t, "/forge").Body.String()
-	if has(body, `action="/forge/pick"`) || !has(body, `name="dataset"`, "absolute path") {
+	if has(body, `action="/forge/pick"`) || !has(body, `name="dataset"`, `type="text"`) {
 		t.Error("browser Forge lacks path fallback or exposes native picker controls")
 	}
 	p := &fakePathPicker{path: "/chosen/resource.jsonl"}
@@ -840,21 +840,21 @@ func TestForgeIntentPickerKeepsResourcesAndBrowserFallback(t *testing.T) {
 		return e.post(t, "/forge/pick", v).Body.String()
 	}
 	body = postPick("dataset")
-	for _, want := range []string{`name="dataset" value="/chosen/resource.jsonl"`, `name="source" required`, `value="cuda" selected`, `value="never" selected`} {
+	for _, want := range []string{`<option value="/chosen/resource.jsonl" selected>resource.jsonl</option>`, `name="source" aria-label="Source" required`, `value="cuda" selected`, `value="never" selected`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dataset picker lost intent field %q", want)
 		}
 	}
 	body = postPick("question-file")
-	if !strings.Contains(body, "/defs/old.json\n/chosen/resource.jsonl</textarea>") {
+	if !strings.Contains(body, "<option value=\"/defs/old.json\n/chosen/resource.jsonl\" selected>old.json, resource.jsonl</option>") {
 		t.Error("Question Definition picker did not append the selected path")
 	}
 	body = postPick("question-folder")
-	if p.calls[len(p.calls)-1] != "folder" || !strings.Contains(body, "/defs/old.json\n/chosen/resource.jsonl</textarea>") {
+	if p.calls[len(p.calls)-1] != "folder" || !strings.Contains(body, "<option value=\"/defs/old.json\n/chosen/resource.jsonl\" selected>") {
 		t.Error("Question Definition folder picker did not reuse the native folder dialog")
 	}
 	body = postPick("policy")
-	if !strings.Contains(body, `name="policy" value="/chosen/resource.jsonl"`) {
+	if !strings.Contains(body, `<select name="policy"><option value="">Built-in policy</option><option value="/chosen/resource.jsonl" selected>`) {
 		t.Error("policy picker lost the selected path")
 	}
 }

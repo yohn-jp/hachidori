@@ -35,11 +35,9 @@ func recordPreflight(t *testing.T, h home.Home, req optimize.PreflightRequest, a
 	return rep
 }
 
-func TestOptimizeProfileResolvesExactProfileAndRefusesAnotherSource(t *testing.T) {
-	source, err := setup.LookupModel(setup.ClefFlash)
-	if err != nil {
-		t.Fatal(err)
-	}
+// clefAnalysis is the semantic analysis of a minimal clef-flash layout.
+func clefAnalysis(t *testing.T, source home.ModelManifest) tuning.Analysis {
+	t.Helper()
 	analysis, err := tuning.Analyze(source, tuning.DeclaredLayout{
 		ModelType: "qwen3_5", TextModelType: "qwen3_5_text",
 		Architectures: []string{"Qwen3_5ForConditionalGeneration"},
@@ -55,6 +53,15 @@ func TestOptimizeProfileResolvesExactProfileAndRefusesAnotherSource(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	return analysis
+}
+
+func TestOptimizeProfileResolvesExactProfileAndRefusesAnotherSource(t *testing.T) {
+	source, err := setup.LookupModel(setup.ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis := clefAnalysis(t, source)
 	profile, err := tuning.NewDefaultProfile(analysis, "balanced")
 	if err != nil {
 		t.Fatal(err)

@@ -84,7 +84,7 @@
     <form method="post" action="/errors/export" class="path-form">
       <input type="hidden" name="token" value="{{$.Token}}">
       {{range $k, $vs := $.C.Values}}{{range $vs}}<input type="hidden" name="{{$k}}" value="{{.}}">{{end}}{{end}}
-      {{template "resource-selection" (resourceInput $.PathPicker "Export path" "export_path" $.Export "/path/to/errors.json" false false "/errors/pick" "pick" "export" "Choose file")}}
+      {{template "resource-selection" (resourceInput $.PathPicker "Export path" "export_path" $.Export "/path/to/errors.json" false false "/errors/pick" "pick" "export" "Choose destination…")}}
       <button type="submit" class="btn">{{t "Export selection"}}</button>
     </form>
   </section>
@@ -147,6 +147,6 @@
 </div>{{end}}
 <form method="post" action="/errors/open" class="stack">
   <input type="hidden" name="token" value="{{.Token}}">
-  {{template "resource-selection" (resourceInput .PathPicker "Evidence report file (absolute path)" "path" .OpenPath "/path/to/report.json" false false "/errors/pick" "pick" "open" "Choose file")}}
+  {{template "resource-selection" (resourceInput .PathPicker "Evidence report file (absolute path)" "path" .OpenPath "/path/to/report.json" false false "/errors/pick" "pick" "open" "Open evidence report…")}}
   <div class="btn-row"><button type="submit" class="btn">{{t "Open report"}}</button></div>
 </form>{{end}}

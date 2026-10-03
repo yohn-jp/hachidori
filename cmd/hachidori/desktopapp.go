@@ -548,7 +548,8 @@ func forgeState(f app.ForgeState) dashboard.ForgeState {
 	for _, p := range f.Probes {
 		row := dashboard.ProbeRow{Variant: p.Variant, Device: p.Device, Result: p.Result, Phase: p.Phase, Error: p.Error, StartedAt: p.StartedAt,
 			ManifestSHA256: p.VariantManifestSHA256, Provider: p.Provider, DType: p.Execution.DType, DeviceName: p.Execution.DeviceName,
-			StartupMS: p.Timing.StartupMS, LoadMS: p.Timing.LoadMS, WarmupMS: p.Timing.WarmupMS, RequestMS: p.Timing.RequestMS}
+			StartupMS: p.Timing.StartupMS, LoadMS: p.Timing.LoadMS, WarmupMS: p.Timing.WarmupMS, RequestMS: p.Timing.RequestMS,
+			VRAMBytes: max(p.Resources.VRAMAllocated, p.Resources.VRAMReserved)}
 		if d := p.Decision; d != nil {
 			row.Choice, row.Confidence = d.Choice, d.Confidence
 		}
@@ -609,7 +610,7 @@ func (m modelManager) Optimize(model, recipe string) error { return m.ctl().Opti
 
 func (m modelManager) BuildAndEvaluate(r dashboard.ForgeBuildEvaluateRequest) error {
 	return m.ctl().BuildAndEvaluate(app.ForgeBuildEvaluateParams{
-		Source: r.Source, Optimization: optimize.Request{Model: r.Source, Recipe: r.Profile}, Device: r.Device,
+		Source: r.Source, Optimization: optimize.Request{Model: r.Source, Recipe: r.Profile}, TuningProfile: r.TuningProfile, Device: r.Device,
 		ReferenceDevice: r.ReferenceDevice, ReferenceDType: r.ReferenceDType,
 		Dataset: r.Dataset, Questions: r.Questions, Policy: r.Policy, Materialize: r.Materialize,
 	})
@@ -908,6 +909,10 @@ func (s tuningStore) BuildCandidate(source, profileID string) error {
 // 128 weights, (0.5 + 2/128) bytes, against 2 bytes in bfloat16.
 const w4a16BytesPerBF16Byte = (0.5 + 2.0/128) / 2
 
+// weightsLowerBound names the memory lower bound: the weights must be resident,
+// so their size understates the device memory a candidate occupies.
+const weightsLowerBound = "weights must be resident, so their size is a lower bound; activations, cache and the device context are not included. Not a measurement"
+
 const sizeEstimator = "W4A16 g128 estimator: source bfloat16 Linear weights are 4-bit packed plus one bfloat16 scale per 128 weights; preserved regions, other tensors and carried files keep their source size. Not a measurement"
 
 // Impact projects what the home's evidence says about one exact profile. A
@@ -930,8 +935,10 @@ func (s tuningStore) Impact(p tuning.Profile, a tuning.Analysis, c tuning.Compil
 	}
 	v, vdir, ok := tunedVariant(h, p)
 	if !ok {
-		if est, err := estimateSize(dir, m, c); err == nil {
+		if est, bytes, err := estimateSize(dir, m, c); err == nil {
 			imp.Size = est
+			imp.Memory = dashboard.ImpactValue{State: dashboard.Estimated, Value: "at least " + gib(bytes) + " (weights only)", Basis: weightsLowerBound}
+			imp.MemoryUsage = tuning.Usage{Bytes: uint64(bytes), LowerBound: true}
 		} else {
 			imp.Size = none("size could not be estimated: " + err.Error())
 		}
@@ -951,6 +958,8 @@ func (s tuningStore) Impact(p tuning.Profile, a tuning.Analysis, c tuning.Compil
 	}
 	if total > 0 {
 		imp.Size = dashboard.ImpactValue{State: dashboard.Measured, Value: gib(total), Basis: label + ": bytes of its artifact files"}
+		imp.Memory = dashboard.ImpactValue{State: dashboard.Estimated, Value: "at least " + gib(total) + " (weights only)", Basis: label + ": " + weightsLowerBound}
+		imp.MemoryUsage = tuning.Usage{Bytes: uint64(total), LowerBound: true}
 	} else {
 		imp.Size = none(label + ": its artifact files could not be read")
 	}
@@ -960,8 +969,10 @@ func (s tuningStore) Impact(p tuning.Profile, a tuning.Analysis, c tuning.Compil
 			imp.Latency = dashboard.ImpactValue{State: dashboard.Measured, Value: fmt.Sprintf("%.1f ms per request", pr.Timing.RequestMS), Basis: basis}
 		}
 		switch r := pr.Resources; {
-		case r.VRAMAllocated > 0:
-			imp.Memory = dashboard.ImpactValue{State: dashboard.Measured, Value: "VRAM allocated " + gib(int64(r.VRAMAllocated)), Basis: basis}
+		case r.VRAMAllocated > 0 || r.VRAMReserved > 0:
+			used := max(r.VRAMAllocated, r.VRAMReserved)
+			imp.Memory = dashboard.ImpactValue{State: dashboard.Measured, Value: "VRAM reserved " + gib(int64(used)), Basis: basis}
+			imp.MemoryUsage = tuning.Usage{Bytes: used}
 		case r.HostRSSBytes > 0:
 			imp.Memory = dashboard.ImpactValue{State: dashboard.Measured, Value: "host RSS " + gib(int64(r.HostRSSBytes)), Basis: basis}
 		}
@@ -1047,10 +1058,10 @@ func safetensorsHeader(path string) (map[string]tensorHeader, error) {
 }
 
 // estimateSize applies the documented size estimator to the compiled profile.
-func estimateSize(dir string, m home.ModelManifest, c tuning.Compilation) (dashboard.ImpactValue, error) {
+func estimateSize(dir string, m home.ModelManifest, c tuning.Compilation) (dashboard.ImpactValue, int64, error) {
 	_, weightMap, err := declaredLayout(dir, m)
 	if err != nil {
-		return dashboard.ImpactValue{}, err
+		return dashboard.ImpactValue{}, 0, err
 	}
 	tensors := map[string]tensorHeader{}
 	shards := map[string]bool{}
@@ -1061,7 +1072,7 @@ func estimateSize(dir string, m home.ModelManifest, c tuning.Compilation) (dashb
 		shards[shard] = true
 		table, err := safetensorsHeader(filepath.Join(dir, filepath.FromSlash(shard)))
 		if err != nil {
-			return dashboard.ImpactValue{}, err
+			return dashboard.ImpactValue{}, 0, err
 		}
 		for name, t := range table {
 			tensors[name] = t
@@ -1076,7 +1087,7 @@ func estimateSize(dir string, m home.ModelManifest, c tuning.Compilation) (dashb
 		for _, module := range r.Modules {
 			t, ok := tensors[module+".weight"]
 			if !ok || t.DType != "BF16" {
-				return dashboard.ImpactValue{}, fmt.Errorf("module %s is not a bfloat16 tensor of the source", module)
+				return dashboard.ImpactValue{}, 0, fmt.Errorf("module %s is not a bfloat16 tensor of the source", module)
 			}
 			b := float64(t.Offsets[1] - t.Offsets[0])
 			linear += b
@@ -1093,5 +1104,5 @@ func estimateSize(dir string, m home.ModelManifest, c tuning.Compilation) (dashb
 			size += float64(info.Size())
 		}
 	}
-	return dashboard.ImpactValue{State: dashboard.Estimated, Value: "about " + gib(int64(size)), Basis: sizeEstimator}, nil
+	return dashboard.ImpactValue{State: dashboard.Estimated, Value: "about " + gib(int64(size)), Basis: sizeEstimator}, int64(size), nil
 }

@@ -1,16 +1,11 @@
 {{/* Tuning edits and saves model-engineering intent and hands one exact saved profile to Forge. Regions come from backend analysis; generated mappings stay in Evidence; every impact value states MEASURED, ESTIMATED or NOT_CHECKED. */}}
 {{define "tuning"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>{{t "Tuning"}}</h1><p class="lede">{{t "Choose what the model must preserve under a resource objective. Save a versioned profile, then hand that exact profile to Forge to build a candidate. Nothing is applied automatically."}}</p></div>
+  <div><h1>{{t "Tuning"}}</h1><p class="lede">{{t "Make this model usable on this machine at the quality you choose."}}</p></div>
 </header>
 {{template "last" .Last}}
 {{with .Tuning}}
 <div id="tuning-workspace">
-  <form method="get" action="/tuning" class="fields" id="tuning-source-form">
-    <label class="field">{{t "Source"}}<select name="source">{{range .Sources}}<option value="{{.ID}}"{{if eq .ID $.Tuning.Source}} selected{{end}}>{{.ID}}{{if not .Materialized}} · {{t "not materialized"}}{{end}}</option>{{end}}</select></label>
-    <div class="btn-row"><button type="submit" class="btn">{{t "Show source"}}</button></div>
-  </form>
-
   {{with .Err}}<p class="msg bad" role="alert" id="tuning-unavailable">{{t .}}</p>{{end}}
 
   {{with .Context}}
@@ -141,9 +136,92 @@
   </section>
   {{end}}
 
-  {{if .Regions}}
-  <section class="region section" id="tuning-identity" aria-labelledby="ti-h">
-    <div class="region-h"><h2 id="ti-h">{{t "Exact source and profile"}}</h2><span class="sub">{{if .Saved}}{{t "saved, immutable profile"}}{{else}}{{t "initial all-Auto profile · not saved"}}{{end}}</span></div>
+  <dl class="intent" id="tuning-intent">
+    <div><dt>{{t "Source"}}</dt><dd>
+      <form method="get" action="/tuning" class="btn-row" id="tuning-source-form">
+        <select name="source" aria-label="{{t "Source"}}">{{range .Sources}}<option value="{{.ID}}"{{if eq .ID $.Tuning.Source}} selected{{end}}>{{.ID}}{{if not .Materialized}} · {{t "not materialized"}}{{end}}</option>{{end}}</select>
+        <button type="submit" class="btn quiet">{{t "Show source"}}</button>
+      </form>
+    </dd></div>
+    {{if .Regions}}
+    <div id="tuning-target"><dt>{{t "Target device"}}</dt><dd>
+      {{with .Envelope}}
+      <span class="value">{{if .Device}}{{.Device}}{{else}}{{t "Unknown device"}}{{end}}{{with .Total}} · {{.}}{{end}}</span>
+      {{if not .TotalBytes}}<span class="note">{{t "The device memory is known once the runtime has run on it."}}</span>{{end}}
+      {{end}}
+    </dd></div>
+    <div id="tuning-budget" data-budget="{{if .Envelope.Auto}}auto{{else}}explicit{{end}}"><dt>{{t "Memory budget"}}</dt><dd>
+      {{with .Envelope}}
+      <span class="value">{{if .Auto}}{{t "Auto"}}{{else}}{{t "Override"}}{{end}}{{with .Budget}} · {{.}}{{else}} · {{t "unknown"}}{{end}}</span>
+      {{if .Auto}}<span class="note">{{t "Keeps a tenth of device memory (at least 1 GiB) free. A full device is never within budget."}}</span>{{end}}
+      {{with .Err}}<span class="msg bad" role="alert">{{t .}}</span>{{end}}
+      {{if .Editable}}
+      <details class="inline" id="tuning-budget-edit"><summary>{{t "Change budget"}}</summary>
+        <form method="post" action="/tuning/budget" class="btn-row">
+          <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="source" value="{{$.Tuning.Source}}">{{if $.Tuning.Saved}}<input type="hidden" name="profile" value="{{$.Tuning.ProfileID}}">{{end}}
+          <label class="check"><input type="radio" name="budget_mode" value="auto"{{if .Auto}} checked{{end}}> {{t "Auto"}}</label>
+          <label class="check"><input type="radio" name="budget_mode" value="explicit"{{if not .Auto}} checked{{end}}> {{t "Override"}}</label>
+          <input name="budget_gib" value="{{.OverrideGiB}}" inputmode="decimal" aria-label="{{t "Memory budget in GiB"}}" placeholder="GiB" style="max-width:7rem">
+          <button type="submit" class="btn">{{t "Save budget"}}</button>
+        </form>
+      </details>
+      {{end}}
+      {{end}}
+    </dd></div>
+  </dl>
+
+  <form method="post" action="/tuning/save" class="stack" id="tuning-form">
+    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="source" value="{{.Source}}">
+    <dl class="intent">
+      <div id="tuning-objective"><dt><label for="tuning-objective-select">{{t "Quality objective"}}</label></dt><dd>
+        <select id="tuning-objective-select" name="objective" aria-label="{{t "Quality objective"}}">{{range .Objectives}}<option value="{{.}}"{{if eq . $.Tuning.Objective}} selected{{end}}>{{t (objective .)}}</option>{{end}}</select>
+      </dd></div>
+      <div id="tuning-plan"><dt>{{t "Current plan"}}</dt><dd>
+        <span class="value">{{t "4-bit weights"}} · {{.PreservedRegions}} / {{len .Regions}} {{t "semantic regions kept at source precision"}}</span>
+        <span class="note">{{if .Saved}}{{t "Saved profile"}} <span class="mono" title="{{.ProfileID}}">{{short .ProfileID}}</span>{{else}}{{t "Hachidori's analyzed default; it is saved when you build."}}{{end}}</span>
+        {{template "operator-advanced-open" .AdvancedDisclosure}}
+        <div id="tuning-regions"><div class="table-wrap"><table class="data" id="tuning-region-table">
+          <caption class="vh">{{t "Preservation by semantic region"}}</caption>
+          <thead><tr><th scope="col">{{t "Region"}}</th><th scope="col">{{t "Preservation"}}</th><th scope="col">{{t "Result"}}</th></tr></thead>
+          <tbody>{{range .Regions}}
+            <tr data-region="{{.ID}}" data-effective="{{.Effective}}"{{if .Recommended}} data-recommended="true"{{end}}>
+              <th scope="row" class="strong"><label for="region-{{.ID}}">{{t .Label}}</label>{{with .Purpose}}<div class="note">{{t .}}</div>{{end}}</th>
+              <td><select id="region-{{.ID}}" name="region.{{.ID}}"><option value="auto"{{if not .Pinned}} selected{{end}}>{{t "Auto"}}</option><option value="pinned"{{if .Pinned}} selected{{end}}>{{t "Preserved at source precision"}}</option></select></td>
+              <td>{{template "semantic-state" .Effective}}{{if .Recommended}} <span class="badge">{{t "Recommended by evidence"}}</span>{{end}}</td>
+            </tr>{{end}}
+          </tbody>
+        </table></div></div>
+        <div class="btn-row"><button type="submit" class="btn">{{t "Save profile only"}}</button></div>
+        {{template "operator-disclosure-close"}}
+      </dd></div>
+      <div id="tuning-fit" data-fit="{{.Fit.Fit}}"><dt>{{t "Memory"}}</dt><dd>
+        <span class="value tone-{{.Fit.Tone}}">{{if eq (print .Fit.Fit) "within"}}{{t "Within budget"}}{{else if eq (print .Fit.Fit) "exceeds"}}{{t "Exceeds budget"}}{{else}}{{t "Fit not checked"}}{{end}}{{with .Fit.Value}} · {{.}}{{end}}{{with .Envelope.Budget}} / {{.}}{{end}}</span>
+        <span>{{template "semantic-state" .Fit.State}}{{with .Fit.Basis}} <span class="note">{{.}}</span>{{end}}</span>
+        {{if .Fit.Blocked}}<p class="msg bad" role="alert" id="tuning-over-budget">{{t "This plan does not fit the memory budget. Keep fewer regions at source precision under Semantic preservation, or change the budget. Nothing is changed for you."}}</p>{{end}}
+      </dd></div>
+      <div id="tuning-impact"><dt>{{t "Impact"}}</dt><dd>
+        <div class="table-wrap"><table class="data" id="tuning-impact-table">
+          <caption class="vh">{{t "Impact of the profile"}}</caption>
+          <tbody>{{range .Impact}}{{if ne .Key "memory"}}
+            <tr data-impact="{{.Key}}" data-state="{{.State}}">
+              <th scope="row">{{t .Label}}</th>
+              <td class="num">{{if .Value}}{{.Value}}{{else}}<span class="muted">{{t "No valid evidence"}}</span>{{end}}</td>
+              <td>{{template "semantic-state" .State}}{{with .Basis}} <span class="note">{{.}}</span>{{end}}</td>
+            </tr>{{end}}{{end}}
+          </tbody>
+        </table></div>
+      </dd></div>
+    </dl>
+
+    <div class="intent-action">
+      <button type="submit" class="btn primary" formaction="/tuning/build" data-pending="{{t "Handing the profile to Forge…"}}">{{t "Build candidate"}}</button>
+      <span class="note">{{t "Saves this plan and builds a candidate in Forge. Nothing is applied."}}</span>
+    </div>
+  </form>
+
+  {{template "operator-evidence-open" .EvidenceDisclosure}}
+  <section id="tuning-identity" aria-labelledby="ti-h">
+    <h3 id="ti-h">{{t "Exact source and profile"}}</h3>
     <dl class="kv">
       <dt>{{t "Source"}}</dt><dd>{{.Source}}</dd>
       <dt>{{t "Repository"}}</dt><dd>{{.Repo}}@{{.Revision}}</dd>
@@ -152,64 +230,14 @@
       <dt>{{t "Compiler"}}</dt><dd>{{.CompilerVersion}}</dd>
       <dt>{{t "Profile schema"}}</dt><dd>{{.ProfileSchema}}</dd>
       <dt>{{if .Saved}}{{t "Profile"}}{{else}}{{t "Profile (when saved)"}}{{end}}</dt><dd data-tuning-profile="{{.ProfileID}}"{{if not .Saved}} data-unsaved="true"{{end}}>{{.ProfileID}}</dd>
+      {{with index .Impact 1}}<dt>{{t "Memory figure"}}</dt><dd data-impact="memory" data-state="{{.State}}">{{template "semantic-state" .State}} {{if .Value}}{{.Value}}{{else}}<span class="muted">{{t "No valid evidence"}}</span>{{end}}{{with .Basis}} <span class="note">{{.}}</span>{{end}}</dd>{{end}}
     </dl>
+    <h3>{{t "Semantic regions"}}</h3>
+    <ul class="note">{{range .Regions}}<li data-evidence-region-counts="{{.ID}}"><span class="mono">{{.ID}}</span> · {{if .Modules}}{{.Modules}} {{t "modules"}}{{end}}{{if and .Modules .Files}} · {{end}}{{if .Files}}{{.Files}} {{t "files"}}{{end}} · {{t .Note}}</li>{{end}}</ul>
   </section>
-
-  <form method="post" action="/tuning/save" class="stack" id="tuning-form">
-    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="source" value="{{.Source}}">
-    <section class="region section" id="tuning-objective" aria-labelledby="to-h">
-      <div class="region-h"><h2 id="to-h">{{t "Objective"}}</h2><span class="sub">{{t "recorded with the profile"}}</span></div>
-      <div class="fields">
-        <label class="field">{{t "Objective"}}<select name="objective">{{range .Objectives}}<option value="{{.}}"{{if eq . $.Tuning.Objective}} selected{{end}}>{{t (objective .)}}</option>{{end}}</select></label>
-      </div>
-      <p class="note">{{t "The objective is recorded as intent and is part of the profile identity. The preservation choices below decide what a build preserves."}}</p>
-    </section>
-
-    <section class="region section" id="tuning-regions" aria-labelledby="tr-h">
-      <div class="region-h"><h2 id="tr-h">{{t "Semantic regions"}}</h2><span class="sub">{{t "from the backend analysis of this exact source"}}</span></div>
-      <p class="note">{{t "Auto keeps the canonical safe policy for the region. Preserved keeps every member of the region at source precision."}}</p>
-      <div class="table-wrap"><table class="data" id="tuning-region-table">
-        <caption class="vh">{{t "Preservation by semantic region"}}</caption>
-        <thead><tr><th scope="col">{{t "Region"}}</th><th scope="col">{{t "Members"}}</th><th scope="col">{{t "Preservation"}}</th><th scope="col">{{t "Result"}}</th></tr></thead>
-        <tbody>{{range .Regions}}
-          <tr data-region="{{.ID}}" data-effective="{{.Effective}}"{{if .Recommended}} data-recommended="true"{{end}}>
-            <th scope="row" class="strong"><label for="region-{{.ID}}">{{t .Label}}</label>{{with .Purpose}}<div class="note">{{t .}}</div>{{end}}</th>
-            <td class="num">{{if .Modules}}{{.Modules}} {{t "modules"}}{{end}}{{if and .Modules .Files}} · {{end}}{{if .Files}}{{.Files}} {{t "files"}}{{end}}</td>
-            <td><select id="region-{{.ID}}" name="region.{{.ID}}"><option value="auto"{{if not .Pinned}} selected{{end}}>{{t "Auto"}}</option><option value="pinned"{{if .Pinned}} selected{{end}}>{{t "Preserved at source precision"}}</option></select></td>
-            <td>{{template "semantic-state" .Effective}} <span class="note">{{t .Note}}</span>{{if .Recommended}} <span class="badge">{{t "Recommended by evidence"}}</span>{{end}}</td>
-          </tr>{{end}}
-        </tbody>
-      </table></div>
-      <p class="note">{{t "Result describes the saved profile above. Edits take effect when you save."}}</p>
-    </section>
-
-    <div class="btn-row">
-      <button type="submit" class="btn primary" formaction="/tuning/build" data-pending="{{t "Handing the profile to Forge…"}}">{{t "Build candidate"}}</button>
-      <button type="submit" class="btn">{{t "Save profile"}}</button>
-    </div>
-    <p class="note">{{t "Build candidate saves this profile, then hands exactly that saved profile to Forge. Forge builds the candidate and owns its evaluation and Apply."}} <a href="/forge">{{t "Open Forge"}}</a></p>
-  </form>
-
-  <section class="region section" id="tuning-impact" aria-labelledby="tm-h">
-    <div class="region-h"><h2 id="tm-h">{{t "Impact"}}</h2><span class="sub">{{t "of the exact profile above"}}</span></div>
-    <div class="table-wrap"><table class="data" id="tuning-impact-table">
-      <caption class="vh">{{t "Impact of the profile"}}</caption>
-      <thead><tr><th scope="col">{{t "Measure"}}</th><th scope="col">{{t "State"}}</th><th scope="col">{{t "Value"}}</th><th scope="col">{{t "Basis"}}</th></tr></thead>
-      <tbody>{{range .Impact}}
-        <tr data-impact="{{.Key}}" data-state="{{.State}}">
-          <th scope="row" class="strong">{{t .Label}}</th>
-          <td>{{template "semantic-state" .State}}</td>
-          <td>{{if .Value}}{{.Value}}{{else}}<span class="muted">{{t "No valid evidence"}}</span>{{end}}</td>
-          <td>{{with .Basis}}<span class="note">{{.}}</span>{{end}}</td>
-        </tr>{{end}}
-      </tbody>
-    </table></div>
-    <p class="note">{{t "MEASURED values are observed from evidence of a candidate built from this exact profile. ESTIMATED values are derived by the named estimator and are not measurements. NOT_CHECKED means no valid evidence exists."}}</p>
-  </section>
-
   {{with .Profiles}}
-  <section class="region section" id="tuning-profiles" aria-labelledby="tp-h">
-    <div class="region-h"><h2 id="tp-h">{{t "Saved profiles"}}</h2><span class="sub">{{t "newest first"}}</span></div>
+  <section id="tuning-profiles" aria-labelledby="tp-h">
+    <h3 id="tp-h">{{t "Saved profiles"}}</h3>
     <div class="table-wrap"><table class="data">
       <caption class="vh">{{t "Saved profiles"}}</caption>
       <thead><tr><th scope="col">{{t "Profile"}}</th><th scope="col">{{t "Objective"}}</th><th scope="col">{{t "Preserved regions"}}</th></tr></thead>
@@ -222,11 +250,9 @@
     </table></div>
   </section>
   {{end}}
-
   {{with .Evidence}}
-  <section class="region section" id="tuning-evidence" aria-labelledby="te-h">
-    <div class="region-h"><h2 id="te-h">{{t "Evidence"}}</h2><span class="sub">{{t "generated from the saved profile; never an input"}}</span></div>
-    {{template "operator-evidence-open" $.Tuning.EvidenceDisclosure}}
+  <section id="tuning-evidence" aria-labelledby="te-h">
+    <h3 id="te-h">{{t "Generated mappings and recipe"}}</h3>
     <dl class="kv">
       <dt>{{t "Recipe"}}</dt><dd>{{.Recipe}}</dd>
       <dt>{{t "Recipe SHA-256"}}</dt><dd>{{.RecipeSHA256}}</dd>
@@ -248,9 +274,11 @@
       <thead><tr><th scope="col">{{t "Pattern"}}</th><th scope="col">{{t "Scope"}}</th><th scope="col">{{t "Precision"}}</th><th scope="col">{{t "Regions"}}</th></tr></thead>
       <tbody>{{range .Preserved}}<tr><td class="mono">{{.Pattern}}</td><td>{{.Scope}}</td><td class="mono">{{.Precision}}</td><td class="mono">{{range .Regions}}{{.}} {{end}}</td></tr>{{end}}</tbody>
     </table></div>
-    {{template "operator-disclosure-close"}}
   </section>
   {{end}}
+  {{template "operator-disclosure-close"}}
+  {{else}}
+  </dl>
   {{end}}
 </div>
 {{end}}

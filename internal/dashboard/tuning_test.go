@@ -172,7 +172,22 @@ func impactRow(t *testing.T, body, key string) string {
 	if i < 0 {
 		t.Fatalf("no impact row %s", key)
 	}
-	return body[i : i+strings.Index(body[i:], "</tr>")]
+	end := strings.Index(body[i:], "</tr>")
+	if dd := strings.Index(body[i:], "</dd>"); dd >= 0 && (end < 0 || dd < end) {
+		end = dd
+	}
+	return body[i : i+end]
+}
+
+// regionEvidence is the Evidence line of one region: its member counts and
+// what the canonical policy does with it.
+func regionEvidence(t *testing.T, body, region string) string {
+	t.Helper()
+	i := strings.Index(body, `data-evidence-region-counts="`+region+`"`)
+	if i < 0 {
+		t.Fatalf("no Evidence line for region %s", region)
+	}
+	return body[i : i+strings.Index(body[i:], "</li>")]
 }
 
 func TestTuningIsAFirstClassWorkspaceInTheNavigation(t *testing.T) {
@@ -230,7 +245,7 @@ func TestTuningInitialStateIsTruthfulAutoNotCheckedAndUnsaved(t *testing.T) {
 	body := e.get(t, "/tuning").Body.String()
 	// exact source and analysis identity; the profile is shown as unsaved
 	for _, want := range []string{"clef-flash", "Cloudflare/clef-flash@17f0b0ad64efb65d273590632833508766b2aae6", tuning.ClefAnalyzerVersion,
-		`data-tuning-analysis="` + ft.analysis.SHA256() + `"`, tuning.RecipeCompilerVersion, tuning.ProfileSchema, "initial all-Auto profile · not saved", `data-unsaved="true"`} {
+		`data-tuning-analysis="` + ft.analysis.SHA256() + `"`, tuning.RecipeCompilerVersion, tuning.ProfileSchema, "Hachidori&#39;s analyzed default; it is saved when you build.", `data-unsaved="true"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("identity lacks %q", want)
 		}
@@ -262,10 +277,10 @@ func TestTuningRegionsComeFromBackendAnalysisAndRawMappingsAreEvidenceOnly(t *te
 	body := e.get(t, "/tuning").Body.String()
 	for _, r := range ft.analysis.Regions {
 		row := tuningRow(t, body, r.ID)
-		if r.ID == tuning.RegionJointSchemaHead && !strings.Contains(row, "1 files") {
+		if r.ID == tuning.RegionJointSchemaHead && !strings.Contains(regionEvidence(t, body, r.ID), "1 files") {
 			t.Errorf("file count missing: %s", row)
 		}
-		if r.ID == tuning.RegionVision && !strings.Contains(row, "2 modules") {
+		if r.ID == tuning.RegionVision && !strings.Contains(regionEvidence(t, body, r.ID), "2 modules") {
 			t.Errorf("module count missing: %s", row)
 		}
 		if !strings.Contains(row, `name="region.`+r.ID+`"`) {
@@ -277,10 +292,10 @@ func TestTuningRegionsComeFromBackendAnalysisAndRawMappingsAreEvidenceOnly(t *te
 	}
 	// The canonical policy is stated per region: the gates stay preserved
 	// under Auto, the backbone projections are quantized.
-	if row := tuningRow(t, body, tuning.RegionLinearAttentionDecay); !strings.Contains(row, `data-effective="PRESERVED"`) || !strings.Contains(row, "already preserves") {
+	if row := tuningRow(t, body, tuning.RegionLinearAttentionDecay); !strings.Contains(row, `data-effective="PRESERVED"`) || !strings.Contains(regionEvidence(t, body, tuning.RegionLinearAttentionDecay), "already preserves") {
 		t.Errorf("decay gate under Auto: %s", row)
 	}
-	if row := tuningRow(t, body, tuning.RegionFeedForward); !strings.Contains(row, `data-effective="AUTO"`) || !strings.Contains(row, "quantizes") {
+	if row := tuningRow(t, body, tuning.RegionFeedForward); !strings.Contains(row, `data-effective="AUTO"`) || !strings.Contains(regionEvidence(t, body, tuning.RegionFeedForward), "quantizes") {
 		t.Errorf("feed-forward under Auto: %s", row)
 	}
 	// Raw module names, recipe patterns and the recipe digest exist only in
@@ -329,7 +344,7 @@ func TestTuningSavesAVersionedProfileWithoutBuilding(t *testing.T) {
 	}
 
 	body := e.get(t, rec.Header().Get("Location")).Body.String()
-	for _, want := range []string{`data-tuning-profile="` + want.ID() + `"`, "saved, immutable profile", `<option value="maximum-fidelity" selected>Maximum fidelity</option>`} {
+	for _, want := range []string{`data-tuning-profile="` + want.ID() + `"`, "Saved profile", `<option value="maximum-fidelity" selected>Maximum fidelity</option>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("saved profile page lacks %q", want)
 		}
@@ -339,7 +354,7 @@ func TestTuningSavesAVersionedProfileWithoutBuilding(t *testing.T) {
 	}
 	for _, region := range []string{tuning.RegionFeedForward, tuning.RegionFullAttention} {
 		row := tuningRow(t, body, region)
-		if !strings.Contains(row, `<option value="pinned" selected>`) || !strings.Contains(row, `data-effective="PRESERVED"`) || !strings.Contains(row, "Pinned by this profile") {
+		if !strings.Contains(row, `<option value="pinned" selected>`) || !strings.Contains(row, `data-effective="PRESERVED"`) || !strings.Contains(regionEvidence(t, body, region), "Pinned by this profile") {
 			t.Errorf("%s is not pinned/preserved: %s", region, row)
 		}
 	}
@@ -439,7 +454,7 @@ func TestTuningPageOffersNoOptimizerLifecycleAndRunsNoClientCode(t *testing.T) {
 	}
 	actions := regexp.MustCompile(`(?:form)?action="([^"]+)"`).FindAllStringSubmatch(main, -1)
 	for _, a := range actions {
-		if a[1] != "/tuning" && a[1] != "/tuning/save" && a[1] != "/tuning/build" {
+		if a[1] != "/tuning" && a[1] != "/tuning/save" && a[1] != "/tuning/build" && a[1] != "/tuning/budget" {
 			t.Errorf("Tuning posts to %s", a[1])
 		}
 	}
@@ -535,7 +550,7 @@ func TestTuningResponsiveAccessibleAndLocalized(t *testing.T) {
 		t.Fatalf("select ja: %d", rec.Code)
 	}
 	ja := e.get(t, "/tuning").Body.String()
-	for _, want := range []string{`<html lang="ja">`, `<h1>チューニング</h1>`, "候補を構築", "プロファイルを保存", "意味的リージョン", "推定", "未確認", "保持", "最大の忠実度", `<a href="/tuning" aria-current="page">チューニング</a>`} {
+	for _, want := range []string{`<html lang="ja">`, `<h1>チューニング</h1>`, "候補を構築", "プロファイルのみを保存", "意味的リージョン", "推定", "未確認", "保持", "最大の忠実度", `<a href="/tuning" aria-current="page">チューニング</a>`} {
 		if !strings.Contains(ja, want) {
 			t.Errorf("Japanese Tuning lacks %q", want)
 		}

@@ -292,6 +292,9 @@ type record struct {
 	Locale          string           `json:"locale,omitempty"`
 	Updates         *update.Settings `json:"updates,omitempty"`
 	Residents       []string         `json:"resident_models,omitempty"`
+	// MemoryBudget is the operator's explicit tuning memory budget in bytes;
+	// 0 (absent) is Auto.
+	MemoryBudget uint64 `json:"memory_budget_bytes,omitempty"`
 }
 
 // Store is the settings authority. An empty Path keeps its values in memory.
@@ -453,6 +456,20 @@ func (s *Store) SetResidents(ids []string) error {
 		return err
 	}
 	return s.update(func(r *record) error { r.Residents = norm; return nil })
+}
+
+// MemoryBudget reads the explicit tuning memory budget in bytes; 0 is Auto.
+func (s *Store) MemoryBudget() (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.load()
+	return r.MemoryBudget, err
+}
+
+// SetMemoryBudget stores the explicit tuning memory budget; 0 selects Auto.
+// It only stores: no profile, candidate or activation changes.
+func (s *Store) SetMemoryBudget(b uint64) error {
+	return s.update(func(r *record) error { r.MemoryBudget = b; return nil })
 }
 
 // Locale reads the explicit operator UI locale selection; "" means none was

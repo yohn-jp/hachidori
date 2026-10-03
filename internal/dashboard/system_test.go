@@ -177,7 +177,7 @@ func TestRuntimeReferenceComposition(t *testing.T) {
 	body := e.get(t, "/").Body.String()
 	panel := body[strings.Index(body, `<section class="readiness-panel`):]
 	panel = panel[:strings.Index(panel, "</section>")]
-	order := []string{`class="state-word"`, `class="actions"`, `class="spec"`, `<dt>Model</dt><dd class="id">`, `<dt>Runtime</dt><dd class="id">`}
+	order := []string{`class="state-word"`, `class="actions"`, `class="spec"`, `<dt>Model</dt><dd class="id">`, `<dt>GPU memory</dt>`, `data-disclosure="details" id="runtime-identity"`}
 	at := 0
 	for _, s := range order {
 		i := strings.Index(panel[at:], s)
@@ -199,7 +199,7 @@ func TestRuntimeReferenceComposition(t *testing.T) {
 			t.Errorf("readiness composition carries %s", banned)
 		}
 	}
-	// the state stays the primary action's neighbor, and Stop stays visible and destructive
+	// Stop stays available (under Runtime controls, never a peer of the primary action) and destructive
 	if !strings.Contains(panel, `<button type="submit" class="btn danger">Stop</button>`) {
 		t.Error("Stop is hidden or not destructive")
 	}
