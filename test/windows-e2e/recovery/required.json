@@ -1,5 +1,10 @@
 {
   "scenarios": [
-    "candidate-identity"
+    "candidate-identity",
+    "worker-kill-recovers",
+    "repeated-failure-needs-attention",
+    "host-kill-no-orphan-worker",
+    "corrupt-activation-record-recovery",
+    "damaged-worker-script-replaced"
   ]
 }
