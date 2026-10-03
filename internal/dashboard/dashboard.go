@@ -188,6 +188,10 @@ type CertifyRequest struct {
 // progress and outcome are read from State.
 type Models interface {
 	State() ModelsState
+	// StartDesiredState applies one complete serving and resident intent as a
+	// single backend operation. The dashboard only forwards the submitted
+	// identities and choices; the controller owns reconciliation and rollback.
+	StartDesiredState(DesiredStateRequest) error
 	Verify(kind, id string) error
 	Materialize(device, model string) error
 	Repair(device, model string) error
@@ -254,14 +258,19 @@ type ModelCheck struct {
 // bytes; Total is zero for an indeterminate step), and how it ended.
 type ModelOp struct {
 	Kind, Device, Model, Target string
-	Plan, Phases                []string
-	Phase                       string
-	Step, Detail                string
-	Done, Total                 int64
-	Item, Items                 int
-	Started, Finished           time.Time
-	Failure                     string // empty when it succeeded
-	FailurePhase, FailureStep   string
+	// Desired-state device facts are reported by the Controller. DeviceMode
+	// distinguishes an Auto resolution from an operator-pinned override; the
+	// actual value is the worker's reported device after execution.
+	DeviceMode, RequestedDevice, ResolvedDevice, ActualDevice string
+	Plan, Phases                                              []string
+	Residents                                                 []string
+	Phase                                                     string
+	Step, Detail                                              string
+	Done, Total                                               int64
+	Item, Items                                               int
+	Started, Finished                                         time.Time
+	Failure                                                   string // empty when it succeeded
+	FailurePhase, FailureStep                                 string
 	// Resumed is how many of Done a download already held when it began
 	// (an interrupted partial being continued); Diagnostic is the identity of
 	// the failure diagnostic recorded for a failed Forge operation.
@@ -1066,6 +1075,12 @@ func (d *Dashboard) modelsOp(w http.ResponseWriter, r *http.Request) {
 	device, model := strings.TrimSpace(r.PostFormValue("device")), strings.TrimSpace(r.PostFormValue("model"))
 	kind, id := strings.TrimSpace(r.PostFormValue("kind")), strings.TrimSpace(r.PostFormValue("id"))
 	switch op := r.PathValue("op"); op {
+	case "desired-state":
+		intent, err := desiredStateRequest(r, m.State().Inventory)
+		if err == nil {
+			err = m.StartDesiredState(intent)
+		}
+		d.done(w, r, "desired state", err, "started; the Controller is reconciling the requested execution target and resident set")
 	case "verify":
 		d.done(w, r, "verify "+kind+" "+id, m.Verify(kind, id), "started; the result is shown beside the artifact")
 	case "materialize":

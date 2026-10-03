@@ -1,7 +1,7 @@
 {{/* Models: runtime, model and residency administration, and the explicit execution artifact. Everything renders from the maintenance authority's state and the status document. */}}
 {{define "models"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>{{t "Models"}}</h1><p class="lede">{{t "Runtimes, models and resident selection under HACHIDORI_HOME, and exactly which execution artifact serves. System One variants are built, certified and applied in Forge. Nothing here restarts the running runtime unless you choose Restart."}}</p></div>
+  <div><h1>{{t "Models"}}</h1><p class="lede">{{t "Choose the execution target and resident set, then apply them in one operation. Runtime shows what is actually serving. Exact certified variants remain distinct from their source models."}}</p></div>
 </header>
 {{template "last" .Last}}
 {{with .Models}}
@@ -9,8 +9,8 @@
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   {{if .RestartRequired}}
   <div class="last tone-bad" role="status" id="restart-required">
-    <strong>{{t "RESTART REQUIRED"}}</strong><span class="msg-text">{{if .ResidencyChanged}}{{t "The resident selection changed (the active runtime/model may have changed too). The running workers still serve what they started with; nothing restarts automatically."}}{{else}}{{t "The active runtime/model changed. The running worker still serves what it started with; nothing restarts automatically."}}{{end}}</span>
-    <form method="post" action="/models/restart" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><button type="submit" class="btn primary">{{t "Restart runtime"}}</button></form>
+    <strong>{{if .ResidencyChanged}}{{t "DESIRED STATE PENDING"}}{{else}}{{t "RESTART REQUIRED"}}{{end}}</strong><span class="msg-text">{{if .ResidencyChanged}}{{t "The selected resident set differs from the running workers. Apply the desired state above to reconcile it in one operation."}}{{else}}{{t "The active runtime/model changed. The running worker still serves what it started with; nothing restarts automatically."}}{{end}}</span>
+    {{if not .ResidencyChanged}}<form method="post" action="/models/restart" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><button type="submit" class="btn primary">{{t "Restart runtime"}}</button></form>{{end}}
   </div>
   {{end}}
   {{with .Inventory.ActiveProblem}}<div class="last tone-bad" role="alert" id="active-problem"><strong>{{t "CANNOT START"}}</strong><span class="msg-text">{{t "The active runtime cannot be started by this version of Hachidori."}} {{.}}</span></div>{{end}}
@@ -21,8 +21,37 @@
   {{with .Last}}{{template "op-last" .}}{{end}}
   {{with .Inventory.ActiveErr}}<p class="msg bad" role="alert">{{t "Activation record:"}} {{.}}</p>{{end}}
 
+  <section class="region section" id="desired-state" aria-labelledby="desired-state-h">
+    <div class="region-h"><div><h2 id="desired-state-h">{{t "Desired execution state"}}</h2><p class="sub" id="desired-state-help">{{t "Choose a SOURCE model or one exact certified VARIANT. Auto uses the active activation's device; Override pins the selected device."}}</p></div></div>
+    <form method="post" action="/models/desired-state" id="desired-state-form" aria-describedby="desired-state-help">
+      <input type="hidden" name="token" value="{{$.Token}}">
+      <label class="field">{{t "Execution target"}}
+        <select name="target" required>
+          <option value="" selected disabled>{{t "Choose an execution target"}}</option>
+          <optgroup label="SOURCE">
+            {{range .Models}}<option value="source:{{.ID}}">SOURCE · {{.ID}}</option>{{end}}
+          </optgroup>
+          {{if .Variants}}<optgroup label="{{t "Certified VARIANT"}}">
+            {{range .Variants}}{{if .CanActivate}}<option value="variant:{{.ID}}">VARIANT · {{.ID}} · {{.SourceID}}</option>{{end}}{{end}}
+          </optgroup>{{end}}
+        </select>
+      </label>
+      <div class="fields">
+        <label class="field">{{t "Device selection"}}
+          <select name="device_mode"><option value="auto" selected>{{t "Auto"}}</option><option value="pinned">{{t "Override"}}</option></select>
+        </label>
+        <label class="field">{{t "Override device"}}
+          <select name="device_override"><option value="">{{t "Choose only when Override is selected"}}</option>{{range .Devices}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+        </label>
+      </div>
+      <p class="note">{{t "Auto resolves from the active activation. An override stays pinned to the selected device and never falls back to another device."}}</p>
+      <label class="check"><input type="checkbox" name="allow_provision" value="1"><span>{{t "Allow this operation to repair or materialize a missing runtime or source model."}}</span></label>
+      <div class="btn-row"><button type="submit" class="btn primary">{{t "Apply desired state"}}</button></div>
+    </form>
+  </section>
+
   <section class="region section" id="execution-artifact" aria-labelledby="ea-h">
-    <div class="region-h"><h2 id="ea-h">{{t "Execution artifact"}}</h2><span class="sub">{{t "what serves now and what the next start serves"}}</span></div>
+    <div class="region-h"><h2 id="ea-h">{{t "Execution artifact"}}</h2><span class="sub">{{t "what is serving now and the active target"}}</span></div>
     {{template "artifacts" $.Art}}
     <p class="note">{{t "SOURCE is the upstream model artifact. A VARIANT is a derived, quantized artifact of one source with its own exact identity; it is never substituted for the source or for another variant."}} <a href="/forge">{{t "Open Forge"}}</a></p>
   </section>
@@ -73,30 +102,30 @@
   {{with .Residency}}
   <h3 id="resident-selection-h">{{t "Resident models"}}</h3>
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
-  <form method="post" action="/models/residents" id="resident-selection">
-    <input type="hidden" name="token" value="{{$.Token}}">
-    <input type="hidden" name="return" value="models">
+  <div id="resident-selection">
     <div class="table-wrap"><table class="data" aria-labelledby="resident-selection-h">
       <thead><tr><th scope="col">{{t "Resident"}}</th><th scope="col">{{t "Model"}}</th><th scope="col">{{t "Status"}}</th></tr></thead>
       <tbody>{{range .Rows}}
         <tr data-model="{{.ID}}">
-          <td><input type="checkbox" name="resident" value="{{.ID}}" aria-label="{{.ID}}"{{if or .Default .Selected}} checked{{end}}{{if or .Default (and (not .Selected) (not .Materialized))}} disabled{{end}}></td>
+          <td><input type="checkbox" form="desired-state-form" name="resident" value="{{.ID}}" aria-label="{{.ID}}"{{if or .Default .Selected}} checked{{end}}{{if or .Default (and (not .Selected) (not .Materialized))}} disabled{{end}}></td>
           <td class="strong">{{.ID}}</td>
           <td>{{if .Default}}<span class="badge tone-ok">{{t "default resident"}}</span>{{if not .Bound}}<span class="sub">{{t "starts with the runtime"}}</span>{{end}}
             {{else if and .Selected .Bound}}<span class="badge tone-ok">{{t "resident"}}</span>
-            {{else if .Selected}}<span class="badge">{{t "selected · applies on next start"}}</span>
-            {{else if .Bound}}<span class="badge">{{t "resident · removed on restart"}}</span>
+            {{else if .Selected}}<span class="badge">{{t "selected · starts when applied"}}</span>
+            {{else if .Bound}}<span class="badge">{{t "resident · removed when applied"}}</span>
             {{else if not .Materialized}}<span class="sub">{{t "not materialized"}}</span>{{end}}
             {{if and .Selected (not .Materialized)}}<div class="bad-t">{{t "Not materialized: this resident will fail to start and is never replaced by another model. Materialize it first."}}</div>{{end}}</td>
         </tr>{{end}}
       </tbody>
     </table></div>
-    <div class="btn-row"><button type="submit" class="btn primary">{{t "Save resident models"}}</button></div>
-  </form>
-  <p class="note">{{t "The active model is always the default resident. A selection is stored for the next start only: saving it downloads, activates, starts, stops and restarts nothing, and the running workers keep what they started with until you restart the runtime. Each resident is its own worker process, and a failed one never stops the others."}}</p>
+  </div>
+  <p class="note">{{t "Additional residents are reconciled with the execution target when you apply the desired state. The active target is always the default resident. Each resident is its own worker process, and a failed one never stops the others."}}</p>
   {{end}}
 
-  <form method="post" class="region" id="models-choice">
+  <details class="region" id="models-choice">
+    <summary>{{t "Advanced artifact actions"}}</summary>
+    <p class="note">{{t "These maintenance controls remain available for compatibility. Choosing a model in this form changes nothing by itself; Materialize, Repair, and Activate are separate operations."}}</p>
+  <form method="post">
     <input type="hidden" name="token" value="{{$.Token}}">
     <input type="hidden" name="return" value="models">
     <div class="fields">
@@ -112,13 +141,14 @@
       <button type="submit" class="btn primary" formaction="/models/activate">{{t "Activate"}}</button>
     </div>
   </form>
-  <p class="note">{{t "Only the catalog's pinned runtime and model identities are listed. Choosing a model in the form changes nothing by itself. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker, so a running worker keeps serving its model until you restart it. A requested device is never replaced by another. The active runtime and model cannot be removed."}}</p>
+  <p class="note">{{t "Only the catalog's pinned runtime and model identities are listed. Materialize downloads and verifies through the same staged setup and never activates; Repair rebuilds an artifact that fails verification and needs the worker stopped; Activate only switches the active pair and never restarts the worker, so a running worker keeps serving its model until you restart it. A requested device is never replaced by another. The active runtime and model cannot be removed."}}</p>
+  </details>
   </section>
 </div>
 {{end}}
 {{template "close" .Chrome}}{{end}}
 
-{{/* The execution artifact of the running worker and of the next start: always SOURCE or an exact VARIANT. */}}
+{{/* The execution artifact of the running worker and of the active target: always SOURCE or an exact VARIANT. */}}
 {{define "artifacts"}}{{with .}}
 <div class="artifacts" id="models-serving">
   <div class="artifact" id="artifact-running" data-artifact="{{if .Running.Present}}{{.Running.Kind}}{{else}}none{{end}}">
@@ -126,11 +156,11 @@
     {{if .Running.Present}}{{template "artifact" .Running}}{{else}}<p class="muted">{{t "no worker running"}}</p>{{end}}
   </div>
   <div class="artifact" id="artifact-next" data-artifact="{{if .Next.Present}}{{.Next.Kind}}{{else}}none{{end}}">
-    <h3>{{t "Active (next start)"}}</h3>
+    <h3>{{t "Active target"}}</h3>
     {{if .Next.Present}}{{template "artifact" .Next}}{{else}}<p class="muted">-</p>{{end}}
   </div>
 </div>
-{{if .Differs}}<p class="note warn-t" id="artifact-differs">{{t "The next start serves another model, device or artifact than the running worker. Choose Restart to apply it."}}</p>{{end}}
+{{if .Differs}}<p class="note warn-t" id="artifact-differs">{{t "The active target differs from the running worker. Choose Restart to apply this compatibility activation."}}</p>{{end}}
 {{end}}{{end}}
 
 {{define "artifact"}}

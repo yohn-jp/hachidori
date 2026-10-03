@@ -330,6 +330,27 @@ func TestModelManagerOverRealSetupAuthority(t *testing.T) {
 	}
 }
 
+func TestModelManagerStartsAndProjectsDesiredStateOperation(t *testing.T) {
+	root := t.TempDir()
+	h := home.Home{Root: filepath.Join(root, "home")}
+	if err := h.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	prefs := settingsStore(filepath.Join(root, "desktop.json"), nil)
+	ctl := app.New(app.Config{Home: h.Root, Residents: func() []string { ids, _ := prefs.Residents(); return ids }, SetResidents: prefs.SetResidents})
+	m := modelManager{ctl: func() *app.Controller { return ctl }}
+	intent := dashboard.DesiredStateRequest{Model: setup.DefaultModel, DeviceMode: "pinned", Device: "cpu", Residents: []string{"opendecider-nano"}}
+	if err := m.StartDesiredState(intent); err != nil {
+		t.Fatalf("desired-state operation was not accepted: %v", err)
+	}
+	waitModelsIdle(t, m)
+	op := m.State().Last
+	if op == nil || op.Kind != app.OpDesiredState || op.Model != setup.DefaultModel || op.DeviceMode != "pinned" || op.RequestedDevice != "cpu" || op.ResolvedDevice != "cpu" ||
+		len(op.Residents) != 1 || op.Residents[0] != "opendecider-nano" {
+		t.Fatalf("desired-state operation was not projected: %+v", op)
+	}
+}
+
 // waitModelsIdle waits for the maintenance action in flight to finish: the
 // actions are accepted at once and run in the background.
 func waitModelsIdle(t *testing.T, m modelManager) {

@@ -5,7 +5,24 @@ package dashboard
 // start. Everything here restates the maintenance authority's state and the
 // /v1/status document; the dashboard decides and stores nothing.
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/yohn-jp/hachidori/internal/setup"
+)
+
+// DesiredStateRequest is one operator intent for the source or exact variant
+// to serve, its device-selection mode, and the additional resident set.
+type DesiredStateRequest struct {
+	Model          string
+	Variant        string
+	DeviceMode     string
+	Device         string
+	Residents      []string
+	AllowProvision bool
+}
 
 // Artifact kinds: the execution artifact is always one of these, never left
 // implicit.
@@ -94,4 +111,53 @@ func (d *Dashboard) modelsPage(w http.ResponseWriter, r *http.Request) {
 	v.Models = d.modelsView(v)
 	v.Art = artifactsOf(v, v.Models)
 	d.renderView(w, "models", v)
+}
+
+// desiredStateRequest resolves the selected catalog identity and forwards the
+// explicit device mode, resident set and provisioning authorization. It does
+// not infer an execution target from physical runtime facts.
+func desiredStateRequest(r *http.Request, inv setup.Inventory) (DesiredStateRequest, error) {
+	if err := r.ParseForm(); err != nil {
+		return DesiredStateRequest{}, fmt.Errorf("read desired state: %w", err)
+	}
+	var out DesiredStateRequest
+	kind, id, ok := strings.Cut(strings.TrimSpace(r.PostFormValue("target")), ":")
+	if !ok || id == "" {
+		return out, fmt.Errorf("choose a SOURCE model or certified VARIANT")
+	}
+	switch kind {
+	case "source":
+		for _, model := range inv.Models {
+			if model.ID == id {
+				out.Model = model.ID
+				break
+			}
+		}
+	case "variant":
+		for _, variant := range inv.Variants {
+			if variant.ID == id {
+				out.Model, out.Variant = variant.SourceID, variant.ID
+				break
+			}
+		}
+	}
+	if out.Model == "" {
+		return DesiredStateRequest{}, fmt.Errorf("the selected execution target is no longer available")
+	}
+	switch strings.TrimSpace(r.PostFormValue("device_mode")) {
+	case "auto":
+		out.DeviceMode = "auto"
+	case "pinned":
+		out.DeviceMode = "pinned"
+		out.Device = strings.TrimSpace(r.PostFormValue("device_override"))
+	default:
+		return DesiredStateRequest{}, fmt.Errorf("choose Auto or an explicit device override")
+	}
+	for _, id := range r.PostForm["resident"] {
+		if id = strings.TrimSpace(id); id != "" {
+			out.Residents = append(out.Residents, id)
+		}
+	}
+	out.AllowProvision = r.PostFormValue("allow_provision") == "1"
+	return out, nil
 }

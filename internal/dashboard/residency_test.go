@@ -50,7 +50,7 @@ func pairInventory() setup.Inventory {
 	return inv
 }
 
-func withResidency(e *env, fm *fakeModels, fr *fakeResidency) {
+func withResidency(e *env, fm Models, fr *fakeResidency) {
 	cfg := e.d.cfg
 	cfg.Models, cfg.Residency = fm, fr
 	e.d = New(cfg)
@@ -65,17 +65,19 @@ func selectionRow(t *testing.T, body, model string) string {
 	return m
 }
 
-// Settings > Models & runtimes offers an explicit resident selection over the
-// catalog models only: the active model is the always-on default resident,
-// a materialized model can be selected, and one that is not materialized cannot
-// be newly selected. Viewing acts on nothing.
+// Models offers resident inputs on the one desired-state form: the active
+// model is the always-on default resident, a materialized model can be
+// selected, and an unmaterialized model cannot be newly selected.
 func TestResidentSelectionControl(t *testing.T) {
 	e := newEnv(t)
 	fm := &fakeModels{state: ModelsState{Inventory: pairInventory()}}
 	withResidency(e, fm, &fakeResidency{})
 	body := e.get(t, "/models").Body.String()
-	if !strings.Contains(body, `id="resident-selection"`) || !strings.Contains(body, `action="/models/residents"`) {
-		t.Fatal("no resident-selection form in Models & runtimes")
+	if !strings.Contains(body, `id="resident-selection"`) || !strings.Contains(body, `form="desired-state-form" name="resident"`) || !strings.Contains(body, `action="/models/desired-state"`) {
+		t.Fatal("resident inputs are not part of the Models desired-state form")
+	}
+	if strings.Contains(body, `action="/models/residents"`) || strings.Contains(body, "Save resident models") {
+		t.Fatal("normal resident selection still offers save-now behavior")
 	}
 	def := selectionRow(t, body, "laya-base")
 	for _, want := range []string{`value="laya-base"`, ` checked`, ` disabled`, "default resident"} {
@@ -144,9 +146,9 @@ type refusal struct{}
 
 func (*refusal) Error() string { return "refused: not a catalog model" }
 
-// A selection that is not what the runtime was started with is shown as next
-// start / restart intent per model, and the explicit restart is offered; the
-// running set is read from the status document, never from the selection.
+// A desired resident set that differs from the running set is shown as pending
+// and directs the operator to the one desired-state action. The running set is
+// read from the status document, never from the selection.
 func TestResidentSelectionIsNextStartIntentNotRunningState(t *testing.T) {
 	e := newEnv(t) // one worker: laya-base on cuda
 	inv := pairInventory()
@@ -154,11 +156,11 @@ func TestResidentSelectionIsNextStartIntentNotRunningState(t *testing.T) {
 	withResidency(e, fm, &fakeResidency{ids: []string{"opendecider-nano", "laya-absent"}})
 	body := e.get(t, "/models").Body.String()
 
-	if !strings.Contains(body, `id="restart-required"`) || !strings.Contains(body, "The resident selection changed") {
-		t.Error("a pending selection does not require a restart")
+	if !strings.Contains(body, `id="restart-required"`) || !strings.Contains(body, "Apply the desired state above to reconcile it in one operation") || strings.Contains(body, `action="/models/restart"`) {
+		t.Error("a pending resident set does not direct the operator to the desired-state action")
 	}
 	nano := selectionRow(t, body, "opendecider-nano")
-	if !strings.Contains(nano, "selected · applies on next start") || !strings.Contains(nano, " checked") || strings.Contains(nano, `badge tone-ok">resident<`) {
+	if !strings.Contains(nano, "selected · starts when applied") || !strings.Contains(nano, " checked") || strings.Contains(nano, `badge tone-ok">resident<`) {
 		t.Errorf("selected but not running: %s", nano)
 	}
 	absent := selectionRow(t, body, "laya-absent")
@@ -190,7 +192,7 @@ func TestResidentSelectionIsNextStartIntentNotRunningState(t *testing.T) {
 	fr.ids = nil
 	fr.mu.Unlock()
 	body = e.get(t, "/models").Body.String()
-	if row := selectionRow(t, body, "opendecider-nano"); !strings.Contains(row, "resident · removed on restart") || strings.Contains(row, " checked") {
+	if row := selectionRow(t, body, "opendecider-nano"); !strings.Contains(row, "resident · removed when applied") || strings.Contains(row, " checked") {
 		t.Errorf("a deselected running resident: %s", row)
 	}
 }
