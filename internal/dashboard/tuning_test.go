@@ -1,15 +1,21 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"errors"
+	"html"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/yohn-jp/hachidori/internal/eval"
+	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tuning"
@@ -597,5 +603,422 @@ func TestTuningSourceSelectionUsesTheModelsInventory(t *testing.T) {
 	body := e.get(t, "/tuning").Body.String()
 	if !strings.Contains(body, `<option value="clef-flash" selected>clef-flash</option>`) || strings.Contains(body, `value="laya-base"`) {
 		t.Error("sources are not the System One models of the inventory")
+	}
+}
+
+// ---- Experiment/Evidence context handed to Tuning (#188) ----
+
+// feedbackAnalysis has three linear-attention projection modules against one
+// full-attention module, so the smallest unpreserved supported region is
+// unique: full-attention-projections.
+func feedbackAnalysis(t testing.TB) tuning.Analysis {
+	t.Helper()
+	source, err := setup.LookupModel(setup.ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis, err := tuning.Analyze(source, tuning.DeclaredLayout{
+		ModelType: "qwen3_5", TextModelType: "qwen3_5_text",
+		Architectures: []string{"Qwen3_5ForConditionalGeneration"},
+		LayerTypes:    []string{"linear_attention", "linear_attention", "linear_attention", "full_attention"},
+		LinearModules: []string{
+			"lm_head", "model.visual.blocks.0.attn.qkv", "model.visual.merger.linear_fc1",
+			"model.language_model.layers.0.linear_attn.in_proj_a", "model.language_model.layers.0.linear_attn.in_proj_b",
+			"model.language_model.layers.0.linear_attn.in_proj_qkv", "model.language_model.layers.0.linear_attn.in_proj_z",
+			"model.language_model.layers.0.linear_attn.out_proj", "model.language_model.layers.0.mlp.gate_proj",
+			"model.language_model.layers.3.self_attn.q_proj",
+		},
+		CarriedFiles: []string{"joint_head.safetensors"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return analysis
+}
+
+// writeTunedVariant stores a sealed variant manifest in the dashboard's home
+// whose provenance names the profile (or none, when tuned is false).
+func writeTunedVariant(t *testing.T, root string, p tuning.Profile, a tuning.Analysis, tuned bool) string {
+	t.Helper()
+	c, err := tuning.Compile(p, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := home.VariantManifest{Source: p.Source, Provider: p.Source.Provider,
+		Optimizer: home.Optimizer{Engine: c.Recipe.Engine, Version: "0.14.0", Runtime: "optimizer-cpu-x", Device: "cpu"}, Recipe: c.Recipe,
+		Weights:  home.WeightPrecision{Scheme: "W4A16", Bits: 4, GroupSize: 128, Symmetric: true, Format: "compressed-tensors/pack-quantized", DType: "bfloat16"},
+		Files:    map[string]string{"model.safetensors": strings.Repeat("4", 64)},
+		Creation: home.Creation{CreatedAt: "2026-01-01T00:00:00Z", Platform: "linux/amd64", Command: "hachidori variant optimize"}}
+	if tuned {
+		v.Tuning = &home.TuningProvenance{Schema: home.TuningProvenanceSchema, Source: p.Source, ProfileID: p.ID(), ProfileSHA256: p.ID(),
+			AnalysisID: a.ID(), AnalysisSHA256: a.SHA256(), CompilerVersion: tuning.RecipeCompilerVersion}
+	}
+	v.Seal()
+	h := home.Home{Root: root}
+	if err := os.MkdirAll(h.VariantDir(p.Source.ID, v.ID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.WriteJSON(filepath.Join(h.VariantDir(p.Source.ID, v.ID), home.VariantManifestFile), v); err != nil {
+		t.Fatal(err)
+	}
+	return v.ID
+}
+
+// evidenceOf is a strictly valid hachidori.evidence.v1 report of one served
+// model/variant: n observations of question q1, correct of them right.
+func evidenceOf(model, revision, variant, dataset string, n, correct int) eval.Report {
+	prov := map[string]any{"model_revision": revision}
+	if variant != "" {
+		prov["variant_id"] = variant
+	}
+	r := eval.Report{Schema: eval.EvidenceSchema, Endpoint: "http://127.0.0.1:7843", Dataset: "d.jsonl", DatasetSHA256: dataset,
+		StartedAt: "2026-01-01T00:00:00Z", ServedConsistent: true, Cases: n, Observations: n, Errors: []eval.RequestError{}, Passes: 1,
+		ChoiceAccuracy: float64(correct) / float64(n),
+		Served:         &eval.Served{StatusSchema: "hachidori.v1", Runtime: map[string]any{"model_id": model}, Provider: prov, Digest: "id-" + model + variant},
+		PerQuestion:    map[string]eval.QuestionStats{"q1": {N: n, Accuracy: float64(correct) / float64(n), MeanConfidence: 0.9}}}
+	for i := 0; i < n; i++ {
+		choice := "yes"
+		if i >= correct {
+			choice = "no"
+		}
+		r.Results = append(r.Results, eval.Observation{CaseID: "c" + strconv.Itoa(i), QuestionID: "q1", QuestionSHA256: strings.Repeat("5", 64),
+			Expected: "yes", Choice: choice, Confidence: 0.9, Probabilities: map[string]float64{"yes": 0.5, "no": 0.5}, Correct: choice == "yes"})
+	}
+	return r
+}
+
+type feedback struct {
+	e       *env
+	ft      *fakeTuning
+	profile tuning.Profile
+	variant string // candidate variant built from profile
+	dataset string
+}
+
+func (f *feedback) save(t *testing.T, r eval.Report, label string) string {
+	t.Helper()
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm, err := f.e.d.hist.Save(append(b, '\n'), label, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sm.ID
+}
+
+func feedbackEnv(t *testing.T) *feedback {
+	t.Helper()
+	e, ft, _ := tuningEnv(t)
+	cfg := e.d.cfg
+	cfg.HistoryDir = filepath.Join(e.home, "state", "history")
+	e.d = New(cfg)
+	ft.analysis = feedbackAnalysis(t)
+	p := expectedProfile(t, ft.analysis, "balanced")
+	if err := ft.SaveProfile(p, ft.analysis); err != nil {
+		t.Fatal(err)
+	}
+	return &feedback{e: e, ft: ft, profile: p, variant: writeTunedVariant(t, e.home, p, ft.analysis, true), dataset: strings.Repeat("d", 64)}
+}
+
+func (f *feedback) model() (string, string) { return f.profile.Source.ID, f.profile.Source.Revision }
+
+// pair stores a source baseline and a candidate of the profile's variant.
+func (f *feedback) pair(t *testing.T, candidateCorrect int) (base, cand string) {
+	t.Helper()
+	m, rev := f.model()
+	base = f.save(t, evidenceOf(m, rev, "", f.dataset, 20, 19), "source")
+	cand = f.save(t, evidenceOf(m, rev, f.variant, f.dataset, 20, candidateCorrect), "candidate")
+	return base, cand
+}
+
+var handoffRe = regexp.MustCompile(`href="(/tuning\?[^"]+)" data-tuning-handoff="true"`)
+
+func (f *feedback) compare(t *testing.T, a, b string) string {
+	t.Helper()
+	return html.UnescapeString(f.e.post(t, "/history/compare", url.Values{"a": {a}, "b": {b}}).Body.String())
+}
+
+// handoff is the Tuning link of Experiments' comparison.
+func (f *feedback) handoff(t *testing.T, a, b string) string {
+	t.Helper()
+	body := f.compare(t, a, b)
+	m := handoffRe.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("comparison offers no Tuning handoff:\n%s", body)
+	}
+	return m[1]
+}
+
+func (f *feedback) page(t *testing.T, link string) string {
+	t.Helper()
+	rec := f.e.get(t, link)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: %d", link, rec.Code)
+	}
+	return html.UnescapeString(workspace(rec.Body.String()))
+}
+
+// historyBytes is every stored evidence and meta file: evidence must be
+// immutable.
+func historyBytes(t *testing.T, e *env) string {
+	t.Helper()
+	var s string
+	root := filepath.Join(e.home, "state", "history", "entries")
+	dirs, _ := os.ReadDir(root)
+	for _, d := range dirs {
+		files, _ := os.ReadDir(filepath.Join(root, d.Name()))
+		for _, f := range files {
+			b, _ := os.ReadFile(filepath.Join(root, d.Name(), f.Name()))
+			s += d.Name() + "/" + f.Name() + "\n" + string(b)
+		}
+	}
+	if s == "" {
+		t.Fatal("no stored evidence")
+	}
+	return s
+}
+
+func TestTuningReceivesTheExactExperimentContext(t *testing.T) {
+	f := feedbackEnv(t)
+	base, cand := f.pair(t, 15)
+	link := f.handoff(t, base, cand)
+	body := f.page(t, link)
+	br, _, _ := f.e.d.hist.Open(base)
+	cr, _, _ := f.e.d.hist.Open(cand)
+	_, baseSHA, _ := f.e.d.hist.Open(base)
+	_, candSHA, _ := f.e.d.hist.Open(cand)
+	m, rev := f.model()
+	for _, want := range []string{`data-context="bound"`, m + "@" + rev, `data-context-candidate="` + f.variant + `"`, `data-context-profile="` + f.profile.ID() + `"`,
+		`data-context-dataset="` + f.dataset + `"`, `data-context-questions="` + eval.QuestionIdentitiesSHA256(cr) + `"`,
+		`data-context-baseline="` + baseSHA + `"`, `data-context-evidence="` + candSHA + `"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("exact context lacks %q", want)
+		}
+	}
+	if eval.QuestionIdentitiesSHA256(br) != eval.QuestionIdentitiesSHA256(cr) {
+		t.Fatal("fixture questions differ")
+	}
+	// The page shows that exact profile, not whichever one is newest.
+	if !strings.Contains(body, `data-tuning-profile="`+f.profile.ID()+`"`) {
+		t.Error("the page does not show the profile of the candidate")
+	}
+	// The measured regression is projected beside the preservation controls.
+	reg := body[strings.Index(body, `id="tuning-regression-table"`):]
+	reg = reg[:strings.Index(reg, "</table>")]
+	for _, want := range []string{`data-regression="all"`, "0.9500", "0.7500", "20 cases", `data-regression="q1"`} {
+		if !strings.Contains(reg, want) {
+			t.Errorf("regression lacks %q:\n%s", want, reg)
+		}
+	}
+	if strings.Index(body, `id="tuning-regression-table"`) > strings.Index(body, `id="tuning-region-table"`) {
+		t.Error("the regression is not projected before the preservation controls")
+	}
+	if len(f.ft.builds) != 0 {
+		t.Error("handing context over built a candidate")
+	}
+}
+
+func TestTuningRecommendationStatesEvidenceBasisAndRegionChange(t *testing.T) {
+	f := feedbackEnv(t)
+	base, cand := f.pair(t, 15)
+	body := f.page(t, f.handoff(t, base, cand))
+	i := strings.Index(body, `id="tuning-recommendation"`)
+	if i < 0 {
+		t.Fatalf("no recommendation:\n%s", body)
+	}
+	rec := body[i : i+strings.Index(body[i:], `id="tuning-accept-form"`)]
+	for _, want := range []string{`data-recommendation="full-attention-projections"`, "auto → pinned", "Evidence basis", "0.9500 to 0.7500 over 20 cases",
+		"Question q1", f.variant, f.dataset[:12], "does not show that this region caused it"} {
+		if !strings.Contains(rec, want) {
+			t.Errorf("recommendation lacks %q:\n%s", want, rec)
+		}
+	}
+	if strings.Contains(strings.ToLower(rec), "confidence") {
+		t.Error("the recommendation invents a confidence")
+	}
+	if row := tuningRow(t, body, tuning.RegionFullAttention); !strings.Contains(row, `data-recommended="true"`) {
+		t.Errorf("the recommended region is not marked beside its control:\n%s", row)
+	}
+	if row := tuningRow(t, body, tuning.RegionFeedForward); strings.Contains(row, "data-recommended") {
+		t.Error("an unrelated region is marked recommended")
+	}
+}
+
+func TestTuningRefusesAndSeparatesIncompatibleContext(t *testing.T) {
+	f := feedbackEnv(t)
+	m, rev := f.model()
+	base, cand := f.pair(t, 15)
+
+	// Experiments does not hand over pairs that are not like for like.
+	otherDS := f.save(t, evidenceOf(m, rev, f.variant, strings.Repeat("e", 64), 20, 15), "other dataset")
+	otherModel := f.save(t, evidenceOf("laya-base", rev, f.variant, f.dataset, 20, 15), "other model")
+	otherRev := f.save(t, evidenceOf(m, "otherrev", f.variant, f.dataset, 20, 15), "other revision")
+	variantBase := f.save(t, evidenceOf(m, rev, f.variant, f.dataset, 20, 19), "variant as baseline")
+	untuned := writeTunedVariant(t, f.e.home, f.profile, f.ft.analysis, false)
+	noProvenance := f.save(t, evidenceOf(m, rev, untuned, f.dataset, 20, 15), "variant without a profile")
+	for name, pair := range map[string][2]string{"dataset": {base, otherDS}, "model": {base, otherModel}, "revision": {base, otherRev},
+		"baseline is a variant": {variantBase, cand}, "candidate is the source": {cand, base}, "no profile provenance": {base, noProvenance}} {
+		body := f.compare(t, pair[0], pair[1])
+		if handoffRe.MatchString(body) || !strings.Contains(body, `data-tuning-handoff-refused="true"`) {
+			t.Errorf("%s: the pair was offered to Tuning or not explained:\n%s", name, body)
+		}
+	}
+
+	// A link whose identity does not match the stored evidence is refused,
+	// and the page is the plain profile with no regression or recommendation.
+	link := f.handoff(t, base, cand)
+	u, _ := url.Parse(link)
+	tamper := map[string]string{"profile": strings.Repeat("0", 64), "cand_sha": strings.Repeat("0", 64), "base_sha": strings.Repeat("0", 64),
+		"ds": strings.Repeat("0", 64), "qs": strings.Repeat("0", 64), "variant": "clef-flash--r--ffffffffffff", "source": "laya-base", "base": cand}
+	for key, value := range tamper {
+		q := u.Query()
+		q.Set(key, value)
+		body := f.page(t, "/tuning?"+q.Encode())
+		if !strings.Contains(body, `id="tuning-context-refused"`) || strings.Contains(body, `id="tuning-recommendation"`) ||
+			strings.Contains(body, `id="tuning-regression-table"`) || strings.Contains(body, `data-context="bound"`) {
+			t.Errorf("tampered %s was not refused:\n%s", key, body)
+		}
+	}
+	// Candidate-less and unknown evidence ids are refused too.
+	for _, q := range []string{"cand=20260101T000000Z-aaaaaaaaaaaa&source=clef-flash", "cand=../x"} {
+		if body := f.page(t, "/tuning?"+q); !strings.Contains(body, `id="tuning-context-refused"`) {
+			t.Errorf("%s: not refused", q)
+		}
+	}
+}
+
+func TestTuningNoRecommendationIsANormalState(t *testing.T) {
+	f := feedbackEnv(t)
+	m, rev := f.model()
+	base := f.save(t, evidenceOf(m, rev, "", f.dataset, 20, 19), "source")
+	same := f.save(t, evidenceOf(m, rev, f.variant, f.dataset, 20, 19), "candidate, no regression")
+	body := f.page(t, f.handoff(t, base, same))
+	for _, want := range []string{`data-context="bound"`, `id="tuning-no-recommendation"`, "No recommendation.", "no accuracy regression"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no-regression context lacks %q", want)
+		}
+	}
+	if strings.Contains(body, `id="tuning-recommendation"`) || strings.Contains(body, `id="tuning-regression-table"`) || strings.Contains(body, "data-recommended") {
+		t.Error("a recommendation or regression was projected without a measured regression")
+	}
+	// A single report is a context but not a comparison.
+	_, cand := f.pair(t, 15)
+	f.e.post(t, "/history/open", url.Values{"id": {cand}})
+	ev := html.UnescapeString(f.e.get(t, "/errors").Body.String())
+	m2 := handoffRe.FindStringSubmatch(ev)
+	if m2 == nil {
+		t.Fatal("Evidence offers no Tuning handoff for a stored variant report")
+	}
+	one := f.page(t, m2[1])
+	if !strings.Contains(one, `data-context="bound"`) || !strings.Contains(one, `data-context-candidate="`+f.variant+`"`) ||
+		!strings.Contains(one, "needs a compatible baseline") || strings.Contains(one, `id="tuning-recommendation"`) {
+		t.Errorf("single-report context:\n%s", one)
+	}
+	// Unsupported: when the supported regions are already pinned, nothing is recommended.
+	pinned := expectedProfile(t, f.ft.analysis, "balanced", tuning.RegionFullAttention, tuning.RegionLinearAttention)
+	if err := f.ft.SaveProfile(pinned, f.ft.analysis); err != nil {
+		t.Fatal(err)
+	}
+	v2 := writeTunedVariant(t, f.e.home, pinned, f.ft.analysis, true)
+	cand2 := f.save(t, evidenceOf(m, rev, v2, f.dataset, 20, 15), "candidate of the pinned profile")
+	got := f.page(t, f.handoff(t, base, cand2))
+	if !strings.Contains(got, "already applied") || strings.Contains(got, `id="tuning-recommendation"`) {
+		t.Errorf("pinned profile still received a recommendation:\n%s", got)
+	}
+}
+
+func TestTuningAcceptanceIsExplicitAndCreatesADistinctProfile(t *testing.T) {
+	f := feedbackEnv(t)
+	base, cand := f.pair(t, 15)
+	link := f.handoff(t, base, cand)
+	u, _ := url.Parse(link)
+	evidenceBefore := historyBytes(t, f.e)
+
+	// Viewing the context changes nothing.
+	f.page(t, link)
+	if len(f.ft.order) != 1 || len(f.ft.builds) != 0 {
+		t.Fatalf("viewing saved or built: %v %v", f.ft.order, f.ft.builds)
+	}
+	form := func(region string) url.Values {
+		v := url.Values{"accept_recommendation": {region}}
+		for k := range u.Query() {
+			v.Set(k, u.Query().Get(k))
+		}
+		return v
+	}
+
+	// A recommendation other than the one shown, or a stale identity, creates nothing.
+	if rec := f.e.post(t, "/tuning/save", form(tuning.RegionFeedForward)); rec.Code != http.StatusSeeOther || len(f.ft.order) != 1 {
+		t.Fatalf("a different region was accepted: %d %v", rec.Code, f.ft.order)
+	}
+	stale := form(tuning.RegionFullAttention)
+	stale.Set("cand_sha", strings.Repeat("0", 64))
+	f.e.post(t, "/tuning/save", stale)
+	if len(f.ft.order) != 1 {
+		t.Fatal("a stale evidence identity was accepted")
+	}
+	noToken := form(tuning.RegionFullAttention)
+	noToken.Set("token", "")
+	if rec := f.e.post(t, "/tuning/save", noToken); rec.Code != http.StatusForbidden || len(f.ft.order) != 1 {
+		t.Fatalf("acceptance without the form token: %d", rec.Code)
+	}
+
+	// The explicit action saves exactly the new profile and goes to it.
+	rec := f.e.post(t, "/tuning/save", form(tuning.RegionFullAttention))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("accept: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(f.ft.order) != 2 {
+		t.Fatalf("saved profiles %v", f.ft.order)
+	}
+	next := f.ft.profiles[f.ft.order[1]]
+	want := expectedProfile(t, f.ft.analysis, "balanced", tuning.RegionFullAttention)
+	if next.ID() == f.profile.ID() || next.ID() != want.ID() {
+		t.Fatalf("accepted profile %s, want %s distinct from %s", next.ID(), want.ID(), f.profile.ID())
+	}
+	if loc := rec.Header().Get("Location"); loc != tuningLocation(f.profile.Source.ID, next.ID()) {
+		t.Errorf("redirect %q", loc)
+	}
+	if got := f.ft.profiles[f.profile.ID()]; got.ID() != f.profile.ID() || got.Preservation[tuning.RegionFullAttention].Mode != tuning.PreservationAuto {
+		t.Error("the original profile changed")
+	}
+	if len(f.ft.builds) != 0 {
+		t.Errorf("accepting built a candidate: %v", f.ft.builds)
+	}
+	// Evidence is byte-for-byte immutable across viewing, refusals and acceptance.
+	if historyBytes(t, f.e) != evidenceBefore {
+		t.Error("stored evidence changed")
+	}
+	shown := f.page(t, rec.Header().Get("Location"))
+	if !strings.Contains(shown, `data-tuning-profile="`+next.ID()+`"`) || !strings.Contains(tuningRow(t, shown, tuning.RegionFullAttention), `data-effective="PRESERVED"`) {
+		t.Errorf("the new profile is not shown pinned:\n%s", shown)
+	}
+	// Accepting the same recommendation again names the same distinct profile:
+	// the store holds it once.
+	f.e.post(t, "/tuning/save", form(tuning.RegionFullAttention))
+	if len(f.ft.order) != 2 {
+		t.Errorf("repeat acceptance produced %d profiles", len(f.ft.order))
+	}
+}
+
+// Existing deep links, filters and history behaviour keep working without a context.
+func TestTuningWithoutContextAndExistingDeepLinksAreUnchanged(t *testing.T) {
+	f := feedbackEnv(t)
+	for _, link := range []string{"/tuning", "/tuning?source=clef-flash", "/tuning?source=clef-flash&profile=" + f.profile.ID()} {
+		body := f.page(t, link)
+		if strings.Contains(body, `id="tuning-context"`) || !strings.Contains(body, `id="tuning-regions"`) {
+			t.Errorf("%s changed without a context", link)
+		}
+	}
+	base, cand := f.pair(t, 15)
+	// A comparison that is refused for tuning is still a normal comparison.
+	if body := f.compare(t, cand, base); !strings.Contains(body, `data-compare="compatible"`) {
+		t.Errorf("comparison changed:\n%s", body)
+	}
+	f.e.post(t, "/history/open", url.Values{"id": {cand}})
+	if rec := f.e.get(t, "/errors?outcome=wrong&th=0.9&sort=confidence&desc=1"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Failures") {
+		t.Errorf("Evidence filters: %d", rec.Code)
 	}
 }

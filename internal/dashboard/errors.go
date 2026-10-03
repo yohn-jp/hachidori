@@ -35,7 +35,9 @@ const maxRows = 1000
 type evidenceSource struct {
 	Report eval.Report
 	SHA256 string // file bytes, or the canonical encoding of an experiment report
-	Origin string // "file <path>" or "experiment #N"
+	Origin string // "file <path>", "history <id>" or "experiment #N"
+	// HistoryID is the stored entry the report was opened from, empty otherwise.
+	HistoryID string
 }
 
 type explorer struct {
@@ -128,17 +130,21 @@ func (c controls) parse() (float64, explore.Filter, error) {
 // errView is the Evidence workspace's view model (the Error Explorer).
 type errView struct {
 	Chrome
-	Token      string
-	Src        *evidenceSource
-	C          controls
-	A          *explore.Analysis
-	Rows       []explore.Item // at most maxRows of A.Items
-	Detail     *explore.Item
-	OpenPath   string
-	Export     string
-	Msg        string
-	Err        string
-	ExpSeq     int // current experiment with a report, 0 if none
+	Token    string
+	Src      *evidenceSource
+	C        controls
+	A        *explore.Analysis
+	Rows     []explore.Item // at most maxRows of A.Items
+	Detail   *explore.Item
+	OpenPath string
+	Export   string
+	Msg      string
+	Err      string
+	ExpSeq   int // current experiment with a report, 0 if none
+	// Tuning is the link that opens the report's candidate in Tuning with its
+	// exact evidence context; empty unless the report is a stored entry of a
+	// variant built from a tuning profile.
+	Tuning     string
 	PathPicker bool
 }
 
@@ -150,6 +156,11 @@ func (d *Dashboard) errView(q url.Values) errView {
 	}
 	if v.Src == nil {
 		return v
+	}
+	if v.Src.HistoryID != "" && d.cfg.hasTuning() {
+		if _, vals, err := d.tuningContextOf("", v.Src.HistoryID); err == nil {
+			v.Tuning = "/tuning?" + vals.Encode()
+		}
 	}
 	th, f, err := v.C.parse()
 	if err == nil {

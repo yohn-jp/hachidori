@@ -213,7 +213,9 @@
   <div class="btn-row">
     <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryA.ID}}"><button type="submit" class="btn">{{t "Open A in Evidence"}}</button></form>
     <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryB.ID}}"><button type="submit" class="btn">{{t "Open B in Evidence"}}</button></form>
+    {{with .Tuning}}<a class="btn" href="{{.}}" data-tuning-handoff="true">{{t "Open B in Tuning"}}</a>{{end}}
   </div>
+  {{with .TuningWhy}}<p class="note" data-tuning-handoff-refused="true">{{t "Not handed to Tuning:"}} {{.}}</p>{{end}}
   {{range .Incompatibility}}<p class="msg bad" role="alert">{{if or (eq .Code "dataset_mismatch") (eq .Code "schema_mismatch")}}{{t "comparison refused"}}{{else}}{{t "partial comparison"}}{{end}}: {{.Code}}{{with .Question}} {{t "· question"}} {{.}}{{end}} · {{.Detail}}</p>{{end}}
   {{with .Aggregate}}
   <div class="table-wrap"><table class="data" aria-label="{{t "aggregate deltas"}}"><thead><tr><th>{{t "metric"}}</th><th class="num">A</th><th class="num">B</th><th class="num">B - A</th></tr></thead><tbody>

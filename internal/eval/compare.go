@@ -1,6 +1,8 @@
 package eval
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -219,4 +221,102 @@ func latencyDelta(a, b Latency) LatencyDelta {
 	d.Available = true
 	d.P50, d.P95, d.Mean = delta(a.P50, b.P50), delta(a.P95, b.P95), delta(a.Mean, b.Mean)
 	return d
+}
+
+// RunIdentity is the identity one report records for what served it, read
+// only from the report: the evidence digest (supplied by whoever opened the
+// exact bytes), the semantic source model and revision, and the executed
+// variant, empty when the source artifact itself served the run.
+type RunIdentity struct {
+	EvidenceSHA256 string
+	ModelID        string
+	Revision       string
+	VariantID      string
+	ServedIdentity string
+}
+
+// RunIdentityOf reads the served identity of a report. It fails, rather than
+// guessing, when the report does not identify its served model and revision,
+// or when the served identity changed during the run.
+func RunIdentityOf(r Report, evidenceSHA256 string) (RunIdentity, error) {
+	str := func(m map[string]any, k string) string { v, _ := m[k].(string); return v }
+	if r.Served == nil {
+		return RunIdentity{}, fmt.Errorf("evidence records no served identity")
+	}
+	if !r.ServedConsistent {
+		return RunIdentity{}, fmt.Errorf("evidence is marked served_consistent=false")
+	}
+	id := RunIdentity{EvidenceSHA256: evidenceSHA256, ModelID: str(r.Served.Runtime, "model_id"),
+		Revision: str(r.Served.Provider, "model_revision"), VariantID: str(r.Served.Provider, "variant_id"),
+		ServedIdentity: r.Served.Digest}
+	if id.EvidenceSHA256 == "" || id.ModelID == "" || id.Revision == "" {
+		return RunIdentity{}, fmt.Errorf("evidence does not identify its source model and revision")
+	}
+	return id, nil
+}
+
+// Binding is the exact identity of a baseline/candidate pair of reports that
+// may be compared as equivalents: one source model and revision, the source
+// as baseline and one variant as candidate, the same dataset and the same
+// question identities. Comparison is Compare of the same two reports.
+type Binding struct {
+	DatasetSHA256 string
+	// QuestionsSHA256 digests every aligned question's recorded identity.
+	QuestionsSHA256     string
+	Baseline, Candidate RunIdentity
+	Comparison          Comparison
+}
+
+// Bind refuses, with the reason, any pair that is not like for like: reports
+// of different models or revisions, a baseline that is itself a variant, a
+// candidate that is not a variant, or a comparison that is not fully
+// compatible (different dataset, or any question that cannot be aligned).
+// It reads and modifies nothing but its arguments.
+func Bind(baseline, candidate Report, baselineSHA256, candidateSHA256 string) (Binding, error) {
+	b, err := RunIdentityOf(baseline, baselineSHA256)
+	if err != nil {
+		return Binding{}, fmt.Errorf("baseline: %w", err)
+	}
+	c, err := RunIdentityOf(candidate, candidateSHA256)
+	if err != nil {
+		return Binding{}, fmt.Errorf("candidate: %w", err)
+	}
+	switch {
+	case b.ModelID != c.ModelID || b.Revision != c.Revision:
+		return Binding{}, fmt.Errorf("baseline serves %s@%s but candidate serves %s@%s: different source models are not compared as equivalent",
+			b.ModelID, b.Revision, c.ModelID, c.Revision)
+	case b.VariantID != "":
+		return Binding{}, fmt.Errorf("baseline executed variant %s: the baseline must be the source model", b.VariantID)
+	case c.VariantID == "":
+		return Binding{}, fmt.Errorf("candidate evidence does not name an executed variant")
+	}
+	cmp := Compare(baseline, candidate)
+	if cmp.Status != CompareCompatible {
+		reason := "the reports are not comparable"
+		if len(cmp.Incompatibility) > 0 {
+			reason = cmp.Incompatibility[0].Detail
+			if q := cmp.Incompatibility[0].Question; q != "" {
+				reason = q + ": " + reason
+			}
+		}
+		return Binding{}, fmt.Errorf("comparison is %s, not compatible: %s", cmp.Status, reason)
+	}
+	return Binding{DatasetSHA256: baseline.DatasetSHA256, QuestionsSHA256: QuestionIdentitiesSHA256(baseline),
+		Baseline: b, Candidate: c, Comparison: cmp}, nil
+}
+
+// QuestionIdentitiesSHA256 digests, in question id order, the exact question
+// and Question Definition identities a report recorded for every question.
+func QuestionIdentitiesSHA256(r Report) string {
+	ids := questionIdentities(r)
+	keys := make([]string, 0, len(ids))
+	for id := range ids {
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+	h := sha256.New()
+	for _, id := range keys {
+		fmt.Fprintf(h, "%s\x00%s\x00", id, ids[id])
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

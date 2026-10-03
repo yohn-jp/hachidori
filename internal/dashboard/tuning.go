@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tuning"
@@ -109,6 +110,8 @@ type TuningRegionRow struct {
 	ID, Label, Purpose string
 	Modules, Files     int
 	Pinned             bool
+	// Recommended marks the region an advisory recommendation proposes to pin.
+	Recommended bool
 	// Effective is Preserved when the compiled profile keeps the whole region
 	// at source precision (pinned, or already preserved by the canonical
 	// policy under Auto) and Auto when Auto leaves it quantized.
@@ -162,6 +165,24 @@ type TuningView struct {
 	// EvidenceDisclosure is the shared Details/Evidence primitive that holds
 	// every generated mapping.
 	EvidenceDisclosure DisclosureProjection
+
+	// Context is the Experiment/Evidence context handed to this page, nil
+	// when none was.
+	Context *TuningContextView
+}
+
+// TuningContextView is an Experiment/Evidence context beside the profile it is
+// bound to. Refused is the reason a context that is not bound to exactly this
+// source, profile, dataset, questions and evidence is shown but informs
+// nothing. Regression and Recommendation exist only for a bound, compatible
+// comparison; NoRecommendation says why there is none, which is a normal state.
+type TuningContextView struct {
+	Refused          string
+	Context          tuning.EvidenceContext
+	Handoff          url.Values
+	Regression       *tuning.MeasuredRegression
+	Recommendation   *tuning.Recommendation
+	NoRecommendation string
 }
 
 func objectiveLabel(id string) string {
@@ -197,8 +218,55 @@ func (d *Dashboard) tuningPage(w http.ResponseWriter, r *http.Request) {
 	v.Live = false
 	mv := d.modelsView(v)
 	v.Models = mv
-	v.Tuning = d.tuningView(mv, r.URL.Query().Get("source"), r.URL.Query().Get("profile"))
+	q := r.URL.Query()
+	source, profileID := q.Get("source"), q.Get("profile")
+	var (
+		ctx    tuning.EvidenceContext
+		ctxErr error
+	)
+	handedOver := q.Get(qCand) != ""
+	if handedOver {
+		ctx, ctxErr = d.resolveTuningContext(q)
+		if ctxErr == nil {
+			profileID = ctx.ProfileID
+		}
+	}
+	v.Tuning = d.tuningView(mv, source, profileID)
+	if handedOver {
+		v.Tuning.Context = d.tuningContextView(v.Tuning, q, ctx, ctxErr)
+	}
 	d.renderView(w, "tuning", v)
+}
+
+// tuningContextView binds a resolved context to the profile the page shows and
+// derives the advisory recommendation from that exact pair.
+func (d *Dashboard) tuningContextView(tv *TuningView, q url.Values, ctx tuning.EvidenceContext, err error) *TuningContextView {
+	cv := &TuningContextView{}
+	if err != nil {
+		cv.Refused = err.Error()
+		return cv
+	}
+	cv.Context, cv.Regression, cv.Handoff = ctx, ctx.Regression, handoffValues(q)
+	if !tv.Saved || tv.ProfileID != ctx.ProfileID {
+		cv.Refused = "The profile named by the evidence context cannot be shown, so the context informs nothing."
+		return cv
+	}
+	profile, analysis, err := d.cfg.Tuning.LoadProfile(ctx.ProfileID)
+	if err != nil {
+		cv.Refused = "The profile named by the evidence context cannot be loaded: " + err.Error()
+		return cv
+	}
+	if err := ctx.Check(profile); err != nil {
+		cv.Refused = err.Error()
+		return cv
+	}
+	cv.Recommendation, cv.NoRecommendation = tuning.Recommend(ctx, profile, analysis)
+	if cv.Recommendation != nil {
+		for i := range tv.Regions {
+			tv.Regions[i].Recommended = tv.Regions[i].ID == cv.Recommendation.RegionID
+		}
+	}
+	return cv
 }
 
 // tuningView projects the tuning authority's state for one source and,
@@ -388,6 +456,10 @@ func tuningLocation(source, profileID string) string {
 // tuningSave persists the described profile as one immutable versioned
 // document and shows it. Saving builds nothing.
 func (d *Dashboard) tuningSave(w http.ResponseWriter, r *http.Request) {
+	if r.PostFormValue("accept_recommendation") != "" {
+		d.tuningAccept(w, r)
+		return
+	}
 	source, profile, analysis, err := d.tuningProfile(r)
 	if err == nil {
 		err = d.cfg.Tuning.SaveProfile(profile, analysis)
@@ -430,4 +502,169 @@ func (d *Dashboard) tuningBuild(w http.ResponseWriter, r *http.Request) {
 	}
 	d.remember("build candidate "+source, nil, "handed profile "+saved.ID()+" to Forge. The build, its evidence and any Apply are Forge's; nothing is applied")
 	http.Redirect(w, r, "/forge", http.StatusSeeOther)
+}
+
+// The Experiment/Evidence context travels in the query string as identities
+// only. The page never trusts them: it reopens the stored evidence, rebinds it
+// and refuses the context unless every identity matches what it recomputed.
+const (
+	qBase, qBaseSHA = "base", "base_sha"
+	qCand, qCandSHA = "cand", "cand_sha"
+	qDataset        = "ds"
+	qQuestions      = "qs"
+	qVariant        = "variant"
+)
+
+var handoffKeys = []string{"source", "profile", qVariant, qBase, qBaseSHA, qCand, qCandSHA, qDataset, qQuestions}
+
+func handoffValues(q url.Values) url.Values {
+	out := url.Values{}
+	for _, k := range handoffKeys {
+		if v := q.Get(k); v != "" {
+			out.Set(k, v)
+		}
+	}
+	return out
+}
+
+// variantProfile resolves a candidate variant to the profile its build
+// provenance names, through the tuning authority over HACHIDORI_HOME.
+func (d *Dashboard) variantProfile(source, variant string) (string, error) {
+	if d.cfg.Status == nil {
+		return "", errors.New("the runtime home is unavailable")
+	}
+	root := d.cfg.Status().Runtime.Home
+	if root == "" {
+		return "", errors.New("the runtime home is unavailable")
+	}
+	return tuning.VariantProfile(home.Home{Root: root}, source, variant)
+}
+
+// tuningContextOf is the exact context of stored history evidence: the
+// candidate entry and, for a comparison, the baseline entry. It refuses what
+// cannot be compared as equivalent. The returned values are the identities a
+// link carries.
+func (d *Dashboard) tuningContextOf(baseID, candID string) (tuning.EvidenceContext, url.Values, error) {
+	if d.hist == nil {
+		return tuning.EvidenceContext{}, nil, errNoHistory
+	}
+	cand, candSHA, err := d.hist.Open(candID)
+	if err != nil {
+		return tuning.EvidenceContext{}, nil, fmt.Errorf("candidate evidence: %w", err)
+	}
+	ctx := tuning.EvidenceContext{DatasetSHA256: cand.DatasetSHA256, QuestionsSHA256: eval.QuestionIdentitiesSHA256(cand)}
+	var ci eval.RunIdentity
+	if baseID == "" {
+		if ci, err = eval.RunIdentityOf(cand, candSHA); err != nil {
+			return tuning.EvidenceContext{}, nil, fmt.Errorf("candidate evidence: %w", err)
+		}
+	} else {
+		base, baseSHA, err := d.hist.Open(baseID)
+		if err != nil {
+			return tuning.EvidenceContext{}, nil, fmt.Errorf("baseline evidence: %w", err)
+		}
+		binding, err := eval.Bind(base, cand, baseSHA, candSHA)
+		if err != nil {
+			return tuning.EvidenceContext{}, nil, err
+		}
+		bi := binding.Baseline
+		ci = binding.Candidate
+		ctx.Baseline = &tuning.EvidenceRun{EvidenceSHA256: bi.EvidenceSHA256, ModelID: bi.ModelID, Revision: bi.Revision, VariantID: bi.VariantID}
+		ctx.Regression = regressionOf(binding.Comparison)
+	}
+	ctx.Candidate = tuning.EvidenceRun{EvidenceSHA256: ci.EvidenceSHA256, ModelID: ci.ModelID, Revision: ci.Revision, VariantID: ci.VariantID}
+	if ci.VariantID == "" {
+		return tuning.EvidenceContext{}, nil, errors.New("candidate evidence does not name an executed variant")
+	}
+	if ctx.ProfileID, err = d.variantProfile(ci.ModelID, ci.VariantID); err != nil {
+		return tuning.EvidenceContext{}, nil, err
+	}
+	vals := url.Values{"source": {ci.ModelID}, "profile": {ctx.ProfileID}, qVariant: {ci.VariantID}, qCand: {candID}, qCandSHA: {candSHA},
+		qDataset: {ctx.DatasetSHA256}, qQuestions: {ctx.QuestionsSHA256}}
+	if baseID != "" {
+		vals.Set(qBase, baseID)
+		vals.Set(qBaseSHA, ctx.Baseline.EvidenceSHA256)
+	}
+	return ctx, vals, nil
+}
+
+// regressionOf copies the measured accuracy regression out of a compatible
+// comparison. It is nil when overall accuracy did not fall or no aligned
+// question's accuracy fell.
+func regressionOf(c eval.Comparison) *tuning.MeasuredRegression {
+	if c.Status != eval.CompareCompatible || c.Aggregate == nil || !(c.Aggregate.Accuracy.Diff < 0) {
+		return nil
+	}
+	reg := &tuning.MeasuredRegression{Cases: c.Aggregate.Cases.B, BaselineAccuracy: c.Aggregate.Accuracy.A, CandidateAccuracy: c.Aggregate.Accuracy.B,
+		BaselineErrors: c.Aggregate.RequestErrors.A, CandidateErrors: c.Aggregate.RequestErrors.B}
+	for _, qd := range c.Questions {
+		if qd.Accuracy.Diff < 0 {
+			reg.Questions = append(reg.Questions, tuning.QuestionRegression{Question: qd.ID, N: qd.N.B, Baseline: qd.Accuracy.A, Candidate: qd.Accuracy.B})
+		}
+	}
+	if len(reg.Questions) == 0 {
+		return nil
+	}
+	return reg
+}
+
+// resolveTuningContext rebuilds the context the query names from stored
+// evidence and refuses it unless every identity it carries (source, profile,
+// variant, evidence, dataset and questions) equals the recomputed one.
+func (d *Dashboard) resolveTuningContext(q url.Values) (tuning.EvidenceContext, error) {
+	ctx, want, err := d.tuningContextOf(q.Get(qBase), q.Get(qCand))
+	if err != nil {
+		return tuning.EvidenceContext{}, err
+	}
+	for _, k := range handoffKeys {
+		if q.Get(k) != want.Get(k) {
+			return tuning.EvidenceContext{}, fmt.Errorf("the evidence context does not match the stored evidence: %s is %q, not %q", k, q.Get(k), want.Get(k))
+		}
+	}
+	return ctx, nil
+}
+
+// tuningAccept is the explicit operator action on a recommendation. It
+// rebuilds the context and the recommendation, applies exactly the
+// recommendation the operator was shown, and saves the result as a new,
+// distinct profile. Evidence is never written and nothing is built.
+func (d *Dashboard) tuningAccept(w http.ResponseWriter, r *http.Request) {
+	q := url.Values{}
+	for _, k := range handoffKeys {
+		q.Set(k, r.PostFormValue(k))
+	}
+	source, region := q.Get("source"), strings.TrimSpace(r.PostFormValue("accept_recommendation"))
+	fail := func(err error) {
+		d.remember("accept tuning recommendation", err, "")
+		http.Redirect(w, r, "/tuning?"+handoffValues(q).Encode(), http.StatusSeeOther)
+	}
+	ctx, err := d.resolveTuningContext(q)
+	if err != nil {
+		fail(err)
+		return
+	}
+	profile, analysis, err := d.cfg.Tuning.LoadProfile(ctx.ProfileID)
+	if err != nil {
+		fail(err)
+		return
+	}
+	rec, why := tuning.Recommend(ctx, profile, analysis)
+	switch {
+	case rec == nil:
+		fail(errors.New("there is no recommendation to accept: " + why))
+		return
+	case rec.RegionID != region:
+		fail(fmt.Errorf("the recommendation is to preserve %s, not %q", rec.RegionID, region))
+		return
+	}
+	next, err := tuning.Accept(*rec, profile, analysis)
+	if err == nil {
+		err = d.cfg.Tuning.SaveProfile(next, analysis)
+	}
+	if err != nil {
+		fail(err)
+		return
+	}
+	d.remember("accept tuning recommendation "+short12(next.ID()), nil, "saved as new profile "+next.ID()+" from profile "+profile.ID()+" with "+rec.RegionID+" preserved. The evidence is unchanged. Nothing was built")
+	http.Redirect(w, r, tuningLocation(source, next.ID()), http.StatusSeeOther)
 }

@@ -130,6 +130,7 @@
       {{with $r.Served}}<dt>{{t "served model"}}</dt><dd>{{.Model}}</dd><dt>{{t "served identity"}}</dt><dd>{{.Digest}}</dd>{{end}}
       <dt>{{t "served consistent"}}</dt><dd>{{if $r.ServedConsistent}}{{t "yes"}}{{else}}<span class="bad-t">{{t "no"}}</span>{{end}}</dd>
     </dl>
+    {{with $.Tuning}}<p><a class="btn" href="{{.}}" data-tuning-handoff="true">{{t "Open candidate in Tuning"}}</a></p>{{end}}
     <h3>{{t "Open another report"}}</h3>
     {{template "evidence-open" $}}
   </div>
