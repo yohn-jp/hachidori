@@ -320,3 +320,56 @@ func QuestionIdentitiesSHA256(r Report) string {
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+// CandidateBinding is the exact identity of a pair of reports of two tuned
+// candidate variants of one source model and revision that may be compared
+// with each other: the same dataset and the same question identities. It is
+// separate from Binding, whose baseline is the source model: candidate against
+// candidate is a descriptive comparison and implies no baseline or
+// recommendation. Comparison is Compare of the same two reports, A to B.
+type CandidateBinding struct {
+	DatasetSHA256 string
+	// QuestionsSHA256 digests every aligned question's recorded identity.
+	QuestionsSHA256 string
+	A, B            RunIdentity
+	Comparison      Comparison
+}
+
+// BindCandidates refuses, with the reason, any pair that is not like for like
+// between two candidates: reports of different models or revisions, a report
+// that is not of an executed variant, both reports of the same variant, or a
+// comparison that is not fully compatible. It reads and modifies nothing but
+// its arguments.
+func BindCandidates(a, b Report, aSHA256, bSHA256 string) (CandidateBinding, error) {
+	x, err := RunIdentityOf(a, aSHA256)
+	if err != nil {
+		return CandidateBinding{}, fmt.Errorf("candidate A: %w", err)
+	}
+	y, err := RunIdentityOf(b, bSHA256)
+	if err != nil {
+		return CandidateBinding{}, fmt.Errorf("candidate B: %w", err)
+	}
+	switch {
+	case x.ModelID != y.ModelID || x.Revision != y.Revision:
+		return CandidateBinding{}, fmt.Errorf("candidate A serves %s@%s but candidate B serves %s@%s: candidates of different source models are not compared as equivalent",
+			x.ModelID, x.Revision, y.ModelID, y.Revision)
+	case x.VariantID == "":
+		return CandidateBinding{}, fmt.Errorf("candidate A evidence does not name an executed variant")
+	case y.VariantID == "":
+		return CandidateBinding{}, fmt.Errorf("candidate B evidence does not name an executed variant")
+	case x.VariantID == y.VariantID:
+		return CandidateBinding{}, fmt.Errorf("both evidence reports executed variant %s: two different candidates are required", x.VariantID)
+	}
+	cmp := Compare(a, b)
+	if cmp.Status != CompareCompatible {
+		reason := "the reports are not comparable"
+		if len(cmp.Incompatibility) > 0 {
+			reason = cmp.Incompatibility[0].Detail
+			if q := cmp.Incompatibility[0].Question; q != "" {
+				reason = q + ": " + reason
+			}
+		}
+		return CandidateBinding{}, fmt.Errorf("comparison is %s, not compatible: %s", cmp.Status, reason)
+	}
+	return CandidateBinding{DatasetSHA256: a.DatasetSHA256, QuestionsSHA256: QuestionIdentitiesSHA256(a), A: x, B: y, Comparison: cmp}, nil
+}

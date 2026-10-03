@@ -257,3 +257,129 @@ func TestVariantProfileResolvesExactProvenance(t *testing.T) {
 		}
 	}
 }
+
+func pinned(t *testing.T, a Analysis, p Profile, regions ...string) Profile {
+	t.Helper()
+	next := p
+	next.Preservation = map[string]PreservationChoice{}
+	for id, c := range p.Preservation {
+		next.Preservation[id] = c
+	}
+	for _, r := range regions {
+		next.Preservation[r] = PreservationChoice{Mode: PreservationPinned, Precision: PreservedPrecision}
+	}
+	if _, err := Compile(next, a); err != nil {
+		t.Fatal(err)
+	}
+	return next
+}
+
+func candidateComparison(a, b Profile) CandidateComparison {
+	run := func(p Profile, evidence, variant string) CandidateRun {
+		return CandidateRun{EvidenceRun: EvidenceRun{EvidenceSHA256: strings.Repeat(evidence, 64), ModelID: p.Source.ID, Revision: p.Source.Revision, VariantID: variant},
+			ProfileID: p.ID()}
+	}
+	return CandidateComparison{DatasetSHA256: strings.Repeat("d", 64), QuestionsSHA256: strings.Repeat("e", 64),
+		A: run(a, "1", a.Source.ID+"--r--aaaaaaaaaaaa"), B: run(b, "2", b.Source.ID+"--r--bbbbbbbbbbbb"), Cases: 20}
+}
+
+func TestDiffProfilesIsTheDeterministicSemanticDifference(t *testing.T) {
+	a := feedbackAnalysis(t)
+	base := defaultProfile(t, a)
+	other := pinned(t, a, base, RegionFullAttention, RegionLinearAttention)
+	other.Objective = "maximum-fidelity"
+
+	d, err := DiffProfiles(base, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.A != base.ID() || d.B != other.ID() || d.Identical() || !d.ObjectiveChanged() || d.AnalysisChanged() || d.CompilerChanged() ||
+		d.ObjectiveA != "balanced" || d.ObjectiveB != "maximum-fidelity" {
+		t.Fatalf("delta %+v", d)
+	}
+	want := []RegionChange{
+		{RegionID: RegionFullAttention, A: PreservationChoice{Mode: PreservationAuto}, B: PreservationChoice{Mode: PreservationPinned, Precision: PreservedPrecision}},
+		{RegionID: RegionLinearAttention, A: PreservationChoice{Mode: PreservationAuto}, B: PreservationChoice{Mode: PreservationPinned, Precision: PreservedPrecision}},
+	}
+	if !reflect.DeepEqual(d.Regions, want) {
+		t.Fatalf("regions %+v", d.Regions)
+	}
+	again, _ := DiffProfiles(base, other)
+	if !reflect.DeepEqual(d, again) {
+		t.Error("profile difference is not deterministic")
+	}
+	// The difference is directional: swapping the profiles swaps the sides.
+	rev, _ := DiffProfiles(other, base)
+	if rev.A != other.ID() || rev.Regions[0].A != want[0].B || rev.Regions[0].B != want[0].A {
+		t.Errorf("reverse delta %+v", rev)
+	}
+
+	same, err := DiffProfiles(base, base)
+	if err != nil || !same.Identical() || len(same.Regions) != 0 || same.ObjectiveChanged() {
+		t.Errorf("identical profiles: %+v, %v", same, err)
+	}
+
+	// A region only one profile has is reported as absent from the other.
+	partial := base
+	partial.Preservation = map[string]PreservationChoice{}
+	for id, c := range base.Preservation {
+		if id != RegionFullAttention {
+			partial.Preservation[id] = c
+		}
+	}
+	d, err = DiffProfiles(base, partial)
+	if err != nil || len(d.Regions) != 1 || d.Regions[0].RegionID != RegionFullAttention || d.Regions[0].B.Mode != "" {
+		t.Errorf("absent region: %+v, %v", d, err)
+	}
+
+	otherSource := base
+	otherSource.Source.Revision = "otherrev"
+	if _, err := DiffProfiles(base, otherSource); err == nil || !strings.Contains(err.Error(), "different sources") {
+		t.Errorf("profiles of different sources: %v", err)
+	}
+}
+
+func TestCandidateComparisonCheckBindsExactlyTwoProfilesAndEvidence(t *testing.T) {
+	a := feedbackAnalysis(t)
+	pa := defaultProfile(t, a)
+	pb := pinned(t, a, pa, RegionFullAttention)
+	good := candidateComparison(pa, pb)
+	if err := good.Check(pa, pb); err != nil {
+		t.Fatal(err)
+	}
+	// Two candidates of the same profile are a valid comparison.
+	same := candidateComparison(pa, pa)
+	if err := same.Check(pa, pa); err != nil {
+		t.Errorf("same profile: %v", err)
+	}
+
+	mutate := func(f func(c *CandidateComparison)) CandidateComparison {
+		c := candidateComparison(pa, pb)
+		f(&c)
+		return c
+	}
+	cases := map[string]struct {
+		c    CandidateComparison
+		want string
+	}{
+		"profile A is another profile": {mutate(func(c *CandidateComparison) { c.A.ProfileID = pb.ID() }), "candidate A is bound to profile"},
+		"profile B is another profile": {mutate(func(c *CandidateComparison) { c.B.ProfileID = strings.Repeat("0", 64) }), "candidate B is bound to profile"},
+		"no profile identity":          {mutate(func(c *CandidateComparison) { c.B.ProfileID = "" }), "candidate B is bound to profile"},
+		"A is the source":              {mutate(func(c *CandidateComparison) { c.A.VariantID = "" }), "executed variant"},
+		"same variant":                 {mutate(func(c *CandidateComparison) { c.B.VariantID = c.A.VariantID }), "two different candidates"},
+		"A serves another model":       {mutate(func(c *CandidateComparison) { c.A.ModelID = "laya-base" }), "candidate evidence serves"},
+		"B serves another revision":    {mutate(func(c *CandidateComparison) { c.B.Revision = "otherrev" }), "candidate evidence serves"},
+		"no dataset identity":          {mutate(func(c *CandidateComparison) { c.DatasetSHA256 = "" }), "dataset and questions"},
+		"no question identity":         {mutate(func(c *CandidateComparison) { c.QuestionsSHA256 = "" }), "dataset and questions"},
+	}
+	for name, tc := range cases {
+		if err := tc.c.Check(pa, pb); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err %v, want %q", name, err, tc.want)
+		}
+	}
+	otherSource := pb
+	otherSource.Source.Revision = "otherrev"
+	if err := good.Check(pa, otherSource); err == nil || !strings.Contains(err.Error(), "different sources") {
+		t.Errorf("profiles of different sources: %v", err)
+	}
+}

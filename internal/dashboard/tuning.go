@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/yohn-jp/hachidori/internal/eval"
@@ -169,6 +170,9 @@ type TuningView struct {
 	// Context is the Experiment/Evidence context handed to this page, nil
 	// when none was.
 	Context *TuningContextView
+	// Compare is the candidate A/B comparison handed to this page, nil when
+	// none was. It is separate from Context: it has no source baseline.
+	Compare *TuningCompareView
 }
 
 // TuningContextView is an Experiment/Evidence context beside the profile it is
@@ -224,15 +228,29 @@ func (d *Dashboard) tuningPage(w http.ResponseWriter, r *http.Request) {
 		ctx    tuning.EvidenceContext
 		ctxErr error
 	)
-	handedOver := q.Get(qCand) != ""
-	if handedOver {
+	var (
+		cmp    tuning.CandidateComparison
+		cmpErr error
+	)
+	compared := q.Get(qCmpA) != "" || q.Get(qCmpB) != ""
+	handedOver := !compared && q.Get(qCand) != ""
+	switch {
+	case compared:
+		// The profile shown is the one of candidate B, as in "Open B in Tuning".
+		if cmp, cmpErr = d.resolveCandidateComparison(q); cmpErr == nil {
+			source, profileID = cmp.B.ModelID, cmp.B.ProfileID
+		}
+	case handedOver:
 		ctx, ctxErr = d.resolveTuningContext(q)
 		if ctxErr == nil {
 			profileID = ctx.ProfileID
 		}
 	}
 	v.Tuning = d.tuningView(mv, source, profileID)
-	if handedOver {
+	switch {
+	case compared:
+		v.Tuning.Compare = d.tuningCompareView(v.Tuning, cmp, cmpErr)
+	case handedOver:
 		v.Tuning.Context = d.tuningContextView(v.Tuning, q, ctx, ctxErr)
 	}
 	d.renderView(w, "tuning", v)
@@ -667,4 +685,219 @@ func (d *Dashboard) tuningAccept(w http.ResponseWriter, r *http.Request) {
 	}
 	d.remember("accept tuning recommendation "+short12(next.ID()), nil, "saved as new profile "+next.ID()+" from profile "+profile.ID()+" with "+rec.RegionID+" preserved. The evidence is unchanged. Nothing was built")
 	http.Redirect(w, r, tuningLocation(source, next.ID()), http.StatusSeeOther)
+}
+
+// The candidate A/B comparison travels in the query string as identities only,
+// like the Experiment/Evidence context, and is rebuilt and refused the same
+// way. Candidate B's profile is the one the page shows.
+const (
+	qCmpA, qCmpASHA, qCmpAVariant, qCmpAProfile = "cmp_a", "cmp_a_sha", "cmp_a_variant", "cmp_a_profile"
+	qCmpB, qCmpBSHA, qCmpBVariant, qCmpBProfile = "cmp_b", "cmp_b_sha", "cmp_b_variant", "cmp_b_profile"
+)
+
+var candidateKeys = []string{"source", "profile", qCmpA, qCmpASHA, qCmpAVariant, qCmpAProfile, qCmpB, qCmpBSHA, qCmpBVariant, qCmpBProfile, qDataset, qQuestions}
+
+// candidateComparisonOf is the exact comparison of two stored candidate
+// evidence entries. It refuses what cannot be compared as equivalent. The
+// returned values are the identities a link carries.
+func (d *Dashboard) candidateComparisonOf(aID, bID string) (tuning.CandidateComparison, url.Values, error) {
+	if d.hist == nil {
+		return tuning.CandidateComparison{}, nil, errNoHistory
+	}
+	ra, aSHA, err := d.hist.Open(aID)
+	if err != nil {
+		return tuning.CandidateComparison{}, nil, fmt.Errorf("candidate A evidence: %w", err)
+	}
+	rb, bSHA, err := d.hist.Open(bID)
+	if err != nil {
+		return tuning.CandidateComparison{}, nil, fmt.Errorf("candidate B evidence: %w", err)
+	}
+	binding, err := eval.BindCandidates(ra, rb, aSHA, bSHA)
+	if err != nil {
+		return tuning.CandidateComparison{}, nil, err
+	}
+	run := func(id eval.RunIdentity) (tuning.CandidateRun, error) {
+		profile, err := d.variantProfile(id.ModelID, id.VariantID)
+		if err != nil {
+			return tuning.CandidateRun{}, err
+		}
+		return tuning.CandidateRun{EvidenceRun: tuning.EvidenceRun{EvidenceSHA256: id.EvidenceSHA256, ModelID: id.ModelID, Revision: id.Revision, VariantID: id.VariantID},
+			ProfileID: profile}, nil
+	}
+	cmp := measuredCandidateComparison(binding)
+	if cmp.A, err = run(binding.A); err != nil {
+		return tuning.CandidateComparison{}, nil, fmt.Errorf("candidate A: %w", err)
+	}
+	if cmp.B, err = run(binding.B); err != nil {
+		return tuning.CandidateComparison{}, nil, fmt.Errorf("candidate B: %w", err)
+	}
+	vals := url.Values{"source": {binding.B.ModelID}, "profile": {cmp.B.ProfileID},
+		qCmpA: {aID}, qCmpASHA: {aSHA}, qCmpAVariant: {binding.A.VariantID}, qCmpAProfile: {cmp.A.ProfileID},
+		qCmpB: {bID}, qCmpBSHA: {bSHA}, qCmpBVariant: {binding.B.VariantID}, qCmpBProfile: {cmp.B.ProfileID},
+		qDataset: {cmp.DatasetSHA256}, qQuestions: {cmp.QuestionsSHA256}}
+	return cmp, vals, nil
+}
+
+// measuredCandidateComparison copies the measured quality and resource deltas
+// out of a compatible binding. Resource figures the evidence does not record
+// stay unavailable, never estimated. The caller binds the candidates to their
+// profiles.
+func measuredCandidateComparison(b eval.CandidateBinding) tuning.CandidateComparison {
+	agg := b.Comparison.Aggregate
+	md := func(x eval.Delta) tuning.MeasuredDelta { return tuning.MeasuredDelta{A: x.A, B: x.B, Diff: x.Diff} }
+	c := tuning.CandidateComparison{DatasetSHA256: b.DatasetSHA256, QuestionsSHA256: b.QuestionsSHA256,
+		Cases: agg.Cases.B, Accuracy: md(agg.Accuracy), ErrorsA: agg.RequestErrors.A, ErrorsB: agg.RequestErrors.B}
+	for _, q := range b.Comparison.Questions {
+		if q.Accuracy.Diff != 0 {
+			c.Questions = append(c.Questions, tuning.QuestionDifference{Question: q.ID, NA: q.N.A, NB: q.N.B, Accuracy: md(q.Accuracy)})
+		}
+	}
+	latency := func(prefix string, l eval.LatencyDelta) {
+		for _, m := range []struct {
+			key string
+			d   eval.Delta
+		}{{"p50", l.P50}, {"p95", l.P95}, {"mean", l.Mean}} {
+			r := tuning.ResourceDelta{Key: prefix + "-" + m.key, Unit: "ms", Available: l.Available}
+			if l.Available {
+				r.MeasuredDelta = md(m.d)
+			}
+			c.Resources = append(c.Resources, r)
+		}
+	}
+	latency("request", agg.RequestLatency)
+	latency("inference", agg.ServerInference)
+	return c
+}
+
+// resolveCandidateComparison rebuilds the comparison the query names from
+// stored evidence and refuses it unless every identity it carries equals the
+// recomputed one.
+func (d *Dashboard) resolveCandidateComparison(q url.Values) (tuning.CandidateComparison, error) {
+	cmp, want, err := d.candidateComparisonOf(q.Get(qCmpA), q.Get(qCmpB))
+	if err != nil {
+		return tuning.CandidateComparison{}, err
+	}
+	for _, k := range candidateKeys {
+		if q.Get(k) != want.Get(k) {
+			return tuning.CandidateComparison{}, fmt.Errorf("the candidate comparison does not match the stored evidence: %s is %q, not %q", k, q.Get(k), want.Get(k))
+		}
+	}
+	return cmp, nil
+}
+
+// TuningDeltaRow is one compared figure of the two candidates. A, B and Diff
+// are empty unless State is Measured; Diff is B minus A.
+type TuningDeltaRow struct {
+	Key, Label string
+	State      SemanticState
+	A, B, Diff string
+	Basis      string
+}
+
+// TuningRegionChangeRow is one semantic region whose preservation differs
+// between the two profiles.
+type TuningRegionChangeRow struct {
+	ID, Label, A, B string
+}
+
+// TuningCompareView is the candidate A/B comparison beside the profile page.
+// Refused is the reason a comparison that is not bound to exactly these two
+// candidates and profiles is shown but informs nothing. The comparison is
+// descriptive: it carries no causal attribution, confidence or recommendation.
+type TuningCompareView struct {
+	Refused    string
+	Comparison tuning.CandidateComparison
+	Delta      tuning.ProfileDelta
+	ProfileA   string // link to profile A in Tuning
+	ProfileB   string
+	Regions    []TuningRegionChangeRow
+	Quality    []TuningDeltaRow
+	Resources  []TuningDeltaRow
+	Questions  []TuningDeltaRow
+}
+
+func preservationLabel(c tuning.PreservationChoice) string {
+	switch c.Mode {
+	case tuning.PreservationPinned:
+		return "Preserved"
+	case tuning.PreservationAuto:
+		return "Auto"
+	}
+	return "Absent"
+}
+
+func signedCount(v int) string {
+	if v > 0 {
+		return "+" + strconv.Itoa(v)
+	}
+	return strconv.Itoa(v)
+}
+
+// tuningCompareView binds a resolved comparison to the exact profiles of both
+// candidates and derives their semantic profile difference.
+func (d *Dashboard) tuningCompareView(tv *TuningView, cmp tuning.CandidateComparison, err error) *TuningCompareView {
+	cv := &TuningCompareView{}
+	if err != nil {
+		cv.Refused = err.Error()
+		return cv
+	}
+	cv.Comparison = cmp
+	if !tv.Saved || tv.ProfileID != cmp.B.ProfileID {
+		cv.Refused = "The profile of candidate B cannot be shown, so the comparison informs nothing."
+		return cv
+	}
+	pa, _, err := d.cfg.Tuning.LoadProfile(cmp.A.ProfileID)
+	if err != nil {
+		cv.Refused = "The profile of candidate A cannot be loaded: " + err.Error()
+		return cv
+	}
+	pb, _, err := d.cfg.Tuning.LoadProfile(cmp.B.ProfileID)
+	if err != nil {
+		cv.Refused = "The profile of candidate B cannot be loaded: " + err.Error()
+		return cv
+	}
+	if err := cmp.Check(pa, pb); err != nil {
+		cv.Refused = err.Error()
+		return cv
+	}
+	if cv.Delta, err = tuning.DiffProfiles(pa, pb); err != nil {
+		cv.Refused = err.Error()
+		return cv
+	}
+	cv.ProfileA, cv.ProfileB = tuningLocation(tv.Source, pa.ID()), tuningLocation(tv.Source, pb.ID())
+	for _, c := range cv.Delta.Regions {
+		label := c.RegionID
+		if text, ok := regionCopy[c.RegionID]; ok {
+			label = text.Label
+		}
+		cv.Regions = append(cv.Regions, TuningRegionChangeRow{ID: c.RegionID, Label: label, A: preservationLabel(c.A), B: preservationLabel(c.B)})
+	}
+	score := func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) }
+	count := strconv.Itoa
+	cv.Quality = []TuningDeltaRow{
+		{Key: "accuracy", Label: "Choice accuracy", State: Measured, A: score(cmp.Accuracy.A), B: score(cmp.Accuracy.B), Diff: signed(cmp.Accuracy.Diff, ""),
+			Basis: "Candidate evidence."},
+		{Key: "errors", Label: "Request errors", State: Measured, A: count(cmp.ErrorsA), B: count(cmp.ErrorsB), Diff: signedCount(cmp.ErrorsB - cmp.ErrorsA),
+			Basis: "Candidate evidence."},
+	}
+	for _, q := range cmp.Questions {
+		cv.Questions = append(cv.Questions, TuningDeltaRow{Key: q.Question, Label: q.Question, State: Measured, A: score(q.Accuracy.A), B: score(q.Accuracy.B),
+			Diff: signed(q.Accuracy.Diff, ""), Basis: count(q.NA) + " / " + count(q.NB)})
+	}
+	labels := map[string]string{"request-p50": "Request latency p50", "request-p95": "Request latency p95", "request-mean": "Request latency mean",
+		"inference-p50": "Inference latency p50", "inference-p95": "Inference latency p95", "inference-mean": "Inference latency mean"}
+	cv.Resources = []TuningDeltaRow{
+		{Key: "size", Label: "Model size", State: NotChecked, Basis: "Evidence reports record no model size."},
+		{Key: "memory", Label: "Memory (VRAM/RAM)", State: NotChecked, Basis: "Evidence reports record no memory use."},
+	}
+	for _, r := range cmp.Resources {
+		row := TuningDeltaRow{Key: r.Key, Label: labels[r.Key], State: NotChecked, Basis: "A report has no latency samples."}
+		if r.Available {
+			row.State, row.Basis = Measured, "Candidate evidence."
+			row.A, row.B = strconv.FormatFloat(r.A, 'f', 1, 64)+" "+r.Unit, strconv.FormatFloat(r.B, 'f', 1, 64)+" "+r.Unit
+			row.Diff = signed(r.Diff, r.Unit)
+		}
+		cv.Resources = append(cv.Resources, row)
+	}
+	return cv
 }

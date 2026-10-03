@@ -209,4 +209,144 @@ func Accept(rec Recommendation, profile Profile, analysis Analysis) (Profile, er
 	return next, nil
 }
 
+// MeasuredDelta is one measured value of both candidates and B minus A. It is
+// directional and descriptive: a positive Diff means the value is larger in B,
+// never that B is better.
+type MeasuredDelta struct {
+	A, B, Diff float64
+}
+
+// QuestionDifference is one identity-aligned question whose measured accuracy
+// differs between candidate A and candidate B. N counts the observations in
+// each report.
+type QuestionDifference struct {
+	Question string
+	NA, NB   int
+	Accuracy MeasuredDelta
+}
+
+// ResourceDelta is one resource figure compared between the candidates.
+// Available is false when the evidence of either candidate does not record
+// the figure; the values are then zero and nothing is estimated in their
+// place.
+type ResourceDelta struct {
+	Key       string
+	Unit      string
+	Available bool
+	MeasuredDelta
+}
+
+// CandidateRun is one candidate of a comparison: the executed variant, the
+// evidence that measured it and the exact profile its build provenance names.
+type CandidateRun struct {
+	EvidenceRun
+	ProfileID string
+}
+
+// CandidateComparison is the exact context of comparing two tuned candidates
+// of one source with each other: over which dataset and questions, from which
+// evidence, built from which profiles, and what the compatible evidence
+// measured. It is descriptive input to Tuning. It names no baseline, infers no
+// cause, carries no confidence and yields no recommendation.
+type CandidateComparison struct {
+	DatasetSHA256    string
+	QuestionsSHA256  string
+	A, B             CandidateRun
+	Cases            int
+	Accuracy         MeasuredDelta
+	ErrorsA, ErrorsB int
+	// Questions are the aligned questions whose accuracy differs, by id.
+	Questions []QuestionDifference
+	Resources []ResourceDelta
+}
+
+// Check refuses a comparison that is not bound to exactly these two profiles:
+// each run must be a distinct executed variant of the profiles' common source
+// model and revision, bound to its profile by identity, over an identified
+// dataset and questions. A comparison that fails is shown separately and
+// informs nothing.
+func (c CandidateComparison) Check(a, b Profile) error {
+	switch {
+	case a.Source != b.Source:
+		return fmt.Errorf("profiles are for different sources: %s@%s and %s@%s", a.Source.ID, a.Source.Revision, b.Source.ID, b.Source.Revision)
+	case c.A.ProfileID == "" || c.A.ProfileID != a.ID():
+		return fmt.Errorf("candidate A is bound to profile %s, not %s", short(c.A.ProfileID), short(a.ID()))
+	case c.B.ProfileID == "" || c.B.ProfileID != b.ID():
+		return fmt.Errorf("candidate B is bound to profile %s, not %s", short(c.B.ProfileID), short(b.ID()))
+	case c.A.VariantID == "" || c.B.VariantID == "":
+		return errors.New("both candidates must name an executed variant")
+	case c.A.VariantID == c.B.VariantID:
+		return fmt.Errorf("both evidence reports executed variant %s: two different candidates are required", c.A.VariantID)
+	case c.A.ModelID != a.Source.ID || c.A.Revision != a.Source.Revision || c.B.ModelID != a.Source.ID || c.B.Revision != a.Source.Revision:
+		return fmt.Errorf("candidate evidence serves %s@%s and %s@%s but the profiles are for %s@%s",
+			c.A.ModelID, c.A.Revision, c.B.ModelID, c.B.Revision, a.Source.ID, a.Source.Revision)
+	case c.DatasetSHA256 == "" || c.QuestionsSHA256 == "":
+		return errors.New("candidate comparison does not identify its dataset and questions")
+	}
+	return nil
+}
+
+// RegionChange is one semantic region whose preservation choice differs
+// between two profiles. A choice with an empty Mode means the profile has no
+// choice for the region, because it is bound to an analysis without it.
+type RegionChange struct {
+	RegionID string
+	A, B     PreservationChoice
+}
+
+// ProfileDelta is the deterministic semantic difference between profile A and
+// profile B of one source: the objective, the identities of their analysis
+// and compiler, and every region whose choice differs. It is a function of the
+// two profiles only.
+type ProfileDelta struct {
+	A, B                   string // profile identities
+	ObjectiveA, ObjectiveB string
+	AnalysisA, AnalysisB   string
+	CompilerA, CompilerB   string
+	Regions                []RegionChange // by region id
+}
+
+// Identical reports whether the profiles are the same profile.
+func (d ProfileDelta) Identical() bool { return d.A == d.B }
+
+// ObjectiveChanged reports whether the recorded objectives differ.
+func (d ProfileDelta) ObjectiveChanged() bool { return d.ObjectiveA != d.ObjectiveB }
+
+// AnalysisChanged reports whether the profiles are bound to different
+// analyses of the source, so that their regions are not the same set.
+func (d ProfileDelta) AnalysisChanged() bool { return d.AnalysisA != d.AnalysisB }
+
+// CompilerChanged reports whether the profiles name different compiler
+// versions.
+func (d ProfileDelta) CompilerChanged() bool { return d.CompilerA != d.CompilerB }
+
+// DiffProfiles is the semantic profile difference of two profiles of one
+// exact source. It refuses profiles of different sources, which have no
+// common semantic regions.
+func DiffProfiles(a, b Profile) (ProfileDelta, error) {
+	if a.Source != b.Source {
+		return ProfileDelta{}, fmt.Errorf("profiles are for different sources: %s@%s and %s@%s", a.Source.ID, a.Source.Revision, b.Source.ID, b.Source.Revision)
+	}
+	d := ProfileDelta{A: a.ID(), B: b.ID(), ObjectiveA: a.Objective, ObjectiveB: b.Objective,
+		AnalysisA: a.AnalysisSHA256, AnalysisB: b.AnalysisSHA256, CompilerA: a.CompilerVersion, CompilerB: b.CompilerVersion}
+	ids := map[string]bool{}
+	for id := range a.Preservation {
+		ids[id] = true
+	}
+	for id := range b.Preservation {
+		ids[id] = true
+	}
+	sorted := make([]string, 0, len(ids))
+	for id := range ids {
+		sorted = append(sorted, id)
+	}
+	sort.Strings(sorted)
+	for _, id := range sorted {
+		if x, y := a.Preservation[id], b.Preservation[id]; x != y {
+			d.Regions = append(d.Regions, RegionChange{RegionID: id, A: x, B: y})
+		}
+	}
+	return d, nil
+}
+
 func short(s string) string { return s[:min(len(s), 12)] }

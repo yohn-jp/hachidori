@@ -62,6 +62,85 @@
   </section>
   {{end}}
 
+  {{with .Compare}}
+  <section class="region section" id="tuning-compare" aria-labelledby="tcmp-h" data-compare-candidates="{{if .Refused}}refused{{else}}bound{{end}}">
+    <div class="region-h"><h2 id="tcmp-h">{{t "Candidate comparison"}}</h2><span class="sub">{{t "two tuned candidates of one source · descriptive, never certification"}}</span></div>
+    {{if .Refused}}
+    <p class="msg bad" role="alert" id="tuning-compare-refused">{{t "Candidate comparison refused:"}} {{.Refused}}</p>
+    <p class="note">{{t "A refused comparison is not compared as equivalent and informs nothing. The profile below is shown on its own."}}</p>
+    {{else}}
+    <dl class="kv" id="tuning-compare-identity">
+      <dt>{{t "Source"}}</dt><dd>{{.Comparison.A.ModelID}}@{{.Comparison.A.Revision}}</dd>
+      <dt>{{t "Dataset sha256"}}</dt><dd data-compare-dataset="{{.Comparison.DatasetSHA256}}">{{.Comparison.DatasetSHA256}}</dd>
+      <dt>{{t "Questions sha256"}}</dt><dd data-compare-questions="{{.Comparison.QuestionsSHA256}}">{{.Comparison.QuestionsSHA256}}</dd>
+      <dt>{{t "Cases"}}</dt><dd>{{.Comparison.Cases}}</dd>
+      <dt>{{t "Candidate A"}}</dt><dd data-compare-variant-a="{{.Comparison.A.VariantID}}">{{.Comparison.A.VariantID}}</dd>
+      <dt>{{t "Profile A"}}</dt><dd data-compare-profile-a="{{.Comparison.A.ProfileID}}"><a href="{{.ProfileA}}">{{.Comparison.A.ProfileID}}</a></dd>
+      <dt>{{t "Evidence A"}}</dt><dd data-compare-evidence-a="{{.Comparison.A.EvidenceSHA256}}">{{.Comparison.A.EvidenceSHA256}}</dd>
+      <dt>{{t "Candidate B"}}</dt><dd data-compare-variant-b="{{.Comparison.B.VariantID}}">{{.Comparison.B.VariantID}}</dd>
+      <dt>{{t "Profile B"}}</dt><dd data-compare-profile-b="{{.Comparison.B.ProfileID}}"><a href="{{.ProfileB}}">{{.Comparison.B.ProfileID}}</a></dd>
+      <dt>{{t "Evidence B"}}</dt><dd data-compare-evidence-b="{{.Comparison.B.EvidenceSHA256}}">{{.Comparison.B.EvidenceSHA256}}</dd>
+    </dl>
+
+    <h3>{{t "Profile difference"}}</h3>
+    {{if .Delta.Identical}}
+    <p class="note" id="tuning-compare-profiles-identical">{{t "Both candidates were built from the same profile; there is no profile difference."}}</p>
+    {{else}}
+    <dl class="kv" id="tuning-compare-profile-delta">
+      <dt>{{t "Objective"}}</dt><dd data-delta="objective">{{if .Delta.ObjectiveChanged}}{{t (objective .Delta.ObjectiveA)}} → {{t (objective .Delta.ObjectiveB)}}{{else}}{{t (objective .Delta.ObjectiveA)}} · {{t "unchanged"}}{{end}}</dd>
+      <dt>{{t "Analysis"}}</dt><dd data-delta="analysis">{{if .Delta.AnalysisChanged}}{{.Delta.AnalysisA}} → {{.Delta.AnalysisB}}{{else}}{{t "unchanged"}}{{end}}</dd>
+      <dt>{{t "Compiler"}}</dt><dd data-delta="compiler">{{if .Delta.CompilerChanged}}{{.Delta.CompilerA}} → {{.Delta.CompilerB}}{{else}}{{t "unchanged"}}{{end}}</dd>
+    </dl>
+    {{if .Regions}}
+    <div class="table-wrap"><table class="data" id="tuning-compare-region-table">
+      <caption class="vh">{{t "Preservation differences by semantic region"}}</caption>
+      <thead><tr><th scope="col">{{t "Region"}}</th><th scope="col">{{t "Profile A"}}</th><th scope="col">{{t "Profile B"}}</th></tr></thead>
+      <tbody>{{range .Regions}}
+        <tr data-delta-region="{{.ID}}"><th scope="row" class="strong">{{t .Label}}</th><td>{{t .A}}</td><td>{{t .B}}</td></tr>{{end}}
+      </tbody>
+    </table></div>
+    {{else}}
+    <p class="note" id="tuning-compare-no-region-change">{{t "No semantic region is preserved differently."}}</p>
+    {{end}}
+    {{end}}
+
+    <h3>{{t "Measured quality difference"}}</h3>
+    <p class="note">{{t "MEASURED from compatible evidence: the same source model, dataset and question identities. Differences are B minus A and do not say which candidate is better."}}</p>
+    <div class="table-wrap"><table class="data" id="tuning-compare-quality-table">
+      <caption class="vh">{{t "Measured quality difference"}}</caption>
+      <thead><tr><th scope="col">{{t "Measure"}}</th><th scope="col">{{t "State"}}</th><th scope="col">{{t "Candidate A"}}</th><th scope="col">{{t "Candidate B"}}</th><th scope="col">{{t "B - A"}}</th><th scope="col">{{t "Basis"}}</th></tr></thead>
+      <tbody>{{range .Quality}}
+        <tr data-compare-quality="{{.Key}}" data-state="{{.State}}"><th scope="row" class="strong">{{t .Label}}</th><td>{{template "semantic-state" .State}}</td><td class="num">{{.A}}</td><td class="num">{{.B}}</td><td class="num">{{.Diff}}</td><td><span class="note">{{t .Basis}}</span></td></tr>{{end}}
+      </tbody>
+    </table></div>
+    {{if .Questions}}
+    <div class="table-wrap"><table class="data" id="tuning-compare-question-table">
+      <caption class="vh">{{t "Questions whose accuracy differs"}}</caption>
+      <thead><tr><th scope="col">{{t "Question"}}</th><th scope="col">{{t "Candidate A"}}</th><th scope="col">{{t "Candidate B"}}</th><th scope="col">{{t "B - A"}}</th><th scope="col">{{t "Observations A / B"}}</th></tr></thead>
+      <tbody>{{range .Questions}}
+        <tr data-compare-question="{{.Key}}"><th scope="row" class="mono">{{.Label}}</th><td class="num">{{.A}}</td><td class="num">{{.B}}</td><td class="num">{{.Diff}}</td><td class="num">{{.Basis}}</td></tr>{{end}}
+      </tbody>
+    </table></div>
+    {{else}}
+    <p class="note" id="tuning-compare-no-question-difference">{{t "No identity-aligned question differs in accuracy."}}</p>
+    {{end}}
+
+    <h3>{{t "Resource difference"}}</h3>
+    <div class="table-wrap"><table class="data" id="tuning-compare-resource-table">
+      <caption class="vh">{{t "Resource difference"}}</caption>
+      <thead><tr><th scope="col">{{t "Measure"}}</th><th scope="col">{{t "State"}}</th><th scope="col">{{t "Candidate A"}}</th><th scope="col">{{t "Candidate B"}}</th><th scope="col">{{t "B - A"}}</th><th scope="col">{{t "Basis"}}</th></tr></thead>
+      <tbody>{{range .Resources}}
+        <tr data-compare-resource="{{.Key}}" data-state="{{.State}}"><th scope="row" class="strong">{{t .Label}}</th><td>{{template "semantic-state" .State}}</td>
+          {{if .A}}<td class="num">{{.A}}</td><td class="num">{{.B}}</td><td class="num">{{.Diff}}</td>{{else}}<td colspan="3"><span class="muted">{{t "No valid evidence"}}</span></td>{{end}}
+          <td><span class="note">{{t .Basis}}</span></td></tr>{{end}}
+      </tbody>
+    </table></div>
+    <p class="note">{{t "Resource figures are shown only where both candidates' evidence records them. NOT_CHECKED means no valid evidence exists; nothing is estimated in its place."}}</p>
+    <p class="note" id="tuning-compare-no-attribution">{{t "This comparison states what was measured and how the profiles differ. It does not show which profile difference caused a measured difference, and it makes no recommendation."}}</p>
+    {{end}}
+  </section>
+  {{end}}
+
   {{if .Regions}}
   <section class="region section" id="tuning-identity" aria-labelledby="ti-h">
     <div class="region-h"><h2 id="ti-h">{{t "Exact source and profile"}}</h2><span class="sub">{{if .Saved}}{{t "saved, immutable profile"}}{{else}}{{t "initial all-Auto profile · not saved"}}{{end}}</span></div>
