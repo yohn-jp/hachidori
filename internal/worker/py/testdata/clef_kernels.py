@@ -106,7 +106,7 @@ class KernelTests(unittest.TestCase):
                 })
                 if not available:
                     modules['fla.modules.conv'] = None
-                with patch.dict(sys.modules, modules):
+                with patch.object(sys, 'platform', 'win32'), patch.dict(sys.modules, modules):
                     if available:
                         provider.load()
                         self.assertFalse(backbone.config.use_cache)
@@ -124,7 +124,7 @@ class KernelTests(unittest.TestCase):
     def test_supported_selection_is_not_execution(self):
         module = qwen()
         with patch.dict(sys.modules, kernel_modules()):
-            paths = configure(module, torch(), 'cuda', 'bfloat16')
+            paths = configure(module, torch(), 'cuda', 'bfloat16', platform='win32')
         for entry in paths.values():
             self.assertEqual(entry['execution'], 'not_observed')
             self.assertEqual(entry['availability'], 'available')
@@ -146,7 +146,7 @@ class KernelTests(unittest.TestCase):
             return Tensor([[[3, 50], [8, 140], [13, 230]]]), None
         module = qwen()
         with patch.dict(sys.modules, kernel_modules(conv=conv)):
-            configure(module, torch(), 'cuda', 'bfloat16')
+            configure(module, torch(), 'cuda', 'bfloat16', platform='win32')
         result = module.causal_conv1d_fn(Tensor([[[1, 2, 3], [10, 20, 30]]]),
                                         weights, bias, activation='silu')
         self.assertEqual(result.data, [[[3, 8, 13], [50, 140, 230]]])
@@ -158,7 +158,7 @@ class KernelTests(unittest.TestCase):
             return 'output', None
         module = qwen()
         with patch.dict(sys.modules, kernel_modules(delta=delta)):
-            configure(module, torch(), 'cuda', 'bfloat16')
+            configure(module, torch(), 'cuda', 'bfloat16', platform='win32')
         tensors = tuple(object() for _ in range(5))
         kwargs = {'g': tensors[3], 'beta': tensors[4], 'initial_state': None,
                   'output_final_state': False, 'use_qk_l2norm_in_kernel': True,
@@ -177,7 +177,7 @@ class KernelTests(unittest.TestCase):
                 # Even an optimized callable auto-selected by Transformers must
                 # be replaced on unsupported/CPU launches.
                 module = qwen(optimized=True)
-                paths = configure(module, torch(capability), device, dtype)
+                paths = configure(module, torch(capability), device, dtype, platform='win32')
                 for entry in paths.values():
                     self.assertIn(reason, entry['reason'])
                     self.assertEqual(entry['availability'], 'unavailable')
@@ -187,20 +187,33 @@ class KernelTests(unittest.TestCase):
                 for entry in paths.values():
                     self.assertEqual(entry['execution'], 'reference_active')
 
+    def test_non_windows_cuda_uses_reference_path(self):
+        module = qwen()
+        paths = configure(module, torch(), 'cuda', 'bfloat16', platform='linux')
+        for entry in paths.values():
+            self.assertEqual(entry['selected'], 'reference')
+            self.assertEqual(entry['availability'], 'unavailable')
+            self.assertIn('only on native Windows', entry['reason'])
+        value = object()
+        self.assertIs(module.causal_conv1d_fn(value), value)
+        self.assertIs(module.torch_chunk_gated_delta_rule(value), value)
+        for entry in paths.values():
+            self.assertEqual(entry['execution'], 'reference_active')
+
     def test_supported_cuda_without_kernels_fails(self):
         for missing in ['fla.modules.conv', 'fla.ops.gated_delta_rule']:
             modules = kernel_modules()
             modules[missing] = None
             with patch.dict(sys.modules, modules):
                 with self.assertRaises(ImportError):
-                    configure(qwen(), torch(), 'cuda', 'bfloat16')
+                    configure(qwen(), torch(), 'cuda', 'bfloat16', platform='win32')
 
     def test_failed_kernel_has_no_reference_retry_or_active_claim(self):
         def failed(*args, **kwargs):
             raise RuntimeError('kernel failure')
         module = qwen()
         with patch.dict(sys.modules, kernel_modules(conv=failed, delta=failed)):
-            paths = configure(module, torch(), 'cuda', 'bfloat16')
+            paths = configure(module, torch(), 'cuda', 'bfloat16', platform='win32')
         with self.assertRaisesRegex(RuntimeError, 'kernel failure'):
             module.causal_conv1d_fn(Tensor([[[1]]]), 'weights')
         with self.assertRaisesRegex(RuntimeError, 'kernel failure'):
@@ -217,7 +230,7 @@ class KernelTests(unittest.TestCase):
         module = qwen()
         module.causal_conv1d_fn = lambda value: value
         with self.assertRaisesRegex(RuntimeError, 'unrecognized Transformers'):
-            configure(module, torch(), 'cuda', 'bfloat16')
+            configure(module, torch(), 'cuda', 'bfloat16', platform='win32')
 
     def test_clef_predictions_and_variant_evidence_preserved(self):
         for device in ['cpu', 'cuda']:
