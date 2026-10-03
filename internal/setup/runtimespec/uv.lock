@@ -316,9 +316,8 @@ cpu = [
     { name = "torch", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" } },
 ]
 cu128 = [
-    { name = "fla-core" },
+    { name = "fla-core", marker = "sys_platform == 'win32'" },
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" } },
-    { name = "triton", version = "3.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
     { name = "triton-windows", marker = "sys_platform == 'win32'" },
 ]
 
@@ -326,7 +325,7 @@ cu128 = [
 requires-dist = [
     { name = "accelerate", specifier = "==1.15.0" },
     { name = "compressed-tensors", specifier = "==0.19.0" },
-    { name = "fla-core", marker = "extra == 'cu128'", specifier = "==0.5.2" },
+    { name = "fla-core", marker = "sys_platform == 'win32' and extra == 'cu128'", specifier = "==0.5.2" },
     { name = "hf-xet", specifier = "==1.6.0" },
     { name = "huggingface-hub", specifier = "==1.33.0" },
     { name = "laya", specifier = "==0.3.21" },
@@ -337,7 +336,6 @@ requires-dist = [
     { name = "torch", marker = "extra == 'cpu'", specifier = "==2.11.0+cpu", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "hachidori-runtime", extra = "cpu" } },
     { name = "torch", marker = "extra == 'cu128'", specifier = "==2.11.0+cu128", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "hachidori-runtime", extra = "cu128" } },
     { name = "transformers", specifier = "==5.17.0" },
-    { name = "triton", marker = "sys_platform == 'linux' and extra == 'cu128'", specifier = "==3.6.0" },
     { name = "triton-windows", marker = "sys_platform == 'win32' and extra == 'cu128'", specifier = "==3.6.0.post26" },
 ]
 provides-extras = ["cpu", "cu128"]
@@ -1085,17 +1083,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/0e/9e/750649904a065007a838981785b2bd8d9ff26154c6c341ac67d0b7f82c68/transformers-5.17.0.tar.gz", hash = "sha256:a153be279169b55b92d8000bf4af294aed684503d091cca7804da2dd8a9de000", size = 9817878, upload-time = "2026-09-09T15:39:56.886Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e8/d0/c502b60d684adbd98a8dc7d5bb866842772b816ac4354e4608be240041ae/transformers-5.17.0-py3-none-any.whl", hash = "sha256:78ec1ce21579b38dfb83950a0658cd119f87212a2fcfdff478096ce9d6c03801", size = 12295140, upload-time = "2026-09-09T15:39:53.746Z" },
-]
-
-[[package]]
-name = "triton"
-version = "3.6.0"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/a8/cdf8b3e4c98132f965f88c2313a4b493266832ad47fb52f23d14d4f86bb5/triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:74caf5e34b66d9f3a429af689c1c7128daba1d8208df60e81106b115c00d6fca", size = 188266850, upload-time = "2026-01-20T16:00:43.041Z" },
 ]
 
 [[package]]
