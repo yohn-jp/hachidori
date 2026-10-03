@@ -3,6 +3,7 @@ package eval
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/yohn-jp/hachidori/internal/question"
@@ -138,5 +139,80 @@ func TestCompareCaseCountMismatchIsPartial(t *testing.T) {
 	c := Compare(a, b)
 	if c.Status != ComparePartial || c.Incompatibility[0].Code != IncompatCases || len(c.Questions) != 1 {
 		t.Fatalf("%+v", c)
+	}
+}
+
+func servedReport(r Report, model, revision, variant string) Report {
+	prov := map[string]any{"model_revision": revision}
+	if variant != "" {
+		prov["variant_id"] = variant
+	}
+	r.Served = &Served{Runtime: map[string]any{"model_id": model}, Provider: prov, Digest: "served-" + model + variant}
+	r.ServedConsistent = true
+	return r
+}
+
+// A source baseline and a variant candidate of one model over one dataset and
+// identical question identities bind to their exact recorded identities.
+func TestBindExactIdentities(t *testing.T) {
+	qs := map[string]string{"x": "s1", "y": "s2"}
+	base := servedReport(cmpReport("ds", qs, 0.9, 0.1), "clef-flash", "rev1", "")
+	cand := servedReport(cmpReport("ds", qs, 0.7, 0.2), "clef-flash", "rev1", "clef-flash--r--aaaaaaaaaaaa")
+	b, err := Bind(base, cand, "sha-base", "sha-cand")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.DatasetSHA256 != "ds" || b.QuestionsSHA256 != QuestionIdentitiesSHA256(base) || b.QuestionsSHA256 != QuestionIdentitiesSHA256(cand) {
+		t.Fatalf("dataset/question identity %+v", b)
+	}
+	if b.Baseline != (RunIdentity{EvidenceSHA256: "sha-base", ModelID: "clef-flash", Revision: "rev1", ServedIdentity: "served-clef-flash"}) ||
+		b.Candidate != (RunIdentity{EvidenceSHA256: "sha-cand", ModelID: "clef-flash", Revision: "rev1", VariantID: "clef-flash--r--aaaaaaaaaaaa", ServedIdentity: "served-clef-flashclef-flash--r--aaaaaaaaaaaa"}) {
+		t.Fatalf("run identity %+v %+v", b.Baseline, b.Candidate)
+	}
+	if b.Comparison.Status != CompareCompatible || b.Comparison.Aggregate.Accuracy.Diff >= 0 {
+		t.Fatalf("comparison %+v", b.Comparison)
+	}
+	// A different question identity changes the question digest.
+	other := servedReport(cmpReport("ds", map[string]string{"x": "s1", "y": "other"}, 0.7, 0.2), "clef-flash", "rev1", "v")
+	if QuestionIdentitiesSHA256(other) == b.QuestionsSHA256 {
+		t.Fatal("question identity digest ignores the question identity")
+	}
+}
+
+// Anything that is not like for like is refused with its reason, never
+// compared as equivalent.
+func TestBindRefusesMismatchedIdentity(t *testing.T) {
+	qs := map[string]string{"x": "s1"}
+	source := func() Report { return servedReport(cmpReport("ds", qs, 0.9, 0.1), "clef-flash", "rev1", "") }
+	variant := func() Report { return servedReport(cmpReport("ds", qs, 0.7, 0.2), "clef-flash", "rev1", "v1") }
+	cases := map[string]struct {
+		base, cand func() Report
+		want       string
+	}{
+		"different model":         {source, func() Report { return servedReport(cmpReport("ds", qs, 0.7, 0.2), "laya-base", "rev1", "v1") }, "different source models"},
+		"different revision":      {source, func() Report { return servedReport(cmpReport("ds", qs, 0.7, 0.2), "clef-flash", "rev2", "v1") }, "different source models"},
+		"baseline is a variant":   {func() Report { return servedReport(cmpReport("ds", qs, 0.9, 0.1), "clef-flash", "rev1", "v0") }, variant, "baseline must be the source"},
+		"candidate is the source": {source, source, "does not name an executed variant"},
+		"different dataset":       {source, func() Report { return servedReport(cmpReport("other", qs, 0.7, 0.2), "clef-flash", "rev1", "v1") }, "dataset"},
+		"different question identity": {source, func() Report {
+			return servedReport(cmpReport("ds", map[string]string{"x": "changed"}, 0.7, 0.2), "clef-flash", "rev1", "v1")
+		}, "question"},
+		"extra question": {source, func() Report {
+			return servedReport(cmpReport("ds", map[string]string{"x": "s1", "y": "s2"}, 0.7, 0.2), "clef-flash", "rev1", "v1")
+		}, "question"},
+		"served identity changed": {source, func() Report { r := variant(); r.ServedConsistent = false; return r }, "served_consistent=false"},
+		"no served identity":      {source, func() Report { r := variant(); r.Served = nil; return r }, "no served identity"},
+	}
+	for name, c := range cases {
+		b, err := Bind(c.base(), c.cand(), "sha-base", "sha-cand")
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err %v, want %q", name, err, c.want)
+		}
+		if b.Comparison.Aggregate != nil || b.DatasetSHA256 != "" {
+			t.Errorf("%s: refused binding still carries deltas", name)
+		}
+	}
+	if _, err := Bind(source(), variant(), "", "sha-cand"); err == nil {
+		t.Error("evidence without a digest was bound")
 	}
 }

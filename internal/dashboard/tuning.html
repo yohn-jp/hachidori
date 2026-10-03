@@ -13,6 +13,55 @@
 
   {{with .Err}}<p class="msg bad" role="alert" id="tuning-unavailable">{{t .}}</p>{{end}}
 
+  {{with .Context}}
+  <section class="region section" id="tuning-context" aria-labelledby="tc-h" data-context="{{if .Refused}}refused{{else}}bound{{end}}">
+    <div class="region-h"><h2 id="tc-h">{{t "Evidence context"}}</h2><span class="sub">{{t "handed over from Experiments or Evidence · advisory, never certification"}}</span></div>
+    {{if .Refused}}
+    <p class="msg bad" role="alert" id="tuning-context-refused">{{t "Evidence context refused:"}} {{.Refused}}</p>
+    <p class="note">{{t "A refused context is not compared as equivalent and informs no recommendation. The profile below is shown on its own."}}</p>
+    {{else}}
+    <dl class="kv" id="tuning-context-identity">
+      <dt>{{t "Source"}}</dt><dd>{{.Context.Candidate.ModelID}}@{{.Context.Candidate.Revision}}</dd>
+      <dt>{{t "Candidate"}}</dt><dd data-context-candidate="{{.Context.Candidate.VariantID}}">{{.Context.Candidate.VariantID}}</dd>
+      <dt>{{t "Profile"}}</dt><dd data-context-profile="{{.Context.ProfileID}}">{{.Context.ProfileID}}</dd>
+      <dt>{{t "Dataset sha256"}}</dt><dd data-context-dataset="{{.Context.DatasetSHA256}}">{{.Context.DatasetSHA256}}</dd>
+      <dt>{{t "Questions sha256"}}</dt><dd data-context-questions="{{.Context.QuestionsSHA256}}">{{.Context.QuestionsSHA256}}</dd>
+      {{with .Context.Baseline}}<dt>{{t "Baseline evidence (source model)"}}</dt><dd data-context-baseline="{{.EvidenceSHA256}}">{{.EvidenceSHA256}}</dd>{{end}}
+      <dt>{{t "Candidate evidence"}}</dt><dd data-context-evidence="{{.Context.Candidate.EvidenceSHA256}}">{{.Context.Candidate.EvidenceSHA256}}</dd>
+    </dl>
+    {{with .Regression}}
+    <h3>{{t "Measured regression"}}</h3>
+    <p class="note">{{t "MEASURED from compatible evidence: the same source model, dataset and question identities. Choice accuracy of the candidate against the source model."}}</p>
+    <div class="table-wrap"><table class="data" id="tuning-regression-table">
+      <caption class="vh">{{t "Measured accuracy regression"}}</caption>
+      <thead><tr><th scope="col">{{t "Question"}}</th><th scope="col">{{t "Observations"}}</th><th scope="col">{{t "Source model"}}</th><th scope="col">{{t "Candidate"}}</th></tr></thead>
+      <tbody>
+        <tr data-regression="all"><th scope="row" class="strong">{{t "All questions"}}</th><td class="num">{{.Cases}} {{t "cases"}}</td><td class="num">{{f4 .BaselineAccuracy}}</td><td class="num">{{f4 .CandidateAccuracy}}</td></tr>
+        {{range .Questions}}<tr data-regression="{{.Question}}"><th scope="row" class="mono">{{.Question}}</th><td class="num">{{.N}}</td><td class="num">{{f4 .Baseline}}</td><td class="num">{{f4 .Candidate}}</td></tr>{{end}}
+      </tbody>
+    </table></div>
+    {{end}}
+    {{with .Recommendation}}
+    <div id="tuning-recommendation" data-recommendation="{{.RegionID}}">
+      <h3>{{t "Recommendation"}}</h3>
+      <p><strong>{{t "Preserve"}} <span class="mono">{{.RegionID}}</span> {{t "at source precision"}}</strong> · {{t "profile change"}}: <span class="mono">{{.From}} → {{.To}}</span></p>
+      <h4>{{t "Evidence basis"}}</h4>
+      <ul>{{range .Basis}}<li>{{.}}</li>{{end}}</ul>
+      <p class="note">{{.Rationale}}</p>
+      <form method="post" action="/tuning/save" class="stack" id="tuning-accept-form">
+        <input type="hidden" name="token" value="{{$.Token}}">
+        {{range $k, $v := $.Tuning.Context.Handoff}}<input type="hidden" name="{{$k}}" value="{{index $v 0}}">{{end}}
+        <div class="btn-row"><button type="submit" class="btn primary" name="accept_recommendation" value="{{.RegionID}}">{{t "Accept as a new profile"}}</button></div>
+      </form>
+      <p class="note">{{t "Accepting saves a new, distinct profile. The current profile and all evidence stay unchanged, and nothing is built."}}</p>
+    </div>
+    {{else}}
+    <p class="note" id="tuning-no-recommendation">{{t "No recommendation."}} {{.NoRecommendation}}</p>
+    {{end}}
+    {{end}}
+  </section>
+  {{end}}
+
   {{if .Regions}}
   <section class="region section" id="tuning-identity" aria-labelledby="ti-h">
     <div class="region-h"><h2 id="ti-h">{{t "Exact source and profile"}}</h2><span class="sub">{{if .Saved}}{{t "saved, immutable profile"}}{{else}}{{t "initial all-Auto profile · not saved"}}{{end}}</span></div>
@@ -44,11 +93,11 @@
         <caption class="vh">{{t "Preservation by semantic region"}}</caption>
         <thead><tr><th scope="col">{{t "Region"}}</th><th scope="col">{{t "Members"}}</th><th scope="col">{{t "Preservation"}}</th><th scope="col">{{t "Result"}}</th></tr></thead>
         <tbody>{{range .Regions}}
-          <tr data-region="{{.ID}}" data-effective="{{.Effective}}">
+          <tr data-region="{{.ID}}" data-effective="{{.Effective}}"{{if .Recommended}} data-recommended="true"{{end}}>
             <th scope="row" class="strong"><label for="region-{{.ID}}">{{t .Label}}</label>{{with .Purpose}}<div class="note">{{t .}}</div>{{end}}</th>
             <td class="num">{{if .Modules}}{{.Modules}} {{t "modules"}}{{end}}{{if and .Modules .Files}} · {{end}}{{if .Files}}{{.Files}} {{t "files"}}{{end}}</td>
             <td><select id="region-{{.ID}}" name="region.{{.ID}}"><option value="auto"{{if not .Pinned}} selected{{end}}>{{t "Auto"}}</option><option value="pinned"{{if .Pinned}} selected{{end}}>{{t "Preserved at source precision"}}</option></select></td>
-            <td>{{template "semantic-state" .Effective}} <span class="note">{{t .Note}}</span></td>
+            <td>{{template "semantic-state" .Effective}} <span class="note">{{t .Note}}</span>{{if .Recommended}} <span class="badge">{{t "Recommended by evidence"}}</span>{{end}}</td>
           </tr>{{end}}
         </tbody>
       </table></div>

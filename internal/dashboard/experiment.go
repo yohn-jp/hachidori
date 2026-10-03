@@ -582,7 +582,7 @@ func (d *Dashboard) historyOpen(w http.ResponseWriter, r *http.Request) {
 		var rep eval.Report
 		var sum string
 		if rep, sum, err = d.hist.Open(id); err == nil {
-			d.errs.set(&evidenceSource{Report: rep, SHA256: sum, Origin: "history " + id})
+			d.errs.set(&evidenceSource{Report: rep, SHA256: sum, Origin: "history " + id, HistoryID: id})
 			http.Redirect(w, r, "/errors", http.StatusSeeOther)
 			return
 		}
@@ -599,6 +599,10 @@ type compareView struct {
 	EntryA history.Summary
 	EntryB history.Summary
 	eval.Comparison
+	// Tuning opens the candidate (B) in Tuning with this exact comparison as
+	// its context; TuningWhy says why the pair cannot be handed over. Both are
+	// empty when Tuning is unavailable.
+	Tuning, TuningWhy string
 }
 
 // compareHistory opens two stored entries read-only and compares them with
@@ -623,6 +627,13 @@ func (d *Dashboard) compareHistory(a, b string) (*compareView, error) {
 	}
 	cv := &compareView{Token: d.token, Comparison: eval.Compare(ra, rb),
 		EntryA: history.Summary{ID: a, EvidenceSHA256: sa}, EntryB: history.Summary{ID: b, EvidenceSHA256: sb}}
+	if d.cfg.hasTuning() {
+		if _, vals, err := d.tuningContextOf(a, b); err != nil {
+			cv.TuningWhy = err.Error()
+		} else {
+			cv.Tuning = "/tuning?" + vals.Encode()
+		}
+	}
 	// Operator metadata is display only; it never takes part in the comparison.
 	if list, _, err := d.hist.List(); err == nil {
 		for _, s := range list {

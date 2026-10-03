@@ -180,8 +180,13 @@ type ModelManifest struct {
 	Files       map[string]string `json:"files"`                 // relpath -> sha256
 }
 
-// ReadJSON decodes a JSON file.
+// ReadJSON decodes a JSON file from a path selected by Hachidori's
+// filesystem authorities. Callers must not pass an unvalidated external path.
 func ReadJSON(path string, v any) error {
+	// #nosec G304 -- path is not a public/user-controlled file selector. It is
+	// constructed by Home.Path or another repository-owned filesystem
+	// authority; those authorities validate any external identity components
+	// before this generic JSON decoder is reached.
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
