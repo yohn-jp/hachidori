@@ -353,6 +353,23 @@ func TestRunTrialsReusesCachedComponentsAcrossTrialsOfOneSession(t *testing.T) {
 	}
 }
 
+func TestRunTrialsFailsWhenMeasuredTrialCannotBeRecorded(t *testing.T) {
+	w := newTrialWorld(t)
+	prof := w.profile(t, "block.00.linear-attn", "block.00.mlp")
+	blocked := w.h.Path("state", "tuning-trials")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run, err := RunTrials(context.Background(), w.h, w.params(prof), w.deps(t, "ok"), io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "could not be recorded") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(run.Outcomes) != 1 || run.Outcomes[0].Result == nil || run.Outcomes[0].CandidateID != "" || run.Outcomes[0].EvidenceID != "" ||
+		!strings.Contains(run.Outcomes[0].Failure, "could not be recorded") {
+		t.Fatalf("outcomes %+v", run.Outcomes)
+	}
+}
+
 func TestRunTrialsEvaluationFailureRestoresTheModelAndRecordsNothing(t *testing.T) {
 	w := newTrialWorld(t)
 	a := w.profile(t, "block.00.linear-attn", "block.00.mlp")
