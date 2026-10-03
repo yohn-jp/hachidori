@@ -1,5 +1,8 @@
 {
   "scenarios": [
-    "candidate-identity"
+    "candidate-identity",
+    "single-instance-concurrent-launch",
+    "single-instance-second-launch",
+    "single-instance-guard-released"
   ]
 }
