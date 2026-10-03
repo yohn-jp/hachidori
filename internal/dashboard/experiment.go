@@ -603,6 +603,10 @@ type compareView struct {
 	// its context; TuningWhy says why the pair cannot be handed over. Both are
 	// empty when Tuning is unavailable.
 	Tuning, TuningWhy string
+	// TuningCompare opens A and B, two tuned candidates of one source, in
+	// Tuning as a candidate comparison. It is set instead of Tuning when A
+	// executed a variant.
+	TuningCompare string
 }
 
 // compareHistory opens two stored entries read-only and compares them with
@@ -628,7 +632,16 @@ func (d *Dashboard) compareHistory(a, b string) (*compareView, error) {
 	cv := &compareView{Token: d.token, Comparison: eval.Compare(ra, rb),
 		EntryA: history.Summary{ID: a, EvidenceSHA256: sa}, EntryB: history.Summary{ID: b, EvidenceSHA256: sb}}
 	if d.cfg.hasTuning() {
-		if _, vals, err := d.tuningContextOf(a, b); err != nil {
+		// A baseline that executed a variant is not the source model: the pair
+		// can only be two candidates, compared with each other. A source
+		// baseline keeps the source-to-candidate context unchanged.
+		if id, err := eval.RunIdentityOf(ra, sa); err == nil && id.VariantID != "" {
+			if _, vals, err := d.candidateComparisonOf(a, b); err != nil {
+				cv.TuningWhy = err.Error()
+			} else {
+				cv.TuningCompare = "/tuning?" + vals.Encode()
+			}
+		} else if _, vals, err := d.tuningContextOf(a, b); err != nil {
 			cv.TuningWhy = err.Error()
 		} else {
 			cv.Tuning = "/tuning?" + vals.Encode()

@@ -1022,3 +1022,227 @@ func TestTuningWithoutContextAndExistingDeepLinksAreUnchanged(t *testing.T) {
 		t.Errorf("Evidence filters: %d", rec.Code)
 	}
 }
+
+var candidateCompareRe = regexp.MustCompile(`href="(/tuning\?[^"]+)" data-tuning-candidate-compare="true"`)
+
+// candidates is a second saved profile with its own tuned variant, beside the
+// feedback fixture's profile and variant.
+type candidates struct {
+	*feedback
+	profileB tuning.Profile
+	variantB string
+}
+
+func candidateEnv(t *testing.T) *candidates {
+	t.Helper()
+	f := feedbackEnv(t)
+	pb := expectedProfile(t, f.ft.analysis, "maximum-fidelity", tuning.RegionFullAttention)
+	if err := f.ft.SaveProfile(pb, f.ft.analysis); err != nil {
+		t.Fatal(err)
+	}
+	return &candidates{feedback: f, profileB: pb, variantB: writeTunedVariant(t, f.e.home, pb, f.ft.analysis, true)}
+}
+
+// withLatency records request latency samples in evidence.
+func withLatency(r eval.Report, p50, p95, mean float64) eval.Report {
+	r.RequestLatency = eval.Latency{N: r.Observations, P50: p50, P95: p95, Mean: mean}
+	return r
+}
+
+// pair stores evidence of candidate A (the fixture's variant) and of candidate B.
+func (c *candidates) pair(t *testing.T, aCorrect, bCorrect int) (a, b string) {
+	t.Helper()
+	m, rev := c.model()
+	a = c.save(t, withLatency(evidenceOf(m, rev, c.variant, c.dataset, 20, aCorrect), 10, 20, 12), "candidate A")
+	b = c.save(t, withLatency(evidenceOf(m, rev, c.variantB, c.dataset, 20, bCorrect), 12.5, 19, 13), "candidate B")
+	return a, b
+}
+
+func (c *candidates) link(t *testing.T, a, b string) string {
+	t.Helper()
+	body := c.compare(t, a, b)
+	m := candidateCompareRe.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("comparison offers no candidate comparison in Tuning:\n%s", body)
+	}
+	if handoffRe.MatchString(body) {
+		t.Error("a candidate pair is also offered as a source-baseline handoff")
+	}
+	return m[1]
+}
+
+func compareRow(t *testing.T, body, attr, key string) string {
+	t.Helper()
+	i := strings.Index(body, attr+`="`+key+`"`)
+	if i < 0 {
+		t.Fatalf("no %s row %s", attr, key)
+	}
+	return body[i : i+strings.Index(body[i:], "</tr>")]
+}
+
+func TestTuningComparesTwoTunedCandidatesWithExactIdentities(t *testing.T) {
+	c := candidateEnv(t)
+	a, b := c.pair(t, 15, 18)
+	before := historyBytes(t, c.e)
+	body := c.page(t, c.link(t, a, b))
+	ra, aSHA, _ := c.e.d.hist.Open(a)
+	_, bSHA, _ := c.e.d.hist.Open(b)
+	m, rev := c.model()
+	for _, want := range []string{`data-compare-candidates="bound"`, m + "@" + rev,
+		`data-compare-variant-a="` + c.variant + `"`, `data-compare-variant-b="` + c.variantB + `"`,
+		`data-compare-profile-a="` + c.profile.ID() + `"`, `data-compare-profile-b="` + c.profileB.ID() + `"`,
+		`data-compare-evidence-a="` + aSHA + `"`, `data-compare-evidence-b="` + bSHA + `"`,
+		`data-compare-dataset="` + c.dataset + `"`, `data-compare-questions="` + eval.QuestionIdentitiesSHA256(ra) + `"`,
+		`data-tuning-profile="` + c.profileB.ID() + `"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("exact comparison lacks %q", want)
+		}
+	}
+
+	// The deterministic semantic profile difference.
+	for _, want := range []string{`data-delta="objective">Balanced → Maximum fidelity`, `data-delta="analysis">unchanged`, `data-delta="compiler">unchanged`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("profile difference lacks %q", want)
+		}
+	}
+	row := compareRow(t, body, "data-delta-region", tuning.RegionFullAttention)
+	if !strings.Contains(row, "Auto") || !strings.Contains(row, "Preserved") {
+		t.Errorf("region difference row: %s", row)
+	}
+	if strings.Contains(body, `data-delta-region="`+tuning.RegionLinearAttention+`"`) {
+		t.Error("an unchanged region is listed as a difference")
+	}
+
+	// Measured quality, identity-aligned question slice and resource deltas.
+	if row := compareRow(t, body, "data-compare-quality", "accuracy"); !strings.Contains(row, `data-state="MEASURED"`) ||
+		!strings.Contains(row, "0.7500") || !strings.Contains(row, "0.9000") || !strings.Contains(row, "+0.1500") {
+		t.Errorf("accuracy row: %s", row)
+	}
+	if row := compareRow(t, body, "data-compare-question", "q1"); !strings.Contains(row, "+0.1500") || !strings.Contains(row, "20 / 20") {
+		t.Errorf("question row: %s", row)
+	}
+	if row := compareRow(t, body, "data-compare-resource", "request-p50"); !strings.Contains(row, `data-state="MEASURED"`) ||
+		!strings.Contains(row, "10.0 ms") || !strings.Contains(row, "12.5 ms") || !strings.Contains(row, "+2.5 ms") {
+		t.Errorf("request p50 row: %s", row)
+	}
+	if row := compareRow(t, body, "data-compare-resource", "request-p95"); !strings.Contains(row, "-1.0 ms") {
+		t.Errorf("request p95 row: %s", row)
+	}
+	// Figures the evidence does not record stay NOT_CHECKED with no number.
+	for _, key := range []string{"size", "memory", "inference-p50", "inference-p95", "inference-mean"} {
+		row := compareRow(t, body, "data-compare-resource", key)
+		if !strings.Contains(row, `data-state="NOT_CHECKED"`) || strings.Contains(row, "MEASURED") || strings.Contains(row, " ms") || !strings.Contains(row, "No valid evidence") {
+			t.Errorf("%s was not left NOT_CHECKED: %s", key, row)
+		}
+	}
+
+	// No recommendation, causal attribution or source-baseline context.
+	for _, banned := range []string{`id="tuning-recommendation"`, `accept_recommendation`, `id="tuning-context"`, `id="tuning-no-recommendation"`, `data-recommended`} {
+		if strings.Contains(body, banned) {
+			t.Errorf("candidate comparison renders %q", banned)
+		}
+	}
+	if !strings.Contains(body, `id="tuning-compare-no-attribution"`) {
+		t.Error("the comparison does not state that it makes no causal attribution")
+	}
+	if after := historyBytes(t, c.e); after != before {
+		t.Error("stored evidence changed")
+	}
+	if len(c.ft.order) != 2 || len(c.ft.builds) != 0 {
+		t.Errorf("comparison saved or built profiles: %d profiles, %d builds", len(c.ft.order), len(c.ft.builds))
+	}
+}
+
+func TestTuningCandidateComparisonResourcesAreMeasuredOnlyWhereBothSidesRecordThem(t *testing.T) {
+	c := candidateEnv(t)
+	m, rev := c.model()
+	a := c.save(t, withLatency(evidenceOf(m, rev, c.variant, c.dataset, 20, 15), 10, 20, 12), "A has latency")
+	b := c.save(t, evidenceOf(m, rev, c.variantB, c.dataset, 20, 18), "B has none")
+	body := c.page(t, c.link(t, a, b))
+	for _, key := range []string{"request-p50", "request-p95", "request-mean"} {
+		if row := compareRow(t, body, "data-compare-resource", key); !strings.Contains(row, `data-state="NOT_CHECKED"`) || strings.Contains(row, " ms") {
+			t.Errorf("%s was estimated from one side: %s", key, row)
+		}
+	}
+}
+
+func TestTuningRefusesIncompatibleCandidateComparison(t *testing.T) {
+	c := candidateEnv(t)
+	m, rev := c.model()
+	a, b := c.pair(t, 15, 18)
+	ev := func(model, revision, variant, dataset string) string {
+		return c.save(t, evidenceOf(model, revision, variant, dataset, 20, 18), "mismatch")
+	}
+	untuned := writeTunedVariant(t, c.e.home, c.profile, c.ft.analysis, false)
+	otherQuestion := evidenceOf(m, rev, c.variantB, c.dataset, 20, 18)
+	for i := range otherQuestion.Results {
+		otherQuestion.Results[i].QuestionSHA256 = strings.Repeat("6", 64)
+	}
+	source := c.save(t, evidenceOf(m, rev, "", c.dataset, 20, 19), "source")
+	for name, pair := range map[string][2]string{
+		"different dataset":           {a, ev(m, rev, c.variantB, strings.Repeat("e", 64))},
+		"different model":             {a, ev("laya-base", rev, c.variantB, c.dataset)},
+		"different revision":          {a, ev(m, "otherrev", c.variantB, c.dataset)},
+		"different question identity": {a, c.save(t, otherQuestion, "other question")},
+		"no tuning provenance":        {a, ev(m, rev, untuned, c.dataset)},
+		"candidate B is the source":   {a, source},
+		"same variant twice":          {a, ev(m, rev, c.variant, c.dataset)},
+	} {
+		body := c.compare(t, pair[0], pair[1])
+		if candidateCompareRe.MatchString(body) || handoffRe.MatchString(body) || !strings.Contains(body, `data-tuning-handoff-refused="true"`) {
+			t.Errorf("%s: the pair was offered to Tuning or not explained:\n%s", name, body)
+		}
+	}
+
+	// A link whose identity does not match the stored evidence is refused and
+	// shows the plain profile with no comparison.
+	u, _ := url.Parse(c.link(t, a, b))
+	zero := strings.Repeat("0", 64)
+	tamper := map[string]string{"profile": zero, "cmp_a_profile": zero, "cmp_b_profile": zero, "cmp_a_sha": zero, "cmp_b_sha": zero, "ds": zero, "qs": zero,
+		"cmp_a_variant": "clef-flash--r--ffffffffffff", "cmp_b_variant": c.variant, "source": "laya-base", "cmp_a": b, "cmp_b": a}
+	for key, value := range tamper {
+		q := u.Query()
+		q.Set(key, value)
+		body := c.page(t, "/tuning?"+q.Encode())
+		if !strings.Contains(body, `id="tuning-compare-refused"`) || strings.Contains(body, `data-compare-candidates="bound"`) ||
+			strings.Contains(body, `id="tuning-compare-quality-table"`) || strings.Contains(body, `id="tuning-recommendation"`) {
+			t.Errorf("tampered %s was not refused:\n%s", key, body)
+		}
+	}
+	for _, q := range []string{"cmp_a=20260101T000000Z-aaaaaaaaaaaa&cmp_b=20260101T000000Z-bbbbbbbbbbbb&source=clef-flash", "cmp_a=" + a, "cmp_b=../x"} {
+		if body := c.page(t, "/tuning?"+q); !strings.Contains(body, `id="tuning-compare-refused"`) {
+			t.Errorf("%s: not refused", q)
+		}
+	}
+}
+
+// A comparison of two profiles cannot be shown when one of them is not saved.
+func TestTuningRefusesCandidateComparisonWhoseProfileIsNotSaved(t *testing.T) {
+	c := candidateEnv(t)
+	a, b := c.pair(t, 15, 18)
+	link := c.link(t, a, b)
+	delete(c.ft.profiles, c.profile.ID())
+	if body := c.page(t, link); !strings.Contains(body, `id="tuning-compare-refused"`) || strings.Contains(body, `id="tuning-compare-quality-table"`) {
+		t.Errorf("a comparison with an unavailable profile was shown:\n%s", body)
+	}
+}
+
+// The source-baseline path of the recommendation flow does not change when
+// candidates can be compared.
+func TestTuningCandidateComparisonLeavesTheSourceBaselineFlowUnchanged(t *testing.T) {
+	c := candidateEnv(t)
+	base, cand := c.feedback.pair(t, 15)
+	body := c.compare(t, base, cand)
+	if !handoffRe.MatchString(body) || candidateCompareRe.MatchString(body) {
+		t.Fatalf("source-baseline pair no longer offers only its handoff:\n%s", body)
+	}
+	page := c.page(t, c.handoff(t, base, cand))
+	for _, want := range []string{`data-context="bound"`, `id="tuning-recommendation"`, `data-recommendation="` + tuning.RegionFullAttention + `"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("recommendation flow lacks %q", want)
+		}
+	}
+	if strings.Contains(page, `id="tuning-compare"`) {
+		t.Error("the source-baseline page shows a candidate comparison")
+	}
+}

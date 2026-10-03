@@ -216,3 +216,63 @@ func TestBindRefusesMismatchedIdentity(t *testing.T) {
 		t.Error("evidence without a digest was bound")
 	}
 }
+
+// Two tuned candidates of one source over one dataset and identical question
+// identities bind to their exact identities. The comparison is A to B and
+// carries no baseline.
+func TestBindCandidatesExactIdentities(t *testing.T) {
+	qs := map[string]string{"x": "s1", "y": "s2"}
+	a := servedReport(cmpReport("ds", qs, 0.7, 0.2), "clef-flash", "rev1", "v1")
+	b := servedReport(cmpReport("ds", qs, 0.8, 0.1), "clef-flash", "rev1", "v2")
+	got, err := BindCandidates(a, b, "sha-a", "sha-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DatasetSHA256 != "ds" || got.QuestionsSHA256 != QuestionIdentitiesSHA256(a) || got.QuestionsSHA256 != QuestionIdentitiesSHA256(b) {
+		t.Fatalf("dataset/question identity %+v", got)
+	}
+	if got.A != (RunIdentity{EvidenceSHA256: "sha-a", ModelID: "clef-flash", Revision: "rev1", VariantID: "v1", ServedIdentity: "served-clef-flashv1"}) ||
+		got.B != (RunIdentity{EvidenceSHA256: "sha-b", ModelID: "clef-flash", Revision: "rev1", VariantID: "v2", ServedIdentity: "served-clef-flashv2"}) {
+		t.Fatalf("run identity %+v %+v", got.A, got.B)
+	}
+	if got.Comparison.Status != CompareCompatible || got.Comparison.Aggregate.Accuracy.A != 0.7 || got.Comparison.Aggregate.Accuracy.B != 0.8 {
+		t.Fatalf("comparison %+v", got.Comparison)
+	}
+}
+
+func TestBindCandidatesRefusesMismatchedIdentity(t *testing.T) {
+	qs := map[string]string{"x": "s1"}
+	variant := func(v string) func() Report {
+		return func() Report { return servedReport(cmpReport("ds", qs, 0.7, 0.2), "clef-flash", "rev1", v) }
+	}
+	cases := map[string]struct {
+		a, b func() Report
+		want string
+	}{
+		"different model":    {variant("v1"), func() Report { return servedReport(cmpReport("ds", qs, 0.7, 0.2), "laya-base", "rev1", "v2") }, "different source models"},
+		"different revision": {variant("v1"), func() Report { return servedReport(cmpReport("ds", qs, 0.7, 0.2), "clef-flash", "rev2", "v2") }, "different source models"},
+		"A is the source":    {variant(""), variant("v2"), "candidate A evidence does not name"},
+		"B is the source":    {variant("v1"), variant(""), "candidate B evidence does not name"},
+		"same variant":       {variant("v1"), variant("v1"), "two different candidates"},
+		"different dataset":  {variant("v1"), func() Report { return servedReport(cmpReport("other", qs, 0.7, 0.2), "clef-flash", "rev1", "v2") }, "dataset"},
+		"different question identity": {variant("v1"), func() Report {
+			return servedReport(cmpReport("ds", map[string]string{"x": "changed"}, 0.7, 0.2), "clef-flash", "rev1", "v2")
+		}, "question"},
+		"extra question": {variant("v1"), func() Report {
+			return servedReport(cmpReport("ds", map[string]string{"x": "s1", "y": "s2"}, 0.7, 0.2), "clef-flash", "rev1", "v2")
+		}, "question"},
+		"served identity changed": {variant("v1"), func() Report { r := variant("v2")(); r.ServedConsistent = false; return r }, "served_consistent=false"},
+	}
+	for name, c := range cases {
+		got, err := BindCandidates(c.a(), c.b(), "sha-a", "sha-b")
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err %v, want %q", name, err, c.want)
+		}
+		if got.Comparison.Aggregate != nil || got.DatasetSHA256 != "" {
+			t.Errorf("%s: refused binding still carries deltas", name)
+		}
+	}
+	if _, err := BindCandidates(variant("v1")(), variant("v2")(), "", "sha-b"); err == nil {
+		t.Error("evidence without a digest was bound")
+	}
+}

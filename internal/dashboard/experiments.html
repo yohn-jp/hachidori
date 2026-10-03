@@ -214,6 +214,7 @@
     <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryA.ID}}"><button type="submit" class="btn">{{t "Open A in Evidence"}}</button></form>
     <form method="post" action="/history/open" class="inline"><input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="id" value="{{.EntryB.ID}}"><button type="submit" class="btn">{{t "Open B in Evidence"}}</button></form>
     {{with .Tuning}}<a class="btn" href="{{.}}" data-tuning-handoff="true">{{t "Open B in Tuning"}}</a>{{end}}
+    {{with .TuningCompare}}<a class="btn" href="{{.}}" data-tuning-candidate-compare="true">{{t "Compare A and B in Tuning"}}</a>{{end}}
   </div>
   {{with .TuningWhy}}<p class="note" data-tuning-handoff-refused="true">{{t "Not handed to Tuning:"}} {{.}}</p>{{end}}
   {{range .Incompatibility}}<p class="msg bad" role="alert">{{if or (eq .Code "dataset_mismatch") (eq .Code "schema_mismatch")}}{{t "comparison refused"}}{{else}}{{t "partial comparison"}}{{end}}: {{.Code}}{{with .Question}} {{t "· question"}} {{.}}{{end}} · {{.Detail}}</p>{{end}}
