@@ -3,6 +3,8 @@ name: Go Windows development release
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions: {}
 
@@ -12,7 +14,7 @@ jobs:
     with:
       binary-name: hachidori
       build-target: ./cmd/hachidori
-      development-line: "0.2"
+      development-line: "0.3"
     permissions:
       actions: read
       contents: write
