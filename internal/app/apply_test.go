@@ -616,6 +616,7 @@ func TestApplyIsOneControllerAction(t *testing.T) {
 // ---- failure after the activation: rollback ----
 
 func TestApplyRollsBackAnyFailureAfterTheActivation(t *testing.T) {
+	forgeSource(t) // Install the shared read-only catalog before parallel cases start.
 	for name, tc := range map[string]struct {
 		mode  string
 		phase string
@@ -639,6 +640,7 @@ func TestApplyRollsBackAnyFailureAfterTheActivation(t *testing.T) {
 				continue // the single-worker binding differs only in how it is observed
 			}
 			t.Run(name+"/"+shape, func(t *testing.T) {
+				t.Parallel()
 				e := newApplyEnv(t, "accepted", func(e *applyEnv) { e.single = single })
 				e.start()
 				before, oldPID := e.record(), e.c.Snapshot().Status.Worker.PID
@@ -676,6 +678,7 @@ func TestApplyRollsBackAnyFailureAfterTheActivation(t *testing.T) {
 }
 
 func TestApplyRejectsAStatusThatDoesNotNameTheVariant(t *testing.T) {
+	forgeSource(t) // Keep the catalog immutable while independent cases run.
 	for name, lie := range map[string]func(*server.Runtime){
 		"no variant":       func(r *server.Runtime) { r.Variant = nil },
 		"another manifest": func(r *server.Runtime) { r.Variant.ManifestSHA256 = strings.Repeat("1", 64) },
@@ -683,6 +686,7 @@ func TestApplyRejectsAStatusThatDoesNotNameTheVariant(t *testing.T) {
 		"another device":   func(r *server.Runtime) { r.Device = "cpu" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newApplyEnv(t, "accepted", func(e *applyEnv) { e.statusLie = lie })
 			e.start()
 			before := e.record()
