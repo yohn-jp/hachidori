@@ -64,6 +64,7 @@ jobs:
           name: windows-candidate
           path: candidate/
           if-no-files-found: error
+          overwrite: true
           retention-days: 30
 
   # One matrix entry per #242 proof boundary. Each runs the Go package
@@ -130,4 +131,5 @@ jobs:
           name: windows-e2e-evidence-${{ matrix.shard }}
           path: evidence/${{ matrix.shard }}
           if-no-files-found: error
+          overwrite: true
           retention-days: 30
