@@ -661,6 +661,10 @@ func TestMain(m *testing.M) {
 		fakeExecWorker(spec)
 		os.Exit(0)
 	}
+	if spec := os.Getenv(fakeTrialEnv); spec != "" {
+		fakeTrialWorker(spec)
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
 }
 

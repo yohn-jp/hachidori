@@ -7,6 +7,11 @@
 {{with .Tuning}}
 <div id="tuning-workspace">
   {{with .Err}}<p class="msg bad" role="alert" id="tuning-unavailable">{{t .}}</p>{{end}}
+  {{with .Busy}}{{if .OwnedBy "tuning"}}
+  {{template "op-busy" .}}
+  {{template "op-refresh" "tuning-workspace"}}
+  {{end}}{{end}}
+  {{with .Last}}{{if .OwnedBy "tuning"}}{{template "op-last" .}}{{end}}{{end}}
 
   {{with .Context}}
   <section class="region section" id="tuning-context" aria-labelledby="tc-h" data-context="{{if .Refused}}refused{{else}}bound{{end}}">
@@ -295,6 +300,38 @@
         {{end}}
       </dd></div>
       {{end}}
+      {{with .Trials}}
+      <div id="tuning-trials" data-trials="{{len .Rows}}"><dt>{{t "Trials"}}</dt><dd>
+        {{with .Err}}<p class="msg bad" role="alert" id="tuning-trials-unavailable">{{.}}</p>{{end}}
+        {{with .Current}}
+        <span class="value" id="tuning-trial-current" data-trial-candidate="{{.CandidateID}}" data-trial-stage="{{.Stage}}" data-evaluation="{{.Mode}}">
+          <strong>{{t "EPHEMERAL TRIAL"}}</strong> · {{if eq .Stage "materialized"}}{{t "built by Forge as variant"}}{{range .Variants}} <span class="mono">{{short .}}</span>{{end}}{{else}}{{t "recorded as a candidate, no artifact"}}{{end}}
+        </span>
+        <span class="note">{{t "Choice accuracy"}} {{if .Accuracy}}{{.Accuracy}}{{else}}{{t "not checked"}}{{end}} · {{t "request latency p50"}} {{if .Latency}}{{.Latency}}{{else}}{{t "not checked"}}{{end}} · {{t "trial setup"}} {{.Assembly}}</span>
+        <span class="note">{{t "Measured on an in-memory trial of the source model: not certification. A clean-loaded variant is evaluated separately in Forge."}}</span>
+        {{else}}
+        <span class="value" id="tuning-trial-none">{{t "No trial recorded for this exact plan."}}</span>
+        <span class="note">{{t "Trials run with hachidori forge trial. Nothing is built and nothing is applied."}}</span>
+        {{end}}
+        {{if .Rows}}
+        <div class="table-wrap"><table class="data" id="tuning-trials-table">
+          <caption class="vh">{{t "Recorded trial candidates"}}</caption>
+          <thead><tr><th scope="col">{{t "Candidate"}}</th><th scope="col">{{t "Stage"}}</th><th scope="col">{{t "Choice accuracy"}}</th><th scope="col">{{t "Request latency"}}</th><th scope="col">{{t "Trial setup"}}</th><th scope="col"></th></tr></thead>
+          <tbody>{{range .Rows}}
+            <tr data-trial-candidate="{{.CandidateID}}" data-trial-stage="{{.Stage}}"{{if .Current}} aria-current="true"{{end}}>
+              <th scope="row" class="mono"><a href="/tuning?source={{$.Tuning.Source}}&amp;profile={{.ProfileID}}" title="{{.CandidateID}}">{{short .CandidateID}}</a></th>
+              <td>{{if eq .Stage "materialized"}}{{t "Variant built"}}{{else}}{{t "Trial recorded"}}{{end}}</td>
+              <td class="num">{{if .Accuracy}}{{.Accuracy}}{{else}}<span class="muted">{{t "not checked"}}</span>{{end}}</td>
+              <td class="num">{{if .Latency}}{{.Latency}}{{else}}<span class="muted">{{t "not checked"}}</span>{{end}}</td>
+              <td class="num">{{.Assembly}}</td>
+              <td>{{if ne .Stage "materialized"}}<a class="btn" href="{{.FinalistHref}}">{{t "Forge as finalist"}}</a>{{end}}</td>
+            </tr>{{end}}
+          </tbody>
+        </table></div>
+        {{if .More}}<span class="note">{{.More}} {{t "older candidates are not listed"}}</span>{{end}}
+        {{end}}
+      </dd></div>
+      {{end}}
     </dl>
 
     <div class="intent-action">
@@ -319,6 +356,24 @@
     <h3>{{t "Semantic regions"}}</h3>
     <ul class="note">{{range .Regions}}<li data-evidence-region-counts="{{.ID}}"><span class="mono">{{.ID}}</span> · {{if .Modules}}{{.Modules}} {{t "modules"}}{{end}}{{if and .Modules .Files}} · {{end}}{{if .Files}}{{.Files}} {{t "files"}}{{end}} · {{t .Note}}</li>{{end}}</ul>
   </section>
+  {{with .Trials}}{{with .Current}}{{with .Detail}}
+  <section id="tuning-trial-evidence" aria-labelledby="tte-h" data-trial-evidence="{{.EvidenceID}}">
+    <h3 id="tte-h">{{t "Trial execution evidence"}}</h3>
+    <p class="note">{{t "Trial evidence records how the model was assembled in memory and what was measured on it. It is never certification."}}</p>
+    <dl class="kv">
+      <dt>{{t "Assembly"}}</dt><dd>{{.Assembly}} · {{.Changed}} {{t "groups replaced"}} · {{.Reused}} {{t "groups reused"}}</dd>
+      <dt>{{t "Cache"}}</dt><dd>{{.CacheHits}} {{t "hits"}} · {{.Misses}} {{t "misses"}} · {{.Transformed}} {{t "components transformed"}} · {{.Evicted}} {{t "evicted"}}</dd>
+      <dt>{{t "Transferred"}}</dt><dd>{{.ToGPU}} {{t "RAM to GPU"}} · {{.Released}} {{t "released"}}</dd>
+      <dt>{{t "System RAM"}}</dt><dd>{{.RAMUsed}} / {{.RAMBudget}} {{t "budget"}} ({{.RAMCanonical}} {{t "canonical source"}} + {{.RAMTransformed}} {{t "transformed components"}})</dd>
+      {{if .GPUAllocated}}<dt>{{t "GPU allocated"}}</dt><dd>{{.GPUAllocated}}</dd>{{end}}
+      {{if .HostRSS}}<dt>{{t "Worker RAM"}}</dt><dd>{{.HostRSS}}</dd>{{end}}
+      <dt>{{t "Evaluation time"}}</dt><dd>{{.Evaluation}}</dd>
+      <dt>{{t "Plan"}}</dt><dd data-trial-plan="{{.PlanSHA256}}">{{.PlanSHA256}}</dd>
+      <dt>{{t "Components"}}</dt><dd data-trial-components="{{.ComponentsSHA256}}">{{.Components}} · {{.ComponentsSHA256}}</dd>
+      <dt>{{t "Measurements"}}</dt><dd>{{.Measurements}}</dd>
+    </dl>
+  </section>
+  {{end}}{{end}}{{end}}
   {{with .Profiles}}
   <section id="tuning-profiles" aria-labelledby="tp-h">
     <h3 id="tp-h">{{t "Saved profiles"}}</h3>

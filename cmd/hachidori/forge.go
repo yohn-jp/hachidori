@@ -27,7 +27,7 @@ import (
 
 const forgeUsage = `usage: hachidori variant <list|show|verify|optimize|apply|remove|recipes> [flags]
        hachidori certify <run|evaluate|show> [flags]
-       hachidori forge <preflight|probe|execute|certify|diagnostics> [flags]
+       hachidori forge <preflight|probe|execute|certify|trial|candidates|finalist|diagnostics> [flags]
        hachidori activate [flags]
 `
 

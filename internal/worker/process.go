@@ -88,7 +88,9 @@ type message struct {
 	Results     [][]api.Result `json:"results"`
 	InferenceMS float64        `json:"inference_ms"`
 	Stats       map[string]any `json:"stats"`
-	Error       *RequestError  `json:"error"`
+	// Result is the payload of a trial operation (Process.Call).
+	Result json.RawMessage `json:"result"`
+	Error  *RequestError   `json:"error"`
 }
 
 // Process is one running worker.
@@ -257,6 +259,23 @@ func (p *Process) Decide(items []Item) ([][]api.Result, float64, error) {
 		return nil, 0, p.failure()
 	}
 	return m.Results, m.InferenceMS, nil
+}
+
+// Call runs one named operation of the worker's tuning trial session and
+// returns its result payload. Like every request it is serialized behind
+// in-flight work. A refusal the worker reports is a *RequestError carrying the
+// worker's own class (trial_unsupported, trial_incompatible, trial_state_lost,
+// trial_failed); only a worker that stops answering ends the call early.
+func (p *Process) Call(op string, args map[string]any) (json.RawMessage, error) {
+	req := map[string]any{"op": op}
+	for k, v := range args {
+		req[k] = v
+	}
+	m, err := p.call(req)
+	if err != nil {
+		return nil, err
+	}
+	return m.Result, nil
 }
 
 // Stats returns accelerator statistics from the worker. It waits behind an

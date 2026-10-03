@@ -83,9 +83,13 @@ func LookupRecipe(modelID, name string) (home.Recipe, error) {
 	return home.Recipe{}, fmt.Errorf("model %s has no recipe %q (available: %s)", modelID, name, strings.Join(RecipeNames(modelID), ", "))
 }
 
-// weightsOf is the weight precision a recipe's scheme declares. It is checked
+// WeightsOf is the weight precision a recipe's scheme declares. It is checked
 // against the saved config of every variant built (setup.CheckPreserved), so
-// a scheme the backend did not really apply is refused, never recorded.
+// a scheme the backend did not really apply is refused, never recorded. Tuning
+// trials read the same declaration, so a trial transformation and a Forge
+// build cannot disagree about the scheme's parameters.
+func WeightsOf(r home.Recipe) (home.WeightPrecision, error) { return weightsOf(r) }
+
 func weightsOf(r home.Recipe) (home.WeightPrecision, error) {
 	switch r.Scheme {
 	case "W4A16":

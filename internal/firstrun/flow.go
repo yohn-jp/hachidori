@@ -163,10 +163,14 @@ func (f *Flow) Select(ctx context.Context) (Validation, error) {
 // canChangeLocked reports whether the selection may change now: not while an
 // action is in flight and never after a successful activation.
 func (f *Flow) canChangeLocked() error {
-	if f.busy {
+	snap := f.cfg.Ctl.Snapshot()
+	// The controller is authoritative for whether setup is still running.
+	// The local busy flag can briefly remain true after the controller has
+	// published a terminal failure while the watcher performs its cleanup.
+	// Do not let that stale bookkeeping reject recovery actions.
+	if f.busy && snap.Operation != nil {
 		return ErrBusy
 	}
-	snap := f.cfg.Ctl.Snapshot()
 	switch snap.State {
 	case app.Unconfigured, app.NotInstalled:
 		return nil

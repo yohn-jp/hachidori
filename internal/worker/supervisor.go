@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"sync"
 	"time"
@@ -212,6 +213,22 @@ func (s *Supervisor) Decide(items []Item) ([][]api.Result, float64, error) {
 		s.latencies = s.latencies[len(s.latencies)-1024:]
 	}
 	return res, ms, nil
+}
+
+// Trial runs one operation of a tuning trial session on the resident worker. It
+// returns the worker's PID with the result so that a caller can prove it is
+// still talking to the one worker whose model it has been changing: a worker
+// that was restarted holds a fresh source model, not the trial state.
+func (s *Supervisor) Trial(op string, args map[string]any) (json.RawMessage, int, error) {
+	s.mu.Lock()
+	p := s.proc
+	state := s.state
+	s.mu.Unlock()
+	if p == nil || state != StateReady {
+		return nil, 0, &RequestError{Class: api.ErrNotReady, Message: "worker state is " + state}
+	}
+	res, err := p.Call(op, args)
+	return res, p.PID, err
 }
 
 func (s *Supervisor) count(class string) {

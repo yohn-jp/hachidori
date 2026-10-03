@@ -29,6 +29,9 @@ const forgeCmdUsage = `usage: hachidori forge preflight <materialize|optimize|pr
        hachidori forge probe [flags] <variant-id>
        hachidori forge execute [flags] <dataset.jsonl>
        hachidori forge certify [flags] <variant-id> <dataset.jsonl>
+       hachidori forge trial [flags] <dataset.jsonl> <profile-id>...
+       hachidori forge candidates [flags]
+       hachidori forge finalist [flags] <candidate-id>
        hachidori forge diagnostics <list|show|export> [flags]
 `
 
@@ -46,6 +49,12 @@ func cmdForge(args []string) error {
 		return forgeExecute(args[1:])
 	case "certify":
 		return forgeCertify(args[1:])
+	case "trial":
+		return forgeTrial(args[1:])
+	case "candidates":
+		return forgeCandidates(args[1:])
+	case "finalist":
+		return forgeFinalist(args[1:])
 	case "diagnostics":
 		return forgeDiagnostics(args[1:])
 	}

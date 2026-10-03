@@ -290,6 +290,7 @@ func RunForgeBuildEvaluate(ctx context.Context, h home.Home, p ForgeBuildEvaluat
 	res.Variant = variant
 	res.Resolution.Variant = variant.ID
 	res.Resolution.CandidateDType = variant.Weights.DType
+	linkTrialCandidates(h, variant, log)
 
 	plan.certify.Variant = variant.ID
 	cert, err := runForgeCertification(ctx, h, plan.certify, deps.Certify, log, composedCertificationObserver(obs), plan.certInputs)
