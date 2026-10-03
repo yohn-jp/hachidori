@@ -17,7 +17,8 @@ func TestPrivateScriptsParse(t *testing.T) {
 		t.Skip("no python3 to parse the private scripts")
 	}
 	for _, p := range []string{"hachidori_worker.py", filepath.Join("..", "..", "optimize", "py", "hachidori_optimizer.py"),
-		filepath.Join("..", "..", "optimize", "testdata", "tinyclef.py")} {
+		filepath.Join("..", "..", "optimize", "testdata", "tinyclef.py"),
+		filepath.Join("testdata", "profile_w4.py"), filepath.Join("testdata", "w4_linear.py")} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatal(err)
 		}
@@ -122,6 +123,7 @@ func TestTrialReplacementOnRealTorch(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{filepath.Join("testdata", "trial_torch.py"), "hachidori_worker.py"},
+		{filepath.Join("testdata", "w4_linear.py"), "hachidori_worker.py"},
 		{filepath.Join("testdata", "trial_equivalence.py"), "hachidori_worker.py", filepath.Join("..", "..", "optimize", "testdata", "tinyclef.py")},
 	} {
 		cmd := exec.Command(python, append([]string{"-B"}, args...)...)

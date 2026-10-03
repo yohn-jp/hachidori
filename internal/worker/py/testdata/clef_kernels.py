@@ -241,6 +241,7 @@ class KernelTests(unittest.TestCase):
                     module, torch(), device, 'bfloat16',
                     platform='win32' if device == 'cuda' else 'linux')
             provider.transformers = types.SimpleNamespace(__version__='5.17.0')
+            provider.backbone = types.SimpleNamespace(named_modules=lambda: [])
             provider.quantized = 7
             provider.want_dtype = 'bfloat16'
             provider.variant = {'weights': {'scheme': 'W4A16', 'format': 'compressed-tensors/pack-quantized'}}

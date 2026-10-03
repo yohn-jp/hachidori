@@ -1,0 +1,244 @@
+{
+  "torch": "2.11.0+cpu",
+  "platform": "linux",
+  "physical_windows_rtx3060": "NOT_CHECKED",
+  "bf16_tolerance": {
+    "rtol": 0.016,
+    "atol": 0.00001
+  },
+  "device": "cpu",
+  "shape": [
+    3072,
+    3072
+  ],
+  "micro": {
+    "1": {
+      "dequant_materialize": {
+        "samples_ms": [
+          95.60665796743706,
+          92.33735204907134,
+          91.50875394698232,
+          91.16240800358355,
+          91.92551503656432
+        ],
+        "median_ms": 91.92551503656432,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "linear": {
+        "samples_ms": [
+          1.452911994419992,
+          1.21497199870646,
+          1.061994000338018,
+          1.1570850037969649,
+          1.263094018213451
+        ],
+        "median_ms": 1.21497199870646,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "reference_total": {
+        "samples_ms": [
+          94.71795702120289,
+          94.26943300059065,
+          93.88753696111962,
+          91.87261498300359,
+          92.26199600379914
+        ],
+        "median_ms": 93.88753696111962,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "reference_output_sample": [
+        -0.20703125,
+        0.039306640625,
+        0.6640625,
+        0.125,
+        -1.359375,
+        0.034912109375,
+        0.8515625,
+        -0.36328125
+      ],
+      "auto": {
+        "samples_ms": [
+          89.88640597090125,
+          91.1559010273777,
+          91.34724002797157,
+          90.90508404187858,
+          90.25324496906251
+        ],
+        "median_ms": 90.90508404187858,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "equivalent": true,
+      "max_abs_error": 0,
+      "evidence": {
+        "selected": "packed-reference",
+        "available": false,
+        "executed": "packed-reference",
+        "optimized_calls": 0,
+        "reference_calls": 6,
+        "reason": "native Windows CUDA backend only"
+      }
+    },
+    "4": {
+      "dequant_materialize": {
+        "samples_ms": [
+          89.22141999937594,
+          90.33852000720799,
+          87.3971869586967,
+          88.05614395532757,
+          88.9991590520367
+        ],
+        "median_ms": 88.9991590520367,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "linear": {
+        "samples_ms": [
+          3.4716519876383245,
+          3.173797042109072,
+          3.2756259897723794,
+          3.5984550486318767,
+          3.724125970620662
+        ],
+        "median_ms": 3.4716519876383245,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "reference_total": {
+        "samples_ms": [
+          93.02546002436429,
+          92.7948749740608,
+          92.23954402841628,
+          93.44821202103049,
+          92.8532020188868
+        ],
+        "median_ms": 92.8532020188868,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "reference_output_sample": [
+        0.73828125,
+        0.357421875,
+        -0.2216796875,
+        -0.71484375,
+        0.74609375,
+        -0.09130859375,
+        -0.2265625,
+        1.140625
+      ],
+      "auto": {
+        "samples_ms": [
+          95.89519596192986,
+          95.09514301316813,
+          94.59340898320079,
+          92.90862898342311,
+          93.89579301932827
+        ],
+        "median_ms": 94.59340898320079,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "equivalent": true,
+      "max_abs_error": 0,
+      "evidence": {
+        "selected": "packed-reference",
+        "available": false,
+        "executed": "packed-reference",
+        "optimized_calls": 0,
+        "reference_calls": 12,
+        "reason": "native Windows CUDA backend only"
+      }
+    },
+    "128": {
+      "dequant_materialize": {
+        "samples_ms": [
+          88.53198896395043,
+          85.91857098508626,
+          85.8573549776338,
+          85.82810004008934,
+          86.65326202753931
+        ],
+        "median_ms": 85.91857098508626,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "linear": {
+        "samples_ms": [
+          92.37332502380013,
+          91.38526901369914,
+          91.23017999809235,
+          92.4395359470509,
+          91.63614199496806
+        ],
+        "median_ms": 91.63614199496806,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "reference_total": {
+        "samples_ms": [
+          183.80302202422172,
+          181.20785400969908,
+          181.28139298642054,
+          183.9543100213632,
+          185.366073041223
+        ],
+        "median_ms": 183.80302202422172,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "reference_output_sample": [
+        0.58984375,
+        -0.3515625,
+        -0.4609375,
+        0.7578125,
+        -0.251953125,
+        -0.28515625,
+        0.1748046875,
+        0.466796875
+      ],
+      "auto": {
+        "samples_ms": [
+          182.53991898382083,
+          184.15283696958795,
+          185.6365500134416,
+          184.89101203158498,
+          183.55797801632434
+        ],
+        "median_ms": 184.15283696958795,
+        "base_allocated_bytes": null,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "equivalent": true,
+      "max_abs_error": 0,
+      "evidence": {
+        "selected": "packed-reference",
+        "available": false,
+        "executed": "packed-reference",
+        "optimized_calls": 0,
+        "reference_calls": 18,
+        "reason": "native Windows CUDA backend only"
+      }
+    }
+  },
+  "semantic_workloads": "NOT_CHECKED: use --config",
+  "python": "3.13.15 (main, Aug  5 2026, 12:25:43) [GCC 15.3.0]",
+  "gpu": null,
+  "evidence_scope": "Linux CPU microbenchmark only; no semantic workload or GPU certification",
+  "command": "OMP_NUM_THREADS=1 python profile_w4.py hachidori_worker.py --out 3072 --inner 3072 --repeats 5",
+  "base_sha": "0b5402910f45e776f0d302c1b27acce7e01338f5"
+}
