@@ -993,7 +993,7 @@ func TestForgeFailureAndResumeAreShownTruthfully(t *testing.T) {
 	// Another workspace keeps the outcome and a pointer to the owner, not the
 	// phases or the diagnostic.
 	body = e.get(t, "/models").Body.String()
-	last := section(body, `<div class="op-last compact" id="models-last"`, `</div>`)
+	last := section(body, `id="models-last"`, `</div>`)
 	if !strings.Contains(last, "FAILED") || !strings.Contains(last, `href="/forge">Details`) || strings.Contains(last, "forge-diagnostic-last") || strings.Contains(last, `class="stages"`) {
 		t.Errorf("/models compact failure outcome:\n%s", last)
 	}
