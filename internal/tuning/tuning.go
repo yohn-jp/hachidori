@@ -210,6 +210,9 @@ func (p Profile) Canonical() []byte {
 // SHA256 is the profile identity digest.
 func (p Profile) SHA256() string { return sha256Hex(p.Canonical()) }
 
+// ID is the immutable persisted identity of a profile.
+func (p Profile) ID() string { return p.SHA256() }
+
 // Canonical is the stable JSON encoding used for analysis binding.
 func (a Analysis) Canonical() []byte {
 	b, err := json.Marshal(a)
@@ -221,6 +224,9 @@ func (a Analysis) Canonical() []byte {
 
 // SHA256 is the analysis result digest used to bind profiles to their input.
 func (a Analysis) SHA256() string { return sha256Hex(a.Canonical()) }
+
+// ID is the immutable persisted identity of an analysis.
+func (a Analysis) ID() string { return a.SHA256() }
 
 // Compile deterministically turns a profile into the existing canonical
 // home.Recipe. Auto keeps the optimizer baseline byte-for-byte; pinned adds

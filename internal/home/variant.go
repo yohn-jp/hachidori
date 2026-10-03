@@ -151,6 +151,43 @@ type Calibration struct {
 	SHA256 string `json:"sha256"`
 }
 
+// TuningProvenance binds a variant build to the exact persisted semantic
+// profile and source analysis that compiled its recipe. IDs are their full
+// SHA-256 digests so a provenance reference is directly verifiable.
+type TuningProvenance struct {
+	Schema          string        `json:"schema"`
+	Source          VariantSource `json:"source"`
+	ProfileID       string        `json:"profile_id"`
+	ProfileSHA256   string        `json:"profile_sha256"`
+	AnalysisID      string        `json:"analysis_id"`
+	AnalysisSHA256  string        `json:"analysis_sha256"`
+	CompilerVersion string        `json:"compiler_version"`
+}
+
+// TuningProvenanceSchema versions the optional tuning linkage stored in a
+// variant manifest.
+const TuningProvenanceSchema = "hachidori.tuning-provenance/1"
+
+// Validate checks the provenance's self-contained identities and source.
+func (p TuningProvenance) Validate(source VariantSource) error {
+	if p.Schema != TuningProvenanceSchema {
+		return fmt.Errorf("tuning provenance schema %q, want %q", p.Schema, TuningProvenanceSchema)
+	}
+	if p.Source != source {
+		return errors.New("tuning provenance source identity does not match variant source")
+	}
+	if !validSHA256(p.ProfileID) || p.ProfileID != p.ProfileSHA256 {
+		return errors.New("tuning provenance profile identity does not match its digest")
+	}
+	if !validSHA256(p.AnalysisID) || p.AnalysisID != p.AnalysisSHA256 {
+		return errors.New("tuning provenance analysis identity does not match its digest")
+	}
+	if strings.TrimSpace(p.CompilerVersion) == "" {
+		return errors.New("tuning provenance has no compiler version")
+	}
+	return nil
+}
+
 // WeightPrecision declares how the variant's weights are stored and executed.
 // DType is the compute/activation dtype of everything that is not quantized.
 type WeightPrecision struct {
@@ -182,12 +219,13 @@ type VariantManifest struct {
 	Schema string `json:"schema"`
 	// ID is the stable variant identity: derived from BuildID and the
 	// artifact digests, so it changes whenever the source, engine, engine
-	// version, recipe, calibration or any artifact byte changes.
+	// version, recipe, calibration, tuning profile or any artifact byte changes.
 	ID string `json:"id"`
 	// BuildID is the identity of the build contract alone (source, engine,
-	// engine version, recipe, calibration), before any artifact exists. Two
-	// builds of one contract that produce different bytes share a BuildID and
-	// have different IDs: the difference is visible, never merged.
+	// engine version, recipe, calibration and optional tuning profile), before
+	// any artifact exists. Two builds of one contract that produce different
+	// bytes share a BuildID and have different IDs: the difference is visible,
+	// never merged.
 	BuildID       string            `json:"build_id"`
 	Source        VariantSource     `json:"source"`
 	Provider      string            `json:"provider"`
@@ -195,6 +233,7 @@ type VariantManifest struct {
 	Recipe        Recipe            `json:"recipe"`
 	RecipeSHA256  string            `json:"recipe_sha256"`
 	Calibration   *Calibration      `json:"calibration,omitempty"`
+	Tuning        *TuningProvenance `json:"tuning,omitempty"`
 	Weights       WeightPrecision   `json:"weights"`
 	Preserved     []PreservedModule `json:"preserved"`
 	Files         map[string]string `json:"files"` // artifact relpath -> sha256
@@ -219,15 +258,23 @@ func SourceOf(m ModelManifest) VariantSource {
 
 // DeriveBuildID is the identity of a build contract.
 func DeriveBuildID(src VariantSource, provider string, opt Optimizer, recipeSHA string, cal *Calibration) string {
+	return DeriveBuildIDWithTuning(src, provider, opt, recipeSHA, cal, nil)
+}
+
+// DeriveBuildIDWithTuning is the identity of a build contract, including its
+// optional exact tuning provenance. A nil tuning record preserves the
+// recipe-only identity of existing variants.
+func DeriveBuildIDWithTuning(src VariantSource, provider string, opt Optimizer, recipeSHA string, cal *Calibration, tuning *TuningProvenance) string {
 	b, err := json.Marshal(struct {
-		Schema      string        `json:"schema"`
-		Source      VariantSource `json:"source"`
-		Provider    string        `json:"provider"`
-		Engine      string        `json:"engine"`
-		Version     string        `json:"version"`
-		Recipe      string        `json:"recipe_sha256"`
-		Calibration *Calibration  `json:"calibration,omitempty"`
-	}{VariantSchema, src, provider, opt.Engine, opt.Version, recipeSHA, cal})
+		Schema      string            `json:"schema"`
+		Source      VariantSource     `json:"source"`
+		Provider    string            `json:"provider"`
+		Engine      string            `json:"engine"`
+		Version     string            `json:"version"`
+		Recipe      string            `json:"recipe_sha256"`
+		Calibration *Calibration      `json:"calibration,omitempty"`
+		Tuning      *TuningProvenance `json:"tuning,omitempty"`
+	}{VariantSchema, src, provider, opt.Engine, opt.Version, recipeSHA, cal, tuning})
 	if err != nil {
 		panic(err)
 	}
@@ -267,7 +314,7 @@ func (m *VariantManifest) Seal() {
 	m.Schema = VariantSchema
 	m.RecipeSHA256 = m.Recipe.SHA256()
 	m.Preserved = append([]PreservedModule(nil), m.Recipe.Preserved...)
-	m.BuildID = DeriveBuildID(m.Source, m.Provider, m.Optimizer, m.RecipeSHA256, m.Calibration)
+	m.BuildID = DeriveBuildIDWithTuning(m.Source, m.Provider, m.Optimizer, m.RecipeSHA256, m.Calibration, m.Tuning)
 	m.ID = DeriveVariantID(m.Source.ID, m.Recipe.Name, m.BuildID, m.Files)
 	m.Certification = CertificationLink{Status: CertificationPending, Records: CertificationDir(m.ID)}
 }
@@ -326,8 +373,13 @@ func (m VariantManifest) Validate() error {
 			return fmt.Errorf("variant artifact %s has no sha256 digest", rel)
 		}
 	}
-	if want := DeriveBuildID(m.Source, m.Provider, m.Optimizer, m.RecipeSHA256, m.Calibration); m.BuildID != want {
-		return errors.New("variant build id does not match its source, engine, recipe and calibration")
+	if m.Tuning != nil {
+		if err := m.Tuning.Validate(m.Source); err != nil {
+			return err
+		}
+	}
+	if want := DeriveBuildIDWithTuning(m.Source, m.Provider, m.Optimizer, m.RecipeSHA256, m.Calibration, m.Tuning); m.BuildID != want {
+		return errors.New("variant build id does not match its source, engine, recipe, calibration and tuning provenance")
 	}
 	if want := DeriveVariantID(m.Source.ID, m.Recipe.Name, m.BuildID, m.Files); m.ID != want {
 		return fmt.Errorf("variant id %q does not match its build and artifact digests (%q)", m.ID, want)
@@ -354,6 +406,14 @@ func short(d string) string {
 		return d[:12]
 	}
 	return d
+}
+
+func validSHA256(d string) bool {
+	if len(d) != 64 {
+		return false
+	}
+	b, err := hex.DecodeString(d)
+	return err == nil && hex.EncodeToString(b) == d
 }
 
 func samePreserved(a, b []PreservedModule) bool {
