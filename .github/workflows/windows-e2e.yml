@@ -1,0 +1,133 @@
+name: Windows E2E certification
+
+# Full Windows appliance E2E certification. It certifies one release-candidate
+# executable per main commit and is deliberately not a pull_request workflow:
+# pull requests keep the lightweight Go CI path (ci.yml).
+#
+# Topology: candidate (built once) -> parallel shards, each verifying and
+# consuming that same artifact. Shards never rebuild hachidori.exe.
+#
+# Hosted-runner results are CI evidence. They are never a physical Windows
+# PASS; see docs/windows-certification-checklist.md.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+# One certification per commit; a newer push must not cancel the certification
+# of an earlier main commit.
+concurrency:
+  group: windows-e2e-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: Build Windows candidate
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.identity.outputs.sha256 }}
+      source_commit: ${{ steps.identity.outputs.source_commit }}
+      file: ${{ steps.identity.outputs.file }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+      - name: Build the one candidate executable
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          New-Item -ItemType Directory -Force -Path candidate | Out-Null
+          go build -trimpath -o candidate/hachidori.exe ./cmd/hachidori
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Record candidate identity
+        id: identity
+        shell: pwsh
+        run: |
+          go run ./test/windows-e2e/cmd/e2e-candidate write -dir candidate -file hachidori.exe -commit $env:GITHUB_SHA | Tee-Object -Variable identity
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $identity | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+      - name: Upload candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-candidate
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 30
+
+  # One matrix entry per #242 proof boundary. Each runs the Go package
+  # test/windows-e2e/<shard> in certification mode against the downloaded
+  # candidate. A shard adds scenarios by adding tests to its package and listing
+  # them in the package's required.json; it adds shard-specific setup, if any,
+  # as steps guarded by `if: matrix.shard == '<name>'` below the marked line.
+  shard:
+    name: shard (${{ matrix.shard }})
+    needs: candidate
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - bootstrap
+          - runtime
+          - recovery
+          - single-instance
+          - update
+          - diagnostics
+    env:
+      HACHIDORI_WINDOWS_E2E: "1"
+      HACHIDORI_E2E_CANDIDATE_DIR: ${{ github.workspace }}\candidate
+      HACHIDORI_E2E_EVIDENCE_DIR: ${{ github.workspace }}\evidence
+      HACHIDORI_E2E_SOURCE_SHA: ${{ github.sha }}
+      HACHIDORI_E2E_CANDIDATE_SHA256: ${{ needs.candidate.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+      - name: Download the shared candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-candidate
+          path: candidate
+      - name: Verify candidate identity
+        shell: pwsh
+        run: |
+          if (-not $env:HACHIDORI_E2E_CANDIDATE_SHA256) { throw "candidate job reported no SHA-256" }
+          go run ./test/windows-e2e/cmd/e2e-candidate verify -dir candidate -commit $env:GITHUB_SHA -sha256 $env:HACHIDORI_E2E_CANDIDATE_SHA256
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Shard-specific setup steps go here.
+      - name: Run shard ${{ matrix.shard }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:HACHIDORI_E2E_EVIDENCE_DIR '${{ matrix.shard }}') | Out-Null
+          $log = Join-Path $env:HACHIDORI_E2E_EVIDENCE_DIR '${{ matrix.shard }}\go-test.log'
+          go test -count=1 -timeout 30m -v ./test/windows-e2e/${{ matrix.shard }}/... *> "$log.full"
+          $code = $LASTEXITCODE
+          Get-Content "$log.full" -Tail 2000 | Out-File -Encoding utf8 $log
+          Remove-Item "$log.full"
+          exit $code
+      - name: Upload shard evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-e2e-evidence-${{ matrix.shard }}
+          path: evidence/${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 30
