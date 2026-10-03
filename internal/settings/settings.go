@@ -176,6 +176,9 @@ func (c Connection) Resolve(endpoint tunnel.LocalEndpoint) (ResolvedConnection, 
 	if err := endpoint.Validate(); err != nil {
 		return ResolvedConnection{}, fmt.Errorf("resolve connection %q: %w", c.Name, err)
 	}
+	if c.LocalPortMode == ConnectionAuto && endpoint.Host != "127.0.0.1" {
+		return ResolvedConnection{}, fmt.Errorf("resolve connection %q: local endpoint host %q cannot be represented by the tunnel spec's 127.0.0.1 target", c.Name, endpoint.Host)
+	}
 
 	spec := tunnel.Spec{Destination: c.Destination}
 	if c.RemoteBindMode == ConnectionAuto {

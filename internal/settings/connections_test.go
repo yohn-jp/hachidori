@@ -200,6 +200,11 @@ func TestAutoResolutionAllowsPinnedOverridesAndRejectsUnsafeValues(t *testing.T)
 	if _, err := profile.Resolve(tunnel.LocalEndpoint{Host: "0.0.0.0", Port: 9123}); err == nil {
 		t.Fatal("unsafe managed endpoint was accepted")
 	}
+	for _, host := range []string{"::1", "127.0.0.2"} {
+		if _, err := profile.Resolve(tunnel.LocalEndpoint{Host: host, Port: 9123}); err == nil {
+			t.Errorf("Auto local port accepted managed API host %q, which tunnel.Spec cannot target", host)
+		}
+	}
 }
 
 func TestLegacyConnectionValuesLoadAsPinned(t *testing.T) {
