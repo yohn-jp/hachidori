@@ -124,7 +124,7 @@ func TestHandlerServesWizardAndProtectsActions(t *testing.T) {
 	// Until READY every non-wizard path is still the wizard; after READY the
 	// desktop home takes over.
 	dash = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("dashboard")) })
-	if w = serve(h, "GET", "/", nil, nil); strings.Contains(w.Body.String(), "dashboard") {
+	if w = serve(h, "GET", "/", nil, nil); w.Body.String() == "dashboard" {
 		t.Fatal("dashboard served before READY")
 	}
 	f.rt.set(worker.StateReady, "ready")
