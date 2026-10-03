@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -690,6 +691,10 @@ func TestTuningStoreImpactIsEstimatedUntilACandidateIsMeasured(t *testing.T) {
 		!imp.MemoryUsage.LowerBound || imp.MemoryUsage.Bytes == 0 {
 		t.Errorf("Auto memory %+v / %+v, want an ESTIMATED lower bound", imp.Memory, imp.MemoryUsage)
 	}
+	// Carried files are artifact size, never device-resident memory.
+	if carried == 0 || int64(imp.MemoryUsage.Bytes) > int64(float64(total)-float64(quantizable)*(1-w4a16BytesPerBF16Byte))+1 {
+		t.Errorf("memory lower bound %d includes carried files (%d bytes)", imp.MemoryUsage.Bytes, carried)
+	}
 	notChecked("latency", imp.Latency)
 	notChecked("fidelity", imp.Fidelity)
 	pinned := pinnedProfile(t, a, "maximum-fidelity", tuning.RegionFeedForward)
@@ -708,8 +713,11 @@ func TestTuningStoreImpactIsEstimatedUntilACandidateIsMeasured(t *testing.T) {
 		Tuning: &home.TuningProvenance{Schema: home.TuningProvenanceSchema, Source: home.SourceOf(m), ProfileID: pinned.ID(), ProfileSHA256: pinned.SHA256(),
 			AnalysisID: a.ID(), AnalysisSHA256: a.SHA256(), CompilerVersion: pinned.CompilerVersion},
 		Weights:  home.WeightPrecision{Scheme: recipe.Scheme, Bits: 4, GroupSize: 128, Format: "compressed-tensors", DType: "bfloat16"},
-		Files:    map[string]string{"model.safetensors": strings.Repeat("ab", 32)},
+		Files:    map[string]string{"model.safetensors": strings.Repeat("ab", 32), "config.json": strings.Repeat("cd", 32)},
 		Creation: home.Creation{CreatedAt: "2026-10-03T00:00:00Z"},
+	}
+	for _, f := range compiled.Recipe.Carry {
+		v.Files[f] = strings.Repeat("ef", 32)
 	}
 	v.Seal()
 	vdir := h.VariantDir(m.ID, v.ID)
@@ -719,11 +727,25 @@ func TestTuningStoreImpactIsEstimatedUntilACandidateIsMeasured(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(vdir, "model.safetensors"), make([]byte, 3<<20), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(vdir, "config.json"), make([]byte, 1<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range compiled.Recipe.Carry {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(vdir, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(vdir, f), make([]byte, 1<<20), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Contains(compiled.Recipe.Carry, "joint_head.safetensors") {
+		t.Fatalf("fixture recipe carries no weights-like file: %v", compiled.Recipe.Carry)
+	}
 	if err := home.WriteJSON(filepath.Join(vdir, home.VariantManifestFile), v); err != nil {
 		t.Fatal(err)
 	}
 	imp = impact(pinned)
-	if imp.Size.State != dashboard.Measured || imp.Size.Value != gib(3<<20) || !strings.Contains(imp.Size.Basis, v.ID) {
+	if imp.Size.State != dashboard.Measured || imp.Size.Value != gib(int64(4+len(compiled.Recipe.Carry))<<20) || !strings.Contains(imp.Size.Basis, v.ID) {
 		t.Errorf("measured size %+v", imp.Size)
 	}
 	if imp.Memory.State != dashboard.Estimated || imp.MemoryUsage != (tuning.Usage{Bytes: 3 << 20, LowerBound: true}) {

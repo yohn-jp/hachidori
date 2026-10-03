@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -898,12 +899,6 @@ func (s tuningStore) SaveProfile(p tuning.Profile, a tuning.Analysis) error {
 	return tuning.SaveProfile(h, p, a)
 }
 
-// BuildCandidate hands the exact saved profile to the controller's Forge
-// build (OptimizeProfile). It is accepted as one background operation.
-func (s tuningStore) BuildCandidate(source, profileID string) error {
-	return s.ctl().OptimizeProfile(source, profileID)
-}
-
 // w4a16BytesPerBF16Byte is the documented size estimator's quantization
 // factor: a W4A16 group-128 weight stores 4 bits plus one bfloat16 scale per
 // 128 weights, (0.5 + 2/128) bytes, against 2 bytes in bfloat16.
@@ -947,7 +942,7 @@ func (s tuningStore) Impact(p tuning.Profile, a tuning.Analysis, c tuning.Compil
 	label := "candidate " + v.ID
 	imp.Memory, imp.Latency = none(label+" has no passed probe of this exact manifest"), none(label+" has no passed probe of this exact manifest")
 	imp.Fidelity = none(label + " has no certification")
-	var total int64
+	var total, resident int64
 	for rel := range v.Files {
 		info, err := os.Stat(filepath.Join(vdir, filepath.FromSlash(rel)))
 		if err != nil {
@@ -955,11 +950,16 @@ func (s tuningStore) Impact(p tuning.Profile, a tuning.Analysis, c tuning.Compil
 			break
 		}
 		total += info.Size()
+		if residentWeights(v, rel) {
+			resident += info.Size()
+		}
 	}
 	if total > 0 {
 		imp.Size = dashboard.ImpactValue{State: dashboard.Measured, Value: gib(total), Basis: label + ": bytes of its artifact files"}
-		imp.Memory = dashboard.ImpactValue{State: dashboard.Estimated, Value: "at least " + gib(total) + " (weights only)", Basis: label + ": " + weightsLowerBound}
-		imp.MemoryUsage = tuning.Usage{Bytes: uint64(total), LowerBound: true}
+		if resident > 0 {
+			imp.Memory = dashboard.ImpactValue{State: dashboard.Estimated, Value: "at least " + gib(resident) + " (weights only)", Basis: label + ": " + weightsLowerBound}
+			imp.MemoryUsage = tuning.Usage{Bytes: uint64(resident), LowerBound: true}
+		}
 	} else {
 		imp.Size = none(label + ": its artifact files could not be read")
 	}
@@ -985,6 +985,13 @@ func (s tuningStore) Impact(p tuning.Profile, a tuning.Analysis, c tuning.Compil
 		}
 	}
 	return imp, nil
+}
+
+// residentWeights reports whether a variant file holds weights that must be
+// resident on the device: a safetensors file the recipe did not carry over
+// unchanged from the source.
+func residentWeights(v home.VariantManifest, rel string) bool {
+	return strings.HasSuffix(rel, ".safetensors") && !slices.Contains(v.Recipe.Carry, rel)
 }
 
 func gib(b int64) string { return fmt.Sprintf("%.2f GiB", float64(b)/(1<<30)) }
@@ -1058,6 +1065,8 @@ func safetensorsHeader(path string) (map[string]tensorHeader, error) {
 }
 
 // estimateSize applies the documented size estimator to the compiled profile.
+// It also returns the estimated bytes of the weight-map tensors alone: the
+// device-resident lower bound, without carried files.
 func estimateSize(dir string, m home.ModelManifest, c tuning.Compilation) (dashboard.ImpactValue, int64, error) {
 	_, weightMap, err := declaredLayout(dir, m)
 	if err != nil {
@@ -1099,10 +1108,14 @@ func estimateSize(dir string, m home.ModelManifest, c tuning.Compilation) (dashb
 		}
 	}
 	size += total - linear
+	// The tensors of the weight map must be resident on the device; carried
+	// files (configs, tokenizers, extra artifacts) are not counted toward the
+	// memory lower bound.
+	resident := size
 	for _, f := range c.Recipe.Carry {
 		if info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(f))); err == nil {
 			size += float64(info.Size())
 		}
 	}
-	return dashboard.ImpactValue{State: dashboard.Estimated, Value: "about " + gib(int64(size)), Basis: sizeEstimator}, int64(size), nil
+	return dashboard.ImpactValue{State: dashboard.Estimated, Value: "about " + gib(int64(size)), Basis: sizeEstimator}, int64(resident), nil
 }

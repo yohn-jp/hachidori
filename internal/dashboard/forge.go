@@ -347,14 +347,30 @@ func forgeOf(mv *ModelsView) *ForgeView {
 	return fv
 }
 
-// forgePage renders the Forge workspace.
+// forgePage renders the Forge workspace. A source and build choice in the
+// query (the Tuning handoff) preselect the form when they name a choice the
+// page offers; anything else is ignored.
 func (d *Dashboard) forgePage(w http.ResponseWriter, r *http.Request) {
 	d.renderForgePage(w, r, nil)
+}
+
+// forgeHandoff is the form a Tuning handoff selects, nil without a valid one.
+func forgeHandoff(r *http.Request, fv *ForgeView) *ForgeIntentForm {
+	source, profile := r.URL.Query().Get("source"), r.URL.Query().Get("profile")
+	for _, p := range fv.Profiles {
+		if p.Source == source && p.Value == profile {
+			return &ForgeIntentForm{Source: source, Profile: profile, Provisioning: "auto"}
+		}
+	}
+	return nil
 }
 
 func (d *Dashboard) renderForgePage(w http.ResponseWriter, r *http.Request, form *ForgeIntentForm) {
 	v := d.forgeView()
 	v.Forge.PathPicker = d.cfg.PathPicker != nil
+	if form == nil && r.Method == http.MethodGet {
+		form = forgeHandoff(r, v.Forge)
+	}
 	if form == nil {
 		form = &ForgeIntentForm{Provisioning: "auto"}
 		if len(v.Forge.Sources) > 0 {

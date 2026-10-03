@@ -39,10 +39,6 @@ type Tuning interface {
 	// say about the exact profile. It is advisory: every value carries its
 	// state, and the dashboard shows nothing it does not state.
 	Impact(tuning.Profile, tuning.Analysis, tuning.Compilation) (TuningImpact, error)
-	// BuildCandidate hands the exact saved profile to the Forge build
-	// (app.Controller.OptimizeProfile): one accepted background operation
-	// whose phases, candidate and evidence are Forge's. Nothing is applied.
-	BuildCandidate(source, profileID string) error
 }
 
 // ImpactValue is one projected consequence of a profile. State is Measured
@@ -537,8 +533,9 @@ func (d *Dashboard) tuningSave(w http.ResponseWriter, r *http.Request) {
 }
 
 // tuningBuild saves the described profile, reads it back by its identity and
-// hands exactly that saved profile to the Forge build. The candidate, its
-// progress and its evidence are then Forge's; Apply stays explicit there.
+// selects exactly that saved profile in Forge, whose one build/evaluate
+// operation builds, evaluates and records the candidate. Tuning starts no
+// build of its own; Apply stays explicit in Forge.
 func (d *Dashboard) tuningBuild(w http.ResponseWriter, r *http.Request) {
 	source, profile, analysis, err := d.tuningProfile(r)
 	if err == nil {
@@ -555,16 +552,14 @@ func (d *Dashboard) tuningBuild(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err == nil {
-		err = d.cfg.Tuning.BuildCandidate(source, savedID)
-	}
 	if err != nil {
 		d.remember("build candidate "+source, err, "")
 		http.Redirect(w, r, tuningLocation(source, savedID), http.StatusSeeOther)
 		return
 	}
-	d.remember("build candidate "+source, nil, "handed profile "+saved.ID()+" to Forge. The build, its evidence and any Apply are Forge's; nothing is applied")
-	http.Redirect(w, r, "/forge", http.StatusSeeOther)
+	d.remember("build candidate "+source, nil, "saved profile "+saved.ID()+" and selected it in Forge. Build candidate there builds and evaluates it in one operation; nothing was built and nothing is applied")
+	q := url.Values{"source": {source}, "profile": {tuningProfilePrefix + saved.ID()}}
+	http.Redirect(w, r, "/forge?"+q.Encode()+"#forge-intent-form", http.StatusSeeOther)
 }
 
 // The Experiment/Evidence context travels in the query string as identities

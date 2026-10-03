@@ -21,8 +21,6 @@ import (
 	"github.com/yohn-jp/hachidori/internal/tuning"
 )
 
-type tuningBuild struct{ Source, Profile string }
-
 // fakeTuning is a tuning authority over the real internal/tuning analysis,
 // profile validation and compiler, with an in-memory store.
 type fakeTuning struct {
@@ -33,8 +31,6 @@ type fakeTuning struct {
 	order       []string // newest last
 	impact      TuningImpact
 	impactErr   error
-	builds      []tuningBuild
-	buildErr    error
 }
 
 func (f *fakeTuning) Analysis(source string) (tuning.Analysis, error) {
@@ -87,13 +83,6 @@ func (f *fakeTuning) SaveProfile(p tuning.Profile, a tuning.Analysis) error {
 
 func (f *fakeTuning) Impact(tuning.Profile, tuning.Analysis, tuning.Compilation) (TuningImpact, error) {
 	return f.impact, f.impactErr
-}
-
-func (f *fakeTuning) BuildCandidate(source, profileID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.builds = append(f.builds, tuningBuild{source, profileID})
-	return f.buildErr
 }
 
 func tuningAnalysis(t testing.TB) tuning.Analysis {
@@ -267,7 +256,7 @@ func TestTuningInitialStateIsTruthfulAutoNotCheckedAndUnsaved(t *testing.T) {
 			t.Errorf("%s without evidence is not NOT_CHECKED: %s", key, row)
 		}
 	}
-	if len(ft.profiles) != 0 || len(ft.builds) != 0 {
+	if len(ft.profiles) != 0 {
 		t.Error("rendering saved or built something")
 	}
 }
@@ -339,8 +328,8 @@ func TestTuningSavesAVersionedProfileWithoutBuilding(t *testing.T) {
 	if saved.Schema != tuning.ProfileSchema || saved.CompilerVersion != tuning.RecipeCompilerVersion || saved.AnalysisSHA256 != ft.analysis.SHA256() {
 		t.Errorf("profile is not versioned and bound: %+v", saved)
 	}
-	if len(ft.builds) != 0 || len(fv.calls) != 0 {
-		t.Errorf("saving ran a build or Forge action: %v %v", ft.builds, fv.calls)
+	if len(fv.calls) != 0 {
+		t.Errorf("saving ran a Forge action: %v", fv.calls)
 	}
 
 	body := e.get(t, rec.Header().Get("Location")).Body.String()
@@ -396,50 +385,45 @@ func TestTuningRefusesIntentThatIsNotAnObjectiveAndRegionChoice(t *testing.T) {
 			t.Errorf("%s: build was accepted: %+v", name, a)
 		}
 	}
-	if len(ft.profiles) != 0 || len(ft.builds) != 0 {
-		t.Errorf("a refused intent was saved or built: %d %v", len(ft.profiles), ft.builds)
+	if len(ft.profiles) != 0 {
+		t.Errorf("a refused intent was saved: %d", len(ft.profiles))
 	}
 	if rec := e.post(t, "/tuning/save", url.Values{"token": {"forged"}, "source": {"clef-flash"}, "objective": {"balanced"}}); rec.Code != http.StatusForbidden {
 		t.Errorf("forged token: %d", rec.Code)
 	}
 }
 
-func TestTuningBuildCandidateHandsTheExactSavedProfileToForge(t *testing.T) {
+func TestTuningHandsTheExactSavedProfileToForgesOneOperation(t *testing.T) {
 	e, ft, fv := tuningEnv(t)
 	form := url.Values{"source": {"clef-flash"}, "objective": {"minimum-size"}, "region." + tuning.RegionOutputEmbeddings: {"pinned"}, "region." + tuning.RegionFeedForward: {"pinned"}}
 	rec := e.post(t, "/tuning/build", form)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/forge" {
-		t.Fatalf("build: %d %q", rec.Code, rec.Header().Get("Location"))
-	}
 	want := expectedProfile(t, ft.analysis, "minimum-size", tuning.RegionOutputEmbeddings, tuning.RegionFeedForward)
+	loc := "/forge?profile=tuning%3A" + want.ID() + "&source=clef-flash#forge-intent-form"
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != loc {
+		t.Fatalf("handoff: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
 	if _, ok := ft.profiles[want.ID()]; !ok {
 		t.Fatal("the profile was not saved before the handoff")
 	}
-	if len(ft.builds) != 1 || ft.builds[0] != (tuningBuild{"clef-flash", want.ID()}) {
-		t.Fatalf("Forge received %+v, want the saved profile %s", ft.builds, want.ID())
+	// Tuning starts nothing: no build-only path and no Forge action.
+	if len(fv.calls) != 0 || len(fv.buildRequests) != 0 {
+		t.Errorf("Tuning started a build itself: %v", fv.calls)
 	}
-	// the handed identity is the stored document's own digest
-	stored := ft.profiles[ft.builds[0].Profile]
-	if stored.ID() != ft.builds[0].Profile || stored.SHA256() != ft.builds[0].Profile {
-		t.Error("the handed identity is not the saved profile's digest")
-	}
-	// Tuning ran no optimizer lifecycle of its own: the Forge actions are untouched
-	if len(fv.calls) != 0 {
-		t.Errorf("Tuning invoked Forge actions itself: %v", fv.calls)
-	}
-	if a := e.lastAction(t); !a.OK || !strings.Contains(a.Message, want.ID()) || !strings.Contains(a.Message, "nothing is applied") {
+	if a := e.lastAction(t); !a.OK || !strings.Contains(a.Message, want.ID()) || !strings.Contains(a.Message, "nothing was built") {
 		t.Errorf("handoff outcome: %+v", a)
 	}
-
-	// a refusal is shown on Tuning, with the saved profile still selected
-	ft.buildErr = errors.New("another operation is running")
-	rec = e.post(t, "/tuning/build", form)
-	if rec.Header().Get("Location") != "/tuning?profile="+want.ID()+"&source=clef-flash" {
-		t.Errorf("failed handoff location %q", rec.Header().Get("Location"))
+	// Forge shows exactly that saved profile selected for its one operation.
+	body := e.get(t, strings.TrimSuffix(loc, "#forge-intent-form")).Body.String()
+	if !strings.Contains(body, `<option value="tuning:`+want.ID()+`" selected>`) {
+		t.Error("Forge does not preselect the handed profile")
 	}
-	body := e.get(t, rec.Header().Get("Location")).Body.String()
-	if !strings.Contains(body, "another operation is running") || !strings.Contains(body, "FAILED") {
-		t.Error("a failed handoff is not reported")
+	e.post(t, "/forge/build-evaluate", url.Values{"source": {"clef-flash"}, "profile": {"tuning:" + want.ID()}, "dataset": {hostPath("data", "eval.jsonl")}, "provisioning": {"auto"}})
+	if len(fv.buildRequests) != 1 || fv.buildRequests[0].TuningProfile != want.ID() {
+		t.Fatalf("Forge build/evaluate request %+v", fv.buildRequests)
+	}
+	// A handoff naming a profile Forge does not offer selects nothing.
+	if body := e.get(t, "/forge?source=clef-flash&profile=tuning%3A"+strings.Repeat("a", 64)).Body.String(); strings.Contains(body, "tuning:"+strings.Repeat("a", 64)) {
+		t.Error("Forge selected an unknown profile")
 	}
 }
 
@@ -458,8 +442,8 @@ func TestTuningPageOffersNoOptimizerLifecycleAndRunsNoClientCode(t *testing.T) {
 			t.Errorf("Tuning posts to %s", a[1])
 		}
 	}
-	if !strings.Contains(main, `formaction="/tuning/build"`) || !strings.Contains(main, ">Build candidate<") {
-		t.Error("the primary action is not Build candidate")
+	if !strings.Contains(main, `formaction="/tuning/build"`) || !strings.Contains(main, ">Continue in Forge<") || strings.Contains(main, ">Build candidate<") {
+		t.Error("the primary action is not the handoff to Forge")
 	}
 }
 
@@ -550,7 +534,7 @@ func TestTuningResponsiveAccessibleAndLocalized(t *testing.T) {
 		t.Fatalf("select ja: %d", rec.Code)
 	}
 	ja := e.get(t, "/tuning").Body.String()
-	for _, want := range []string{`<html lang="ja">`, `<h1>チューニング</h1>`, "候補を構築", "プロファイルのみを保存", "意味的リージョン", "推定", "未確認", "保持", "最大の忠実度", `<a href="/tuning" aria-current="page">チューニング</a>`} {
+	for _, want := range []string{`<html lang="ja">`, `<h1>チューニング</h1>`, "Forge で続ける", "プロファイルのみを保存", "意味的リージョン", "推定", "未確認", "保持", "最大の忠実度", `<a href="/tuning" aria-current="page">チューニング</a>`} {
 		if !strings.Contains(ja, want) {
 			t.Errorf("Japanese Tuning lacks %q", want)
 		}
@@ -830,9 +814,6 @@ func TestTuningReceivesTheExactExperimentContext(t *testing.T) {
 	if strings.Index(body, `id="tuning-regression-table"`) > strings.Index(body, `id="tuning-region-table"`) {
 		t.Error("the regression is not projected before the preservation controls")
 	}
-	if len(f.ft.builds) != 0 {
-		t.Error("handing context over built a candidate")
-	}
 }
 
 func TestTuningRecommendationStatesEvidenceBasisAndRegionChange(t *testing.T) {
@@ -953,8 +934,8 @@ func TestTuningAcceptanceIsExplicitAndCreatesADistinctProfile(t *testing.T) {
 
 	// Viewing the context changes nothing.
 	f.page(t, link)
-	if len(f.ft.order) != 1 || len(f.ft.builds) != 0 {
-		t.Fatalf("viewing saved or built: %v %v", f.ft.order, f.ft.builds)
+	if len(f.ft.order) != 1 {
+		t.Fatalf("viewing saved a profile: %v", f.ft.order)
 	}
 	form := func(region string) url.Values {
 		v := url.Values{"accept_recommendation": {region}}
@@ -998,9 +979,6 @@ func TestTuningAcceptanceIsExplicitAndCreatesADistinctProfile(t *testing.T) {
 	}
 	if got := f.ft.profiles[f.profile.ID()]; got.ID() != f.profile.ID() || got.Preservation[tuning.RegionFullAttention].Mode != tuning.PreservationAuto {
 		t.Error("the original profile changed")
-	}
-	if len(f.ft.builds) != 0 {
-		t.Errorf("accepting built a candidate: %v", f.ft.builds)
 	}
 	// Evidence is byte-for-byte immutable across viewing, refusals and acceptance.
 	if historyBytes(t, f.e) != evidenceBefore {
@@ -1163,8 +1141,8 @@ func TestTuningComparesTwoTunedCandidatesWithExactIdentities(t *testing.T) {
 	if after := historyBytes(t, c.e); after != before {
 		t.Error("stored evidence changed")
 	}
-	if len(c.ft.order) != 2 || len(c.ft.builds) != 0 {
-		t.Errorf("comparison saved or built profiles: %d profiles, %d builds", len(c.ft.order), len(c.ft.builds))
+	if len(c.ft.order) != 2 {
+		t.Errorf("comparison saved profiles: %d profiles", len(c.ft.order))
 	}
 }
 

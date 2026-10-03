@@ -81,8 +81,8 @@ func TestTuningOverBudgetPlanIsBlockedNotRewritten(t *testing.T) {
 	if body := e.get(t, "/tuning").Body.String(); !strings.Contains(body, `data-fit="unknown"`) {
 		t.Error("an unstated memory figure decided the fit")
 	}
-	if len(ft.profiles) != 0 || len(ft.builds) != 0 {
-		t.Error("rendering changed or built a profile")
+	if len(ft.profiles) != 0 {
+		t.Error("rendering changed a profile")
 	}
 }
 
@@ -101,8 +101,8 @@ func TestTuningNormalSurfaceIsIntentFirst(t *testing.T) {
 			t.Errorf("normal surface lacks %q", want)
 		}
 	}
-	if n := strings.Count(body, `class="btn primary"`); n != 1 || !strings.Contains(body, `formaction="/tuning/build" data-pending`) {
-		t.Errorf("Tuning has %d primary actions, want Build candidate only", n)
+	if n := strings.Count(body, `class="btn primary"`); n != 1 || !strings.Contains(body, `formaction="/tuning/build">Continue in Forge`) {
+		t.Errorf("Tuning has %d primary actions, want the Forge handoff only", n)
 	}
 	if strings.Count(body, `name="objective"`) != 1 {
 		t.Error("the objective control is repeated")
