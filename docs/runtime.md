@@ -1381,6 +1381,29 @@ instead of it; an execution that succeeded but could not restore is a failure. A
 GPU held by a process Hachidori does not own makes the worker fail to load; that
 is reported, not worked around.
 
+**Tuning trials** (`app.RunTrials`, `internal/trial`, `Controller.RunTrials`).
+`hachidori forge trial --device D --ram-budget B <dataset.jsonl> <profile-id>...`
+runs one RAM-resident tuning session: a worker started with `--trial-session` loads the
+pinned source model on the accelerator (`execution: trial`, never a variant),
+keeps its canonical Linear weights in system RAM, and applies the resolved plan
+of each saved layer-wise profile to the resident model as a bounded in-place
+delta (`trial_open`, `trial_transform`, `trial_validate`, `trial_apply`,
+`trial_reconstruct`, `trial_state`, `trial_release` over the worker protocol).
+Each plan is measured with the same `eval.RunResident` evaluation Forge uses,
+through the same decide path, and recorded as a Candidate with trial Evidence under
+`state/tuning-trials/`. The worker verifies every module (plain `Linear`, no dispatch
+hook, no shared weight, expected shape, dtype and device) before a replacement and
+reads back the realized representation after it; the controller refuses to
+evaluate a model that is not the requested plan. A session builds no artifact,
+writes no activation, desired-resident or routing state and certifies nothing;
+`Controller.RunTrials` owns the accelerator for the whole session like every GPU
+model-engineering transaction. The RAM budget is required and explicit. A worker
+that is restarted mid-session reports its state as lost.
+`hachidori forge finalist <candidate-id>` builds the exact recorded plan through the
+Forge optimizer; the resulting Variant is linked to its Candidate through its own
+tuning provenance. The design and its limits are in
+`operator-abstraction-and-model-tuning.md` 9.9.
+
 **Model-engineering ownership.** Serving and GPU model-engineering execution are
 mutually exclusive on one accelerator, and the controller owns that exclusion as
 one transaction boundary (`Controller.transact`). It records the serving state,
@@ -1818,6 +1841,7 @@ HACHIDORI_HOME/
   state/forge/preflight/       the latest preflight report of each target
   state/forge/probe/           the latest probe record of each variant and device
   state/forge/runs/            resident runs recorded by Forge execution sessions, one document per evidence ID
+  state/tuning-trials/<candidate id>/   a tuning trial Candidate (candidate.json), its trial Evidence (evidence/), and the Variants built from it (materialized/); never an artifact (see Tuning trials)
   state/forge/diagnostics/     bounded, redacted failure diagnostics of Forge operations (newest 20)
   state/dashboard.json         last tunnel form values (non-secret), dashboard only
   state/updates/               explicit update downloads only: <tag>/ staged executable, ready.json,

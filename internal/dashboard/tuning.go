@@ -185,9 +185,15 @@ type TuningView struct {
 	ChangesBasis string
 	ChangesNote  string
 	Candidate    *TuningCandidateView
-	Bulk         TuningBulkForm
-	Notice       string // the outcome of the last editor operation
-	NoticeBad    bool
+	// Trials are the ephemeral RAM-resident trials recorded for this source;
+	// nil when the application provides none.
+	Trials *TuningTrialsView
+	// Busy and Last are the operation in flight and the one that finished
+	// last, when the Tuning workspace owns them (trial sessions).
+	Busy, Last *ModelOp
+	Bulk       TuningBulkForm
+	Notice     string // the outcome of the last editor operation
+	NoticeBad  bool
 	// PreservedRegions counts the regions the compiled profile keeps at
 	// source precision (pinned or preserved by the canonical policy).
 	PreservedRegions int
@@ -312,6 +318,9 @@ func (d *Dashboard) tuningPage(w http.ResponseWriter, r *http.Request) {
 // finishTuning places the shown profile against the device envelope and
 // builds the editor's disclosure. Callers that edit open it themselves.
 func (d *Dashboard) finishTuning(v *view) {
+	if v.Models != nil && v.Tuning != nil {
+		v.Tuning.Busy, v.Tuning.Last = v.Models.Busy, v.Models.Last
+	}
 	v.Tuning.Envelope = d.envelopeOf(*v)
 	if len(v.Tuning.Impact) > 1 {
 		v.Tuning.Fit = fitOfTuning(v.Tuning)
@@ -510,6 +519,7 @@ func (d *Dashboard) tuningView(mv *ModelsView, source, profileID string, draft *
 		tv.ChangesNote = "The accepted baseline and candidate evidence could not be read: " + err.Error()
 	}
 	tv.Candidate = candidateView(cand, *compiled.Plan)
+	tv.Trials = d.trialsView(source, planSHAOf(*compiled.Plan))
 	if canonical, cerr := canonicalPlan(analysis, profile.Objective); cerr == nil {
 		if policies, basis := baselinePolicies(cand, canonical); policies != nil {
 			tv.Changes, tv.ChangesBasis = planChanges(*compiled.Plan, policies), basis

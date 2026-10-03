@@ -137,6 +137,9 @@ type Maintenance struct {
 	// Execute runs one exact-target execution session and records its
 	// evidence (RunExecution).
 	Execute func(ctx context.Context, root string, p ExecuteParams, log io.Writer) (ExecutionResult, error)
+	// Trials runs one tuning trial session and records each measured trial as
+	// a Candidate with trial Evidence (RunTrials).
+	Trials func(ctx context.Context, root string, p TrialParams, log io.Writer, obs *setup.Observer) (TrialRun, error)
 }
 
 // PreflightParams are the explicit inputs of a preflight: the operation it
@@ -228,6 +231,11 @@ func (m Maintenance) withDefaults() Maintenance {
 	if m.Execute == nil {
 		m.Execute = func(ctx context.Context, root string, p ExecuteParams, log io.Writer) (ExecutionResult, error) {
 			return RunExecution(ctx, home.Home{Root: root}, p, ExecutionDeps{}, log)
+		}
+	}
+	if m.Trials == nil {
+		m.Trials = func(ctx context.Context, root string, p TrialParams, log io.Writer, obs *setup.Observer) (TrialRun, error) {
+			return RunTrials(ctx, home.Home{Root: root}, p, TrialDeps{}, log, obs)
 		}
 	}
 	return m
@@ -828,6 +836,8 @@ func plan(kind, target string) []string {
 		return []string{PhaseDesiredResolve, PhaseApplyValidate, PhaseApplySnapshot, PhaseDesiredProvision,
 			string(setup.PhaseRuntime), string(setup.PhaseModel), string(setup.PhaseVariant), string(setup.PhaseActivation),
 			PhaseApplyRebind, PhaseApplyReady, PhaseApplyProve, PhaseApplySmoke, PhaseApplyFinal}
+	case OpTuningTrial:
+		return p(TrialPhaseResolve, TrialPhaseStart, TrialPhaseTrials, TrialPhaseRecord)
 	case OpPreflight:
 		return p(setup.PhasePreflight)
 	case OpProbe:
@@ -968,28 +978,16 @@ func (c *Controller) OptimizeProfile(model, profileID string) error {
 			if err != nil {
 				return err
 			}
-			_, err = c.cfg.Maintenance.Build(context.Background(), home.Home{Root: root}, req, log, obs)
+			res, err := c.cfg.Maintenance.Build(context.Background(), home.Home{Root: root}, req, log, obs)
+			if err == nil {
+				linkTrialCandidates(home.Home{Root: root}, res.Variant, log)
+			}
 			return err
 		}})
 }
 
 func tunedBuildRequest(h home.Home, source home.ModelManifest, profileID string) (optimize.Request, error) {
-	if !setup.SupportsVariants(source) {
-		return optimize.Request{}, fmt.Errorf("model %s has no variants (only System One models are optimized)", source.ID)
-	}
-	profile, analysis, err := tuning.LoadProfile(h, profileID)
-	if err != nil {
-		return optimize.Request{}, err
-	}
-	if profile.Source != home.SourceOf(source) {
-		return optimize.Request{}, fmt.Errorf("tuning profile %s is bound to a different source model", profileID)
-	}
-	compiled, err := tuning.Compile(profile, analysis)
-	if err != nil {
-		return optimize.Request{}, err
-	}
-	provenance := tuning.Provenance(profile, analysis, compiled)
-	return optimize.Request{Model: source.ID, Recipe: compiled.Recipe.Name, CompiledRecipe: &compiled.Recipe, Tuning: &provenance, Plan: compiled.Plan}, nil
+	return tuning.BuildRequest(h, source, profileID)
 }
 
 // Certify compares a reference run and a candidate run of a variant and
@@ -1240,7 +1238,7 @@ func (c *Controller) reconcile(next string) error {
 
 func isMaintenance(kind string) bool {
 	switch kind {
-	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpForgeBuildEvaluate, OpPreflight, OpProbe, OpExecute, OpApply, OpDesiredState:
+	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpForgeBuildEvaluate, OpPreflight, OpProbe, OpExecute, OpTuningTrial, OpApply, OpDesiredState:
 		return true
 	}
 	return false

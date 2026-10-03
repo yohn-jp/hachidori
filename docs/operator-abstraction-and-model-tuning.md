@@ -450,6 +450,54 @@ Two policies are a discrete choice, not a slider; a slider is admissible only fo
 
 **Migration.** A schema 1 profile is shown as its exact schema 2 equivalent: every group of a pinned region becomes an override to `source-precision`, everything else is AUTO, pins on regions the canonical contract already requires are recorded as redundant. Migration is refused unless the current analysis describes the same declared layout and both compile to the same set of preserved modules. The legacy profile is never changed; saving the equivalent creates a new profile that names its lineage.
 
+### 9.9 RAM-resident tuning trials (Candidates)
+
+Issue #226 makes layer-wise experiments cheap enough to run in the tens or hundreds. A full Forge build quantizes the whole model, serializes a multi-gigabyte artifact, unloads and reloads it; a trial instead changes the representation of the few groups that differ from the previous trial, in place, on a resident model.
+
+~~~text
+source (canonical weights, RAM)
+  -> transformed component cache (RAM, by deterministic identity)
+  -> the one model on the accelerator, changed by a bounded delta
+  -> the existing resident evaluation
+  -> Candidate + trial Evidence      (repeat)
+  -> Forge, only for a selected finalist
+  -> immutable Variant -> clean-load certification -> Apply
+~~~
+
+Three lifecycle objects are kept apart:
+
+| object | what it is | persisted as |
+| --- | --- | --- |
+| **Trial** | the ephemeral composition being measured: the resolved plan applied to the resident model | nothing; reversible, disposable |
+| **Candidate** | a reproducible result: exact source, profile, resolved plan and component set, with immutable trial Evidence | `state/tuning-trials/<candidate id>/` |
+| **Variant** | the immutable Forge artifact | `variants/…` (unchanged) |
+
+**Plan, not a second policy.** A trial is driven by the resolved `home.TuningPlan` of 9.8. The delta between two trials is computed from the two plans' effective policies per stable group (`trial.Diff`); plans of different structures are refused.
+
+**Components.** A transformed component is identified by the digest of everything that can change its bytes or the safety of reusing it: the exact source (revision and every pinned file digest), the plan schema, the stable group and its modules with their source tensor shape and dtype, the transformation (policy, scheme parameters read from the same declaration the Forge builder verifies variants against, transformation implementation version, numerical backend version). Profile identity and display state are not part of it, so two profiles that need the same transformation of the same group share the component. A component is never reused across a source revision, plan schema, tensor shape or dtype, transformation parameter or implementation version.
+
+**RAM tier.** The session has an explicit byte budget (there is no default and nothing is assumed about the host). The canonical source and the transformed components count against it. Eviction is deterministic (least recently used first, by a logical clock) and never touches a component the current trial needs, the known-good state a rollback needs, or one that is being built; a trial that cannot fit fails before it changes the model. Cache hits, misses, evictions, bytes RAM to GPU, bytes released, RAM in use and assembly time are recorded in every trial's Evidence.
+
+**Transactions.** Application is validate, stage on the accelerator beside the old weights, swap, release the old weights, and read back what the modules actually are; a mismatch with the requested plan is a failure, never an evaluated model. A failed or cancelled trial restores the previous trial's state from RAM (reverse delta, or an explicit full reconstruction), keeps the valid cache, releases partial allocations and records nothing. If the state cannot be restored the session is broken and refuses further trials. A delta the worker cannot apply in place is refused, or, only when `--allow-reconstruct` is given, rebuilt explicitly and recorded as `reconstruct` in the Evidence. The canonical source and every Variant are never written.
+
+**Evidence is not certification.** Trial Evidence (`hachidori.trial-evidence/1`) states `ephemeral: true`, `certification: NOT_CERTIFIED` and the evaluation mode `trial-fast`, binds the candidate, plan, component set, dataset, inputs and questions it was measured on, and records the worker's own reported execution (`trial`, never a variant). It is a different schema from Decision Evidence, Forge runs and certification and is never read as one.
+
+**Finalists.** `hachidori forge finalist <candidate-id>` (or Continue in Forge from the candidate's row) builds the candidate's exact resolved plan through the normal Forge optimizer, and is refused if the candidate's profile no longer resolves to byte-for-byte the plan that was measured. The Variant is independently loadable and is then certified from a clean load with the existing certification; it is linked to the Candidate by its own provenance.
+
+**Commands.**
+
+~~~text
+hachidori forge trial --device cuda --ram-budget 40GiB <dataset.jsonl> <profile-id>...
+hachidori forge candidates
+hachidori forge finalist <candidate-id>
+~~~
+
+The Tuning page shows, for the shown plan, whether a trial was recorded, that it is an ephemeral trial and not certification, its figures, and whether the candidate has been built as a Variant; cache and transfer detail is in Evidence.
+
+**Backend limits (code evidence).** The component cache is exactly as fine as one stable group: the transformation (`TorchOps.build`) is applied per Linear module with the compressed-tensors pack-quantized primitives, and a module executes through the same `packed_forward` binding the Variant loader uses (`bind_packed`). The existing packed W4A16 forward still dequantizes into `F.linear`; a fused/packed kernel (#222) would be a new representation value with its own transformation, and Trial, Candidate and component identity do not change shape for it. Only the two policies of 9.8 exist; no other precision is offered.
+
+**Validation boundary.** Portable tests prove identity, orchestration, rollback, cache behavior, provenance and state transitions, and (with torch, compressed-tensors and llmcompressor installed) that a trial component equals what the Forge optimizer writes, bit for bit, on CPU. Real RAM residency, CUDA replacement, transfer behavior, GPU/RAM figures and wall-clock throughput on the Windows RTX workstation are NOT_CHECKED until measured there. To compare: the old path is the Forge phases `quantizing`, `serializing`, `verifying`, `publish` plus the variant load of a probe/execution; the new path is each trial's `assembly_ms` plus `evaluation_ms` (and `total_ms`), with the session's one-time worker start (`start_ms`) reported separately.
+
 ## 10. Evidence feedback loop
 
 The target product loop is:

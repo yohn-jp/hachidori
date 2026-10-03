@@ -100,6 +100,12 @@ func phaseLabel(p string) string {
 // exact inputs).
 var kindPhaseLabels = map[string]map[string]string{
 	"forge_certify": {"resolving": "Resolving inputs"},
+	"tuning_trial": {
+		"resolve_inputs": "Resolving trial inputs",
+		"starting":       "Starting the trial worker",
+		"trials":         "Running trials",
+		"recording":      "Recording candidates",
+	},
 	"forge_build_evaluate": {
 		"resolve_inputs": "Resolving build intent",
 		"provision":      "Provisioning prerequisites",
@@ -342,6 +348,7 @@ func nextOf(st ModelsState, rt server.Runtime) *nextStart {
 const (
 	ownerModels = "models"
 	ownerForge  = "forge"
+	ownerTuning = "tuning"
 )
 
 // opOwners is where each operation is started and followed. An operation kind
@@ -352,6 +359,7 @@ var opOwners = map[string]string{
 	"verify": ownerModels, "remove": ownerModels, "desired_state": ownerModels, "runtime_reconcile": ownerModels,
 	"optimize": ownerForge, "certify": ownerForge, "forge_certify": ownerForge, "forge_build_evaluate": ownerForge,
 	"preflight": ownerForge, "probe": ownerForge, "execute": ownerForge, "apply": ownerForge,
+	"tuning_trial": ownerTuning,
 }
 
 // opKindLabels name an operation kind for the operator. The raw kind stays on
@@ -361,7 +369,7 @@ var opKindLabels = map[string]string{
 	"verify": "Verify", "remove": "Remove", "desired_state": "Apply desired state", "runtime_reconcile": "Reconcile runtime",
 	"optimize": "Build variant", "certify": "Certify variant", "forge_certify": "Certify variant",
 	"forge_build_evaluate": "Build and evaluate", "preflight": "Preflight", "probe": "Probe variant",
-	"execute": "Execute", "apply": "Apply variant", "update": "Update",
+	"execute": "Execute", "apply": "Apply variant", "update": "Update", "tuning_trial": "Tuning trials",
 }
 
 // opOutcomes state what a successfully finished operation did, in the words the
@@ -383,6 +391,7 @@ var opOutcomes = map[string]string{
 	"preflight":            "Preflight recorded.",
 	"probe":                "Probe recorded.",
 	"apply":                "Applied: the runtime is READY on the variant and answered a typed decision.",
+	"tuning_trial":         "Trials recorded as candidates. Nothing was built, applied or certified.",
 	"update":               "The update was downloaded and verified.",
 }
 
@@ -419,6 +428,8 @@ func opHref(kind string) string {
 		return "/models"
 	case ownerForge:
 		return "/forge"
+	case ownerTuning:
+		return "/tuning"
 	}
 	if kind == "update" {
 		return "/settings/updates"

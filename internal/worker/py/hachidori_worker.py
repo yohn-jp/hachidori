@@ -26,6 +26,7 @@ import signal
 import sys
 import time
 import traceback
+import types
 
 PROTOCOL = "hachidori-worker.v1"
 
@@ -189,7 +190,9 @@ class Provider:
 
     name = ""
 
-    def __init__(self, model_dir, device, manifest, dtype=None, variant_dir=None, variant=None):
+    def __init__(self, model_dir, device, manifest, dtype=None, variant_dir=None, variant=None, trial_session=False):
+        self.trial_session = trial_session
+        self.trial = None  # the tuning trial executor of a trial session
         self.model_dir = model_dir
         self.requested = device
         self.dtype = dtype
@@ -467,6 +470,517 @@ def packed_forward(self, x):
     return self.torch_linear(x, w, self.bias)
 
 
+def bind_packed(torch, unpack, module, out, inner, bits, group):
+    """Make module execute as a packed int4 Linear: its forward dequantizes its own
+    weight per call (packed_forward). The variant loader and the tuning trials
+    bind modules through this one function, so a trial executes exactly as the
+    variant built from the same plan does."""
+    module._hachidori_packed = (out, inner, bits, group)
+    module._unpack = unpack
+    module.torch_Size = torch.Size
+    module.torch_linear = torch.nn.functional.linear
+    module.forward = types.MethodType(packed_forward, module)
+
+
+# -- RAM-resident tuning trials ------------------------------------------------
+#
+# A trial session keeps the canonical source weights of every Linear module in
+# system RAM, builds transformed components there once, and changes only the
+# representation of the modules of the groups that differ from one trial to the
+# next. The model object, its module identities and the canonical source are
+# never replaced or written; a failed replacement leaves the model exactly as it
+# was. Inference is unchanged: it runs on the accelerator through the very same
+# decide path as every other execution.
+
+TRIAL_TRANSFORM = "hachidori.trial-transform/1"  # must equal trial.TransformImplementation in Go
+REPRESENTATION_DENSE = "dense"
+REPRESENTATION_PACKED = "packed-int4"
+# Bounds the accelerator memory one replacement chunk stages beside the weights
+# it replaces. A larger delta is applied chunk by chunk; a failed chunk reverses
+# the chunks already applied, from system RAM.
+TRIAL_STAGE_BYTES = 1 << 30
+
+
+class TrialError(Exception):
+    """A trial operation refused or failed. cls is one of trial_unsupported (an
+    explicit full reconstruction can resolve it), trial_incompatible (the
+    requested representation cannot be produced on this model), trial_state_lost
+    (the model is neither as asked nor as it was) and trial_failed (nothing was
+    changed)."""
+
+    def __init__(self, cls, message):
+        super().__init__(message)
+        self.cls = cls
+
+
+class TorchOps:
+    """The torch-facing half of the trial executor: everything that touches a
+    tensor or a module. It is deliberately thin; the transactional logic lives in
+    TrialExecutor and is tested without torch."""
+
+    def __init__(self, torch, device, dtype_name):
+        self.torch = torch
+        self.device = device
+        self.dtype_name = dtype_name
+        self.pinned = False
+        self._unpack = None
+        self._ct = None
+        self._unsupported = None
+        try:
+            from compressed_tensors.compressors.pack_quantized.helpers import pack_to_int32, unpack_from_int32
+            from compressed_tensors.quantization import preset_name_to_scheme
+            from compressed_tensors.quantization.lifecycle.forward import quantize
+            from compressed_tensors.quantization.utils import calculate_qparams
+            import importlib.metadata as md
+            self._unpack = unpack_from_int32
+            self._ct = {"pack": pack_to_int32, "quantize": quantize, "qparams": calculate_qparams,
+                        "scheme": preset_name_to_scheme, "version": md.version("compressed-tensors")}
+        except Exception as e:  # noqa: BLE001 - reported, and packed replacement is then unsupported
+            self._unsupported = "%s: %s" % (type(e).__name__, e)
+
+    # -- identity of the numerical stack ---------------------------------------
+    def backend(self):
+        if self._ct is None:
+            return "unavailable"
+        return "compressed-tensors %s" % self._ct["version"]
+
+    def packed_support(self):
+        """None when packed modules can be built and executed, else the reason."""
+        return self._unsupported
+
+    # -- inspection ------------------------------------------------------------
+    def describe(self, module):
+        params, bufs = module._parameters, module._buffers
+        info = {"class": type(module).__name__, "hooked": bool(getattr(module, "_hf_hook", None)),
+                "bias": params.get("bias") is not None}
+        weight = params.get("weight")
+        packed = params.get("weight_packed", bufs.get("weight_packed"))
+        if weight is not None and packed is None:
+            info.update(representation=REPRESENTATION_DENSE, shape=tuple(int(d) for d in weight.shape),
+                        dtype=str(weight.dtype).replace("torch.", ""), device=weight.device.type)
+        elif weight is None and packed is not None and hasattr(module, "_hachidori_packed"):
+            out, inner = module._hachidori_packed[:2]
+            scale = params.get("weight_scale", bufs.get("weight_scale"))
+            info.update(representation=REPRESENTATION_PACKED, shape=(int(out), int(inner)),
+                        dtype=str(scale.dtype).replace("torch.", ""), device=packed.device.type)
+        else:
+            info.update(representation="unknown", shape=(), dtype="", device="")
+        return info
+
+    def shared_weights(self, model):
+        """Module names whose weight Parameter is also reachable under another name
+        (tied or shared): replacing one alias would not replace the other."""
+        owners = {}
+        for name, p in model.named_parameters(remove_duplicate=False):
+            owners.setdefault(id(p), []).append(name)
+        shared = set()
+        for names in owners.values():
+            if len(names) > 1:
+                shared.update(n[:-len(".weight")] for n in names if n.endswith(".weight"))
+        return shared
+
+    def canonical(self, module):
+        w = module._parameters["weight"]
+        return {"tensor": w.detach().to("cpu", copy=True), "requires_grad": bool(w.requires_grad)}
+
+    def tensor_bytes(self, tensor):
+        return int(tensor.numel()) * int(tensor.element_size())
+
+    # -- components --------------------------------------------------------------
+    def build(self, weight, params):
+        """Quantize one canonical weight exactly as the compressed-tensors pack
+        quantized compressor stores it: per-row, per-group symmetric min-max scale
+        (the round-to-nearest observer), int4 values packed into int32 words."""
+        torch, ct = self.torch, self._ct
+        scheme = ct["scheme"]("W4A16", ["Linear"])
+        args = scheme.weights
+        if (args.num_bits, args.group_size, bool(args.symmetric)) != (params["bits"], params["group_size"], bool(params["symmetric"])):
+            raise TrialError("trial_incompatible", "the library's W4A16 scheme is %s bits/group %s/symmetric %s, the transformation asks %s/%s/%s"
+                             % (args.num_bits, args.group_size, args.symmetric, params["bits"], params["group_size"], params["symmetric"]))
+        out, inner = weight.shape
+        group = args.group_size
+        grouped = weight.reshape(out, inner // group, group)
+        scale, zero_point = ct["qparams"](torch.amin(grouped, dim=-1), torch.amax(grouped, dim=-1), args)
+        q = ct["quantize"](x=weight, scale=scale, zero_point=zero_point, args=args, dtype=torch.int8)
+        packed = ct["pack"](q, args.num_bits)
+        tensors = {"packed": packed.contiguous(), "scale": scale.to(weight.dtype).contiguous(),
+                   "shape": torch.tensor([int(out), int(inner)], dtype=torch.int64)}
+        if self.device == "cuda":
+            # Pinned host memory makes the repeated RAM -> GPU copies of a cached
+            # component faster and lets them overlap; a refusal to pin (no more
+            # lockable memory) leaves the component pageable, still correct.
+            try:
+                tensors = {k: v.pin_memory() for k, v in tensors.items()}
+                self.pinned = True
+            except RuntimeError:
+                pass
+        return tensors
+
+    def component_bytes(self, tensors):
+        return sum(self.tensor_bytes(t) for t in tensors.values())
+
+    def digest(self, items):
+        import hashlib
+        h = hashlib.sha256()
+        for name, tensors in items:
+            h.update(name.encode("utf-8") + b"\0")
+            for key in ("packed", "scale", "shape"):
+                t = tensors[key].contiguous().view(self.torch.uint8)
+                h.update(key.encode("ascii") + b"\0")
+                h.update(t.numpy().tobytes())
+        return h.hexdigest()
+
+    # -- staging and installation -------------------------------------------------
+    def stage_dense(self, canonical):
+        return {"weight": canonical["tensor"].to(self.device, non_blocking=True), "requires_grad": canonical["requires_grad"]}
+
+    def stage_packed(self, tensors):
+        return {k: v.to(self.device, non_blocking=True) for k, v in tensors.items()}
+
+    def staged_bytes(self, staged):
+        return sum(self.tensor_bytes(t) for k, t in staged.items() if k != "requires_grad")
+
+    def sync(self):
+        if self.device == "cuda":
+            self.torch.cuda.synchronize()
+
+    def snapshot(self, module):
+        keep = {}
+        for kind, table in (("p", module._parameters), ("b", module._buffers)):
+            for key in ("weight", "weight_packed", "weight_scale", "weight_shape"):
+                if key in table:
+                    keep[(kind, key)] = table[key]
+        extra = {k: module.__dict__[k] for k in ("_hachidori_packed", "_unpack", "torch_Size", "torch_linear", "forward") if k in module.__dict__}
+        return {"tables": keep, "extra": extra}
+
+    def snapshot_bytes(self, snap):
+        return sum(self.tensor_bytes(t) for t in snap["tables"].values() if t is not None)
+
+    def _clear(self, module):
+        for table in (module._parameters, module._buffers):
+            for key in ("weight", "weight_packed", "weight_scale", "weight_shape"):
+                table.pop(key, None)
+        for key in ("_hachidori_packed", "_unpack", "torch_Size", "torch_linear", "forward"):
+            module.__dict__.pop(key, None)
+
+    def install_dense(self, module, staged):
+        self._clear(module)
+        module.register_parameter("weight", self.torch.nn.Parameter(staged["weight"], requires_grad=staged["requires_grad"]))
+
+    def install_packed(self, module, staged, params):
+        self._clear(module)
+        nn = self.torch.nn
+        module.register_parameter("weight_packed", nn.Parameter(staged["packed"], requires_grad=False))
+        module.register_parameter("weight_scale", nn.Parameter(staged["scale"], requires_grad=False))
+        module.register_parameter("weight_shape", nn.Parameter(staged["shape"], requires_grad=False))
+        out, inner = (int(v) for v in staged["shape"].tolist())
+        bind_packed(self.torch, self._unpack, module, out, inner, params["bits"], params["group_size"])
+
+    def restore(self, module, snap):
+        self._clear(module)
+        for (kind, key), value in snap["tables"].items():
+            (module._parameters if kind == "p" else module._buffers)[key] = value
+        module.__dict__.update(snap["extra"])
+
+    def memory(self):
+        out = {}
+        if self.device == "cuda":
+            out["gpu_allocated"] = int(self.torch.cuda.memory_allocated())
+        try:
+            import psutil
+            out["host_rss"] = int(psutil.Process().memory_info().rss)
+        except Exception:  # noqa: BLE001 - absent or unreadable is simply not reported
+            pass
+        return out
+
+
+def trial_params(transformation):
+    """The transformation parameters a packed component is built with, checked to
+    be exactly what this executor can produce."""
+    t = transformation
+    if t.get("implementation") != TRIAL_TRANSFORM:
+        raise TrialError("trial_incompatible", "transformation implementation %r is not %r" % (t.get("implementation"), TRIAL_TRANSFORM))
+    if t.get("representation") == REPRESENTATION_DENSE:
+        return None
+    if t.get("representation") != REPRESENTATION_PACKED:
+        raise TrialError("trial_unsupported", "representation %r is not one this worker can execute" % (t.get("representation"),))
+    if (t.get("format") != "compressed-tensors/pack-quantized" or t.get("bits") != 4 or not t.get("symmetric")
+            or t.get("algorithm") != "rtn" or int(t.get("group_size", 0)) <= 0):
+        raise TrialError("trial_incompatible", "unsupported packed transformation %s" % json.dumps(t, sort_keys=True))
+    return {"bits": int(t["bits"]), "group_size": int(t["group_size"]), "symmetric": bool(t["symmetric"]),
+            "compute_dtype": t.get("compute_dtype")}
+
+
+class TrialExecutor:
+    """Transactional in-place replacement of module weight representations.
+
+    Every module of a replacement is checked before anything changes; the new
+    representation is staged on the accelerator beside the old one and swapped in
+    by attribute assignment, which keeps the old tensors until the swap is done,
+    so a failure at any point restores the old representation without allocating.
+    A delta larger than one staging chunk is applied chunk by chunk and a failed
+    chunk reverses the chunks before it from system RAM."""
+
+    def __init__(self, ops, modules, device, dtype_name, stage_bytes=TRIAL_STAGE_BYTES, shared=()):
+        self.ops = ops
+        self.modules = modules  # name -> the module object, captured at open
+        self.device = device
+        self.dtype_name = dtype_name
+        self.stage_bytes = stage_bytes
+        self.shared = set(shared)
+        self.groups = {}
+        self.canon = {}  # name -> canonical weight in system RAM
+        self.components = {}  # component id -> {"modules": {name: tensors}, "bytes": int}
+        self.current = {}  # module -> (representation, component id or None)
+
+    # -- session -------------------------------------------------------------------
+    def open(self, groups):
+        self.groups = {g: list(m) for g, m in groups.items()}
+        listed = []
+        canonical_bytes = 0
+        for name in sorted(self.modules):
+            module = self.modules[name]
+            info = self.ops.describe(module)
+            if info["representation"] != REPRESENTATION_DENSE:
+                raise TrialError("trial_incompatible", "module %s starts as %s, not as the dense source" % (name, info["representation"]))
+            self.canon[name] = self.ops.canonical(module)
+            canonical_bytes += self.ops.tensor_bytes(self.canon[name]["tensor"])
+            self.current[name] = (REPRESENTATION_DENSE, None)
+            listed.append({"module": name, "shape": list(info["shape"]), "dtype": info["dtype"]})
+        return {"device": self.device, "dtype": self.dtype_name, "backend": self.ops.backend(), "modules": listed,
+                "canonical_bytes": canonical_bytes, "transform": TRIAL_TRANSFORM, "stage_bytes": self.stage_bytes}
+
+    # -- components ----------------------------------------------------------------
+    def transform(self, identity):
+        t = identity["transformation"]
+        params = trial_params(t)
+        if params is None:
+            raise TrialError("trial_incompatible", "source-precision material is the canonical source; there is nothing to build")
+        if self.ops.packed_support() is not None:
+            raise TrialError("trial_incompatible", "packed replacement is unavailable: %s" % self.ops.packed_support())
+        if t.get("backend") != self.ops.backend():
+            raise TrialError("trial_incompatible", "the component is identified under backend %r, this worker is %r" % (t.get("backend"), self.ops.backend()))
+        cid = identity["id"]
+        if cid in self.components:
+            raise TrialError("trial_failed", "component %s is already resident" % cid)
+        built, total = {}, 0
+        try:
+            for member in identity["members"]:
+                name = member["module"]
+                canon = self.canon.get(name)
+                if canon is None:
+                    raise TrialError("trial_incompatible", "module %s is not in the resident source" % name)
+                weight = canon["tensor"]
+                if list(weight.shape) != list(member["shape"]) or str(weight.dtype).replace("torch.", "") != member["dtype"]:
+                    raise TrialError("trial_incompatible", "module %s is %s %s, the component was identified for %s %s"
+                                     % (name, list(weight.shape), weight.dtype, member["shape"], member["dtype"]))
+                if len(weight.shape) != 2 or weight.shape[1] % params["group_size"] != 0:
+                    raise TrialError("trial_incompatible", "module %s width is not a multiple of group size %d" % (name, params["group_size"]))
+                tensors = self.ops.build(weight, params)
+                built[name] = tensors
+                total += self.ops.component_bytes(tensors)
+        except TrialError:
+            built.clear()
+            raise
+        except Exception as e:  # noqa: BLE001 - nothing partial is kept
+            built.clear()
+            raise TrialError("trial_failed", "%s: %s" % (type(e).__name__, e))
+        digest = self.ops.digest(sorted(built.items()))
+        self.components[cid] = {"modules": built, "bytes": total, "params": params}
+        return {"bytes": total, "digest": digest, "pinned": bool(getattr(self.ops, "pinned", False))}
+
+    def release(self, cid):
+        comp = self.components.get(cid)
+        if comp is None:
+            return {"released": 0}
+        for name, rep in self.current.items():
+            if rep[1] == cid:
+                raise TrialError("trial_failed", "component %s is in use by module %s" % (cid, name))
+        del self.components[cid]
+        return {"released": comp["bytes"]}
+
+    # -- validation ----------------------------------------------------------------
+    def _check(self, rep, force):
+        group = rep["group"]
+        t = rep["transformation"]
+        params = trial_params(t)
+        if rep["policy"] is None or not rep["modules"]:
+            raise TrialError("trial_incompatible", "group %s names no policy or modules" % group)
+        if params is not None:
+            if self.ops.packed_support() is not None:
+                raise TrialError("trial_incompatible", "group %s: packed replacement is unavailable: %s" % (group, self.ops.packed_support()))
+            if params["compute_dtype"] != self.dtype_name:
+                raise TrialError("trial_incompatible", "group %s: the component computes in %s, the model in %s" % (group, params["compute_dtype"], self.dtype_name))
+            comp = self.components.get(rep.get("component"))
+            if comp is None:
+                raise TrialError("trial_incompatible", "group %s: component %s is not resident" % (group, rep.get("component")))
+        for name in rep["modules"]:
+            module = self.modules.get(name)
+            if module is None:
+                raise TrialError("trial_incompatible", "group %s: module %s is not in the resident model" % (group, name))
+            if name in self.shared:
+                raise TrialError("trial_incompatible", "group %s: module %s shares its weight with another module" % (group, name))
+            info = self.ops.describe(module)
+            canon = self.canon[name]["tensor"]
+            if info["class"] != "Linear" or info["hooked"]:
+                raise TrialError("trial_incompatible", "group %s: module %s is %s%s, not a plain Linear" % (group, name, info["class"], " with a dispatch hook" if info["hooked"] else ""))
+            if info["representation"] == "unknown":
+                raise TrialError("trial_unsupported", "group %s: module %s is in a representation this worker does not recognize" % (group, name))
+            if list(info["shape"]) != list(canon.shape) or info["dtype"] != self.dtype_name or info["device"] != self.device:
+                raise TrialError("trial_incompatible", "group %s: module %s is %s %s on %s, the source is %s %s on %s"
+                                 % (group, name, list(info["shape"]), info["dtype"], info["device"], list(canon.shape), self.dtype_name, self.device))
+            if params is not None:
+                tensors = comp["modules"].get(name)
+                if tensors is None or list(tensors["shape"].tolist()) != list(canon.shape):
+                    raise TrialError("trial_incompatible", "group %s: component %s does not cover module %s at its shape" % (group, rep.get("component"), name))
+            if not force and info["representation"] != self.current[name][0]:
+                raise TrialError("trial_unsupported", "group %s: module %s is observed as %s but the session tracked %s"
+                                 % (group, name, info["representation"], self.current[name][0]))
+
+    def validate(self, reps, force=False):
+        seen = set()
+        for rep in reps:
+            for name in rep["modules"]:
+                if name in seen:
+                    raise TrialError("trial_incompatible", "module %s is replaced twice in one request" % name)
+                seen.add(name)
+            self._check(rep, force)
+        return {"ok": True, "modules": len(seen)}
+
+    # -- application ---------------------------------------------------------------
+    def _jobs(self, reps):
+        jobs = []
+        for rep in reps:
+            params = trial_params(rep["transformation"])
+            for name in rep["modules"]:
+                jobs.append((name, rep.get("component") if params is not None else None, params))
+        return jobs
+
+    def _job_bytes(self, job):
+        name, cid, _ = job
+        if cid is None:
+            return self.ops.tensor_bytes(self.canon[name]["tensor"])
+        return self.ops.component_bytes(self.components[cid]["modules"][name])
+
+    def _chunks(self, jobs):
+        chunk, size = [], 0
+        for job in jobs:
+            b = self._job_bytes(job)
+            if chunk and size + b > self.stage_bytes:
+                yield chunk
+                chunk, size = [], 0
+            chunk.append(job)
+            size += b
+        if chunk:
+            yield chunk
+
+    def _stage(self, job):
+        name, cid, _ = job
+        if cid is None:
+            return self.ops.stage_dense(self.canon[name])
+        return self.ops.stage_packed(self.components[cid]["modules"][name])
+
+    def _apply_chunk(self, chunk):
+        """Stage a chunk beside the old weights, swap it in, then drop the old
+        weights. Returns (bytes copied to the accelerator, bytes released). On any
+        failure the old representation is back in place and nothing is returned."""
+        staged = []
+        try:
+            for job in chunk:
+                staged.append(self._stage(job))
+            self.ops.sync()
+        except Exception as e:  # noqa: BLE001 - includes accelerator out-of-memory
+            del staged[:]
+            raise TrialError("trial_failed", "staging on the accelerator failed: %s: %s" % (type(e).__name__, e))
+        swapped = []
+        try:
+            for job, new in zip(chunk, staged):
+                name, cid, params = job
+                module = self.modules[name]
+                snap = self.ops.snapshot(module)
+                swapped.append((module, snap))
+                if cid is None:
+                    self.ops.install_dense(module, new)
+                else:
+                    self.ops.install_packed(module, new, params)
+        except Exception as e:  # noqa: BLE001
+            try:
+                for module, snap in reversed(swapped):
+                    self.ops.restore(module, snap)
+            except Exception as r:  # noqa: BLE001
+                raise TrialError("trial_state_lost", "installing failed (%s: %s) and its undo failed (%s: %s)" % (type(e).__name__, e, type(r).__name__, r))
+            raise TrialError("trial_failed", "installing failed and was undone: %s: %s" % (type(e).__name__, e))
+        copied = sum(self.ops.staged_bytes(s) for s in staged)
+        released = sum(self.ops.snapshot_bytes(snap) for _, snap in swapped)
+        for job in chunk:
+            name, cid, _ = job
+            self.current[name] = (REPRESENTATION_DENSE, None) if cid is None else (REPRESENTATION_PACKED, cid)
+        del swapped[:]
+        del staged[:]
+        return copied, released
+
+    def apply(self, reps, force=False):
+        self.validate(reps, force=force)
+        jobs = self._jobs(reps)
+        before = {name: self.current[name] for name, _, _ in jobs}
+        done, copied, released = [], 0, 0
+        for chunk in self._chunks(jobs):
+            try:
+                c, r = self._apply_chunk(chunk)
+            except TrialError as e:
+                if done:
+                    # Reverse the chunks that were applied, from system RAM.
+                    back = []
+                    for name, _, _ in done:
+                        rep, cid = before[name]
+                        back.append((name, None if rep == REPRESENTATION_DENSE else cid,
+                                     None if rep == REPRESENTATION_DENSE else self._params_of(cid)))
+                    try:
+                        for undo in self._chunks(back):
+                            self._apply_chunk(undo)
+                    except TrialError as u:
+                        raise TrialError("trial_state_lost", "%s; reversing the applied chunks failed: %s" % (e, u))
+                raise
+            copied, released = copied + c, released + r
+            done.extend(chunk)
+        return {"bytes_to_gpu": copied, "bytes_released": released, "modules": len(jobs)}
+
+    def _params_of(self, cid):
+        return self.components[cid]["params"]
+
+    def reconstruct(self, reps):
+        return self.apply(reps, force=True)
+
+    # -- state ---------------------------------------------------------------------
+    def state(self):
+        out = {}
+        for group, names in self.groups.items():
+            reps = {self.ops.describe(self.modules[n])["representation"] for n in names}
+            out[group] = reps.pop() if len(reps) == 1 else ("mixed" if reps else REPRESENTATION_DENSE)
+        res = {"groups": out}
+        res.update(self.ops.memory())
+        return res
+
+
+def trial_dispatch(executor, op, req):
+    """One trial protocol request on an executor."""
+    if op == "trial_open":
+        return executor.open(req["groups"])
+    if op == "trial_transform":
+        return executor.transform(req["identity"])
+    if op == "trial_release":
+        return executor.release(req["component"])
+    if op == "trial_validate":
+        return executor.validate(req["replacements"])
+    if op == "trial_apply":
+        return executor.apply(req["replacements"])
+    if op == "trial_reconstruct":
+        return executor.reconstruct(req["replacements"])
+    if op == "trial_state":
+        return executor.state()
+    raise ValueError("unknown trial op %r" % op)
+
+
 class ClefProvider(Provider):
     """Clef System One (a Qwen3.5 backbone with the joint schema head). The upstream
     module joint_schema_model.py, imported from the digest-verified model directory,
@@ -544,12 +1058,21 @@ class ClefProvider(Provider):
             raise RuntimeError("variant %s loaded no quantized weights" % self.variant["id"])
         if not self.variant and self.quantized:
             raise RuntimeError("the source model loaded quantized weights")
+        if self.trial_session:
+            self.trial = self.build_trial(backbone)
+
+    def build_trial(self, backbone):
+        """The tuning trial executor over this model's Linear modules. A trial
+        session is the pinned source model on the accelerator; nothing else."""
+        torch = self.torch
+        ops = TorchOps(torch, self.requested, self.want_dtype)
+        modules = {n: m for n, m in backbone.named_modules() if isinstance(m, torch.nn.Linear)}
+        return TrialExecutor(ops, modules, self.requested, self.want_dtype, shared=ops.shared_weights(backbone))
 
     def install_packed_linears(self, backbone):
         """Run every packed Linear at four bits. transformers would expand the whole
         model to the dense dtype on its first forward pass (a hook on the root model);
         that is removed, and each packed module dequantizes its own weight per call."""
-        import types
         from compressed_tensors.compressors.pack_quantized.helpers import unpack_from_int32
         torch = self.torch
         weights = self.variant["weights"]
@@ -565,11 +1088,7 @@ class ClefProvider(Provider):
             out, inner = (int(v) for v in module.weight_shape.tolist())
             if inner % weights["group_size"] != 0:
                 raise RuntimeError("packed module width %d is not a multiple of group size %d" % (inner, weights["group_size"]))
-            module._hachidori_packed = (out, inner, weights["bits"], weights["group_size"])
-            module._unpack = unpack_from_int32
-            module.torch_Size = torch.Size
-            module.torch_linear = torch.nn.functional.linear
-            module.forward = types.MethodType(packed_forward, module)
+            bind_packed(torch, unpack_from_int32, module, out, inner, weights["bits"], weights["group_size"])
             self.quantized += 1
 
     def reference(self):
@@ -606,8 +1125,12 @@ class ClefProvider(Provider):
         return "clef/" + self.transformers.__version__
 
     def extra_info(self):
+        execution = "variant" if self.variant else ("trial" if self.trial_session else "source")
         info = {"transformers_version": self.transformers.__version__, "weights_quantized_modules": self.quantized,
-                "execution": "variant" if self.variant else "source", "kernel_paths": self.kernel_paths}
+                "execution": execution, "kernel_paths": self.kernel_paths}
+        if self.trial_session:
+            info["trial_session"] = True
+            info["trial_transform"] = TRIAL_TRANSFORM
         if self.variant:
             weights = self.variant["weights"]
             info["quantization_scheme"] = weights["scheme"]
@@ -640,9 +1163,17 @@ def serve(provider):
                       "inference_ms": (time.perf_counter() - t0) * 1000.0})
             elif op == "stats":
                 emit({"id": rid, "ok": True, "stats": provider.stats()})
+            elif isinstance(op, str) and op.startswith("trial_"):
+                if provider.trial is None:
+                    emit({"id": rid, "ok": False,
+                          "error": {"class": "request_invalid", "message": "this worker is not a tuning trial session"}})
+                else:
+                    emit({"id": rid, "ok": True, "result": trial_dispatch(provider.trial, op, req)})
             else:
                 emit({"id": rid, "ok": False,
                       "error": {"class": "request_invalid", "message": "unknown op %r" % op}})
+        except TrialError as e:
+            emit({"id": rid, "ok": False, "error": {"class": e.cls, "message": str(e)}})
         except (ValueError, TypeError, KeyError) as e:
             emit({"id": rid, "ok": False,
                   "error": {"class": "request_invalid", "message": "%s: %s" % (type(e).__name__, e)}})
@@ -665,6 +1196,8 @@ def main():
                     help="opendecider: inference dtype (default float32); clef: bfloat16 (default) or float32 on the source model")
     ap.add_argument("--variant-dir", help="clef only: execute this Hachidori variant of the model instead of the source")
     ap.add_argument("--variant-manifest", help="clef only: the variant manifest (hachidori.variant/1) of --variant-dir")
+    ap.add_argument("--trial-session", action="store_true",
+                    help="clef only: serve the pinned source model as a RAM-resident tuning trial session")
     args = ap.parse_args()
     if args.dtype and args.provider not in ("opendecider", "clef"):
         ap.error("--dtype is only supported by the opendecider and clef providers")
@@ -672,6 +1205,8 @@ def main():
         ap.error("--variant-dir and --variant-manifest go together")
     if args.variant_dir and args.provider != "clef":
         ap.error("variants are only supported by the clef provider")
+    if args.trial_session and (args.provider != "clef" or args.variant_dir):
+        ap.error("--trial-session is only supported by the clef provider on the source model")
     emit({"event": "hello", "protocol": PROTOCOL, "pid": os.getpid()})
     with open(args.manifest, encoding="utf-8") as f:
         manifest = json.load(f)
@@ -679,7 +1214,7 @@ def main():
     if args.variant_manifest:
         with open(args.variant_manifest, encoding="utf-8") as f:
             variant = json.load(f)
-    provider = PROVIDERS[args.provider](args.model_dir, args.device, manifest, args.dtype, args.variant_dir, variant)
+    provider = PROVIDERS[args.provider](args.model_dir, args.device, manifest, args.dtype, args.variant_dir, variant, args.trial_session)
     provider.initialize()
     provider.warmup()
     emit({"event": "ready", "info": provider.info()})

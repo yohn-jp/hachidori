@@ -34,6 +34,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/trial"
 	"github.com/yohn-jp/hachidori/internal/tuning"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
@@ -724,7 +725,36 @@ func (a *desktopApp) webviewDataDir(plan firstrun.Plan) (string, func()) {
 // metadata files and safetensors headers of a materialized source.
 type tuningStore struct{ ctl func() *app.Controller }
 
-var _ dashboard.Tuning = tuningStore{}
+var (
+	_ dashboard.Tuning       = tuningStore{}
+	_ dashboard.TuningTrials = tuningStore{}
+)
+
+// Trials reads the trial candidates recorded for a source with their evidence
+// and how far each progressed. It only reads what trial sessions recorded.
+func (s tuningStore) Trials(source string) ([]dashboard.TuningTrialRecord, error) {
+	h, err := s.home()
+	if err != nil {
+		return nil, err
+	}
+	candidates, err := trial.List(h, source)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]dashboard.TuningTrialRecord, 0, len(candidates))
+	for _, c := range candidates {
+		st, err := trial.StatusOf(h, c.ID)
+		if err != nil {
+			return nil, err
+		}
+		ev, err := trial.LoadEvidence(h, c.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, dashboard.TuningTrialRecord{Candidate: c, Status: st, Evidence: ev})
+	}
+	return out, nil
+}
 
 func (s tuningStore) home() (home.Home, error) {
 	root := s.ctl().Snapshot().Home
