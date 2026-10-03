@@ -1,0 +1,13 @@
+{
+  "schema": "hachidori.question.v1",
+  "id": "inari_authority_status",
+  "version": 1,
+  "type": "choice",
+  "instructions": "Classify whether the next implementation action is allowed by the current Issue authority.",
+  "choices": ["within_authority", "scope_expansion_required", "authority_blocked"],
+  "descriptions": {
+    "within_authority": "The required action is inside the stated WRITE scope and violates no READONLY or DENY boundary.",
+    "scope_expansion_required": "The required action is outside the stated WRITE scope but is not explicitly READONLY or DENY; authority must be expanded before changing it.",
+    "authority_blocked": "The required action crosses an explicit READONLY or DENY boundary and must not be performed under the current authority."
+  }
+}

@@ -954,8 +954,8 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   </label>
   {{if .Native}}<div class="resource-selection-actions" role="group" aria-label="{{t "Choose resource"}}">{{range .Choices}}<button type="submit" class="btn quiet"{{if .FormAction}} formaction="{{.FormAction}}"{{end}} name="{{.Name}}" value="{{.Value}}" formnovalidate>{{t .Label}}</button>{{end}}</div>{{end}}
   <details class="inline resource-path"><summary>{{t "Exact path"}}</summary>
-    {{if .Native}}{{with .Value}}<p class="resource-path-value mono">{{.}}</p>{{else}}<p class="sub">{{t "No path selected"}}</p>{{end}}
-    {{else}}<label class="field wide">{{t "Another path"}}{{if .Multiline}}<textarea name="{{.Name}}_path" rows="2" spellcheck="false"></textarea>{{else}}<input type="text" name="{{.Name}}_path" spellcheck="false" autocomplete="off">{{end}}</label>{{end}}
+    {{with .Value}}<p class="resource-path-value mono">{{.}}</p>{{else}}<p class="sub">{{t "No path selected"}}</p>{{end}}
+    <label class="field wide">{{t "Another path"}}{{if .Multiline}}<textarea name="{{.Name}}_path" rows="2" spellcheck="false"></textarea>{{else}}<input type="text" name="{{.Name}}_path" spellcheck="false" autocomplete="off">{{end}}</label>
   </details>
   {{else if .Native}}
   <div class="field"><span>{{t .Label}}</span>

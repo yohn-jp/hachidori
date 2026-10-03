@@ -1,0 +1,21 @@
+{
+  "schema": "hachidori.certification-policy/1",
+  "id": "inari-sample-fidelity/1",
+  "min_observations": 50,
+  "high_confidence": 0.8,
+  "max_flip_rate": 0.25,
+  "max_high_confidence_flip_rate": 0.15,
+  "max_mean_js_bits": 0.1,
+  "max_p95_probability_delta": 0.35,
+  "max_probability_delta": 0.9,
+  "max_request_errors": 0,
+  "require_stable_residents": true,
+  "labelled": {
+    "max_accuracy_drop": 0.15,
+    "max_macro_f1_drop": 0.15,
+    "max_ece_increase": 0.15,
+    "max_brier_increase": 0.15,
+    "max_nll_increase": 0.5,
+    "max_high_confidence_error_rate_increase": 0.15
+  }
+}

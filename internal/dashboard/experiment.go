@@ -371,7 +371,7 @@ func formOf(in ExperimentInput) expForm {
 func (d *Dashboard) expView() expView {
 	v := expView{Chrome: d.chrome("Experiments", "experiments"),
 		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr, Exp: d.exp.snapshot(), PathPicker: d.cfg.PathPicker != nil,
-		Form: expForm{Warmup: "0", Passes: "1"}, HistoryOn: d.hist != nil,
+		Form: expForm{Dataset: d.sampleResource(resDataset), Definitions: d.sampleResource(resQuestions), Warmup: "0", Passes: "1"}, HistoryOn: d.hist != nil,
 		knownDatasets: d.resourceCatalog(resDataset), knownQuestions: d.resourceCatalog(resQuestions)}
 	if v.Exp != nil {
 		v.Form = formOf(v.Exp.Pre.Input)

@@ -1,0 +1,15 @@
+{
+  "schema": "hachidori.question.v1",
+  "id": "inari_blocker_class",
+  "version": 1,
+  "type": "choice",
+  "instructions": "Classify the blocker that currently prevents the work from completing.",
+  "choices": ["none", "contract", "environment", "authority", "governance"],
+  "descriptions": {
+    "none": "No current blocker prevents the next required implementation or verification step.",
+    "contract": "A required external or upstream contract cannot currently be satisfied by the implementation.",
+    "environment": "The required step cannot run because the execution environment or required material is unavailable.",
+    "authority": "Current Issue scope or an explicit READONLY/DENY boundary prevents the required change.",
+    "governance": "Repository or PR governance is the remaining blocker, such as an invalid template contract."
+  }
+}
