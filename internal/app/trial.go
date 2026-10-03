@@ -358,6 +358,10 @@ func RunTrials(ctx context.Context, h home.Home, p TrialParams, deps TrialDeps, 
 		}
 		if err != nil {
 			out.Failure = "the measured trial could not be recorded: " + err.Error()
+			r := res
+			out.Result, out.Restored = &r, true
+			run.Outcomes = append(run.Outcomes, out)
+			return run, errors.New(out.Failure)
 		}
 		r := res
 		out.Result, out.Restored = &r, true
