@@ -31,16 +31,28 @@ type Policy struct {
 	Window      time.Duration // sliding window for MaxRestarts
 	Backoff     time.Duration // delay before each restart
 	QueueDepth  int           // max requests waiting or in flight
+	BatchWindow time.Duration // maximum wait for compatible Clef requests
+	BatchItems  int           // maximum Clef items per call (zero uses conservative default)
+	BatchWork   int           // maximum estimated bytes per call (zero uses conservative default)
 }
 
 // DefaultPolicy is the conservative first-milestone policy.
-var DefaultPolicy = Policy{MaxRestarts: 3, Window: 10 * time.Minute, Backoff: 2 * time.Second, QueueDepth: 64}
+var DefaultPolicy = Policy{MaxRestarts: 3, Window: 10 * time.Minute, Backoff: 2 * time.Second, QueueDepth: 64, BatchWindow: 10 * time.Millisecond, BatchItems: 8, BatchWork: 32768}
 
 // Supervisor owns one resident worker and its restart policy.
 type Supervisor struct {
-	cfg    Config
-	policy Policy
-	queue  chan struct{}
+	cfg              Config
+	policy           Policy
+	queue            chan struct{}
+	batch            chan batchRequest
+	batchCtx         context.Context
+	batchCalls       int64
+	batchItems       int64
+	batchQueueWaitMS float64
+	batchWaitMS      float64
+	batchLastSize    int
+	batchLastWork    int
+	batchSizes       map[int]int64
 
 	mu        sync.Mutex
 	state     string
@@ -58,8 +70,17 @@ type Supervisor struct {
 
 // NewSupervisor creates a supervisor; call Run to start the worker.
 func NewSupervisor(cfg Config, policy Policy) *Supervisor {
+	if policy.BatchItems <= 0 {
+		policy.BatchItems = 8
+	}
+	if policy.BatchWork <= 0 {
+		policy.BatchWork = 32768
+	}
+	if policy.BatchWindow < 0 {
+		policy.BatchWindow = 0
+	}
 	return &Supervisor{cfg: cfg, policy: policy, queue: make(chan struct{}, policy.QueueDepth),
-		state: StateStarting, errors: map[string]int64{}}
+		state: StateStarting, errors: map[string]int64{}, batchSizes: map[int]int64{}}
 }
 
 // Run starts the worker and keeps it resident until ctx is cancelled.
@@ -110,6 +131,13 @@ func (s *Supervisor) Run(ctx context.Context) {
 		}
 		s.mu.Lock()
 		s.proc, s.info, s.state, s.phase, s.readyAt = p, p.Info, StateReady, "ready", time.Now()
+		if p.Info["provider"] == "clef" {
+			s.batch = make(chan batchRequest, s.policy.QueueDepth)
+			s.batchCtx = ctx
+			go s.collectBatches(ctx, p, s.batch)
+		} else {
+			s.batch, s.batchCtx = nil, nil
+		}
 		s.mu.Unlock()
 
 		select {
@@ -190,12 +218,35 @@ func (s *Supervisor) Decide(items []Item) ([][]api.Result, float64, error) {
 	s.mu.Lock()
 	p := s.proc
 	state := s.state
+	batch, batchCtx := s.batch, s.batchCtx
 	s.mu.Unlock()
 	if p == nil || state != StateReady {
 		s.count(api.ErrNotReady)
 		return nil, 0, &RequestError{Class: api.ErrNotReady, Message: "worker state is " + state}
 	}
-	res, ms, err := p.Decide(items)
+	var res [][]api.Result
+	var ms float64
+	var err error
+	key, work, length := batchMetadata(items)
+	if batch != nil {
+		req := batchRequest{items: items, key: key, work: work, length: length, reply: make(chan batchReply, 1), started: make(chan struct{}), queued: time.Now()}
+		select {
+		case batch <- req:
+		case <-batchCtx.Done():
+			err = &RequestError{Class: api.ErrNotReady, Message: "worker stopped"}
+		case <-p.Done():
+			err = p.ExitFailure()
+		}
+		if err == nil {
+			answer, waitErr := waitBatch(req, batchCtx, p)
+			res, ms, err = answer.results, answer.ms, answer.err
+			if waitErr != nil {
+				err = waitErr
+			}
+		}
+	} else {
+		res, ms, err = p.Decide(items)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests++
@@ -276,6 +327,8 @@ func (s *Supervisor) Snapshot() Snapshot {
 	snap := Snapshot{State: s.state, Phase: s.phase, Ready: s.state == StateReady, Starts: s.starts,
 		Restarts: len(s.restarts), Info: s.info, Requests: s.requests, Errors: map[string]int64{},
 		QueueDepth: len(s.queue), QueueLimit: cap(s.queue)}
+	batch := s.batchMetricsLocked()
+	clef := s.info["provider"] == "clef"
 	for k, v := range s.errors {
 		snap.Errors[k] = v
 	}
@@ -293,6 +346,21 @@ func (s *Supervisor) Snapshot() Snapshot {
 		if st, stale, err := p.TryStats(); err == nil && len(st) > 0 {
 			snap.Accelerator, snap.AcceleratorStale = st, stale
 		}
+	}
+	if clef {
+		// Stats are volatile, unlike provider identity. Never mutate the
+		// Process's cached stats map while constructing a status snapshot.
+		stats := make(map[string]any, len(snap.Accelerator)+1)
+		for key, value := range snap.Accelerator {
+			stats[key] = value
+		}
+		stats["batching"] = map[string]any{
+			"calls": batch.BatchCalls, "items": batch.BatchItems,
+			"window_wait_ms": batch.BatchWindowWaitMS, "request_queue_wait_ms": batch.BatchQueueWaitMS,
+			"last_size": batch.BatchLastSize, "last_estimated_work_bytes": batch.BatchLastWork,
+			"size_distribution": batch.BatchSizeDistribution,
+		}
+		snap.Accelerator = stats
 	}
 	return snap
 }
