@@ -325,6 +325,8 @@ class Provider:
 
     def stats(self):
         out = {}
+        if self.name == "clef":
+            out["w4_linear_paths"] = self.extra_info()["w4_linear_paths"]
         # Host RAM of this worker process, only when it can actually be read.
         try:
             import psutil
@@ -458,27 +460,115 @@ CLEF_MAX_LENGTH = 16384
 CLEF_DTYPES = ("float32", "bfloat16")
 
 
+def packed_reference_weight(module, dtype):
+    """Original reconstruction retained as the numerical/profiling reference."""
+    if module._hachidori_w4[1] is not None:
+        raise RuntimeError("reference reconstruction requires the canonical packed layout")
+    out, inner, bits, group = module._hachidori_packed
+    q = module._unpack(module.weight_packed, bits, module.torch_Size((out, inner)))
+    return (q.to(dtype).view(out, inner // group, group)
+            * module.weight_scale.to(dtype).unsqueeze(-1)).view(out, inner)
+
+
+def select_w4_backend(torch, module, platform=None):
+    """Derived execution layout, not an artifact or a new quantizer.
+
+    Torch 2.11 CUDA tinygemm uses offset-8 nibbles and BF16 [scale, zero]
+    pairs. Additive zero is exactly zero for our symmetric weights.
+    API/layout authority: pytorch v2.11.0 aten/src/ATen/native/cuda/int4mm.cu
+    and torch/testing/_internal/common_quantization.py. No requantization.
+    Probe the actual wheel/device; API presence does not establish support.
+    """
+    state = {"selected": "packed-reference", "available": False,
+             "executed": None, "optimized_calls": 0, "reference_calls": 0,
+             "reason": None}
+    out, inner, bits, group = module._hachidori_packed
+    platform = sys.platform if platform is None else platform
+    if platform != "win32":
+        state["reason"] = "native Windows CUDA backend only"
+    elif str(torch.__version__) != "2.11.0+cu128":
+        state["reason"] = "requires pinned torch 2.11.0+cu128"
+    elif module.weight_packed.device.type != "cuda":
+        state["reason"] = "requires CUDA resident weights"
+    elif module.weight_scale.dtype != torch.bfloat16:
+        state["reason"] = "requires BF16 scales/compute"
+    elif module.bias is not None:
+        state["reason"] = "native kernel has no fused bias; reference preserves bias rounding"
+    elif bits != 4 or group != 128 or inner % 128 or out % 8:
+        state["reason"] = "requires W4 group 128 and aligned Linear shape"
+    elif torch.cuda.get_device_capability(module.weight_packed.device)[0] < 8:
+        state["reason"] = "requires NVIDIA SM80 or newer"
+    else:
+        try:
+            # Integer unpacking once; never a resident dense BF16 weight copy.
+            q = module._unpack(module.weight_packed, bits, torch.Size((out, inner)))
+            u = (q.to(torch.int16) + 8).to(torch.uint8)
+            pairs = ((u[:, 0::2] << 4) | u[:, 1::2]).contiguous()
+            layout = torch._convert_weight_to_int4pack(pairs, 8)
+            scales = torch.stack((module.weight_scale.t(), torch.zeros_like(module.weight_scale.t())), -1).contiguous()
+            # Windows upstream tests skip this private API. Require a real,
+            # deterministic output comparison on the installed wheel/device.
+            probe = torch.sin(torch.arange(inner, device=q.device, dtype=torch.float32)).to(torch.bfloat16).view(1, inner)
+            dense = (q.to(torch.bfloat16).view(out, inner // group, group)
+                     * module.weight_scale.unsqueeze(-1)).view(out, inner)
+            expected = torch.nn.functional.linear(probe, dense)
+            actual = torch._weight_int4pack_mm(probe, layout, group, scales)
+            torch.testing.assert_close(actual, expected, rtol=0.016, atol=1e-5)
+            torch.cuda.synchronize(q.device)
+            state.update(selected="torch-cuda-int4pack", available=True)
+            return state, (layout, scales, torch._weight_int4pack_mm, torch.bfloat16)
+        except (RuntimeError, AttributeError, NotImplementedError, AssertionError) as e:
+            state["reason"] = "%s: %s" % (type(e).__name__, e)
+    return state, None
+
+
 def packed_forward(self, x):
     """Linear forward of a module that holds its weight as compressed-tensors
-    pack-quantized int4 (weight_packed, weight_scale): the weight is expanded for this
-    one call only, so the module stays at four bits in memory. This is exactly the
-    dequantization compressed-tensors itself applies (pack_quantized, symmetric, group
-    quantization), without ever materializing the dense model."""
-    out, inner, bits, group = self._hachidori_packed
-    q = self._unpack(self.weight_packed, bits, self.torch_Size((out, inner)))
-    w = (q.to(x.dtype).view(out, inner // group, group) * self.weight_scale.to(x.dtype).unsqueeze(-1)).view(out, inner)
-    return self.torch_linear(x, w, self.bias)
+    int4 weights: a native weight-aware kernel when capability probing succeeded,
+    otherwise explicit per-call reconstruction. Neither path expands the model."""
+    out, inner, _, group = self._hachidori_packed
+    state, backend = self._hachidori_w4
+    if backend is not None and x.dtype == backend[1]:
+        mm, _ = backend
+        # A failure after probing is surfaced, never silently retried.
+        if x.numel() == 0:
+            return x.new_empty((*x.shape[:-1], out))
+        y = mm(x.reshape(-1, inner).contiguous(), self.weight_packed, group, self._hachidori_w4_scales)
+        y = y.reshape(*x.shape[:-1], out)
+        if self.bias is not None:
+            y = y + self.bias
+        state["executed"] = "torch-cuda-int4pack"
+        state["optimized_calls"] += 1
+        return y
+    if backend is not None:
+        raise RuntimeError("optimized W4 Linear requires BF16 activations")
+    w = packed_reference_weight(self, x.dtype)
+    y = self.torch_linear(x, w, self.bias)
+    state["executed"] = "packed-reference"
+    state["reference_calls"] += 1
+    return y
 
 
 def bind_packed(torch, unpack, module, out, inner, bits, group):
-    """Make module execute as a packed int4 Linear: its forward dequantizes its own
-    weight per call (packed_forward). The variant loader and the tuning trials
+    """Bind one capability-gated execution contract to packed int4 Linear.
+    The variant loader and the tuning trials
     bind modules through this one function, so a trial executes exactly as the
     variant built from the same plan does."""
     module._hachidori_packed = (out, inner, bits, group)
     module._unpack = unpack
     module.torch_Size = torch.Size
     module.torch_linear = torch.nn.functional.linear
+    state, backend = select_w4_backend(torch, module)
+    if backend is not None:
+        layout, scales, mm, dtype = backend
+        # Replace, do not duplicate, packed residency. The immutable on-disk and
+        # RAM component formats remain compressed-tensors; this layout is derived.
+        module._parameters.pop("weight_packed", None)
+        module._buffers.pop("weight_packed", None)
+        module.register_parameter("weight_packed", torch.nn.Parameter(layout, requires_grad=False))
+        module.register_buffer("_hachidori_w4_scales", scales)
+        backend = (mm, dtype)
+    module._hachidori_w4 = (state, backend)
     module.forward = types.MethodType(packed_forward, module)
 
 
@@ -647,10 +737,10 @@ class TorchOps:
     def snapshot(self, module):
         keep = {}
         for kind, table in (("p", module._parameters), ("b", module._buffers)):
-            for key in ("weight", "weight_packed", "weight_scale", "weight_shape"):
+            for key in ("weight", "weight_packed", "weight_scale", "weight_shape", "_hachidori_w4_scales"):
                 if key in table:
                     keep[(kind, key)] = table[key]
-        extra = {k: module.__dict__[k] for k in ("_hachidori_packed", "_unpack", "torch_Size", "torch_linear", "forward") if k in module.__dict__}
+        extra = {k: module.__dict__[k] for k in ("_hachidori_packed", "_hachidori_w4", "_unpack", "torch_Size", "torch_linear", "forward") if k in module.__dict__}
         return {"tables": keep, "extra": extra}
 
     def snapshot_bytes(self, snap):
@@ -658,9 +748,9 @@ class TorchOps:
 
     def _clear(self, module):
         for table in (module._parameters, module._buffers):
-            for key in ("weight", "weight_packed", "weight_scale", "weight_shape"):
+            for key in ("weight", "weight_packed", "weight_scale", "weight_shape", "_hachidori_w4_scales"):
                 table.pop(key, None)
-        for key in ("_hachidori_packed", "_unpack", "torch_Size", "torch_linear", "forward"):
+        for key in ("_hachidori_packed", "_hachidori_w4", "_unpack", "torch_Size", "torch_linear", "forward"):
             module.__dict__.pop(key, None)
 
     def install_dense(self, module, staged):
@@ -1072,7 +1162,7 @@ class ClefProvider(Provider):
     def install_packed_linears(self, backbone):
         """Run every packed Linear at four bits. transformers would expand the whole
         model to the dense dtype on its first forward pass (a hook on the root model);
-        that is removed, and each packed module dequantizes its own weight per call."""
+        that is removed, and each packed module selects its execution backend."""
         from compressed_tensors.compressors.pack_quantized.helpers import unpack_from_int32
         torch = self.torch
         weights = self.variant["weights"]
@@ -1128,6 +1218,9 @@ class ClefProvider(Provider):
         execution = "variant" if self.variant else ("trial" if self.trial_session else "source")
         info = {"transformers_version": self.transformers.__version__, "weights_quantized_modules": self.quantized,
                 "execution": execution, "kernel_paths": self.kernel_paths}
+        info["w4_linear_paths"] = {name: dict(module._hachidori_w4[0])
+                                   for name, module in self.backbone.named_modules()
+                                   if hasattr(module, "_hachidori_w4")}
         if self.trial_session:
             info["trial_session"] = True
             info["trial_transform"] = TRIAL_TRANSFORM
