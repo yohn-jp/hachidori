@@ -422,16 +422,16 @@ parsed or retried.
   `HACHIDORI_CLEF_DTYPE=float32`, in `float32` as the high-precision reference. The
   device is explicit: CUDA is never silently replaced by the CPU. A 9B model in
   `bfloat16` does not fit an RTX 3060; the reference path is the CPU and may be
-  slow, and the CUDA path is for a variant (below). On CUDA compute capability
-  >= 8.0 in `bfloat16`, Hachidori binds FLA's Triton causal convolution and
-  chunk Gated DeltaNet kernels. The convolution adapter only transposes between
-  Transformers' `[B, D, T]` and FLA's `[B, T, D]` layout. CUDA runtimes lock
-  `fla-core==0.5.2`, Linux `triton==3.6.0`, or Windows
-  `triton-windows==3.6.0.post26`; CPU runtimes carry no FLA kernel dependencies.
-  CPU, older CUDA capabilities, and `float32` use explicit PyTorch references.
-  Missing kernels or kernel execution errors on the supported path are startup
-  or inference failures, never reference retries or CPU substitution. Nothing
-  is generated, parsed or retried.
+  slow, and the CUDA path is for a variant (below). On native Windows amd64
+  with CUDA compute capability >= 8.0 in `bfloat16`, Hachidori binds FLA's
+  Triton causal convolution and chunk Gated DeltaNet kernels. The convolution
+  adapter only transposes between Transformers' `[B, D, T]` and FLA's
+  `[B, T, D]` layout. The Windows CUDA runtime locks `fla-core==0.5.2` and
+  `triton-windows==3.6.0.post26`. CPU and non-Windows runtimes carry no Clef
+  kernel dependencies. Non-Windows CUDA, CPU, older CUDA capabilities, and
+  `float32` use explicit PyTorch references. Missing kernels or kernel execution
+  errors on the supported Windows path are startup or inference failures, never
+  reference retries or CPU substitution. Nothing is generated, parsed or retried.
 
   Clef worker startup logs kernel selection. READY/status provider information
   includes `kernel_paths.causal_conv1d_fn` and
