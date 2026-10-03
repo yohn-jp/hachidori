@@ -89,6 +89,15 @@ func TestCandidateIsBuiltExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestArtifactUploadsAreRerunnable(t *testing.T) {
+	text := load(t)
+	uploads := strings.Count(text, "uses: actions/upload-artifact@")
+	overwrites := strings.Count(text, "overwrite: true")
+	if uploads == 0 || overwrites != uploads {
+		t.Fatalf("every artifact upload must be replaceable on a workflow rerun: uploads=%d overwrite=true=%d", uploads, overwrites)
+	}
+}
+
 func TestShardsConsumeAndVerifyTheSharedCandidate(t *testing.T) {
 	text := load(t)
 	shard := job(text, "shard")
