@@ -265,9 +265,10 @@ func TestOperationProgressRendering(t *testing.T) {
 		t.Error("a phase without a step yet is not shown as working")
 	}
 
-	// The same operation is visible on the Runtime page.
-	if b := e.get(t, "/").Body.String(); !strings.Contains(b, `id="models-busy"`) || !strings.Contains(b, "RUNNING") {
-		t.Error("the Runtime page does not show the operation in flight")
+	// Runtime owns no operation: it carries the compact headline in the shell
+	// and none of the phases, progress or console.
+	if b := e.get(t, "/").Body.String(); !strings.Contains(b, `class="op-headline`) || strings.Contains(b, `id="models-busy"`) || strings.Contains(b, "Operation phases") {
+		t.Error("the Runtime page does not reduce the operation in flight to its headline")
 	}
 }
 

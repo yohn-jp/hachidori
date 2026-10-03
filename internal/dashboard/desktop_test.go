@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -59,7 +60,7 @@ func TestDesktopPanelShowsOptInPreferencesAndTrayBehaviour(t *testing.T) {
 	if root := e.get(t, "/").Body.String(); !strings.Contains(root, `id="diagnostics"`) || !strings.Contains(root, `location.hash === "#diagnostics"`) {
 		t.Error("runtime page does not keep the #diagnostics entry")
 	}
-	if strings.Contains(body, "checked") {
+	if regexp.MustCompile(`<input[^>]* checked`).MatchString(body) {
 		t.Error("preferences are opt-in: nothing may be checked by default")
 	}
 }

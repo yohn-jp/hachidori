@@ -88,7 +88,7 @@
       .then(function (t) {
         var src = new DOMParser().parseFromString(t, "text/html").querySelector('[data-live="experiment"]');
         var dst = document.querySelector('[data-live="experiment"]');
-        if (src && dst && src.innerHTML !== dst.innerHTML) dst.innerHTML = src.innerHTML;
+        if (src && dst) hachidoriUI.swap(dst, src);
         if (!running()) {
           var b = document.querySelector("#exp-form button[data-run]");
           if (b) { b.disabled = false; b.classList.remove("primary"); }
@@ -163,7 +163,7 @@
   </div>
 
   {{with .Errors}}
-  <details class="disclosure" open><summary>{{t "Request errors"}}<span class="sub bad-t">{{len .}}</span></summary>
+  <details class="disclosure" id="exp-request-errors" open><summary>{{t "Request errors"}}<span class="sub bad-t">{{len .}}</span></summary>
   <div class="body table-wrap"><table class="data" aria-label="{{t "Request errors"}}"><thead><tr><th>{{t "phase"}}</th><th>{{t "pass"}}</th><th>{{t "case"}}</th><th>{{t "question"}}</th><th>{{t "class"}}</th><th>{{t "message"}}</th></tr></thead><tbody>
   {{range .}}<tr><td>{{.Phase}}</td><td>{{if .Pass}}{{.Pass}}{{end}}</td><td class="mono">{{.CaseID}}</td><td class="mono">{{.QuestionID}}</td><td class="mono">{{.Class}}</td><td>{{.Message}}</td></tr>{{end}}
   </tbody></table></div></details>
@@ -241,7 +241,7 @@
   {{range .Questions}}<tr><td class="mono">{{.ID}}</td><td class="num">{{.N.A}} / {{.N.B}}</td><td class="num">{{f4 .Accuracy.A}} / {{f4 .Accuracy.B}}</td><td class="num">{{sd .Accuracy.Diff}}</td><td class="num">{{f4 .ECE.A}} / {{f4 .ECE.B}}</td><td class="num">{{sd .ECE.Diff}}</td></tr>{{end}}
   </tbody></table></div>
   {{end}}
-  <details class="disclosure"><summary>{{t "Run context"}}<span class="sub">{{t "may explain differences; never gates the comparison"}}</span></summary>
+  <details class="disclosure" id="exp-run-context"><summary>{{t "Run context"}}<span class="sub">{{t "may explain differences; never gates the comparison"}}</span></summary>
     <div class="body kv-grid">
       <dl class="kv"><dt>{{t "A started"}}</dt><dd>{{.A.StartedAt}}</dd><dt>{{t "A served model"}}</dt><dd>{{.A.ServedModel}}</dd><dt>{{t "A identity"}}</dt><dd class="mono">{{.A.ServedIdentity}}</dd><dt>{{t "A warmup / passes"}}</dt><dd>{{.A.WarmupRequests}} / {{.A.Passes}}</dd></dl>
       <dl class="kv"><dt>{{t "B started"}}</dt><dd>{{.B.StartedAt}}</dd><dt>{{t "B served model"}}</dt><dd>{{.B.ServedModel}}</dd><dt>{{t "B identity"}}</dt><dd class="mono">{{.B.ServedIdentity}}</dd><dt>{{t "B warmup / passes"}}</dt><dd>{{.B.WarmupRequests}} / {{.B.Passes}}</dd></dl>

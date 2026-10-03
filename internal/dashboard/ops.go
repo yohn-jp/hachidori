@@ -9,8 +9,10 @@ package dashboard
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/yohn-jp/hachidori/internal/redact"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -119,105 +121,6 @@ func stepLabel(s string) string {
 		return l
 	}
 	return s
-}
-
-// Operation detail belongs to one workspace. Every page shows the operation in
-// flight as one compact headline in the shell; the phase strip, the position
-// ("n of m"), the progress bar and the operation's own execution facts render
-// only on the workspace that owns the operation. This is a rule of
-// projection over the controller's one operation: no state is copied or kept
-// per page.
-//
-// The composed Forge operations (and the low-level Forge steps they are built
-// from) are owned by Forge. A kind that is not listed has no single owning
-// workspace and is shown wherever it always was.
-var opOwners = map[string]string{
-	"forge_build_evaluate": "forge",
-	"forge_certify":        "forge",
-	"optimize":             "forge",
-	"certify":              "forge",
-	"preflight":            "forge",
-	"probe":                "forge",
-	"execute":              "forge",
-}
-
-// opOwner is the workspace (Chrome.Nav) that owns the detail of an operation of
-// the given kind, "" when it has none.
-func opOwner(kind string) string { return opOwners[kind] }
-
-// opDetailOn reports whether the detail of an operation of kind renders on the
-// workspace nav.
-func opDetailOn(nav, kind string) bool {
-	owner := opOwner(kind)
-	return owner == "" || owner == nav
-}
-
-// scopedTo is the state as workspace nav may render it in detail. The
-// operation in flight, when another workspace owns it, is left to the shell's
-// headline; a finished one stays as a compact outcome line that points to the
-// owner (so a failure is never hidden, but its phases and diagnostics are not
-// repeated).
-func (st ModelsState) scopedTo(nav string) ModelsState {
-	if st.Busy != nil && !opDetailOn(nav, st.Busy.Kind) {
-		st.Busy = nil
-	}
-	if st.Last != nil && !opDetailOn(nav, st.Last.Kind) {
-		last := *st.Last
-		last.Compact = true
-		st.Last = &last
-	}
-	return st
-}
-
-var opKindLabels = map[string]string{
-	"forge_build_evaluate": "Build & evaluate",
-	"forge_certify":        "Certification",
-	"optimize":             "Building candidate",
-	"certify":              "Certifying",
-	"preflight":            "Preflight",
-	"probe":                "Probing variant",
-	"execute":              "Evaluation run",
-	"desired_state":        "Applying desired state",
-	"apply":                "Applying variant",
-	"activate":             "Activating",
-	"materialize":          "Materializing",
-	"repair":               "Repairing",
-	"setup":                "Setting up",
-	"verify":               "Verifying",
-	"remove":               "Removing",
-}
-
-// opHeadline is the compact global statement that Hachidori is doing work: what
-// the operation is and the phase it is in. It is what every workspace keeps
-// while only the owning one shows the detail (the phase strip, the phase
-// number, progress and the operation's execution facts).
-type opHeadline struct {
-	// Kind and Phase are catalog message IDs.
-	Kind, Phase string
-	// Href is the workspace holding the detail ("" when the operation has no
-	// single owner).
-	Href string
-}
-
-var navHrefs = map[string]string{"forge": "/forge", "models": "/models", "tuning": "/tuning"}
-
-// OwnerHref is where the detail of an operation of this kind is shown ("" when
-// it has no single owner).
-func (o ModelOp) OwnerHref() string { return navHrefs[opOwner(o.Kind)] }
-
-// headlineOf restates the operation in flight; nil when none is.
-func headlineOf(o *ModelOp) *opHeadline {
-	if o == nil {
-		return nil
-	}
-	h := &opHeadline{Kind: o.Kind, Href: navHrefs[opOwner(o.Kind)]}
-	if l, ok := opKindLabels[o.Kind]; ok {
-		h.Kind = l
-	}
-	if o.Phase != "" {
-		h.Phase = opPhaseLabel(o.Kind, o.Phase)
-	}
-	return h
 }
 
 // opStages places an operation among the phases it goes through. A phase is
@@ -403,6 +306,7 @@ type nextStart struct {
 	// Variant is the variant the activation record selects ("" for the source
 	// artifact) and VariantDiffers whether the runtime executes another one.
 	Variant        string
+	VariantLabel   string // the operator's name of Variant, from the inventory's manifest
 	VariantDiffers bool
 	// Problem is why the active pair cannot be started by this build.
 	Problem    string
@@ -421,6 +325,7 @@ func nextOf(st ModelsState, rt server.Runtime) *nextStart {
 			}
 		}
 		n.Variant = a.Variant
+		n.VariantLabel = variantLabels(st.Inventory.Variants)[a.Variant]
 		running := ""
 		if rt.Variant != nil {
 			running = rt.Variant.ID
@@ -429,4 +334,138 @@ func nextOf(st ModelsState, rt server.Runtime) *nextStart {
 		n.Differs = n.Model != "" && (n.Model != rt.ModelID || n.Device != rt.Device || n.VariantDiffers)
 	}
 	return n
+}
+
+// Workspaces that own a long-running operation. The owning workspace shows its
+// full phases, progress and console while it runs; every other workspace shows
+// only the compact headline in the shell and, once it ends, a compact summary.
+const (
+	ownerModels = "models"
+	ownerForge  = "forge"
+)
+
+// opOwners is where each operation is started and followed. An operation kind
+// that is not listed (an update download, which has its own panel) belongs to
+// no maintenance workspace.
+var opOwners = map[string]string{
+	"setup": ownerModels, "materialize": ownerModels, "repair": ownerModels, "activate": ownerModels,
+	"verify": ownerModels, "remove": ownerModels, "desired_state": ownerModels,
+	"optimize": ownerForge, "certify": ownerForge, "forge_certify": ownerForge, "forge_build_evaluate": ownerForge,
+	"preflight": ownerForge, "probe": ownerForge, "execute": ownerForge, "apply": ownerForge,
+}
+
+// opKindLabels name an operation kind for the operator. The raw kind stays on
+// the element (data-kind) for evidence and tests.
+var opKindLabels = map[string]string{
+	"setup": "Set up", "materialize": "Materialize", "repair": "Repair", "activate": "Activate",
+	"verify": "Verify", "remove": "Remove", "desired_state": "Apply desired state",
+	"optimize": "Build variant", "certify": "Certify variant", "forge_certify": "Certify variant",
+	"forge_build_evaluate": "Build and evaluate", "preflight": "Preflight", "probe": "Probe variant",
+	"execute": "Execute", "apply": "Apply variant", "update": "Update",
+}
+
+// opOutcomes state what a successfully finished operation did, in the words the
+// owning action already uses. They restate the plan the operation completed;
+// they add no measurement.
+var opOutcomes = map[string]string{
+	"setup":                "Runtime and model are set up and activated.",
+	"materialize":          "Materialized. It is not activated until you activate it.",
+	"repair":               "Repaired and verified.",
+	"activate":             "Activated. A running worker keeps its current runtime until you restart it.",
+	"verify":               "Verified against its pinned digest.",
+	"remove":               "Removed from HACHIDORI_HOME.",
+	"desired_state":        "Desired state applied: the runtime serves the requested target.",
+	"optimize":             "Variant built.",
+	"certify":              "Certification recorded.",
+	"forge_certify":        "Certification recorded.",
+	"forge_build_evaluate": "Candidate built and evaluated. Applying it stays your decision.",
+	"preflight":            "Preflight recorded.",
+	"probe":                "Probe recorded.",
+	"apply":                "Applied: the runtime is READY on the variant and answered a typed decision.",
+	"update":               "The update was downloaded and verified.",
+}
+
+func opOwner(kind string) string { return opOwners[kind] }
+
+// OwnedBy reports whether the workspace nav owns the operation.
+func (o ModelOp) OwnedBy(nav string) bool { return opOwners[o.Kind] == nav }
+
+// opLabel is the operator's name of an operation kind.
+func opLabel(kind string) string {
+	if l, ok := opKindLabels[kind]; ok {
+		return l
+	}
+	return kind
+}
+
+// opOutcome is what a successfully finished operation accomplished, or "".
+func opOutcome(o ModelOp) string {
+	if o.Failure != "" {
+		return ""
+	}
+	return opOutcomes[o.Kind]
+}
+
+// opTarget is what an operation acted on: its device, model and target.
+func opTarget(o ModelOp) string {
+	return strings.Join(strings.Fields(o.Device+" "+o.Model+" "+o.Target), " ")
+}
+
+// opHref is where an operation is followed.
+func opHref(kind string) string {
+	switch opOwners[kind] {
+	case ownerModels:
+		return "/models"
+	case ownerForge:
+		return "/forge"
+	}
+	if kind == "update" {
+		return "/settings/updates"
+	}
+	return "/"
+}
+
+// LastActivity is the latest real backend movement of the operation: the later
+// of its last reported phase or step and the last write of its own log output.
+// It is zero when the backend reported none; it is never the dashboard's clock.
+func (o ModelOp) LastActivity() time.Time {
+	if o.ConsoleAt.After(o.Activity) {
+		return o.ConsoleAt
+	}
+	return o.Activity
+}
+
+// Console bounds. The adapter already scrubs and bounds the tail; the
+// dashboard repeats both so that no source can widen what the console shows.
+const (
+	consoleLines     = 100
+	consoleLineBytes = 512
+)
+
+// consoleTail is the bounded, redacted recent output of an operation.
+func consoleTail(o ModelOp) []string {
+	lines := o.Console
+	if len(lines) > consoleLines {
+		lines = lines[len(lines)-consoleLines:]
+	}
+	s := redact.New("")
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, s.Line(l, consoleLineBytes))
+	}
+	return out
+}
+
+// opHeadline is the compact line every workspace shows while an operation is
+// running: what it is, where it is and how long it has run. It is the only
+// view of a running operation outside the workspace that owns it.
+type opHeadline struct {
+	Label, Position, Elapsed, Href, Kind string
+}
+
+func headlineOf(o *ModelOp) *opHeadline {
+	if o == nil || !o.Finished.IsZero() {
+		return nil
+	}
+	return &opHeadline{Label: opLabel(o.Kind), Position: phasePosition(*o), Elapsed: since(o.Started), Href: opHref(o.Kind), Kind: o.Kind}
 }

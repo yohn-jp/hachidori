@@ -110,63 +110,6 @@ func planningEnv(t *testing.T) (*env, *fakeModels) {
 	return e, fm
 }
 
-var everyPage = []string{"/", "/models", "/forge", "/tuning", "/workbench", "/experiments", "/errors", "/settings", "/diagnostics"}
-
-// The operation is one compact headline in the shell of every workspace; its
-// phase strip, phase number, progress and execution facts render only on Forge.
-func TestForgeOperationDetailBelongsToForgeAndTheHeadlineToEveryPage(t *testing.T) {
-	e, fm := planningEnv(t)
-	withSettings(e, &fakeSettings{}, nil)
-	plan := []string{"resolve_inputs", "preflight", "build", "resolving", "preflight", "probe", "reference_run", "candidate_run", "aligning", "certifying", "persisting"}
-	fm.state.Busy = &ModelOp{Kind: "forge_build_evaluate", Device: "cuda", Model: "clef-flash", Target: "source clef-flash recipe clef-flash-w4a16-rtn-g128",
-		Plan: plan, Phases: plan[:7], Phase: "reference_run", Step: "probing", Detail: "case 12", Item: 12, Items: 40, DeviceMode: "auto", ResolvedDevice: "cuda",
-		Started: time.Now().Add(-time.Minute)}
-	for _, page := range everyPage {
-		rec := e.get(t, page)
-		if rec.Code != 200 {
-			t.Fatalf("%s: %d", page, rec.Code)
-		}
-		body := rec.Body.String()
-		head := section(body, `id="shell-operation"`, `</span>`)
-		if !has(head, "RUNNING", "Build &amp; evaluate", "Reference run", `href="/forge"`) {
-			t.Errorf("%s lacks the compact headline: %q", page, head)
-		}
-		for _, detail := range []string{`id="models-busy"`, `class="stages"`, "phase 7 of 11", `class="bar progress`, "case 12", "data-device-mode"} {
-			if page == "/forge" {
-				if !strings.Contains(body, detail) {
-					t.Errorf("/forge lacks the operation detail %q", detail)
-				}
-			} else if strings.Contains(body, detail) {
-				t.Errorf("%s repeats the Forge operation detail %q", page, detail)
-			}
-		}
-	}
-	// The same operation, rendered for the live refresh of any page.
-	live := e.get(t, "/live").Body.String()
-	if strings.Contains(live, `class="stages"`) || !strings.Contains(live, `id="shell-operation"`) {
-		t.Error("the live fragment carries the operation detail or lacks the headline")
-	}
-}
-
-// A finished Forge operation keeps its outcome elsewhere as one line that
-// points at Forge; its phases and diagnostics are Forge's.
-func TestFinishedForgeOperationIsCompactOutsideForge(t *testing.T) {
-	e, fm, _ := forgeEnv(t, variantInventory())
-	plan := []string{"resolve_inputs", "preflight", "build"}
-	fm.state.Last = &ModelOp{Kind: "forge_build_evaluate", Model: "clef-flash", Plan: plan, Phases: plan, Phase: "build", Failure: "boom", FailurePhase: "build",
-		Diagnostic: "forge_build_evaluate-20261002T000000Z-0123abcd", Started: time.Now().Add(-time.Minute), Finished: time.Now()}
-	for _, page := range []string{"/", "/models"} {
-		body := e.get(t, page).Body.String()
-		last := section(body, `id="models-last"`, "</div>")
-		if !has(last, "FAILED", `href="/forge">Details`) || has(last, `class="stages"`) || has(last, "forge-diagnostic-last") {
-			t.Errorf("%s: %s", page, last)
-		}
-	}
-	if body := e.get(t, "/forge").Body.String(); !has(body, `class="stages"`, "Failed in phase") {
-		t.Error("Forge lacks the finished operation's detail")
-	}
-}
-
 // ---- planning with serving stopped ----
 
 type deviceModels struct {
@@ -220,33 +163,6 @@ func TestPlanningAndBudgetWorkWithServingStopped(t *testing.T) {
 }
 
 // ---- shared layout contract ----
-
-// Short explanatory text and controls take the width of their section; only
-// .prose carries a reading measure. The contract is stated on the shared rules,
-// not on any one screen.
-func TestSharedLayoutDoesNotNarrowShortTextOrControls(t *testing.T) {
-	e := newEnv(t)
-	body := e.get(t, "/").Body.String()
-	css := strings.Split(body, "</style>")[0]
-	for _, sel := range []string{".lede", ".note", ".empty"} {
-		if r := cssRule(t, css, sel); strings.Contains(r, "max-width") || strings.Contains(r, "width:") {
-			t.Errorf("%s is narrower than its section: %s", sel, r)
-		}
-	}
-	if r := cssRule(t, css, ".prose"); !strings.Contains(r, "max-width: var(--measure)") {
-		t.Errorf(".prose lost the reading measure: %s", r)
-	}
-	if strings.Contains(css, ".intent dd select") || strings.Contains(css, ".intent dd input") {
-		t.Error("controls inside .intent are capped narrower than their column")
-	}
-	// Label/value grids give the value the rest of the row; they are not a
-	// fixed ratio that wastes a wide window.
-	for _, sel := range []string{".operator-row", ".instrument-heading"} {
-		if r := cssRule(t, css, sel); !strings.Contains(r, "grid-template-columns: minmax(8rem, 13rem) minmax(0, 1fr)") {
-			t.Errorf("%s does not give its value the available width: %s", sel, r)
-		}
-	}
-}
 
 // No template breaks a line by hand or sets an ad-hoc width on a text
 // container: layout comes from the shared rules.

@@ -315,9 +315,14 @@ type ModelOp struct {
 	Resumed    int64
 	Diagnostic string
 	Log        string // the setup log holding the action's output
-	// Compact: the operation belongs to another workspace, so only its outcome
-	// is shown here (see scopedTo).
-	Compact bool
+	// Activity is when the action last reported a phase or step. Console is
+	// the bounded, redacted recent tail of the action's setup-log output and
+	// ConsoleAt when that output was last written (zero when it was not written
+	// by this action). Both restate backend facts; the dashboard keeps no
+	// activity clock of its own.
+	Activity  time.Time
+	Console   []string
+	ConsoleAt time.Time
 }
 
 // Determinate reports whether the step has a measurable total.
@@ -368,6 +373,9 @@ type VariantRow struct {
 	// CanExperiment: no record exists, so the explicit operator-only
 	// experimental/uncertified launch is offered (never for a rejected one).
 	CanExperiment bool
+	// Label is the operator's name of the variant ("Clef Flash · W4A16"), from
+	// its structured manifest; ID stays the exact identity.
+	Label string
 	// Probe is the latest probe of this variant, nil if it was never probed.
 	// ProbeStale: it was recorded for another manifest of this ID, so it says
 	// nothing about the variant as it is now.
@@ -497,6 +505,9 @@ type Prefs struct {
 	Tunnel tunnel.Spec `json:"tunnel"`
 }
 
+//go:embed uistate.js
+var uiStateJS string
+
 //go:embed page.html workbench.html experiments.html errors.html updates.html models.html forge.html tuning.html
 var pageFS embed.FS
 
@@ -528,6 +539,7 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"sms":           func(v float64) string { return signed(v, "ms") },
 	"short":         func(s string) string { return s[:min(len(s), 12)] },
 	"systemCSS":     ui.CSS,
+	"uiStateJS":     func() template.JS { return template.JS(uiStateJS) },
 	"add":           func(a, b int) int { return a + b },
 	// long-running work (ops.go)
 	"opStages":        opStages,
@@ -540,6 +552,12 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"bytesIn":         bytesIn,
 	"since":           since,
 	"took":            took,
+	"variantTitle":    variantTitle,
+	"opLabel":         opLabel,
+	"opHref":          opHref,
+	"opOutcome":       opOutcome,
+	"opTarget":        opTarget,
+	"consoleTail":     consoleTail,
 	"failureOf":       failureOf,
 	"objective":       objectiveLabel,
 }).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html", "updates.html", "models.html", "forge.html", "tuning.html"))
@@ -567,6 +585,9 @@ type Chrome struct {
 	HasModels   bool // the Models and Forge workspaces are available
 	HasTuning   bool // the Tuning workspace is available
 	Rt          shellStatus
+	// Op is the compact headline of the operation in flight, shown by every
+	// workspace's shell; the full progress belongs to the owning workspace.
+	Op *opHeadline
 }
 
 // hasTuning: the Tuning workspace needs the tuning authority and the Models
@@ -728,10 +749,11 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type view struct {
 	Chrome
-	// models is the maintenance authority's state as of this render, read once.
-	models  ModelsState
 	Token   string
 	Running bool
+	// models is the maintenance state this render read once; the shell's
+	// operation headline and the Models-aware views share it.
+	models  *ModelsState
 	S       server.Status
 	Last    *Action
 	Doctor  DoctorRun
@@ -761,7 +783,8 @@ func (d *Dashboard) statusView(title, nav string) view {
 	v := view{Chrome: Chrome{Title: title, Nav: nav, Lang: d.locale(), APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings(), HasModels: d.cfg.Models != nil, HasTuning: d.cfg.hasTuning()},
 		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
 	if d.cfg.Models != nil {
-		v.models = d.cfg.Models.State()
+		st := d.cfg.Models.State()
+		v.models, v.Op = &st, headlineOf(st.Busy)
 	}
 	v.Rt = shellOf(v)
 	return v
@@ -776,8 +799,8 @@ func (d *Dashboard) view(title, nav string) view {
 	if d.cfg.Connections != nil {
 		v.FormName = d.formName(v.Form)
 	}
-	if d.cfg.Models != nil {
-		v.Next = nextOf(v.models.scopedTo(nav), v.S.Runtime)
+	if v.models != nil {
+		v.Next = nextOf(*v.models, v.S.Runtime)
 	}
 	if d.cfg.Desktop != nil {
 		dv := &DesktopView{}
@@ -972,7 +995,7 @@ func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Dashboard) modelsView(v view) *ModelsView {
-	st := v.models.scopedTo(v.Nav)
+	st := d.cfg.Models.State()
 	mv := &ModelsView{ModelsState: st, Devices: setup.Devices}
 	if a := st.Inventory.Active; a != nil {
 		mv.ActiveDevice = a.Device
@@ -1006,8 +1029,9 @@ func (d *Dashboard) modelsView(v view) *ModelsView {
 		}
 	}
 	mv.VariantControls = d.cfg.Variants != nil
+	labels := variantLabels(st.Inventory.Variants)
 	for _, e := range st.Inventory.Variants {
-		row := VariantRow{VariantEntry: e, Check: check(setup.KindVariant, e.ID), Running: v.Running && e.ID == mv.RunningVariant}
+		row := VariantRow{VariantEntry: e, Label: labels[e.ID], Check: check(setup.KindVariant, e.ID), Running: v.Running && e.ID == mv.RunningVariant}
 		row.Pending = e.Active && st.RestartRequired && !row.Running
 		row.CanActivate = e.Problem == "" && e.SourceMaterialized && e.Certification == eval.StateAccepted
 		row.CanExperiment = e.Problem == "" && e.SourceMaterialized && e.Certification == eval.StateUncertified

@@ -48,7 +48,7 @@ html, body { height: 100%; }
 .operator-label { color: var(--text-2); }
 .operator-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); min-width: 0; overflow-wrap: anywhere; }
 .operator-reason { flex-basis: 100%; }
-.semantic-state { color: var(--tone, var(--text-3)); font: 650 var(--fs-label)/1.5 var(--mono); letter-spacing: .05em; white-space: nowrap; }
+.semantic-state { display: inline-flex; align-items: center; gap: .35rem; color: var(--tone, var(--text-3)); font: 650 var(--fs-label)/1.5 var(--mono); letter-spacing: .05em; white-space: nowrap; }
 .operator-disclosure { border-top: 1px solid var(--line); padding-block: var(--sp-3); min-width: 0; }
 .operator-disclosure > summary { cursor: pointer; font-weight: 600; color: var(--text-2); }
 .operator-disclosure-body { display: grid; gap: var(--sp-3); padding-top: var(--sp-3); min-width: 0; }
@@ -79,13 +79,24 @@ ol.stages li { display: flex; align-items: center; gap: .4rem; color: var(--text
 ol.stages li::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; flex: none; }
 ol.stages li.done { color: var(--text-2); } ol.stages li.done::before { background: var(--ok); border-color: var(--ok); }
 ol.stages li.current { color: var(--text); font-weight: 600; } ol.stages li.current::before { background: var(--accent); border-color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
-ol.stages li.failed { color: var(--bad); font-weight: 600; } ol.stages li.failed::before { background: var(--bad); border-color: var(--bad); }
+ol.stages li.failed { color: var(--bad); font-weight: 600; } ol.stages li.failed::before { background: var(--bad); border-color: var(--bad); border-radius: 0; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
 ol.stages li.skipped { text-decoration: line-through; }
 /* A variant's lifecycle: one stage per line with what the records say; an unrecorded stage is quiet, never an error. */
 ol.stages.lifecycle { display: grid; gap: .3rem; }
 ol.stages.lifecycle li { align-items: baseline; flex-wrap: wrap; }
 ol.stages li.stale { color: var(--warn); } ol.stages li.stale::before { border-color: var(--warn); }
 .stage-detail { font-weight: 400; }
+
+/* long-running work: one panel per operation, a compact headline in the shell, and a console that stays closed until opened */
+.op-panel { display: grid; gap: var(--sp-2); min-width: 0; }
+.op-headline { display: inline-flex; align-items: center; gap: .45rem; max-width: 100%; min-width: 0; color: var(--tone); font-size: var(--fs-small); font-weight: 600; text-decoration: none; white-space: nowrap; overflow: hidden; }
+.op-headline:hover { text-decoration: underline; }
+.op-headline-pos { color: var(--text-2); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+.op-activity { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.op-outcome { font-weight: 560; }
+pre.console { max-height: 18rem; font-size: var(--fs-code); }
+pre.console .l { display: block; }
+.last strong.status { font-size: var(--fs-label); letter-spacing: .06em; }
 /* Forge and Models */
 .variant-card, .step { padding-top: var(--sp-3); border-top: 1px solid var(--line); }
 /* An identity is shown exactly as it is. */
@@ -103,7 +114,7 @@ ol.stages li.stale { color: var(--warn); } ol.stages li.stale::before { border-c
 /* metrics: numbers first, labels quiet */
 .metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: var(--sp-4) var(--sp-5); margin: 0; }
 .metric { min-width: 0; }
-.metric dt, .pair dt, .choices .h { font-size: var(--fs-label); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+.metric dt, .pair dt { font-size: var(--fs-label); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
 .metric dd { margin: .1rem 0 0; font-size: var(--fs-value); font-weight: 600; font-variant-numeric: tabular-nums; }
 .metric dd small { font-size: var(--fs-small); font-weight: 400; color: var(--text-2); margin-left: .3rem; }
 .metric.primary dd { font-size: var(--fs-display); font-weight: 650; letter-spacing: -.01em; line-height: 1.15; }
@@ -121,7 +132,7 @@ ol.stages li.stale { color: var(--warn); } ol.stages li.stale::before { border-c
 .bar.progress { height: 8px; border-radius: 4px; }
 /* Progress advances (completion is the one continuous change it explains). */
 .bar.progress > span { background: var(--tone, var(--accent)); transition: width var(--dur) var(--ease); }
-.legend { list-style: none; padding: 0; margin: var(--sp-2) 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .2rem var(--sp-5); font-size: var(--fs-small); color: var(--text-2); max-width: 32rem; }
+.legend { list-style: none; padding: 0; margin: var(--sp-2) 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .2rem var(--sp-5); font-size: var(--fs-small); color: var(--text-2); }
 .legend li { display: flex; align-items: center; gap: .4rem; }
 .legend strong { margin-left: auto; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
 .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; background: var(--track); }
@@ -178,7 +189,7 @@ form.inline { display: inline-flex; margin: 0; }
 .candidate-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-3); }
 .candidate-head h3 { font-size: var(--fs-body); text-transform: none; letter-spacing: 0; color: var(--text); margin: 0; }
 .resource-selection-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
-.resource-path-value { display: inline-block; max-width: min(65vw, 48rem); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resource-path-value { display: inline-block; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .resource-path-entry { display: grid; gap: var(--sp-2); padding-top: var(--sp-2); min-width: 0; }
 pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: var(--bad); font-weight: 600; } pre .skip { color: var(--text-3); }
 
@@ -211,8 +222,8 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 .transport-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: var(--sp-5) var(--sp-7); }
 
 /* ---- two-pane workspaces (workbench, evidence) ------------------------- */
-.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(22rem, 30rem); gap: var(--sp-5) var(--sp-6); align-items: start; }
-.split.narrow-side { grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); }
+.split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(22rem, 2fr); gap: var(--sp-5) var(--sp-6); align-items: start; }
+.split.narrow-side { grid-template-columns: minmax(0, 4fr) minmax(20rem, 2fr); }
 .pane { display: grid; gap: var(--sp-5); min-width: 0; }
 .pane-side { position: sticky; top: calc(var(--toolbar-h) + var(--sp-2)); max-height: calc(100vh - var(--bar-h) - var(--toolbar-h) - 3rem); overflow: auto; padding-left: var(--sp-5); border-left: 1px solid var(--line); }
 .toolbar { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-height: var(--toolbar-h); padding: .6rem 0;
@@ -224,7 +235,6 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 .block { display: grid; gap: .6rem; }
 .block-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-1) var(--sp-3); }
 .question { display: grid; gap: var(--sp-3); }
-.choices { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(0, 2fr); gap: .35rem .6rem; }
 .result-pane { display: grid; gap: var(--sp-4); }
 .btn[aria-busy="true"] { cursor: progress; opacity: .75; }
 .result-pane[aria-busy="true"] { opacity: .6; transition: opacity var(--dur) var(--ease); }
@@ -274,9 +284,12 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   .identity, .pair { grid-template-columns: minmax(0, 1fr); }
   .kv { grid-template-columns: minmax(0, 1fr); gap: 0; } .kv dd { margin-bottom: .35rem; }
   .path-form { grid-template-columns: minmax(0, 1fr); }
-  .choices { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
+<script>
+{{uiStateJS}}
+hachidoriUI.install(document);
+</script>
 </head>
 <body>
 <a class="skip" href="#main">{{t "Skip to workspace"}}</a>
@@ -309,8 +322,10 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 <script>
 // The shell refreshes every live slot present on this page from /live:
 // readiness and identity everywhere, runtime and diagnostics detail on
-// those workspaces. Forms are never inside a replaced slot's inputs, and
-// disclosures keep whatever open/closed state the operator gave them.
+// those workspaces. Forms are never inside a replaced slot's inputs, and the
+// operator's presentation choices (open disclosures, a console's follow
+// preference and scroll) survive every replacement: hachidoriUI.swap, from
+// uistate.js, is the one place that does it.
 // A slot whose content did not change is left alone (no relayout, no
 // repeated screen-reader announcement), and nothing is fetched while the
 // window is hidden; it refreshes as soon as it is shown again.
@@ -332,14 +347,10 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     if (document.hidden) return;
     fetch("/live", {cache: "no-store"}).then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
       .then(function (t) {
-        var open = {};
-        document.querySelectorAll("details[data-keep]").forEach(function (d) { open[d.dataset.keep] = d.open; });
         var doc = new DOMParser().parseFromString(t, "text/html");
         doc.querySelectorAll("[data-live]").forEach(function (src) {
           var dst = document.querySelector('[data-live="' + src.dataset.live + '"]');
-          if (!dst) return;
-          src.querySelectorAll("details[data-keep]").forEach(function (d) { if (d.dataset.keep in open) d.open = open[d.dataset.keep]; });
-          if (dst.innerHTML !== src.innerHTML) dst.innerHTML = src.innerHTML;
+          if (dst) hachidoriUI.swap(dst, src);
         });
         stamp(true);
       })
@@ -379,8 +390,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 </html>
 {{end}}
 
-{{define "shell"}}{{with .Rt}}<span class="readiness tone-{{.Tone}}" aria-label="{{t "Runtime"}} {{.Word}}"><span class="dot"></span>{{.Word}}</span>
-{{with .Op}}<span class="op-headline" id="shell-operation" role="status">{{t "RUNNING"}} · {{t .Kind}}{{with .Phase}} · {{t .}}{{end}}{{with .Href}} <a href="{{.}}">{{t "Details"}}</a>{{end}}</span>{{end}}
+{{define "shell"}}{{with .Op}}<a class="op-headline tone-active" href="{{.Href}}" data-kind="{{.Kind}}"><span class="dot"></span><span class="op-headline-what">{{t (opLabel .Kind)}}</span> <span class="op-headline-pos">{{with .Position}}{{t "phase"}} {{.}} · {{end}}{{.Elapsed}}</span></a>{{end}}{{with .Rt}}<span class="readiness tone-{{.Tone}}" aria-label="{{t "Runtime"}} {{.Word}}"><span class="dot"></span>{{.Word}}</span>
 {{with .GPU}}<span class="appbar-fact">{{.}}</span>{{end}}
 {{if and .Memory (ne .MemoryTone "ok")}}<span class="readiness tone-{{.MemoryTone}}" id="shell-memory"><span class="dot"></span>{{.Memory}}</span>{{end}}
 {{if .Attention}}<a class="attention-link" href="/diagnostics">{{.Attention}} {{t "needs attention"}}</a>{{end}}{{end}}{{end}}
@@ -392,7 +402,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{define "sync"}}<div class="btn-row" id="sync"><span class="note" id="sync-text">{{t "live · 3 s"}}</span><span class="vh" id="sync-live" role="status"></span><button type="button" class="btn quiet" id="refresh">{{t "Refresh"}}</button></div>{{end}}
 
 {{define "last"}}{{with .}}<div class="last {{if .OK}}tone-ok{{else}}tone-bad{{end}}" role="status">
-  <strong>{{if .OK}}OK{{else}}FAILED{{end}}</strong><span class="what">{{t .Name}}</span><span class="msg-text">{{t .Message}}</span><time>{{when .Time}}</time>
+  <strong class="status">{{if .OK}}OK{{else}}FAILED{{end}}</strong><span class="what">{{t .Name}}</span><span class="msg-text">{{t .Message}}</span><time>{{when .Time}}</time>
 </div>{{end}}{{end}}
 
 {{/* ---- Runtime: can I use Hachidori now? ---- */}}
@@ -408,13 +418,14 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{/* The operation in flight and the last one finished: phases, the current step, progress (determinate only when the step has a total), outcome. */}}
 {{define "op-panels"}}
 {{with .Problem}}<div class="last tone-bad" role="alert" id="active-problem"><strong>{{t "CANNOT START"}}</strong><span class="msg-text">{{t "The active runtime cannot be started by this version of Hachidori."}} {{.}}</span></div>{{end}}
-{{with .Busy}}{{template "op-busy" .}}{{end}}
-{{with .Last}}{{template "op-last" .}}{{end}}
+{{/* Runtime owns no operation: while one runs the shell shows its headline, and the last one finished is a compact summary. */}}
+{{with .Last}}{{template "op-last-compact" .}}{{end}}
 {{end}}
 
 {{define "op-busy"}}
-<div class="last op" role="status" aria-live="polite" id="models-busy">
-  <div class="op-head"><strong>{{t "RUNNING"}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}</span>{{with since .Started}}<time>{{t "running for"}} {{.}}</time>{{end}}</div>
+<div class="op-panel" id="models-busy" data-kind="{{.Kind}}">
+<div class="last op tone-active" role="status" aria-live="polite">
+  <div class="op-head"><strong class="status">{{t "RUNNING"}}</strong><span class="what">{{t (opLabel .Kind)}}</span><span class="msg-text">{{opTarget .}}</span>{{with since .Started}}<time>{{t "running for"}} {{.}}</time>{{end}}</div>
   {{if .DeviceMode}}<p class="op-line" data-device-mode="{{.DeviceMode}}">{{if eq .DeviceMode "auto"}}{{t "Auto"}}{{with .ResolvedDevice}} · {{t "resolved to"}} {{.}}{{else}} · {{t "waiting for resolution"}}{{end}}{{else}}{{t "Pinned override"}} · {{.RequestedDevice}}{{end}}{{with .ActualDevice}} · {{t "worker reported"}} {{.}}{{end}}</p>{{end}}
   {{if eq .Kind "desired_state"}}<p class="op-line">{{t "Additional residents"}}: {{range $i, $id := .Residents}}{{if $i}}, {{end}}{{$id}}{{else}}{{t "none"}}{{end}}</p>{{end}}
   {{template "operation-phases" .}}
@@ -426,24 +437,55 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
   <p class="op-line">{{with phasePosition .}}{{t "phase"}} {{.}} · {{end}}{{if .Phase}}{{t "Working"}}{{else}}{{t "Starting"}}{{end}}</p>
   <div class="bar progress indeterminate" role="progressbar" aria-label="{{if .Phase}}{{t "Working"}}{{else}}{{t "Starting"}}{{end}}"><span></span></div>
   {{end}}
+  {{if .Log}}{{$at := .LastActivity}}<p class="op-line op-activity"{{if not $at.IsZero}} data-activity="{{$at.UTC.Format "2006-01-02T15:04:05Z"}}"{{end}}>{{if $at.IsZero}}{{t "no backend activity reported yet"}}{{else}}{{t "last backend activity"}} {{since $at}} {{t "ago"}}{{end}}</p>{{end}}
+</div>
+{{template "op-console" .}}
 </div>
 {{end}}
 
-{{define "op-last"}}
-<div class="last op {{if .Failure}}tone-bad failure{{else}}tone-ok{{end}}" role="status" id="models-last">
-  <div class="op-head"><strong>{{if .Failure}}{{t "FAILED"}}{{else}}{{t "DONE"}}{{end}}</strong><span class="what">{{.Kind}}</span><span class="msg-text">{{.Device}} {{.Model}} {{.Target}}</span>{{with took .}}<time>{{t "took"}} {{.}}</time>{{end}}{{if .Compact}}{{with .OwnerHref}} <a href="{{.}}">{{t "Details"}}</a>{{end}}{{end}}</div>
-  {{if not .Compact}}
+{{/* The bounded, redacted recent tail of the operation's own log (the setup log the diagnostics also tail). Closed until the operator opens it; its state, and whether it follows the output, are operator-local (uistate.js). It sits outside the live region so appended lines are not announced. */}}
+{{define "op-console"}}{{if .Log}}
+<details class="disclosure op-console" id="op-console" data-keep="op-console"><summary>{{t "Output"}}<span class="sub">{{if .Finished.IsZero}}{{t "recent lines, updated live"}}{{else}}{{t "final lines"}}{{end}}</span></summary>
+  <div class="body">
+    <label class="check"><input type="checkbox" data-keep="op-console-follow" checked> {{t "Follow output"}}</label>
+    <pre class="console" tabindex="0" aria-live="off" aria-label="{{t "Operation output, most recent lines"}}" data-tail="op-console" data-follow="op-console-follow">{{range consoleTail .}}<span class="l">{{.}}</span>{{else}}<span class="faint">{{t "No output has been written for this operation."}}</span>{{end}}</pre>
+    <p class="note">{{t "Only the most recent lines are shown, with paths and secrets removed. The complete log stays in the setup log."}}</p>
+  </div>
+</details>{{end}}{{end}}
+
+{{/* A finished operation: one compact line of what it was, how it ended, what it acted on, how long it took, and what that means. Phases and output are evidence, behind a disclosure on the owning workspace. */}}
+{{define "op-summary"}}
+<div class="last op {{if .Failure}}tone-bad failure{{else}}tone-ok{{end}}" role="status" data-kind="{{.Kind}}">
+  <div class="op-head"><strong class="status">{{if .Failure}}{{t "FAILED"}}{{else}}{{t "DONE"}}{{end}}</strong><span class="what">{{t (opLabel .Kind)}}</span><span class="msg-text">{{opTarget .}}</span>{{with took .}}<time>{{t "took"}} {{.}}</time>{{end}}</div>
+  {{with opOutcome .}}<p class="op-line op-outcome">{{t .}}</p>{{end}}
   {{if .DeviceMode}}<p class="op-line" data-device-mode="{{.DeviceMode}}">{{if eq .DeviceMode "auto"}}{{t "Auto"}}{{with .ResolvedDevice}} · {{t "resolved to"}} {{.}}{{end}}{{else}}{{t "Pinned override"}} · {{.RequestedDevice}}{{end}}{{with .ActualDevice}} · {{t "worker reported"}} {{.}}{{end}}</p>{{end}}
   {{if eq .Kind "desired_state"}}<p class="op-line">{{t "Additional residents"}}: {{range $i, $id := .Residents}}{{if $i}}, {{end}}{{$id}}{{else}}{{t "none"}}{{end}}</p>{{end}}
-  {{template "operation-phases" .}}
   {{with .Failure}}
   <p class="op-line"><span class="bad-t">{{t "Failed in phase"}} {{with $.FailurePhase}}<strong>{{t (opPhase $.Kind .)}}</strong>{{end}}{{with $.FailureStep}} · {{t (stepLabel .)}}{{end}}</span>: <span class="mono">{{.}}</span></p>
   {{if eq $.Kind "update"}}<p class="note">{{t "The installed executable was not changed."}}</p>
   {{else if eq $.Kind "desired_state"}}<p class="note">{{t "The operation details report whether the previous serving and resident state was restored."}}</p>
   {{else}}<p class="note">{{t "The active runtime and model were not changed."}} <a href="/diagnostics">{{t "Open Diagnostics"}}</a>{{with $.Log}} · {{t "action output:"}} <span class="mono">{{.}}</span>{{end}}</p>
-  {{with $.Diagnostic}}<p class="note" id="forge-diagnostic-last">{{t "A bounded, redacted diagnostic was recorded for this failure:"}} <a class="mono" href="/forge/diagnostics/{{.}}" download>{{.}}</a> · <span class="mono">hachidori forge diagnostics show {{.}}</span> · <span class="mono">hachidori forge diagnostics export -out DIR {{.}}</span></p>{{end}}{{end}}
+  {{with $.Diagnostic}}<p class="note prose" id="forge-diagnostic-last">{{t "A bounded, redacted diagnostic was recorded for this failure:"}} <a class="mono" href="/forge/diagnostics/{{.}}" download>{{.}}</a> · <span class="mono">hachidori forge diagnostics show {{.}}</span> · <span class="mono">hachidori forge diagnostics export -out DIR {{.}}</span></p>{{end}}{{end}}
   {{end}}
-  {{end}}
+</div>
+{{end}}
+
+{{/* The owning workspace's view of the operation that last finished: the compact summary, with its phases and output kept one disclosure away. */}}
+{{define "op-last"}}
+<div class="op-panel" id="models-last" data-kind="{{.Kind}}">
+{{template "op-summary" .}}
+{{template "operator-details-open" (disclosure "op-last-detail" "Phases and output")}}
+  {{template "operation-phases" .}}
+  {{template "op-console" .}}
+{{template "operator-disclosure-close"}}
+</div>
+{{end}}
+
+{{/* Any other workspace shows the outcome only, and where the evidence is. */}}
+{{define "op-last-compact"}}
+<div class="op-panel" id="models-last" data-kind="{{.Kind}}">
+{{template "op-summary" .}}
+{{with opHref .Kind}}{{if ne . "/"}}<p class="note"><a href="{{.}}">{{t "Phases and output"}}</a></p>{{end}}{{end}}
 </div>
 {{end}}
 
@@ -481,12 +523,12 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     {{end}}
   </div>
   <dl class="spec">
-    <div><dt>{{t "Model"}}</dt><dd class="id">{{.S.Runtime.ModelID}}{{if not $w.Ready}}<span class="sub">{{t "configured for this runtime, not serving"}}</span>{{end}}{{with .S.Runtime.Variant}}<span class="sub" id="runtime-variant">VARIANT {{.ID}} · {{.Scheme}} · {{.Certification}}</span>{{else}}<span class="sub" id="runtime-source">SOURCE · {{t "the upstream source artifact (no variant)"}}</span>{{end}}</dd></div>
+    <div><dt>{{t "Model"}}</dt><dd class="id">{{.S.Runtime.ModelID}}{{if not $w.Ready}}<span class="sub">{{t "configured for this runtime, not serving"}}</span>{{end}}{{with .S.Runtime.Variant}}{{$v := .}}<span class="sub" id="runtime-variant" data-variant-id="{{.ID}}">VARIANT {{with variantTitle $v.Source.ID $v.Scheme}}{{.}}{{else}}{{$v.ID}} · {{$v.Scheme}}{{end}} · {{.Certification}}</span>{{else}}<span class="sub" id="runtime-source">SOURCE · {{t "the upstream source artifact (no variant)"}}</span>{{end}}</dd></div>
     <div><dt>{{t "Device"}}</dt><dd>{{with get $i "device_name"}}{{.}}{{else}}{{.S.Runtime.Device}}{{end}}{{with .Rt.Device}}<span class="sub">{{.}}</span>{{end}}</dd></div>
     <div id="runtime-memory" data-pressure="{{if $mp}}{{$mp.Level}}{{else}}unknown{{end}}"><dt>{{t "GPU memory"}}</dt><dd>{{with $mp}}<span class="tone-{{.Level}}"><span class="{{if ne .Level "ok"}}bad-t{{end}}">{{.Used}} / {{.Total}}</span> <span class="badge tone-{{.Level}}">{{t .Word}}</span></span>{{if $w.AcceleratorStale}}<span class="sub">{{t "last known"}}</span>{{end}}
       {{with $m := gpuMem $a}}<div class="bar" role="img" aria-label="{{t "GPU memory"}} {{printf "%.1f" .Used}}%"><span class="alloc" style="width:{{printf "%.2f" .Alloc}}%"></span><span class="cache" style="width:{{printf "%.2f" .Cached}}%"></span><span class="other" style="width:{{printf "%.2f" .Other}}%"></span></div>{{end}}
       {{else}}<span class="muted">{{t "no device stats"}}</span>{{end}}</dd></div>
-    {{with .Next}}{{if and .Model (or .Differs .VariantDiffers .Problem)}}<div id="next-start"><dt>{{t "Next start"}}</dt><dd class="id">{{.Model}} · {{.Device}}<span class="sub">{{with .Variant}}VARIANT {{.}}{{else}}SOURCE{{end}} · {{if .Problem}}<span class="bad-t">{{t "cannot start"}}</span>{{else}}<span class="warn-t">{{t "differs from this runtime"}}</span>{{end}}</span></dd></div>{{end}}{{end}}
+    {{with .Next}}{{if and .Model (or .Differs .VariantDiffers .Problem)}}<div id="next-start"><dt>{{t "Next start"}}</dt><dd class="id">{{.Model}} · {{.Device}}<span class="sub">{{if .Variant}}VARIANT {{or .VariantLabel .Variant}}{{else}}SOURCE{{end}} · {{if .Problem}}<span class="bad-t">{{t "cannot start"}}</span>{{else}}<span class="warn-t">{{t "differs from this runtime"}}</span>{{end}}</span></dd></div>{{end}}{{end}}
   </dl>
   {{template "operator-details-open" (disclosure "runtime-identity" "Runtime details")}}
   <dl class="kv">
@@ -494,6 +536,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <dt>{{t "Requested device"}}</dt><dd class="mono">{{.S.Runtime.Device}}</dd>
     <dt>{{t "Provider"}}</dt><dd>{{get $i "provider"}} {{get $i "provider_version"}}</dd>
     <dt>{{t "Runtime"}}</dt><dd class="mono">{{.S.Runtime.Runtime}}</dd>
+    {{with .S.Runtime.Variant}}<dt>{{t "Variant ID"}}</dt><dd class="mono" id="runtime-variant-id">{{.ID}}</dd>{{end}}
     <dt>{{t "Supervision"}}</dt><dd>{{if .Running}}{{t "running"}}{{else}}<span class="bad-t">{{t "not running"}}</span>{{end}} {{t "· API up"}} <span title="{{.S.UptimeS}} s">{{uptime .S.UptimeS}}</span></dd>
     <dt>{{t "Device memory"}}</dt><dd class="mono">{{mib $a "memory_total"}}</dd>
   </dl>
@@ -621,7 +664,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <div class="btn-row"><button type="submit" class="btn">{{t "Save desktop preferences"}}</button></div>
     {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   </form>
-  <p class="note">{{t "Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). The startup entry itself is the source of truth."}}</p>
+  <p class="note prose">{{t "Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). The startup entry itself is the source of truth."}}</p>
 </section>
 {{end}}
 {{with .Set}}
@@ -659,7 +702,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <div class="btn-row"><button type="submit" class="btn">{{t "Save runtime defaults"}}</button></div>
     {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   </form>
-  <p class="note">{{t "Running runtime:"}} <span class="mono">{{with $.Rt.Model}}{{.}}{{else}}-{{end}}</span>{{t ". Defaults do not change it. Explicit command-line flags and environment inputs always take precedence. No secrets are stored."}}</p>
+  <p class="note prose">{{t "Running runtime:"}} <span class="mono">{{with $.Rt.Model}}{{.}}{{else}}-{{end}}</span>{{t ". Defaults do not change it. Explicit command-line flags and environment inputs always take precedence. No secrets are stored."}}</p>
 </section>
 {{end}}
 {{if .HasUpdates}}
@@ -679,7 +722,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
 {{with .Conns}}
 <section class="region section" id="settings-connections" aria-labelledby="sc-h">
   <div class="region-h"><h2 id="sc-h">{{t "Development connections"}}</h2><span class="sub">{{t "named SSH reverse-tunnel profiles"}}</span></div>
-  <p class="note">{{t "A development host only consumes"}} <code>HACHIDORI_ENDPOINT</code>{{t ". A profile is non-secret data: SSH keys, agent, known_hosts and ssh_config stay with the host's own"}} <code>ssh</code> {{t "client and are never read, stored or prompted for. One tunnel runs at a time; both ends are loopback-only."}}</p>
+  <p class="note prose">{{t "A development host only consumes"}} <code>HACHIDORI_ENDPOINT</code>{{t ". A profile is non-secret data: SSH keys, agent, known_hosts and ssh_config stay with the host's own"}} <code>ssh</code> {{t "client and are never read, stored or prompted for. One tunnel runs at a time; both ends are loopback-only."}}</p>
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   <div class="slot" id="connections-state">{{template "transport" $}}</div>
   <div class="btn-row">
@@ -701,12 +744,12 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
       <form method="post" action="/settings/connections/reconnect" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn">{{t "Reconnect"}}</button></form>
       <form method="post" action="/settings/connections/remove" class="inline" data-confirm="{{t "Remove this saved connection?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>
     </div>
-    <details class="inline"><summary>{{t "Edit"}}</summary>
+    <details class="inline" id="conn-{{.Name}}-edit"><summary>{{t "Edit"}}</summary>
       <form method="post" action="/settings/connections/save">
         <input type="hidden" name="token" value="{{$.Token}}">
         <input type="hidden" name="name" value="{{.Name}}">
         <label class="field wide">{{t "SSH destination"}}<input name="destination" value="{{.Destination}}" required autocomplete="off" spellcheck="false"></label>
-        <details class="inline"><summary>{{t "Advanced"}}</summary>
+        <details class="inline" id="conn-{{.Name}}-advanced"><summary>{{t "Advanced"}}</summary>
           <p class="note">{{t "Auto resolves each value for the current API endpoint. Select Override to save the value shown."}}</p>
           <div class="fields">
             <label class="field">{{t "Remote bind"}}<select name="remote_bind_mode"><option value="auto"{{if eq .RemoteBindMode "auto"}} selected{{end}}>{{t "Auto"}} → {{.Resolved.RemoteBind}}</option><option value="pinned"{{if eq .RemoteBindMode "pinned"}} selected{{end}}>{{t "Override"}}</option></select></label>
@@ -729,7 +772,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
       <label class="field">{{t "Name"}}<input name="name" placeholder="connection-name" required autocomplete="off" spellcheck="false"></label>
       <label class="field wide">{{t "SSH destination"}}<input name="destination" value="{{.New.Destination}}" placeholder="user@host" required autocomplete="off" spellcheck="false"></label>
     </div>
-    <details class="inline"><summary>{{t "Advanced"}}</summary>
+    <details class="inline" id="conn-new-advanced"><summary>{{t "Advanced"}}</summary>
       <p class="note">{{t "Auto resolves each value for the current API endpoint. Select Override to save the value shown."}}</p>
       <div class="fields">
         <label class="field">{{t "Remote bind"}}<select name="remote_bind_mode"><option value="auto" selected>{{t "Auto"}} → {{.New.RemoteBind}}</option><option value="pinned">{{t "Override"}}</option></select></label>
@@ -758,7 +801,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <div><h2 id="bundle-h">{{t "Diagnostic bundle"}}</h2><p class="sub">{{t "One local file to attach to an Issue. Nothing is uploaded."}}</p></div>
     <form method="post" action="/diagnostics/export" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn">{{t "Export bundle"}}</button></form>
   </div>
-  <p class="note">{{t "Contains version, runtime, model, WebView2, OS and recovery facts and a short tail of Hachidori worker log lines. It never contains request, state or question text, datasets, environment variables, SSH keys or known_hosts, or model files. It is saved under"}} <code>state/diagnostics</code> {{t "in the Hachidori home."}}</p>
+  <p class="note prose">{{t "Contains version, runtime, model, WebView2, OS and recovery facts and a short tail of Hachidori worker log lines. It never contains request, state or question text, datasets, environment variables, SSH keys or known_hosts, or model files. It is saved under"}} <code>state/diagnostics</code> {{t "in the Hachidori home."}}</p>
 </section>
 
 <section class="region section" id="transport" aria-labelledby="transport-h">
@@ -780,7 +823,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
         <button type="submit" class="btn primary" form="tunnel-connect">{{t "Connect"}}</button>
         <form method="post" action="/tunnel/disconnect" class="inline"><input type="hidden" name="token" value="{{.Token}}"><button type="submit" class="btn danger">{{t "Disconnect"}}</button></form>
       </div>
-      <p class="note">{{t "Runs the host's existing"}} <code>ssh</code> {{t "client:"}} <code>ssh -N -R &lt;remote-bind&gt;:&lt;remote-port&gt;:127.0.0.1:&lt;local-port&gt; &lt;destination&gt;</code>{{t ". Keys, agent, known_hosts and ssh_config stay under the operator's control; failures are shown, never fixed here."}}</p>
+      <p class="note prose">{{t "Runs the host's existing"}} <code>ssh</code> {{t "client:"}} <code>ssh -N -R &lt;remote-bind&gt;:&lt;remote-port&gt;:127.0.0.1:&lt;local-port&gt; &lt;destination&gt;</code>{{t ". Keys, agent, known_hosts and ssh_config stay under the operator's control; failures are shown, never fixed here."}}</p>
     </div>
   </div>
 </section>
@@ -955,7 +998,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
     <select name="{{.Name}}"{{if .Required}} required{{end}}>{{if .None}}<option value=""{{if not .Value}} selected{{end}}>{{t .None}}</option>{{else if not .Value}}<option value="" selected disabled>{{t "Not chosen"}}</option>{{end}}{{range .Known}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}</select>
   </label>
   {{if .Native}}<div class="resource-selection-actions" role="group" aria-label="{{t "Choose resource"}}">{{range .Choices}}<button type="submit" class="btn quiet"{{if .FormAction}} formaction="{{.FormAction}}"{{end}} name="{{.Name}}" value="{{.Value}}" formnovalidate>{{t .Label}}</button>{{end}}</div>{{end}}
-  <details class="inline resource-path"><summary>{{t "Exact path"}}</summary>
+  <details class="inline resource-path" id="resource-path-{{.Name}}"><summary>{{t "Exact path"}}</summary>
     {{with .Value}}<p class="resource-path-value mono">{{.}}</p>{{else}}<p class="sub">{{t "No path selected"}}</p>{{end}}
     <label class="field wide">{{t "Another path"}}{{if .Multiline}}<textarea name="{{.Name}}_path" rows="2" spellcheck="false"></textarea>{{else}}<input type="text" name="{{.Name}}_path" spellcheck="false" autocomplete="off">{{end}}</label>
   </details>
@@ -965,7 +1008,7 @@ pre .l { display: block; } pre .pass { color: var(--ok); } pre .fail { color: va
       {{range .Choices}}<button type="submit" class="btn"{{if .FormAction}} formaction="{{.FormAction}}"{{end}} name="{{.Name}}" value="{{.Value}}" formnovalidate>{{t .Label}}</button>{{end}}
     </div>
   </div>
-  <details class="inline resource-path"><summary>{{t "Exact path"}}{{if .Value}} <span class="resource-path-value mono">{{.Value}}</span>{{else}} <span class="sub">{{t "No path selected"}}</span>{{end}}</summary>
+  <details class="inline resource-path" id="resource-path-{{.Name}}"><summary>{{t "Exact path"}}{{if .Value}} <span class="resource-path-value mono">{{.Value}}</span>{{else}} <span class="sub">{{t "No path selected"}}</span>{{end}}</summary>
     <div class="resource-path-entry">{{template "resource-path-entry" .}}</div>
   </details>
   {{else}}

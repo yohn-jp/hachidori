@@ -38,8 +38,8 @@
         <label class="field">{{t "Question id"}}<input name="q{{$i}}.id" value="{{$q.ID}}" spellcheck="false" autocomplete="off"></label>
         <label class="field">{{t "Instructions"}}<textarea name="q{{$i}}.instructions" rows="3">{{$q.Instructions}}</textarea></label>
         <input type="hidden" name="q{{$i}}.nc" value="{{len $q.Choices}}">
-        <div class="choices">
-          <span class="h">{{t "Choice label"}}</span><span class="h">{{t "Description (optional)"}}</span>
+        <div class="rows">
+          <span class="h">{{t "Choice label"}}</span><span class="h optional">{{t "Description (optional)"}}</span>
           {{range $j, $c := $q.Choices}}
           <input name="q{{$i}}.c{{$j}}.label" value="{{$c.Label}}" aria-label="{{t "Question"}} {{$i}} · {{t "Choice label"}} {{$j}}" spellcheck="false" autocomplete="off">
           <input name="q{{$i}}.c{{$j}}.desc" value="{{$c.Desc}}" aria-label="{{t "Question"}} {{$i}} · {{t "Description (optional)"}} {{$j}}" autocomplete="off">
@@ -47,7 +47,7 @@
         </div>
         <div class="btn-row"><button type="submit" class="btn quiet" name="op" value="choices:{{$i}}">{{t "Add choice rows"}}</button></div>
 
-        <details class="inline"{{with $.Export}}{{if eq .Index $i}} open{{end}}{{end}}><summary>{{t "Definition identity & export"}}</summary>
+        <details class="inline" id="wb-definition-{{$i}}"{{with $.Export}}{{if eq .Index $i}} open{{end}}{{end}}><summary>{{t "Definition identity & export"}}</summary>
           <div class="region">
             {{with $q.Loaded}}<p class="note mono">{{t "loaded"}} {{.ID}}@{{.Version}} · {{.Digest}}</p>{{end}}
             {{with $qv.Identity}}<p class="note mono">{{t "current"}} {{.ID}}@{{.Version}} · {{.Digest}}</p>{{else}}<p class="note bad-t">{{t "not exportable:"}} {{$qv.DefErr}}</p>{{end}}
@@ -96,7 +96,7 @@
       </details>
       {{end}}{{end}}
 
-      <details class="disclosure"{{if or .LoadErr .LoadMsg}} open{{end}}><summary>{{t "Load Question Definition"}}<span class="sub">{{t "one hachidori.question.v1 file"}}</span></summary>
+      <details class="disclosure" id="wb-load"{{if or .LoadErr .LoadMsg}} open{{end}}><summary>{{t "Load Question Definition"}}<span class="sub">{{t "one hachidori.question.v1 file"}}</span></summary>
         <div class="body">
           {{template "resource-selection" (resourceInput .PathPicker "Definition file (absolute path)" "load_path" .W.LoadPath "/path/to/my.question.json" false false "" "op" "pick-load" "Open definition…")}}
           <div class="btn-row"><button type="submit" class="btn" name="op" value="load">{{t "Load into editor"}}</button></div>

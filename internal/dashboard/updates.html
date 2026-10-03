@@ -6,7 +6,7 @@
 {{template "last" .Last}}
 {{with .Upd}}
 <div id="updates-region">
-{{if .Op}}<p class="note busy-note" id="updates-busy-note" role="status">{{t "An update action is in progress. Check, Download, Save channel and Restart & update are unavailable until it finishes; the progress is shown under Download and verification."}} <a href="#updates-op">{{t "Show progress"}}</a></p>{{end}}
+{{if .Op}}<p class="note prose busy-note" id="updates-busy-note" role="status">{{t "An update action is in progress. Check, Download, Save channel and Restart & update are unavailable until it finishes; the progress is shown under Download and verification."}} <a href="#updates-op">{{t "Show progress"}}</a></p>{{end}}
 <section class="region section" id="updates-installed" aria-labelledby="ui-h">
   <div class="region-h"><h2 id="ui-h">{{t "Installed"}}</h2><a href="/settings">{{t "Settings"}}</a></div>
   <dl class="kv">
@@ -22,7 +22,7 @@
     </div>
     <div class="btn-row"><button type="submit" class="btn"{{if .Op}} disabled{{end}}>{{t "Save channel"}}</button></div>
   </form>
-  <p class="note">{{t "Stable offers stable releases (X.Y.Z). Development offers development releases (X.Y.Z-dev) and stable releases. The channel only selects which releases an explicit check offers: it never downloads, installs or downgrades anything."}}</p>
+  <p class="note prose">{{t "Stable offers stable releases (X.Y.Z). Development offers development releases (X.Y.Z-dev) and stable releases. The channel only selects which releases an explicit check offers: it never downloads, installs or downgrades anything."}}</p>
 </section>
 
 <section class="region section" id="updates-check" aria-labelledby="uc-h">
@@ -70,7 +70,7 @@
         if (!src || !dst) { clearInterval(t); return; }
         if (!src.querySelector("#models-busy")) { clearInterval(t); location.reload(); return; }
         var a = src.querySelector("#updates-op"), b = dst.querySelector("#updates-op");
-        if (a && b && a.innerHTML !== b.innerHTML) b.innerHTML = a.innerHTML;
+        if (a && b) hachidoriUI.swap(b, a);
       }).catch(function () {});
     }, 1500);
   })();
