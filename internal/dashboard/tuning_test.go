@@ -92,7 +92,7 @@ func (f *fakeTuning) Impact(tuning.Profile, tuning.Analysis, tuning.Compilation)
 	return f.impact, f.impactErr
 }
 
-func (f *fakeTuning) Candidate(tuning.Profile) (TuningCandidate, error) {
+func (f *fakeTuning) Candidate(tuning.Profile, tuning.Compilation) (TuningCandidate, error) {
 	return f.candidate, f.candidateErr
 }
 
