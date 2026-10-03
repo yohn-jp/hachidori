@@ -12,10 +12,14 @@ import (
 
 // The resource envelope projection: the target device and the memory budget
 // Tuning plans against and Forge applies against. The device facts are the
-// ones the runtime worker reports (the last known accelerator stats); the
-// budget is Auto (tuning.AutoBudget) unless the operator stored an explicit
-// override. Nothing here measures or invents a figure: an unknown device stays
-// unknown and every fit that cannot be decided is NOT_CHECKED.
+// ones a serving worker reports (the last known accelerator stats) and, while
+// none does (serving stopped, or paused for model engineering), the device
+// capacity the host observes without a worker and without loading a model
+// (DeviceObserver). The budget is Auto (tuning.AutoBudget) unless the operator
+// stored an explicit override. Nothing here measures or invents a figure: an
+// unknown device stays unknown, device capacity is never presented as a
+// candidate's measured memory, and every fit that cannot be decided is
+// NOT_CHECKED.
 
 // MemoryBudgets is the optional settings capability that stores the explicit
 // tuning memory budget (bytes; 0 is Auto).
@@ -59,6 +63,18 @@ func (d *Dashboard) envelopeOf(v view) EnvelopeView {
 	device := opt(w.Info, "device_name")
 	if device == "" {
 		device = opt(w.Info, "device")
+	}
+	if total <= 0 {
+		// No worker reports the accelerator: capacity does not require a
+		// model to be resident.
+		if o, ok := d.cfg.Models.(DeviceObserver); ok {
+			if obs := o.Device(); obs.TotalBytes > 0 {
+				total = float64(obs.TotalBytes)
+				if opt(w.Info, "device_name") == "" {
+					device = obs.Name
+				}
+			}
+		}
 	}
 	var override uint64
 	ev := EnvelopeView{}

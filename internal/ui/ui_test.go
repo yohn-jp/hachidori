@@ -109,3 +109,24 @@ func TestNoWebViewZoom(t *testing.T) {
 		}
 	}
 }
+
+// Short explanatory text and controls take the width of their section; only
+// long-form prose (.prose) carries the reading measure.
+func TestShortTextIsNotNarrowedByTheSharedSystem(t *testing.T) {
+	css := string(CSS())
+	for _, sel := range []string{".lede", ".note", ".empty"} {
+		m := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(sel) + ` \{([^}]*)\}`).FindStringSubmatch(css)
+		if m == nil {
+			t.Fatalf("no %s rule", sel)
+		}
+		if strings.Contains(m[1], "width") {
+			t.Errorf("%s sets a width: %s", sel, m[1])
+		}
+	}
+	if !regexp.MustCompile(`(?m)^\.prose \{ max-width: var\(--measure\); \}`).MatchString(css) {
+		t.Error(".prose lacks the reading measure")
+	}
+	if strings.Contains(css, ".intent dd select") {
+		t.Error("controls in .intent are capped narrower than their column")
+	}
+}

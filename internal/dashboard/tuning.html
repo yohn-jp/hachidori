@@ -147,7 +147,7 @@
     <div id="tuning-target"><dt>{{t "Target device"}}</dt><dd>
       {{with .Envelope}}
       <span class="value">{{if .Device}}{{.Device}}{{else}}{{t "Unknown device"}}{{end}}{{with .Total}} · {{.}}{{end}}</span>
-      {{if not .TotalBytes}}<span class="note">{{t "The device memory is known once the runtime has run on it."}}</span>{{end}}
+      {{if not .TotalBytes}}<span class="note">{{t "The device memory is read from the host without loading a model; it is not known yet."}}</span>{{end}}
       {{end}}
     </dd></div>
     <div id="tuning-budget" data-budget="{{if .Envelope.Auto}}auto{{else}}explicit{{end}}"><dt>{{t "Memory budget"}}</dt><dd>

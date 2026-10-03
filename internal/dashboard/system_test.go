@@ -199,7 +199,7 @@ func TestRuntimeReferenceComposition(t *testing.T) {
 			t.Errorf("readiness composition carries %s", banned)
 		}
 	}
-	// Stop stays available (under Runtime controls, never a peer of the primary action) and destructive
+	// Stop stays directly available while the runtime runs (secondary to the primary action) and destructive
 	if !strings.Contains(panel, `<button type="submit" class="btn danger">Stop</button>`) {
 		t.Error("Stop is hidden or not destructive")
 	}

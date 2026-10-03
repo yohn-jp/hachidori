@@ -121,6 +121,105 @@ func stepLabel(s string) string {
 	return s
 }
 
+// Operation detail belongs to one workspace. Every page shows the operation in
+// flight as one compact headline in the shell; the phase strip, the position
+// ("n of m"), the progress bar and the operation's own execution facts render
+// only on the workspace that owns the operation. This is a rule of
+// projection over the controller's one operation: no state is copied or kept
+// per page.
+//
+// The composed Forge operations (and the low-level Forge steps they are built
+// from) are owned by Forge. A kind that is not listed has no single owning
+// workspace and is shown wherever it always was.
+var opOwners = map[string]string{
+	"forge_build_evaluate": "forge",
+	"forge_certify":        "forge",
+	"optimize":             "forge",
+	"certify":              "forge",
+	"preflight":            "forge",
+	"probe":                "forge",
+	"execute":              "forge",
+}
+
+// opOwner is the workspace (Chrome.Nav) that owns the detail of an operation of
+// the given kind, "" when it has none.
+func opOwner(kind string) string { return opOwners[kind] }
+
+// opDetailOn reports whether the detail of an operation of kind renders on the
+// workspace nav.
+func opDetailOn(nav, kind string) bool {
+	owner := opOwner(kind)
+	return owner == "" || owner == nav
+}
+
+// scopedTo is the state as workspace nav may render it in detail. The
+// operation in flight, when another workspace owns it, is left to the shell's
+// headline; a finished one stays as a compact outcome line that points to the
+// owner (so a failure is never hidden, but its phases and diagnostics are not
+// repeated).
+func (st ModelsState) scopedTo(nav string) ModelsState {
+	if st.Busy != nil && !opDetailOn(nav, st.Busy.Kind) {
+		st.Busy = nil
+	}
+	if st.Last != nil && !opDetailOn(nav, st.Last.Kind) {
+		last := *st.Last
+		last.Compact = true
+		st.Last = &last
+	}
+	return st
+}
+
+var opKindLabels = map[string]string{
+	"forge_build_evaluate": "Build & evaluate",
+	"forge_certify":        "Certification",
+	"optimize":             "Building candidate",
+	"certify":              "Certifying",
+	"preflight":            "Preflight",
+	"probe":                "Probing variant",
+	"execute":              "Evaluation run",
+	"desired_state":        "Applying desired state",
+	"apply":                "Applying variant",
+	"activate":             "Activating",
+	"materialize":          "Materializing",
+	"repair":               "Repairing",
+	"setup":                "Setting up",
+	"verify":               "Verifying",
+	"remove":               "Removing",
+}
+
+// opHeadline is the compact global statement that Hachidori is doing work: what
+// the operation is and the phase it is in. It is what every workspace keeps
+// while only the owning one shows the detail (the phase strip, the phase
+// number, progress and the operation's execution facts).
+type opHeadline struct {
+	// Kind and Phase are catalog message IDs.
+	Kind, Phase string
+	// Href is the workspace holding the detail ("" when the operation has no
+	// single owner).
+	Href string
+}
+
+var navHrefs = map[string]string{"forge": "/forge", "models": "/models", "tuning": "/tuning"}
+
+// OwnerHref is where the detail of an operation of this kind is shown ("" when
+// it has no single owner).
+func (o ModelOp) OwnerHref() string { return navHrefs[opOwner(o.Kind)] }
+
+// headlineOf restates the operation in flight; nil when none is.
+func headlineOf(o *ModelOp) *opHeadline {
+	if o == nil {
+		return nil
+	}
+	h := &opHeadline{Kind: o.Kind, Href: navHrefs[opOwner(o.Kind)]}
+	if l, ok := opKindLabels[o.Kind]; ok {
+		h.Kind = l
+	}
+	if o.Phase != "" {
+		h.Phase = opPhaseLabel(o.Kind, o.Phase)
+	}
+	return h
+}
+
 // opStages places an operation among the phases it goes through. A phase is
 // done or current only if the action really entered it; one that failed is
 // marked failed; once the action finished, a planned phase it never entered

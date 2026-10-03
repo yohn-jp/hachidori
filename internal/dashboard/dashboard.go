@@ -232,6 +232,31 @@ type ModelsState struct {
 	ResidencyChanged bool
 	// Forge is the recorded Forge readiness: preflights, probes, diagnostics.
 	Forge ForgeState
+	// Pause is set while model engineering owns the accelerator and serving is
+	// intentionally down for it: neither an operator Stop nor a failure.
+	Pause *ModelPause
+}
+
+// ModelPause restates the controller's intentional pause of serving. Owner is
+// the kind of the operation that owns the accelerator.
+type ModelPause struct {
+	Owner string
+}
+
+// DeviceObserver is the optional capability of a Models manager that can state
+// the device capacity without a serving worker (and without loading a model).
+// It is consulted only while no worker reports the accelerator itself.
+type DeviceObserver interface {
+	Device() DeviceObservation
+}
+
+// DeviceObservation is device capacity observed without a worker. It is not a
+// measurement of any candidate.
+type DeviceObservation struct {
+	Pending    bool
+	Name       string
+	TotalBytes uint64
+	Err        string
 }
 
 // Residency reads and stores the desired additional resident models (catalog
@@ -290,6 +315,9 @@ type ModelOp struct {
 	Resumed    int64
 	Diagnostic string
 	Log        string // the setup log holding the action's output
+	// Compact: the operation belongs to another workspace, so only its outcome
+	// is shown here (see scopedTo).
+	Compact bool
 }
 
 // Determinate reports whether the step has a measurable total.
@@ -700,6 +728,8 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type view struct {
 	Chrome
+	// models is the maintenance authority's state as of this render, read once.
+	models  ModelsState
 	Token   string
 	Running bool
 	S       server.Status
@@ -730,6 +760,9 @@ func (d *Dashboard) statusView(title, nav string) view {
 	d.mu.Unlock()
 	v := view{Chrome: Chrome{Title: title, Nav: nav, Lang: d.locale(), APIAddr: d.cfg.APIAddr, HasSettings: d.cfg.hasSettings(), HasModels: d.cfg.Models != nil, HasTuning: d.cfg.hasTuning()},
 		Token: d.token, Running: d.cfg.Lifecycle.Running(), S: d.cfg.Status(), Last: last, Doctor: doc, Tunnel: d.cfg.Tunnel.Status()}
+	if d.cfg.Models != nil {
+		v.models = d.cfg.Models.State()
+	}
 	v.Rt = shellOf(v)
 	return v
 }
@@ -744,7 +777,7 @@ func (d *Dashboard) view(title, nav string) view {
 		v.FormName = d.formName(v.Form)
 	}
 	if d.cfg.Models != nil {
-		v.Next = nextOf(d.cfg.Models.State(), v.S.Runtime)
+		v.Next = nextOf(v.models.scopedTo(nav), v.S.Runtime)
 	}
 	if d.cfg.Desktop != nil {
 		dv := &DesktopView{}
@@ -939,7 +972,7 @@ func (d *Dashboard) settingsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Dashboard) modelsView(v view) *ModelsView {
-	st := d.cfg.Models.State()
+	st := v.models.scopedTo(v.Nav)
 	mv := &ModelsView{ModelsState: st, Devices: setup.Devices}
 	if a := st.Inventory.Active; a != nil {
 		mv.ActiveDevice = a.Device

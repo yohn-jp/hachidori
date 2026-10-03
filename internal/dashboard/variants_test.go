@@ -666,7 +666,9 @@ func TestOptimizeOperationProgressIsTruthful(t *testing.T) {
 	e, fm, _ := forgeEnv(t, variantInventory())
 	fm.state.Busy = &ModelOp{Kind: "optimize", Model: "clef-flash", Target: "recipe clef-flash-w4a16-rtn-g128", Plan: plan,
 		Phases: plan[:7], Phase: "quantizing", Step: "materializing", Detail: "25 Linear modules", Started: time.Now().Add(-90 * time.Second)}
-	for _, p := range []string{"/forge", "/models"} {
+	// Forge owns the detail of a Forge operation; every other workspace keeps
+	// only the shell's compact headline (operation_scope_test.go).
+	for _, p := range []string{"/forge"} {
 		body := e.get(t, p).Body.String()
 		for _, want := range []string{`id="models-busy"`, "Quantizing", "Loading source model", "Resolving modules", "25 Linear modules"} {
 			if !strings.Contains(body, want) {
@@ -981,14 +983,20 @@ func TestForgeFailureAndResumeAreShownTruthfully(t *testing.T) {
 	fm.state.Busy = nil
 	fm.state.Last = &ModelOp{Kind: "optimize", Model: "clef-flash", Plan: plan, Phases: plan[:2], Phase: "quantizing", Failure: "optimizer quantize: out of memory",
 		FailurePhase: "quantizing", FailureStep: "materializing", Diagnostic: "optimize-20261002T000000Z-0123abcd", Started: time.Now().Add(-time.Minute), Finished: time.Now()}
-	for _, p := range []string{"/models", "/forge"} {
-		body = e.get(t, p).Body.String()
-		for _, want := range []string{`id="forge-diagnostic-last"`, `href="/forge/diagnostics/optimize-20261002T000000Z-0123abcd"`,
-			"hachidori forge diagnostics show optimize-20261002T000000Z-0123abcd", "hachidori forge diagnostics export -out DIR", "Failed in phase"} {
-			if !strings.Contains(body, want) {
-				t.Errorf("%s failure state lacks %q", p, want)
-			}
+	body = e.get(t, "/forge").Body.String()
+	for _, want := range []string{`id="forge-diagnostic-last"`, `href="/forge/diagnostics/optimize-20261002T000000Z-0123abcd"`,
+		"hachidori forge diagnostics show optimize-20261002T000000Z-0123abcd", "hachidori forge diagnostics export -out DIR", "Failed in phase"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/forge failure state lacks %q", want)
 		}
+	}
+	// Another workspace keeps the outcome and a pointer to the owner, not the
+	// phases or the diagnostic.
+	body = e.get(t, "/models").Body.String()
+	last := body[strings.Index(body, `id="models-last"`):]
+	last = last[:strings.Index(last, "</div>\n")+6]
+	if !strings.Contains(last, "FAILED") || !strings.Contains(last, `href="/forge">Details`) || strings.Contains(last, "forge-diagnostic-last") || strings.Contains(last, `class="stages"`) {
+		t.Errorf("/models compact failure outcome:\n%s", last)
 	}
 	// A failure without a diagnostic does not invent one.
 	fm.state.Last.Diagnostic = ""
