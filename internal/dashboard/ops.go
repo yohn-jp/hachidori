@@ -98,6 +98,12 @@ func phaseLabel(p string) string {
 // exact inputs).
 var kindPhaseLabels = map[string]map[string]string{
 	"forge_certify": {"resolving": "Resolving inputs"},
+	"forge_build_evaluate": {
+		"resolve_inputs": "Resolving build intent",
+		"provision":      "Provisioning prerequisites",
+		"build":          "Building candidate",
+		"resolving":      "Resolving evaluation inputs",
+	},
 }
 
 // opPhaseLabel is the label of phase p of an operation of the given kind.

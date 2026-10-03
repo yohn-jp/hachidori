@@ -22,6 +22,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/doctor"
 	"github.com/yohn-jp/hachidori/internal/firstrun"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
@@ -474,7 +475,33 @@ func (m modelManager) State() dashboard.ModelsState {
 	}
 	st.Inventory = inv
 	st.Forge = forgeState(c.Forge())
+	if snap.Operation != nil && snap.Operation.Kind == app.OpForgeBuildEvaluate {
+		st.Forge.Resolution = forgeResolution(snap.Operation.ForgeResolution)
+	} else if snap.Maintenance != nil && snap.Maintenance.Kind == app.OpForgeBuildEvaluate {
+		st.Forge.Resolution = forgeResolution(snap.Maintenance.ForgeResolution)
+	}
 	return st
+}
+
+func forgeResolution(r *app.ForgeBuildEvaluateResolution) *dashboard.ForgeResolution {
+	if r == nil {
+		return nil
+	}
+	return &dashboard.ForgeResolution{
+		Source: r.Source, Recipe: r.Recipe, Variant: r.Variant,
+		CandidateDevice: forgeResolvedValue(r.CandidateDevice),
+		ReferenceDevice: forgeResolvedValue(r.ReferenceDevice),
+		ReferenceDType:  forgeResolvedValue(r.ReferenceDType),
+		CandidateDType:  r.CandidateDType,
+	}
+}
+
+func forgeResolvedValue(r app.ForgeResolvedValue) dashboard.ForgeResolvedValue {
+	mode := "Override"
+	if r.Mode == app.ForgeSelectionAuto {
+		mode = "Auto"
+	}
+	return dashboard.ForgeResolvedValue{Mode: mode, Value: r.Value}
 }
 
 // forgeState restates the controller's Forge records (preflights, probes,
@@ -557,6 +584,14 @@ func (m modelManager) ActivateVariant(device, model, variant string, experimenta
 	return m.ctl().ActivateVariant(app.SetupParams{Device: device, Model: model}, variant, experimental)
 }
 func (m modelManager) Optimize(model, recipe string) error { return m.ctl().Optimize(model, recipe) }
+
+func (m modelManager) BuildAndEvaluate(r dashboard.ForgeBuildEvaluateRequest) error {
+	return m.ctl().BuildAndEvaluate(app.ForgeBuildEvaluateParams{
+		Source: r.Source, Optimization: optimize.Request{Model: r.Source, Recipe: r.Profile}, Device: r.Device,
+		ReferenceDevice: r.ReferenceDevice, ReferenceDType: r.ReferenceDType,
+		Dataset: r.Dataset, Questions: r.Questions, Policy: r.Policy, Materialize: r.Materialize,
+	})
+}
 
 // CertifyVariant is the self-contained Forge certification: the controller
 // produces and binds both runs itself from the semantic inputs.

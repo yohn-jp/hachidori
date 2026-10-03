@@ -19,10 +19,11 @@ import (
 )
 
 type fakeVariants struct {
-	mu    sync.Mutex
-	calls []string
-	err   error
-	diag  map[string][]byte
+	mu            sync.Mutex
+	calls         []string
+	buildRequests []ForgeBuildEvaluateRequest
+	err           error
+	diag          map[string][]byte
 }
 
 func (f *fakeVariants) rec(s string) error {
@@ -40,6 +41,14 @@ func (f *fakeVariants) ActivateVariant(device, model, variant string, experiment
 }
 func (f *fakeVariants) Optimize(model, recipe string) error {
 	return f.rec("optimize " + model + " " + recipe)
+}
+func (f *fakeVariants) BuildAndEvaluate(r ForgeBuildEvaluateRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r.Questions = append([]string(nil), r.Questions...)
+	f.buildRequests = append(f.buildRequests, r)
+	f.calls = append(f.calls, "build-evaluate")
+	return f.err
 }
 func (f *fakeVariants) CertifyVariant(r CertifyRequest) error {
 	return f.rec("certify " + r.Variant + " device=" + r.Device + " reference=" + r.ReferenceDevice + "/" + r.ReferenceDType + " dataset=" + r.Dataset +
@@ -129,7 +138,7 @@ func TestForgeVariantsProjection(t *testing.T) {
 	for _, want := range []string{`id="forge-sources"`, `data-source="clef-flash"`, `data-variant="clef-flash--r--aaaaaaaaaaaa"`, "W4A16 · 4-bit g128 · compute bfloat16",
 		"llmcompressor 0.14.0", `<span class="badge tone-ok">accepted</span>`, `<span class="badge tone-bad">rejected</span>`, `<span class="badge">uncertified</span>`,
 		"model.safetensors: sha256 mismatch", `id="optimizer-runtime"`, "optimizer-cpu-1234",
-		`id="optimize-clef-flash"`, `action="/forge/optimize"`, `value="clef-flash-w4a16-rtn-g128"`} {
+		`id="forge-intent-form"`, `action="/forge/build-evaluate"`, `name="profile"`, `value="clef-flash-w4a16-rtn-g128"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Forge lacks %q", want)
 		}
@@ -139,10 +148,10 @@ func TestForgeVariantsProjection(t *testing.T) {
 	if c := card(t, body, "clef-flash--r--aaaaaaaaaaaa"); !has(c, `action="/forge/apply"`, `>Apply certified variant<`, `name="device"`) || has(c, `name="experimental"`) || has(c, `action="/models/remove"`) {
 		t.Errorf("accepted active variant card:\n%s", c)
 	}
-	if c := card(t, body, "clef-flash--r--bbbbbbbbbbbb"); has(c, `action="/forge/apply"`, `name="experimental"`) || has(c, `action="/forge/apply"`) || !has(c, `action="/forge/certify"`, "Apply is available once the variant is certified") {
+	if c := card(t, body, "clef-flash--r--bbbbbbbbbbbb"); has(c, `action="/forge/apply"`, `name="experimental"`) || has(c, `action="/forge/apply"`, `action="/forge/certify"`) || !has(c, "Use Build &amp; evaluate to produce a candidate with evaluation evidence.") {
 		t.Errorf("uncertified variant card:\n%s", c)
 	}
-	if c := card(t, body, "clef-flash--r--cccccccccccc"); has(c, `action="/forge/apply"`) || !has(c, `action="/models/remove"`, `name="kind" value="variant"`) || !has(c, "Rejected: build another recipe") {
+	if c := card(t, body, "clef-flash--r--cccccccccccc"); has(c, `action="/forge/apply"`) || !has(c, `action="/models/remove"`, `name="kind" value="variant"`) || !has(c, "Rejected: use Build &amp; evaluate to produce another candidate.") {
 		t.Errorf("rejected variant card:\n%s", c)
 	}
 	if c := card(t, body, "clef-flash--r--dddddddddddd"); has(c, `action="/forge/apply"`, `action="/forge/certify"`, `action="/forge/probe"`) || !has(c, "Verify the variant: its artifact reports a problem.") {
@@ -161,19 +170,18 @@ func TestForgeVariantsProjection(t *testing.T) {
 	}
 }
 
-// The normal certification form asks for evaluation inputs and execution
-// choices only: never a reference or candidate run file.
-func TestForgeCertificationFormHasNoResidentRunInputs(t *testing.T) {
+// The normal intent form asks for source/profile and semantic evaluation
+// inputs only: never a reference or candidate run file.
+func TestForgeIntentFormHasNoResidentRunInputs(t *testing.T) {
 	e, _, _ := forgeEnv(t, variantInventory())
 	body := e.get(t, "/forge").Body.String()
-	c := card(t, body, "clef-flash--r--bbbbbbbbbbbb")
-	form := section(c, `<form method="post" action="/forge/certify"`, `</form>`)
-	for _, want := range []string{`name="dataset"`, `name="questions"`, `name="policy"`, `name="device"`, `name="reference_device"`, `name="reference_dtype"`, `name="materialize"`, "Evaluation dataset"} {
+	form := section(body, `<form method="post" action="/forge/build-evaluate"`, `</form>`)
+	for _, want := range []string{`name="source"`, `name="profile"`, `name="dataset"`, `name="questions"`, `name="policy"`, `name="device"`, `name="reference_device"`, `name="reference_dtype"`, `name="provisioning"`, "Evaluation suite", "Build &amp; evaluate"} {
 		if !strings.Contains(form, want) {
-			t.Errorf("certification form lacks %q:\n%s", want, form)
+			t.Errorf("intent form lacks %q:\n%s", want, form)
 		}
 	}
-	for _, banned := range []string{`name="reference"`, `name="candidate"`, "Reference run", "Candidate run", "resident run", "Resident run", "ResidentRun", "run file"} {
+	for _, banned := range []string{`name="reference_run"`, `name="candidate_run"`, `name="reference"`, `name="candidate"`, "ResidentRun", "run file"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("the Forge page mentions %q", banned)
 		}
@@ -206,28 +214,28 @@ func TestLifecycleOfProjectsBackendRecords(t *testing.T) {
 		next string
 	}{
 		"built only": {row("uncertified"), map[string]string{"built": StageDone, "probed": StagePending, "certified": StagePending, "active": StagePending},
-			"Next: certify the variant with an evaluation dataset."},
+			"Use Build & evaluate to produce a candidate with evaluation evidence."},
 		"probed": {func() VariantRow {
 			r := row("uncertified")
 			r.Probe = &ProbeRow{Result: "passed", Device: "cuda"}
 			return r
 		}(),
-			map[string]string{"built": StageDone, "probed": StageDone, "certified": StagePending, "active": StagePending}, "Next: certify the variant with an evaluation dataset."},
+			map[string]string{"built": StageDone, "probed": StageDone, "certified": StagePending, "active": StagePending}, "Use Build & evaluate to produce a candidate with evaluation evidence."},
 		"stale probe": {func() VariantRow {
 			r := row("uncertified")
 			r.Probe, r.ProbeStale = &ProbeRow{Result: "passed"}, true
 			return r
 		}(),
-			map[string]string{"built": StageDone, "probed": StageStale, "certified": StagePending, "active": StagePending}, "Next: certify the variant with an evaluation dataset."},
+			map[string]string{"built": StageDone, "probed": StageStale, "certified": StagePending, "active": StagePending}, "Use Build & evaluate to produce a candidate with evaluation evidence."},
 		"failed probe": {func() VariantRow {
 			r := row("uncertified")
 			r.Probe = &ProbeRow{Result: "failed", Phase: "provenance"}
 			return r
 		}(),
-			map[string]string{"built": StageDone, "probed": StageBad, "certified": StagePending, "active": StagePending}, "Next: certify the variant with an evaluation dataset."},
+			map[string]string{"built": StageDone, "probed": StageBad, "certified": StagePending, "active": StagePending}, "Use Build & evaluate to produce a candidate with evaluation evidence."},
 		"accepted": {row("accepted"), map[string]string{"built": StageDone, "probed": StagePending, "certified": StageDone, "active": StagePending}, "Next: apply the certified variant."},
 		"rejected": {row("rejected"), map[string]string{"built": StageDone, "probed": StagePending, "certified": StageBad, "active": StagePending},
-			"Rejected: build another recipe. A rejected variant is never applied."},
+			"Rejected: use Build & evaluate to produce another candidate. A rejected variant is never applied."},
 		"active, applies on restart": {func() VariantRow { r := row("accepted"); r.Active, r.Pending = true, true; return r }(),
 			map[string]string{"built": StageDone, "probed": StagePending, "certified": StageDone, "active": StageCurrent}, "Applies on restart: restart the runtime in Models."},
 		"serving": {func() VariantRow { r := row("accepted"); r.Active, r.Running = true, true; return r }(),
@@ -392,8 +400,8 @@ func TestForgeExperimentalActivationIsSeparated(t *testing.T) {
 			t.Errorf("a variant card has a primary Activate button:\n%s", cd)
 		}
 	}
-	if !has(card(t, body, "clef-flash--r--bbbbbbbbbbbb"), "Next: certify the variant with an evaluation dataset.") {
-		t.Error("the next step of an uncertified variant is not certification")
+	if !has(card(t, body, "clef-flash--r--bbbbbbbbbbbb"), "Use Build &amp; evaluate to produce a candidate with evaluation evidence.") {
+		t.Error("the next step of an uncertified variant does not use Build & evaluate")
 	}
 	// An accepted variant's activation without apply is also only advanced.
 	if !has(adv, `data-variant="clef-flash--r--aaaaaaaaaaaa"`) || !has(section(adv, `data-variant="clef-flash--r--aaaaaaaaaaaa"`, `</tr>`), "Activate without applying") {
@@ -491,7 +499,7 @@ func TestForgeControlsAbsentWithoutAuthority(t *testing.T) {
 	e := newEnv(t)
 	withModels(e, &fakeModels{state: ModelsState{Inventory: variantInventory()}})
 	body := e.get(t, "/forge").Body.String()
-	if !strings.Contains(body, `id="forge-variants"`) || has(body, "/forge/optimize", "/forge/probe", "/forge/certify", "/forge/apply", "/forge/activate", "/settings/variants/") {
+	if !strings.Contains(body, `id="forge-variants"`) || has(body, `action="/forge/build-evaluate"`, "/forge/optimize", "/forge/probe", "/forge/certify", "/forge/apply", "/forge/activate", "/settings/variants/") {
 		t.Error("variant controls rendered without the authority")
 	}
 	for _, p := range []string{"/forge/optimize", "/settings/variants/optimize", "/forge/apply", "/forge/certify"} {
@@ -699,6 +707,142 @@ func TestCertifyAndApplyOperationsAreProjected(t *testing.T) {
 			t.Errorf("phase %q label %q has no Japanese entry", p, got)
 		}
 	}
+	for _, p := range []string{"resolve_inputs", "provision", "build", "resolving"} {
+		label := opPhaseLabel("forge_build_evaluate", p)
+		if label == "" || !i18n.Japanese.Has(label) {
+			t.Errorf("Build & evaluate phase %q label %q has no Japanese entry", p, label)
+		}
+	}
+}
+
+func TestForgeBuildEvaluateProgressUsesBackendPhases(t *testing.T) {
+	e, fm, _ := forgeEnv(t, variantInventory())
+	plan := []string{"resolve_inputs", "preflight", "build", "resolving", "preflight", "probe", "reference_run", "candidate_run", "aligning", "certifying", "persisting"}
+	fm.state.Busy = &ModelOp{Kind: "forge_build_evaluate", Model: "clef-flash", Target: "source clef-flash recipe clef-flash-w4a16-rtn-g128",
+		Plan: plan, Phases: plan[:4], Phase: "resolving", Started: time.Now().Add(-time.Minute)}
+	fm.state.Forge.Resolution = &ForgeResolution{Source: "clef-flash", Recipe: "clef-flash-w4a16-rtn-g128",
+		CandidateDevice: ForgeResolvedValue{Mode: "Auto", Value: "cuda"}, ReferenceDevice: ForgeResolvedValue{Mode: "Auto", Value: "cpu"},
+		ReferenceDType: ForgeResolvedValue{Mode: "Auto", Value: "bfloat16"}}
+	body := e.get(t, "/forge").Body.String()
+	for _, want := range []string{`id="models-busy"`, "Resolving build intent", "Building candidate", "Resolving evaluation inputs", `aria-current="step"`, `id="forge-resolution"`, `Auto → <span class="mono">cuda</span>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Build & evaluate progress lacks %q", want)
+		}
+	}
+}
+
+func TestForgeBuildEvaluateUsesOneBackendOperation(t *testing.T) {
+	e, _, fv := forgeEnv(t, variantInventory())
+	form := url.Values{
+		"return": {"forge"}, "source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"},
+		"dataset": {" /data/eval.jsonl "}, "questions": {"/defs/a.json\r\n /defs/questions "}, "policy": {" /policy/p.json "},
+		"reference_device": {""}, "reference_dtype": {""}, "provisioning": {"auto"},
+	}
+	rec := e.post(t, "/forge/build-evaluate", form)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/forge" {
+		t.Fatalf("Build & evaluate: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if a := e.lastAction(t); !a.OK || a.Name != "build and evaluate clef-flash" {
+		t.Fatalf("action %+v", a)
+	}
+	if len(fv.calls) != 1 || fv.calls[0] != "build-evaluate" || len(fv.buildRequests) != 1 {
+		t.Fatalf("Build & evaluate made %d backend calls: %v", len(fv.calls), fv.calls)
+	}
+	r := fv.buildRequests[0]
+	if r.Source != "clef-flash" || r.Profile != "clef-flash-w4a16-rtn-g128" || r.Dataset != "/data/eval.jsonl" ||
+		strings.Join(r.Questions, ",") != "/defs/a.json,/defs/questions" || r.Policy != "/policy/p.json" || !r.Materialize ||
+		r.Device != "" || r.ReferenceDevice != "" || r.ReferenceDType != "" {
+		t.Fatalf("semantic request %+v", r)
+	}
+
+	// Overrides are forwarded exactly and provisioning can be explicitly disabled.
+	e.post(t, "/forge/build-evaluate", url.Values{
+		"return": {"forge"}, "source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"},
+		"dataset": {"/data/eval.jsonl"}, "device": {"cuda"}, "reference_device": {"cpu"}, "reference_dtype": {"float32"}, "provisioning": {"never"},
+	})
+	if len(fv.calls) != 2 || len(fv.buildRequests) != 2 {
+		t.Fatalf("override operation count calls=%v requests=%d", fv.calls, len(fv.buildRequests))
+	}
+	r = fv.buildRequests[1]
+	if r.Device != "cuda" || r.ReferenceDevice != "cpu" || r.ReferenceDType != "float32" || r.Materialize {
+		t.Fatalf("override request %+v", r)
+	}
+	if strings.Contains(strings.Join(fv.calls, " "), "apply") {
+		t.Fatalf("Build & evaluate applied a candidate: %v", fv.calls)
+	}
+
+	// Dataset, Question Definition and policy inputs must be absolute before the
+	// composed authority is called; the UI exposes no ResidentRun paths.
+	n := len(fv.calls)
+	for name, bad := range map[string]url.Values{
+		"relative dataset":  {"source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"}, "dataset": {"eval.jsonl"}, "provisioning": {"auto"}},
+		"relative question": {"source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"}, "dataset": {"/d.jsonl"}, "questions": {"q.json"}, "provisioning": {"auto"}},
+		"relative policy":   {"source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"}, "dataset": {"/d.jsonl"}, "policy": {"p.json"}, "provisioning": {"auto"}},
+	} {
+		e.post(t, "/forge/build-evaluate", bad)
+		if a := e.lastAction(t); a.OK || !strings.Contains(a.Message, "path") {
+			t.Errorf("%s was not refused: %+v", name, a)
+		}
+	}
+	if len(fv.calls) != n {
+		t.Fatalf("invalid path reached the backend: %v", fv.calls[n:])
+	}
+}
+
+func TestForgeBuildEvaluateResolutionIsVisible(t *testing.T) {
+	e, fm, _ := forgeEnv(t, variantInventory())
+	fm.state.Forge.Resolution = &ForgeResolution{
+		Source: "clef-flash", Recipe: "clef-flash-w4a16-rtn-g128", Variant: "clef-flash--r--eeeeeeeeeeee",
+		CandidateDevice: ForgeResolvedValue{Mode: "Auto", Value: "cuda"},
+		ReferenceDevice: ForgeResolvedValue{Mode: "Override", Value: "cpu"},
+		ReferenceDType:  ForgeResolvedValue{Mode: "Auto", Value: "bfloat16"},
+		CandidateDType:  "bfloat16",
+	}
+	body := e.get(t, "/forge").Body.String()
+	for _, want := range []string{`id="forge-resolution"`, `Auto → <span class="mono">cuda</span>`, `Override → <span class="mono">cpu</span>`, `Auto → <span class="mono">bfloat16</span>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("resolved plan lacks %q", want)
+		}
+	}
+}
+
+func TestForgeIntentPickerKeepsResourcesAndBrowserFallback(t *testing.T) {
+	e, _, _ := forgeEnv(t, variantInventory())
+	body := e.get(t, "/forge").Body.String()
+	if has(body, `action="/forge/pick"`) || !has(body, `name="dataset"`, "absolute path") {
+		t.Error("browser Forge lacks path fallback or exposes native picker controls")
+	}
+	p := &fakePathPicker{path: "/chosen/resource.jsonl"}
+	withPathPicker(e, p)
+	form := url.Values{
+		"source": {"clef-flash"}, "profile": {"clef-flash-w4a16-rtn-g128"}, "dataset": {"/typed/dataset.jsonl"},
+		"questions": {"/defs/old.json"}, "policy": {"/policy/old.json"}, "device": {"cuda"}, "reference_device": {"cpu"}, "reference_dtype": {"float32"}, "provisioning": {"never"},
+	}
+	postPick := func(kind string) string {
+		v := url.Values{"pick": {kind}}
+		for k, values := range form {
+			v[k] = values
+		}
+		return e.post(t, "/forge/pick", v).Body.String()
+	}
+	body = postPick("dataset")
+	for _, want := range []string{`name="dataset" value="/chosen/resource.jsonl"`, `name="source" required`, `value="cuda" selected`, `value="never" selected`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dataset picker lost intent field %q", want)
+		}
+	}
+	body = postPick("question-file")
+	if !strings.Contains(body, "/defs/old.json\n/chosen/resource.jsonl</textarea>") {
+		t.Error("Question Definition picker did not append the selected path")
+	}
+	body = postPick("question-folder")
+	if p.calls[len(p.calls)-1] != "folder" || !strings.Contains(body, "/defs/old.json\n/chosen/resource.jsonl</textarea>") {
+		t.Error("Question Definition folder picker did not reuse the native folder dialog")
+	}
+	body = postPick("policy")
+	if !strings.Contains(body, `name="policy" value="/chosen/resource.jsonl"`) {
+		t.Error("policy picker lost the selected path")
+	}
 }
 
 // Forge readiness is a projection of the recorded reports: blockers, warnings
@@ -767,12 +911,12 @@ func TestForgeReadinessProjection(t *testing.T) {
 	if c := card(t, body, "clef-flash--r--bbbbbbbbbbbb"); has(c, `action="/forge/apply"`) {
 		t.Errorf("a probe made a variant appliable:\n%s", c)
 	}
-	// A probe form exists only where the variant can load.
-	if c := card(t, body, "clef-flash--r--aaaaaaaaaaaa"); !has(c, `action="/forge/probe"`, `formaction="/forge/preflight"`) {
-		t.Errorf("probed variant card:\n%s", c)
-	}
-	if c := card(t, body, "clef-flash--r--dddddddddddd"); has(c, `action="/forge/probe"`) {
-		t.Errorf("a variant with a problem can be probed:\n%s", c)
+	// Mechanical probe/certification controls are no longer part of candidate
+	// cards; the composed operation owns those phases.
+	for _, id := range []string{"clef-flash--r--aaaaaaaaaaaa", "clef-flash--r--dddddddddddd"} {
+		if c := card(t, body, id); has(c, `action="/forge/probe"`, `action="/forge/certify"`, `formaction="/forge/preflight"`) {
+			t.Errorf("candidate %s exposes internal execution controls:\n%s", id, c)
+		}
 	}
 	if mb := e.get(t, "/models").Body.String(); !has(mb, "interrupted download kept for resume", "3.0 GiB") {
 		t.Error("the partial download is not shown in Models")

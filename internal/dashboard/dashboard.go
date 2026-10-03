@@ -145,6 +145,9 @@ type VariantActions interface {
 	// certification record.
 	ActivateVariant(device, model, variant string, experimental bool) error
 	Optimize(model, recipe string) error
+	// BuildAndEvaluate runs one composed operation from source/profile and
+	// semantic evaluation inputs. Its internal phases are reported by State.
+	BuildAndEvaluate(ForgeBuildEvaluateRequest) error
 	// CertifyVariant starts the self-contained certification of one persisted
 	// variant from semantic inputs alone (app.Controller.CertifyVariant): the
 	// backend produces and binds both runs itself, and a verdict never
@@ -944,11 +947,8 @@ func (d *Dashboard) modelsView(v view) *ModelsView {
 }
 
 // variantsOp forwards one explicit System One variant action to the
-// maintenance authority. The form names only catalog and variant identities
-// and, for certification, the evaluation inputs (corpus, Question Definitions,
-// policy) and the execution devices; the authority refuses anything else. The
-// lifecycle (build, preflight/probe, certification, apply) is the backend's:
-// each action here is one call, and the dashboard chains none of them.
+// maintenance authority. Normal Build & evaluate submits semantic intent in
+// one composed call; the other cases preserve existing action aliases.
 func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 	va := d.cfg.Variants
 	if va == nil {
@@ -957,6 +957,15 @@ func (d *Dashboard) variantsOp(w http.ResponseWriter, r *http.Request) {
 	}
 	f := func(k string) string { return strings.TrimSpace(r.PostFormValue(k)) }
 	switch op := r.PathValue("op"); op {
+	case "pick":
+		d.forgePick(w, r)
+	case "build-evaluate":
+		req, err := forgeBuildEvaluateRequest(r)
+		if err == nil {
+			err = va.BuildAndEvaluate(req)
+		}
+		d.done(w, r, "build and evaluate "+f("source"), err,
+			"started; the backend builds the selected profile, evaluates that candidate and records its evidence. Nothing is applied")
 	case "activate":
 		d.done(w, r, "activate variant "+f("variant"), va.ActivateVariant(f("device"), f("model"), f("variant"), f("experimental") == "1"),
 			"started; once it finishes, a running worker keeps what it started with until you restart it")
