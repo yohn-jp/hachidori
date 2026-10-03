@@ -3,6 +3,8 @@ name: Go Windows development release
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions: {}
 
