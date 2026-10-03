@@ -1,5 +1,12 @@
 {
   "scenarios": [
-    "candidate-identity"
+    "candidate-identity",
+    "bootstrap-clean-profile",
+    "bootstrap-remembered-home",
+    "bootstrap-remembered-installed-home",
+    "bootstrap-missing-home",
+    "bootstrap-corrupt-locator",
+    "bootstrap-commit-record",
+    "bootstrap-failed-setup-cleanup"
   ]
 }
