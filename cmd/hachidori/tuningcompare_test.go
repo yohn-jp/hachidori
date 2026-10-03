@@ -104,6 +104,9 @@ func TestTuningStoreReportsTheCandidateItsEvidenceAndTheAcceptedBaseline(t *test
 	if err := os.WriteFile(filepath.Join(cdir, home.TuningEvidenceFile), ev.Canonical(), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, ok := tunedVariant(h, p, strings.Repeat("f", 64)); ok {
+		t.Fatal("a candidate built under another resolved plan was attributed to this profile")
+	}
 	got, err = store.Candidate(p, compiled)
 	if err != nil || got.Variant != cand.ID || got.Evidence == nil || got.Evidence.PlanSHA256 != compiled.Plan.SHA256() || got.EvidenceErr != "" || len(got.Figures) != 0 {
 		t.Fatalf("candidate without a baseline: %+v %v", got, err)
