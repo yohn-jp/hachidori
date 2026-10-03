@@ -34,6 +34,8 @@ const (
 	// persisted variant. Neither certifies, activates or changes a resident.
 	OpPreflight = "preflight"
 	OpProbe     = "probe"
+	// Forge's one-action build and evaluation transaction.
+	OpForgeBuildEvaluate = "forge_build_evaluate"
 )
 
 // Rejections of the maintenance actions.
@@ -100,6 +102,8 @@ type Maintenance struct {
 	ActivateVariant func(root, device, model, variant string, experimental bool, log io.Writer, obs *setup.Observer) (changed bool, err error)
 	// Optimize builds a variant of a catalog model with a canonical recipe.
 	Optimize func(ctx context.Context, root, model, recipe string, log io.Writer, obs *setup.Observer) error
+	// Build returns the immutable variant produced by the canonical optimizer.
+	Build func(ctx context.Context, h home.Home, req optimize.Request, log io.Writer, obs *setup.Observer) (optimize.Result, error)
 	// Certify compares a reference run and a variant run and records the
 	// certification.
 	Certify func(root string, p CertifyParams, log io.Writer, obs *setup.Observer) error
@@ -176,6 +180,11 @@ func (m Maintenance) withDefaults() Maintenance {
 			return err
 		}
 	}
+	if m.Build == nil {
+		m.Build = func(ctx context.Context, h home.Home, req optimize.Request, log io.Writer, obs *setup.Observer) (optimize.Result, error) {
+			return optimize.Build(ctx, h, req, optimize.Deps{}, log, obs)
+		}
+	}
 	if m.Certify == nil {
 		m.Certify = certify
 	}
@@ -218,9 +227,12 @@ type Operation struct {
 	Phase    string          `json:"phase,omitempty"`    // the phase currently/last entered
 	Phases   []string        `json:"phases,omitempty"`   // every phase entered, in order
 	Progress *setup.Progress `json:"progress,omitempty"` // the current step within Phase
-	Started  time.Time       `json:"started"`
-	Finished time.Time       `json:"finished,omitzero"`
-	Failure  *Failure        `json:"failure,omitempty"`
+	// ForgeResolution is the resolved Auto/override execution plan of a
+	// composed Forge build/evaluate operation.
+	ForgeResolution *ForgeBuildEvaluateResolution `json:"forge_resolution,omitempty"`
+	Started         time.Time                     `json:"started"`
+	Finished        time.Time                     `json:"finished,omitzero"`
+	Failure         *Failure                      `json:"failure,omitempty"`
 	// Cancellable is always false: setup materialization is not safely
 	// interruptible, and Stop/Restart are bounded by the worker's own
 	// shutdown timeout.
@@ -237,6 +249,10 @@ func (o *Operation) clone() *Operation {
 	if o.Progress != nil {
 		p := *o.Progress
 		c.Progress = &p
+	}
+	if o.ForgeResolution != nil {
+		r := *o.ForgeResolution
+		c.ForgeResolution = &r
 	}
 	return &c
 }
@@ -1049,7 +1065,7 @@ func (c *Controller) Inventory(verify bool) (setup.Inventory, error) {
 
 func isMaintenance(kind string) bool {
 	switch kind {
-	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpPreflight, OpProbe, OpExecute, OpApply:
+	case OpMaterialize, OpRepair, OpActivate, OpVerify, OpRemove, OpOptimize, OpCertify, OpForgeCertify, OpForgeBuildEvaluate, OpPreflight, OpProbe, OpExecute, OpApply:
 		return true
 	}
 	return false
