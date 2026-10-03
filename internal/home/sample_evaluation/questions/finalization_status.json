@@ -1,0 +1,13 @@
+{
+  "schema": "hachidori.question.v1",
+  "id": "inari_finalization_status",
+  "version": 1,
+  "type": "choice",
+  "instructions": "Decide whether the work can be finalized now under the stated authority and evidence.",
+  "choices": ["ready", "not_ready", "blocked"],
+  "descriptions": {
+    "ready": "The requested work is complete and all required evidence for the exact submitted revision is present.",
+    "not_ready": "The work can continue, but implementation, repair, or verification is still required.",
+    "blocked": "Progress requires an external contract, environment, or authority decision that the current session cannot legitimately resolve."
+  }
+}

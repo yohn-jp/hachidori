@@ -249,6 +249,12 @@ func (a *desktopApp) run() error {
 		if a.Open != nil {
 			return a.Open(root)
 		}
+		h := home.Home{Root: root}
+		// Existing installed homes do not necessarily run setup after an app
+		// update, so refresh Hachidori-owned sample evaluation resources here.
+		if err := h.EnsureEvaluationResources(); err != nil {
+			return nil, fmt.Errorf("evaluation resources: %w", err)
+		}
 		if err := os.MkdirAll(filepath.Join(root, "logs"), 0o755); err != nil {
 			return nil, err
 		}
@@ -259,7 +265,6 @@ func (a *desktopApp) run() error {
 		// bind attaches the dashboard and the API handler to a newly opened
 		// runtime, whether it is the one worker or a resident set.
 		bind := func(status func() server.Status, lc dashboard.Lifecycle, dec server.Decider, info server.Runtime, started time.Time) {
-			h := home.Home{Root: root}
 			dash := dashboard.New(dashboard.Config{
 				APIAddr:   apiAddr,
 				Status:    status,
@@ -268,8 +273,9 @@ func (a *desktopApp) run() error {
 				Tunnel:    tun,
 				PrefsPath: h.Path("state", "dashboard.json"),
 				// Saved experiment history lives under HACHIDORI_HOME only.
-				HistoryDir: h.Path("state", "history"),
-				Desktop:    prefs,
+				HistoryDir:       h.Path("state", "history"),
+				EvaluationSample: h.InariSampleEvaluation(),
+				Desktop:          prefs,
 				Settings:   prefs,
 				Models:     models,
 				// System One variant actions go through the same controller.

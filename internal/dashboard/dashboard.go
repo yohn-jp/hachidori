@@ -80,6 +80,9 @@ type Config struct {
 	// (state/history). Empty disables saving and listing experiment history;
 	// experiments then stay memory-only apart from explicit exports.
 	HistoryDir string
+	// EvaluationSample is the install-local, operator-visible sample bundle
+	// provisioned beneath HACHIDORI_HOME. Zero values disable sample defaults.
+	EvaluationSample home.EvaluationSample
 	// Desktop, when set, adds the desktop preferences panel (start at
 	// sign-in, start minimized). It is nil for serve/dashboard.
 	Desktop Desktop

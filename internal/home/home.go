@@ -59,7 +59,10 @@ func (h Home) Ensure() error {
 	if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
 		return fmt.Errorf("home not writable: %w", err)
 	}
-	return os.Remove(probe)
+	if err := os.Remove(probe); err != nil {
+		return err
+	}
+	return h.EnsureEvaluationResources()
 }
 
 // Active is state/active-runtime.json: the activation record. The execution

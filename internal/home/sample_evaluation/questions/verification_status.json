@@ -1,0 +1,13 @@
+{
+  "schema": "hachidori.question.v1",
+  "id": "inari_verification_status",
+  "version": 1,
+  "type": "choice",
+  "instructions": "Classify whether the evidence verifies the exact submitted work against its required checks.",
+  "choices": ["sufficient", "insufficient", "environment_blocked"],
+  "descriptions": {
+    "sufficient": "All required evidence applies to the exact submitted revision and the required checks have completed.",
+    "insufficient": "Some required verification is missing, stale, failed, or does not apply to the exact submitted revision.",
+    "environment_blocked": "Required verification cannot be completed because the necessary environment or material is unavailable."
+  }
+}

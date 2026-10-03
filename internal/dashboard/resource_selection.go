@@ -80,11 +80,30 @@ func (d *Dashboard) rememberResource(kind, value string) {
 	d.recent[kind] = append([]string{value}, list...)[:min(len(list)+1, maxKnownResources)]
 }
 
-// resourceCatalog is the catalog of one kind: the resources used in this
-// session and, for datasets, the datasets of saved experiment history.
+// sampleResource is the install-local Inari sample for one semantic kind.
+// It is a normal operator-visible path under HACHIDORI_HOME, not hidden state.
+func (d *Dashboard) sampleResource(kind string) string {
+	s := d.cfg.EvaluationSample
+	switch kind {
+	case resDataset:
+		return s.Dataset
+	case resQuestions:
+		return s.Questions
+	case resPolicy:
+		return s.Policy
+	}
+	return ""
+}
+
+// resourceCatalog is the catalog of one kind: the install-local sample first,
+// then resources used in this session and, for datasets, saved history.
 func (d *Dashboard) resourceCatalog(kind string) []string {
+	var values []string
+	if sample := d.sampleResource(kind); sample != "" {
+		values = append(values, sample)
+	}
 	d.mu.Lock()
-	values := slices.Clone(d.recent[kind])
+	values = append(values, slices.Clone(d.recent[kind])...)
 	d.mu.Unlock()
 	if kind == resDataset && d.hist != nil {
 		if entries, _, err := d.hist.List(); err == nil {
@@ -115,9 +134,20 @@ func knownOptions(catalog []string, current string) []resourceOption {
 	return out
 }
 
-// resourceLabel names a resource by its file names: "eval.jsonl" or
-// "a.question.json, rules". The exact paths are the option's value.
+// resourceLabel names a resource by its file names. The fixed install-local
+// Inari bundle gets a semantic label; its exact path remains the option value.
 func resourceLabel(value string) string {
+	if !strings.Contains(value, "\n") {
+		clean := filepath.ToSlash(filepath.Clean(value))
+		switch {
+		case strings.HasSuffix(clean, "/resources/evaluation/inari/dataset.jsonl"):
+			return "Inari sample · dataset"
+		case strings.HasSuffix(clean, "/resources/evaluation/inari/questions"):
+			return "Inari sample · evaluation questions"
+		case strings.HasSuffix(clean, "/resources/evaluation/inari/policy.json"):
+			return "Inari sample · certification policy"
+		}
+	}
 	var names []string
 	for _, l := range lines(value) {
 		names = append(names, filepath.Base(filepath.Clean(l)))

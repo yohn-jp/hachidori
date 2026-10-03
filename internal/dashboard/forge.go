@@ -383,6 +383,17 @@ func (d *Dashboard) renderForgePage(w http.ResponseWriter, r *http.Request, form
 			}
 		}
 	}
+	if r.Method == http.MethodGet {
+		if form.Dataset == "" {
+			form.Dataset = d.sampleResource(resDataset)
+		}
+		if form.Questions == "" {
+			form.Questions = d.sampleResource(resQuestions)
+		}
+		if form.Policy == "" {
+			form.Policy = d.sampleResource(resPolicy)
+		}
+	}
 	v.Forge.Form = *form
 	d.renderView(w, "forge", v)
 }

@@ -1,0 +1,14 @@
+{
+  "schema": "hachidori.question.v1",
+  "id": "inari_failure_class",
+  "version": 1,
+  "type": "choice",
+  "instructions": "Classify the strongest supported explanation for the observed failure, if any.",
+  "choices": ["product_defect", "fixture_or_harness", "external_or_environment", "no_failure"],
+  "descriptions": {
+    "product_defect": "The product implementation itself is reproducibly wrong.",
+    "fixture_or_harness": "The failure is caused by test data, timing, portability, or the verification harness rather than product behavior.",
+    "external_or_environment": "The failure comes from an unavailable external contract, dependency, material, or execution environment.",
+    "no_failure": "No actual implementation or verification failure is described."
+  }
+}
