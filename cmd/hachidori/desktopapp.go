@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +14,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,12 +26,14 @@ import (
 	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/diagnostics"
 	"github.com/yohn-jp/hachidori/internal/doctor"
+	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/firstrun"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tuning"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -265,6 +273,9 @@ func (a *desktopApp) run() error {
 				Models:     models,
 				// System One variant actions go through the same controller.
 				Variants: models,
+				// Tuning edits and saves semantic profiles and hands the
+				// exact saved profile to the controller's Forge build.
+				Tuning: tuningStore{ctl: models.ctl},
 				// The desired resident models are saved by the same settings
 				// authority and honored by the next open of the runtime.
 				Residency: prefs,
@@ -669,4 +680,418 @@ func (a *desktopApp) webviewDataDir(plan firstrun.Plan) (string, func()) {
 		return filepath.Join(os.TempDir(), "hachidori-webview2"), func() {}
 	}
 	return dir, func() { _ = os.RemoveAll(dir) }
+}
+
+// tuningStore is the desktop's tuning authority for the dashboard. It adds no
+// behavior of its own: analysis, validation, persistence and compilation are
+// internal/tuning's, the build is the controller's Forge action, and the
+// evidence it projects is what the home records (variant manifests, probes and
+// certifications). It reads weights never; it reads only digest-pinned
+// metadata files and safetensors headers of a materialized source.
+type tuningStore struct{ ctl func() *app.Controller }
+
+var _ dashboard.Tuning = tuningStore{}
+
+func (s tuningStore) home() (home.Home, error) {
+	root := s.ctl().Snapshot().Home
+	if root == "" {
+		return home.Home{}, errors.New("no home is selected")
+	}
+	return home.Home{Root: root}, nil
+}
+
+// source resolves a materialized System One catalog model and its directory.
+func (s tuningStore) source(id string) (home.Home, home.ModelManifest, string, error) {
+	h, err := s.home()
+	if err != nil {
+		return h, home.ModelManifest{}, "", err
+	}
+	m, err := setup.LookupModel(id)
+	if err != nil {
+		return h, m, "", err
+	}
+	if !setup.SupportsVariants(m) {
+		return h, m, "", fmt.Errorf("model %s has no semantic regions (only System One models are tuned)", m.ID)
+	}
+	inv, err := s.ctl().Inventory(false)
+	if err != nil {
+		return h, m, "", err
+	}
+	for _, e := range inv.Models {
+		if e.ID != m.ID {
+			continue
+		}
+		if !e.Materialized {
+			msg := "model " + m.ID + " is not materialized; materialize it in Models first"
+			if e.Problem != "" {
+				msg += " (" + e.Problem + ")"
+			}
+			return h, m, "", errors.New(msg)
+		}
+		return h, m, h.Path("models", filepath.FromSlash(setup.ModelDirName(m))), nil
+	}
+	return h, m, "", fmt.Errorf("model %s is not in the inventory", m.ID)
+}
+
+// pinnedFile reads one catalog file of a materialized source and refuses it
+// unless it matches its pinned digest.
+func pinnedFile(dir string, m home.ModelManifest, rel string) ([]byte, error) {
+	want, ok := m.Files[rel]
+	if !ok {
+		return nil, fmt.Errorf("model %s pins no %s", m.ID, rel)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+	if err != nil {
+		return nil, err
+	}
+	if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != want {
+		return nil, fmt.Errorf("%s does not match its pinned digest", rel)
+	}
+	return b, nil
+}
+
+var (
+	clefLanguageLinear = regexp.MustCompile(`^model\.language_model\.layers\.[0-9]+\.(mlp\.(gate|up|down)_proj|linear_attn\.(in_proj_qkv|in_proj_z|in_proj_a|in_proj_b|out_proj)|self_attn\.(q|k|v|o)_proj)$`)
+	clefVisionLinear   = regexp.MustCompile(`^model\.visual\..*\.(qkv|proj|linear_fc1|linear_fc2)$`)
+)
+
+// clefLinearModule reports whether a checkpoint module name is a Linear
+// module of the Clef layout. Norm, convolution, embedding and bias-only
+// tensors are not.
+func clefLinearModule(name string) bool {
+	switch {
+	case name == "lm_head":
+		return true
+	case strings.HasPrefix(name, "model.visual."):
+		return !strings.HasPrefix(name, "model.visual.patch_embed.") && clefVisionLinear.MatchString(name)
+	}
+	return clefLanguageLinear.MatchString(name)
+}
+
+// declaredLayout reads the exact source's declared layout from its
+// digest-pinned config.json and safetensors index.
+func declaredLayout(dir string, m home.ModelManifest) (tuning.DeclaredLayout, map[string]string, error) {
+	cfgRaw, err := pinnedFile(dir, m, "config.json")
+	if err != nil {
+		return tuning.DeclaredLayout{}, nil, err
+	}
+	idxRaw, err := pinnedFile(dir, m, "model.safetensors.index.json")
+	if err != nil {
+		return tuning.DeclaredLayout{}, nil, err
+	}
+	var cfg struct {
+		ModelType     string   `json:"model_type"`
+		Architectures []string `json:"architectures"`
+		Tie           bool     `json:"tie_word_embeddings"`
+		Text          struct {
+			ModelType  string   `json:"model_type"`
+			LayerTypes []string `json:"layer_types"`
+			Tie        bool     `json:"tie_word_embeddings"`
+		} `json:"text_config"`
+	}
+	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
+		return tuning.DeclaredLayout{}, nil, fmt.Errorf("config.json: %w", err)
+	}
+	var idx struct {
+		WeightMap map[string]string `json:"weight_map"`
+	}
+	if err := json.Unmarshal(idxRaw, &idx); err != nil {
+		return tuning.DeclaredLayout{}, nil, fmt.Errorf("model.safetensors.index.json: %w", err)
+	}
+	layout := tuning.DeclaredLayout{ModelType: cfg.ModelType, TextModelType: cfg.Text.ModelType, Architectures: cfg.Architectures, LayerTypes: cfg.Text.LayerTypes}
+	seen := map[string]bool{}
+	for tensor := range idx.WeightMap {
+		if module, ok := strings.CutSuffix(tensor, ".weight"); ok && clefLinearModule(module) && !seen[module] {
+			seen[module] = true
+			layout.LinearModules = append(layout.LinearModules, module)
+		}
+	}
+	// A tied output head is still the Linear module the optimizer sees.
+	if !seen["lm_head"] && (cfg.Tie || cfg.Text.Tie) {
+		layout.LinearModules = append(layout.LinearModules, "lm_head")
+	}
+	recipe, err := optimize.LookupRecipe(m.ID, optimize.RecipeClefFlashW4A16)
+	if err != nil {
+		return tuning.DeclaredLayout{}, nil, err
+	}
+	for _, f := range recipe.Carry {
+		if _, ok := m.Files[f]; ok {
+			layout.CarriedFiles = append(layout.CarriedFiles, f)
+		}
+	}
+	return layout, idx.WeightMap, nil
+}
+
+func (s tuningStore) Analysis(source string) (tuning.Analysis, error) {
+	_, m, dir, err := s.source(source)
+	if err != nil {
+		return tuning.Analysis{}, err
+	}
+	layout, _, err := declaredLayout(dir, m)
+	if err != nil {
+		return tuning.Analysis{}, err
+	}
+	return tuning.Analyze(m, layout)
+}
+
+// Profiles lists the stored profiles of one source, newest first. A stored
+// document that does not verify is not listed.
+func (s tuningStore) Profiles(source string) ([]tuning.Profile, error) {
+	h, err := s.home()
+	if err != nil {
+		return nil, err
+	}
+	dir := h.Path("state", "tuning", "profiles")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	type stored struct {
+		p  tuning.Profile
+		at time.Time
+	}
+	var all []stored
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok || e.IsDir() {
+			continue
+		}
+		p, _, err := tuning.LoadProfile(h, id)
+		if err != nil || p.Source.ID != source {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		all = append(all, stored{p, info.ModTime()})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].at.Equal(all[j].at) {
+			return all[i].at.After(all[j].at)
+		}
+		return all[i].p.ID() < all[j].p.ID()
+	})
+	out := make([]tuning.Profile, len(all))
+	for i, a := range all {
+		out[i] = a.p
+	}
+	return out, nil
+}
+
+func (s tuningStore) LoadProfile(id string) (tuning.Profile, tuning.Analysis, error) {
+	h, err := s.home()
+	if err != nil {
+		return tuning.Profile{}, tuning.Analysis{}, err
+	}
+	return tuning.LoadProfile(h, id)
+}
+
+func (s tuningStore) SaveProfile(p tuning.Profile, a tuning.Analysis) error {
+	h, err := s.home()
+	if err != nil {
+		return err
+	}
+	return tuning.SaveProfile(h, p, a)
+}
+
+// BuildCandidate hands the exact saved profile to the controller's Forge
+// build (OptimizeProfile). It is accepted as one background operation.
+func (s tuningStore) BuildCandidate(source, profileID string) error {
+	return s.ctl().OptimizeProfile(source, profileID)
+}
+
+// w4a16BytesPerBF16Byte is the documented size estimator's quantization
+// factor: a W4A16 group-128 weight stores 4 bits plus one bfloat16 scale per
+// 128 weights, (0.5 + 2/128) bytes, against 2 bytes in bfloat16.
+const w4a16BytesPerBF16Byte = (0.5 + 2.0/128) / 2
+
+const sizeEstimator = "W4A16 g128 estimator: source bfloat16 Linear weights are 4-bit packed plus one bfloat16 scale per 128 weights; preserved regions, other tensors and carried files keep their source size. Not a measurement"
+
+// Impact projects what the home's evidence says about one exact profile. A
+// candidate built from the profile (variant provenance names its profile ID)
+// supplies MEASURED values from its artifact, its latest probe of the exact
+// manifest and its certification. Without one, only the size has an
+// ESTIMATED value from the documented estimator; everything else is
+// NOT_CHECKED.
+func (s tuningStore) Impact(p tuning.Profile, a tuning.Analysis, c tuning.Compilation) (dashboard.TuningImpact, error) {
+	h, m, dir, err := s.source(a.Source.ID)
+	if err != nil {
+		return dashboard.TuningImpact{}, err
+	}
+	none := func(why string) dashboard.ImpactValue {
+		return dashboard.ImpactValue{State: dashboard.NotChecked, Basis: why}
+	}
+	imp := dashboard.TuningImpact{
+		Size: none("no candidate built from this profile"), Memory: none("no candidate built from this profile"),
+		Latency: none("no candidate built from this profile"), Fidelity: none("no candidate built from this profile"),
+	}
+	v, vdir, ok := tunedVariant(h, p)
+	if !ok {
+		if est, err := estimateSize(dir, m, c); err == nil {
+			imp.Size = est
+		} else {
+			imp.Size = none("size could not be estimated: " + err.Error())
+		}
+		return imp, nil
+	}
+	label := "candidate " + v.ID
+	imp.Memory, imp.Latency = none(label+" has no passed probe of this exact manifest"), none(label+" has no passed probe of this exact manifest")
+	imp.Fidelity = none(label + " has no certification")
+	var total int64
+	for rel := range v.Files {
+		info, err := os.Stat(filepath.Join(vdir, filepath.FromSlash(rel)))
+		if err != nil {
+			total = -1
+			break
+		}
+		total += info.Size()
+	}
+	if total > 0 {
+		imp.Size = dashboard.ImpactValue{State: dashboard.Measured, Value: gib(total), Basis: label + ": bytes of its artifact files"}
+	} else {
+		imp.Size = none(label + ": its artifact files could not be read")
+	}
+	if pr, ok := app.LatestProbe(h, v.ID); ok && pr.VariantManifestSHA256 == v.ManifestSHA256() && pr.Result == "passed" {
+		basis := "probe of " + label + " on " + pr.Device + " (one typed decision)"
+		if pr.Timing.RequestMS > 0 {
+			imp.Latency = dashboard.ImpactValue{State: dashboard.Measured, Value: fmt.Sprintf("%.1f ms per request", pr.Timing.RequestMS), Basis: basis}
+		}
+		switch r := pr.Resources; {
+		case r.VRAMAllocated > 0:
+			imp.Memory = dashboard.ImpactValue{State: dashboard.Measured, Value: "VRAM allocated " + gib(int64(r.VRAMAllocated)), Basis: basis}
+		case r.HostRSSBytes > 0:
+			imp.Memory = dashboard.ImpactValue{State: dashboard.Measured, Value: "host RSS " + gib(int64(r.HostRSSBytes)), Basis: basis}
+		}
+	}
+	if cs := eval.ResolveCertification(h, v); cs.Record != nil {
+		if cert, err := eval.LoadCertification(h, *cs.Record); err == nil && cert.Fidelity.Paired > 0 {
+			imp.Fidelity = dashboard.ImpactValue{State: dashboard.Measured,
+				Value: fmt.Sprintf("%.2f%% choice flips over %d paired observations · %s", 100*cert.Fidelity.FlipRate, cert.Fidelity.Paired, cs.State),
+				Basis: "certification of " + label + " against its source (" + cs.Record.Report + ")"}
+		}
+	}
+	return imp, nil
+}
+
+func gib(b int64) string { return fmt.Sprintf("%.2f GiB", float64(b)/(1<<30)) }
+
+// tunedVariant is the latest variant whose build provenance names exactly this
+// profile.
+func tunedVariant(h home.Home, p tuning.Profile) (home.VariantManifest, string, bool) {
+	entries, err := os.ReadDir(h.VariantsDir(p.Source.ID))
+	if err != nil {
+		return home.VariantManifest{}, "", false
+	}
+	var best home.VariantManifest
+	bestDir := ""
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		dir := h.VariantDir(p.Source.ID, e.Name())
+		v, err := home.ReadVariant(dir)
+		if err != nil || v.Tuning == nil || v.Tuning.ProfileID != p.ID() || v.Source != p.Source {
+			continue
+		}
+		if bestDir == "" || v.Creation.CreatedAt > best.Creation.CreatedAt {
+			best, bestDir = v, dir
+		}
+	}
+	return best, bestDir, bestDir != ""
+}
+
+type tensorHeader struct {
+	DType   string   `json:"dtype"`
+	Offsets [2]int64 `json:"data_offsets"`
+}
+
+// safetensorsHeader reads the tensor table of one shard without reading any
+// weight.
+func safetensorsHeader(path string) (map[string]tensorHeader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var n [8]byte
+	if _, err := io.ReadFull(f, n[:]); err != nil {
+		return nil, err
+	}
+	size := binary.LittleEndian.Uint64(n[:])
+	if size == 0 || size > 64<<20 {
+		return nil, fmt.Errorf("%s: unreasonable safetensors header size %d", filepath.Base(path), size)
+	}
+	raw := make([]byte, size)
+	if _, err := io.ReadFull(f, raw); err != nil {
+		return nil, err
+	}
+	var table map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &table); err != nil {
+		return nil, err
+	}
+	out := make(map[string]tensorHeader, len(table))
+	for name, v := range table {
+		if name == "__metadata__" {
+			continue
+		}
+		var t tensorHeader
+		if err := json.Unmarshal(v, &t); err != nil {
+			return nil, fmt.Errorf("%s: tensor %s: %w", filepath.Base(path), name, err)
+		}
+		out[name] = t
+	}
+	return out, nil
+}
+
+// estimateSize applies the documented size estimator to the compiled profile.
+func estimateSize(dir string, m home.ModelManifest, c tuning.Compilation) (dashboard.ImpactValue, error) {
+	_, weightMap, err := declaredLayout(dir, m)
+	if err != nil {
+		return dashboard.ImpactValue{}, err
+	}
+	tensors := map[string]tensorHeader{}
+	shards := map[string]bool{}
+	for _, shard := range weightMap {
+		if shards[shard] {
+			continue
+		}
+		shards[shard] = true
+		table, err := safetensorsHeader(filepath.Join(dir, filepath.FromSlash(shard)))
+		if err != nil {
+			return dashboard.ImpactValue{}, err
+		}
+		for name, t := range table {
+			tensors[name] = t
+		}
+	}
+	var total, linear float64
+	for _, t := range tensors {
+		total += float64(t.Offsets[1] - t.Offsets[0])
+	}
+	size := 0.0
+	for _, r := range c.Evidence.Regions {
+		for _, module := range r.Modules {
+			t, ok := tensors[module+".weight"]
+			if !ok || t.DType != "BF16" {
+				return dashboard.ImpactValue{}, fmt.Errorf("module %s is not a bfloat16 tensor of the source", module)
+			}
+			b := float64(t.Offsets[1] - t.Offsets[0])
+			linear += b
+			if r.Preserved {
+				size += b
+			} else {
+				size += b * w4a16BytesPerBF16Byte
+			}
+		}
+	}
+	size += total - linear
+	for _, f := range c.Recipe.Carry {
+		if info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(f))); err == nil {
+			size += float64(info.Size())
+		}
+	}
+	return dashboard.ImpactValue{State: dashboard.Estimated, Value: "about " + gib(int64(size)), Basis: sizeEstimator}, nil
 }

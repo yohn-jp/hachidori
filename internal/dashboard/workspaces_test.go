@@ -205,3 +205,29 @@ func TestForgeAndModelsCarryNoBrowserSideLifecycle(t *testing.T) {
 		}
 	}
 }
+
+// Hosting the Tuning workspace leaves every existing workspace's content
+// unchanged apart from the one added navigation entry.
+func TestExistingWorkspacesAreUnchangedByTheTuningWorkspace(t *testing.T) {
+	e, _, _ := forgeEnv(t, variantInventory())
+	pages := []string{"/", "/models", "/forge", "/workbench", "/experiments", "/errors", "/diagnostics"}
+	entry := regexp.MustCompile(`\s*<li><a href="/tuning"[^\n]*</li>`)
+	token := regexp.MustCompile(`name="token" value="[0-9a-f]+"`)
+	render := func(p string) string {
+		rec := e.get(t, p)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d", p, rec.Code)
+		}
+		return token.ReplaceAllString(entry.ReplaceAllString(rec.Body.String(), ""), `name="token"`)
+	}
+	before := map[string]string{}
+	for _, p := range pages {
+		before[p] = render(p)
+	}
+	withTuning(e, &fakeTuning{analysis: tuningAnalysis(t)})
+	for _, p := range pages {
+		if render(p) != before[p] {
+			t.Errorf("%s changes when Tuning is hosted", p)
+		}
+	}
+}

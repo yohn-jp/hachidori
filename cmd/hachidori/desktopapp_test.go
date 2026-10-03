@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,8 +23,10 @@ import (
 	"github.com/yohn-jp/hachidori/internal/desktop"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/i18n"
+	"github.com/yohn-jp/hachidori/internal/optimize"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tuning"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 )
 
@@ -428,5 +433,390 @@ func TestSettingsStorePersistsOperatorLocale(t *testing.T) {
 	}
 	if got := settingsStore(prefs, nil).ResolvedLocale(); got != i18n.Japanese {
 		t.Fatalf("after restart: %q", got)
+	}
+}
+
+// tuningFixture materializes a synthetic catalog Clef model: digest-pinned
+// config and safetensors index, one shard with a real safetensors header and
+// the recipe's carried files. Names carry the Linear modules the analyzer must
+// find and the norm, convolution, embedding and patch tensors it must not.
+type fixtureTensor struct {
+	name  string
+	shape []int
+}
+
+var tuningFixtureTensors = []fixtureTensor{
+	{"lm_head.weight", []int{4, 8}},
+	{"model.language_model.embed_tokens.weight", []int{4, 8}},
+	{"model.language_model.layers.0.input_layernorm.weight", []int{8}},
+	{"model.language_model.layers.0.linear_attn.conv1d.weight", []int{6, 1, 4}},
+	{"model.language_model.layers.0.linear_attn.norm.weight", []int{8}},
+	{"model.language_model.layers.0.linear_attn.in_proj_a.weight", []int{2, 8}},
+	{"model.language_model.layers.0.linear_attn.in_proj_b.weight", []int{2, 8}},
+	{"model.language_model.layers.0.linear_attn.in_proj_qkv.weight", []int{24, 8}},
+	{"model.language_model.layers.0.mlp.gate_proj.weight", []int{16, 8}},
+	{"model.language_model.layers.1.self_attn.q_proj.weight", []int{8, 8}},
+	{"model.language_model.layers.1.self_attn.q_norm.weight", []int{8}},
+	{"model.visual.patch_embed.proj.weight", []int{8, 3, 2, 2, 2}},
+	{"model.visual.pos_embed.weight", []int{4, 8}},
+	{"model.visual.blocks.0.norm1.weight", []int{8}},
+	{"model.visual.blocks.0.attn.qkv.weight", []int{24, 8}},
+	{"model.visual.merger.linear_fc1.weight", []int{8, 8}},
+}
+
+func (f fixtureTensor) bytes() int64 {
+	n := int64(2) // bfloat16
+	for _, d := range f.shape {
+		n *= int64(d)
+	}
+	return n
+}
+
+func writeSafetensors(t *testing.T, path string, tensors []fixtureTensor) {
+	t.Helper()
+	header := map[string]any{"__metadata__": map[string]string{"format": "pt"}}
+	var off int64
+	for _, ts := range tensors {
+		header[ts.name] = map[string]any{"dtype": "BF16", "shape": ts.shape, "data_offsets": []int64{off, off + ts.bytes()}}
+		off += ts.bytes()
+	}
+	raw, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n [8]byte
+	binary.LittleEndian.PutUint64(n[:], uint64(len(raw)))
+	if err := os.WriteFile(path, append(append(n[:], raw...), make([]byte, off)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func tuningFixture(t *testing.T) (tuningStore, home.Home, home.ModelManifest, string) {
+	t.Helper()
+	h := home.Home{Root: t.TempDir()}
+	if err := h.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	m := home.ModelManifest{ID: setup.ClefFlash, Provider: home.ProviderClef, Repo: "test/clef", Revision: strings.Repeat("ef", 20), Files: map[string]string{}}
+	dir := h.Path("models", filepath.FromSlash(setup.ModelDirName(m)))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipe, err := optimize.LookupRecipe(setup.ClefFlash, optimize.RecipeClefFlashW4A16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	weightMap := map[string]string{}
+	for _, ts := range tuningFixtureTensors {
+		weightMap[ts.name] = "model-00001-of-00001.safetensors"
+	}
+	index, _ := json.Marshal(map[string]any{"weight_map": weightMap})
+	config, _ := json.Marshal(map[string]any{
+		"model_type": "qwen3_5", "architectures": []string{"Qwen3_5ForConditionalGeneration"},
+		"text_config": map[string]any{"model_type": "qwen3_5_text", "layer_types": []string{"linear_attention", "full_attention"}},
+	})
+	files := map[string][]byte{"config.json": config, "generation_config.json": []byte("{}"), "model.safetensors.index.json": index}
+	for _, f := range recipe.Carry {
+		files[f] = []byte("carried " + f)
+	}
+	for rel, b := range files {
+		if err := os.WriteFile(filepath.Join(dir, rel), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSafetensors(t, filepath.Join(dir, "model-00001-of-00001.safetensors"), tuningFixtureTensors)
+	for _, rel := range []string{"model-00001-of-00001.safetensors"} {
+		files[rel] = nil
+	}
+	for rel := range files {
+		d, err := setup.FileSHA256(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.Files[rel] = d
+	}
+	if err := home.WriteJSON(filepath.Join(dir, "hachidori-model.json"), m); err != nil {
+		t.Fatal(err)
+	}
+	old := setup.Models
+	setup.Models = []home.ModelManifest{m}
+	t.Cleanup(func() { setup.Models = old })
+	ctl := app.New(app.Config{Home: h.Root})
+	return tuningStore{ctl: func() *app.Controller { return ctl }}, h, m, dir
+}
+
+func pinnedProfile(t *testing.T, a tuning.Analysis, objective string, regions ...string) tuning.Profile {
+	t.Helper()
+	p, err := tuning.NewDefaultProfile(a, objective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range regions {
+		p.Preservation[id] = tuning.PreservationChoice{Mode: tuning.PreservationPinned, Precision: tuning.PreservedPrecision}
+	}
+	return p
+}
+
+func TestTuningStoreAnalyzesTheExactPinnedSourceAndStoresProfiles(t *testing.T) {
+	store, h, _, dir := tuningFixture(t)
+	var _ dashboard.Tuning = store
+	a, err := store.Analysis(setup.ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Regions) != 8 {
+		t.Fatalf("regions: %+v", a.Regions)
+	}
+	modules := map[string][]string{}
+	for _, r := range a.Regions {
+		modules[r.ID] = r.Modules
+	}
+	if got := strings.Join(modules[tuning.RegionLinearAttention], ","); got != "model.language_model.layers.0.linear_attn.in_proj_qkv" {
+		t.Errorf("linear-attention members %q", got)
+	}
+	if got := strings.Join(modules[tuning.RegionVision], ","); got != "model.visual.blocks.0.attn.qkv,model.visual.merger.linear_fc1" {
+		t.Errorf("vision members %q", got)
+	}
+	all := strings.Join(func() (s []string) {
+		for _, ms := range modules {
+			s = append(s, ms...)
+		}
+		return
+	}(), "\n")
+	for _, not := range []string{"conv1d", "linear_attn.norm", "embed_tokens", "patch_embed", "pos_embed", "q_norm", "layernorm", "norm1"} {
+		if strings.Contains(all, not) {
+			t.Errorf("non-Linear tensor %q was analyzed as a Linear module", not)
+		}
+	}
+	again, err := store.Analysis(setup.ClefFlash)
+	if err != nil || string(again.Canonical()) != string(a.Canonical()) {
+		t.Fatalf("analysis is not deterministic: %v", err)
+	}
+
+	// versioned profiles persist under HACHIDORI_HOME, newest first
+	first, second := pinnedProfile(t, a, "balanced"), pinnedProfile(t, a, "maximum-fidelity", tuning.RegionFeedForward)
+	for i, p := range []tuning.Profile{first, second} {
+		if err := store.SaveProfile(p, a); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().Add(time.Duration(i-5) * time.Minute)
+		if err := os.Chtimes(h.Path("state", "tuning", "profiles", p.ID()+".json"), at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(h.Path("state", "tuning", "profiles", strings.Repeat("0", 64)+".json"), []byte("{broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	list, err := store.Profiles(setup.ClefFlash)
+	if err != nil || len(list) != 2 || list[0].ID() != second.ID() || list[1].ID() != first.ID() {
+		t.Fatalf("profiles %v %v", err, list)
+	}
+	if other, _ := store.Profiles("another-model"); len(other) != 0 {
+		t.Errorf("profiles of another source: %v", other)
+	}
+	got, ga, err := store.LoadProfile(second.ID())
+	if err != nil || got.ID() != second.ID() || ga.SHA256() != a.SHA256() {
+		t.Fatalf("load: %v", err)
+	}
+
+	// a source file that is not the pinned one is refused, never analyzed
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type":"other"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Analysis(setup.ClefFlash); err == nil || !strings.Contains(err.Error(), "pinned digest") {
+		t.Errorf("tampered config: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "hachidori-model.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Analysis(setup.ClefFlash); err == nil || !strings.Contains(err.Error(), "not materialized") {
+		t.Errorf("unmaterialized source: %v", err)
+	}
+}
+
+func TestTuningStoreImpactIsEstimatedUntilACandidateIsMeasured(t *testing.T) {
+	store, h, m, dir := tuningFixture(t)
+	a, err := store.Analysis(setup.ClefFlash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impact := func(p tuning.Profile) dashboard.TuningImpact {
+		t.Helper()
+		c, err := tuning.Compile(p, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		imp, err := store.Impact(p, a, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return imp
+	}
+	notChecked := func(name string, v dashboard.ImpactValue) {
+		t.Helper()
+		if v.State != dashboard.NotChecked || v.Value != "" || v.Basis == "" {
+			t.Errorf("%s is %+v, want NOT_CHECKED with a reason", name, v)
+		}
+	}
+
+	// expected estimate, computed independently from the fixture
+	var total, quantizable int64
+	for _, ts := range tuningFixtureTensors {
+		total += ts.bytes()
+		if strings.Contains(ts.name, "in_proj_qkv") || strings.Contains(ts.name, "mlp.") || strings.Contains(ts.name, "self_attn.q_proj") {
+			quantizable += ts.bytes()
+		}
+	}
+	var carried int64
+	recipe, _ := optimize.LookupRecipe(setup.ClefFlash, optimize.RecipeClefFlashW4A16)
+	for _, f := range recipe.Carry {
+		info, err := os.Stat(filepath.Join(dir, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		carried += info.Size()
+	}
+	want := func(quantized int64) string {
+		return "about " + gib(int64(float64(total)-float64(quantized)*(1-w4a16BytesPerBF16Byte)+float64(carried)))
+	}
+	auto := pinnedProfile(t, a, "balanced")
+	imp := impact(auto)
+	if imp.Size.State != dashboard.Estimated || imp.Size.Value != want(quantizable) || !strings.Contains(imp.Size.Basis, "Not a measurement") {
+		t.Errorf("Auto size %+v, want ESTIMATED %s", imp.Size, want(quantizable))
+	}
+	notChecked("memory", imp.Memory)
+	notChecked("latency", imp.Latency)
+	notChecked("fidelity", imp.Fidelity)
+	pinned := pinnedProfile(t, a, "maximum-fidelity", tuning.RegionFeedForward)
+	if est := impact(pinned).Size; est.State != dashboard.Estimated || est.Value != want(quantizable-16*8*2) {
+		t.Errorf("pinned size %+v, want ESTIMATED %s", est, want(quantizable-16*8*2))
+	}
+	if err := store.SaveProfile(pinned, a); err != nil {
+		t.Fatal(err)
+	}
+
+	// a candidate built from the pinned profile is MEASURED, only for that profile
+	compiled, _ := tuning.Compile(pinned, a)
+	v := home.VariantManifest{
+		Source: home.SourceOf(m), Provider: m.Provider,
+		Optimizer: home.Optimizer{Engine: recipe.Engine, Version: "1"}, Recipe: compiled.Recipe,
+		Tuning: &home.TuningProvenance{Schema: home.TuningProvenanceSchema, Source: home.SourceOf(m), ProfileID: pinned.ID(), ProfileSHA256: pinned.SHA256(),
+			AnalysisID: a.ID(), AnalysisSHA256: a.SHA256(), CompilerVersion: pinned.CompilerVersion},
+		Weights:  home.WeightPrecision{Scheme: recipe.Scheme, Bits: 4, GroupSize: 128, Format: "compressed-tensors", DType: "bfloat16"},
+		Files:    map[string]string{"model.safetensors": strings.Repeat("ab", 32)},
+		Creation: home.Creation{CreatedAt: "2026-10-03T00:00:00Z"},
+	}
+	v.Seal()
+	vdir := h.VariantDir(m.ID, v.ID)
+	if err := os.MkdirAll(vdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vdir, "model.safetensors"), make([]byte, 3<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.WriteJSON(filepath.Join(vdir, home.VariantManifestFile), v); err != nil {
+		t.Fatal(err)
+	}
+	imp = impact(pinned)
+	if imp.Size.State != dashboard.Measured || imp.Size.Value != gib(3<<20) || !strings.Contains(imp.Size.Basis, v.ID) {
+		t.Errorf("measured size %+v", imp.Size)
+	}
+	notChecked("memory without a probe", imp.Memory)
+	notChecked("latency without a probe", imp.Latency)
+	notChecked("fidelity without a certification", imp.Fidelity)
+	if other := impact(auto).Size; other.State != dashboard.Estimated {
+		t.Errorf("another profile's size is %+v: a candidate of one profile was attributed to another", other)
+	}
+
+	probe := app.ProbeRecord{Schema: app.ProbeSchema, Result: "passed", Variant: v.ID, Device: "cuda", VariantManifestSHA256: "stale", StartedAt: "2026-10-03T01:00:00Z",
+		Timing: app.ProbeTiming{RequestMS: 12.5}, Resources: app.ProbeResources{VRAMAllocated: 3 << 30}}
+	if err := app.SaveProbe(h, probe); err != nil {
+		t.Fatal(err)
+	}
+	imp = impact(pinned)
+	notChecked("latency from a probe of another manifest", imp.Latency)
+	notChecked("memory from a probe of another manifest", imp.Memory)
+	probe.VariantManifestSHA256 = v.ManifestSHA256()
+	if err := app.SaveProbe(h, probe); err != nil {
+		t.Fatal(err)
+	}
+	imp = impact(pinned)
+	if imp.Latency.State != dashboard.Measured || imp.Latency.Value != "12.5 ms per request" || !strings.Contains(imp.Latency.Basis, "cuda") ||
+		imp.Memory.State != dashboard.Measured || imp.Memory.Value != "VRAM allocated 3.00 GiB" {
+		t.Errorf("probe measurements: %+v / %+v", imp.Latency, imp.Memory)
+	}
+	notChecked("fidelity without a certification", imp.Fidelity)
+}
+
+// The desktop composition hosts Tuning beside Models and Forge: it is in the
+// navigation, and over a home with no materialized source it says so rather
+// than showing regions it did not analyze.
+func TestDesktopHostsTheTuningWorkspace(t *testing.T) {
+	d := newResidentDesktop(t, filepath.Join(t.TempDir(), "desktop.json"))
+	d.run(t, func(base string) {
+		body := page(t, base, "/tuning")
+		if !strings.Contains(body, `<a href="/tuning" aria-current="page">Tuning</a>`) {
+			t.Error("Tuning is not in the desktop navigation")
+		}
+		if !strings.Contains(body, `id="tuning-unavailable"`) || strings.Contains(body, `data-region=`) || strings.Contains(body, "/tuning/build") {
+			t.Errorf("an unmaterialized source is analyzed or buildable:\n%s", body)
+		}
+		post(t, base, "/tuning/build", url.Values{"source": {setup.ClefFlash}, "objective": {"balanced"}})
+		if body := page(t, base, "/tuning"); !strings.Contains(body, "build candidate "+setup.ClefFlash) || !strings.Contains(body, "FAILED") {
+			t.Error("a build request without an analysis is not refused visibly")
+		}
+	})
+}
+
+// The production layout reader is intentionally pinned to the exact Clef-Flash
+// checkpoint vocabulary. Keep representative names from every Linear family in
+// the pinned weight map here so a naming drift fails closed instead of silently
+// dropping a semantic region.
+func TestClefLinearModuleMatchesPinnedCheckpointVocabulary(t *testing.T) {
+	t.Parallel()
+	linear := []string{
+		"lm_head",
+		"model.language_model.layers.0.linear_attn.in_proj_a",
+		"model.language_model.layers.0.linear_attn.in_proj_b",
+		"model.language_model.layers.0.linear_attn.in_proj_qkv",
+		"model.language_model.layers.0.linear_attn.in_proj_z",
+		"model.language_model.layers.0.linear_attn.out_proj",
+		"model.language_model.layers.0.mlp.gate_proj",
+		"model.language_model.layers.0.mlp.up_proj",
+		"model.language_model.layers.0.mlp.down_proj",
+		"model.language_model.layers.3.self_attn.q_proj",
+		"model.language_model.layers.3.self_attn.k_proj",
+		"model.language_model.layers.3.self_attn.v_proj",
+		"model.language_model.layers.3.self_attn.o_proj",
+		"model.visual.blocks.0.attn.qkv",
+		"model.visual.blocks.0.attn.proj",
+		"model.visual.blocks.0.mlp.linear_fc1",
+		"model.visual.blocks.0.mlp.linear_fc2",
+		"model.visual.merger.linear_fc1",
+		"model.visual.merger.linear_fc2",
+	}
+	for _, name := range linear {
+		if !clefLinearModule(name) {
+			t.Errorf("pinned Linear module %q is not recognized", name)
+		}
+	}
+	notLinear := []string{
+		"model.language_model.embed_tokens",
+		"model.language_model.layers.0.input_layernorm",
+		"model.language_model.layers.0.post_attention_layernorm",
+		"model.language_model.layers.0.linear_attn.conv1d",
+		"model.language_model.layers.0.linear_attn.norm",
+		"model.language_model.layers.3.self_attn.q_norm",
+		"model.language_model.layers.3.self_attn.k_norm",
+		"model.visual.blocks.0.norm1",
+		"model.visual.blocks.0.norm2",
+		"model.visual.merger.norm",
+		"model.visual.patch_embed.proj",
+		"model.visual.pos_embed",
+	}
+	for _, name := range notLinear {
+		if clefLinearModule(name) {
+			t.Errorf("non-Linear pinned module %q is classified as Linear", name)
+		}
 	}
 }

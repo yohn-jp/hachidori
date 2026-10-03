@@ -1,0 +1,129 @@
+{{/* Tuning edits and saves model-engineering intent and hands one exact saved profile to Forge. Regions come from backend analysis; generated mappings stay in Evidence; every impact value states MEASURED, ESTIMATED or NOT_CHECKED. */}}
+{{define "tuning"}}{{template "open" .Chrome}}
+<header class="ws-head">
+  <div><h1>{{t "Tuning"}}</h1><p class="lede">{{t "Choose what the model must preserve under a resource objective. Save a versioned profile, then hand that exact profile to Forge to build a candidate. Nothing is applied automatically."}}</p></div>
+</header>
+{{template "last" .Last}}
+{{with .Tuning}}
+<div id="tuning-workspace">
+  <form method="get" action="/tuning" class="fields" id="tuning-source-form">
+    <label class="field">{{t "Source"}}<select name="source">{{range .Sources}}<option value="{{.ID}}"{{if eq .ID $.Tuning.Source}} selected{{end}}>{{.ID}}{{if not .Materialized}} · {{t "not materialized"}}{{end}}</option>{{end}}</select></label>
+    <div class="btn-row"><button type="submit" class="btn">{{t "Show source"}}</button></div>
+  </form>
+
+  {{with .Err}}<p class="msg bad" role="alert" id="tuning-unavailable">{{t .}}</p>{{end}}
+
+  {{if .Regions}}
+  <section class="region section" id="tuning-identity" aria-labelledby="ti-h">
+    <div class="region-h"><h2 id="ti-h">{{t "Exact source and profile"}}</h2><span class="sub">{{if .Saved}}{{t "saved, immutable profile"}}{{else}}{{t "initial all-Auto profile · not saved"}}{{end}}</span></div>
+    <dl class="kv">
+      <dt>{{t "Source"}}</dt><dd>{{.Source}}</dd>
+      <dt>{{t "Repository"}}</dt><dd>{{.Repo}}@{{.Revision}}</dd>
+      <dt>{{t "Analyzer"}}</dt><dd>{{.AnalyzerVersion}}</dd>
+      <dt>{{t "Analysis"}}</dt><dd data-tuning-analysis="{{.AnalysisSHA256}}">{{.AnalysisSHA256}}</dd>
+      <dt>{{t "Compiler"}}</dt><dd>{{.CompilerVersion}}</dd>
+      <dt>{{t "Profile schema"}}</dt><dd>{{.ProfileSchema}}</dd>
+      <dt>{{if .Saved}}{{t "Profile"}}{{else}}{{t "Profile (when saved)"}}{{end}}</dt><dd data-tuning-profile="{{.ProfileID}}"{{if not .Saved}} data-unsaved="true"{{end}}>{{.ProfileID}}</dd>
+    </dl>
+  </section>
+
+  <form method="post" action="/tuning/save" class="stack" id="tuning-form">
+    <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="source" value="{{.Source}}">
+    <section class="region section" id="tuning-objective" aria-labelledby="to-h">
+      <div class="region-h"><h2 id="to-h">{{t "Objective"}}</h2><span class="sub">{{t "recorded with the profile"}}</span></div>
+      <div class="fields">
+        <label class="field">{{t "Objective"}}<select name="objective">{{range .Objectives}}<option value="{{.}}"{{if eq . $.Tuning.Objective}} selected{{end}}>{{t (objective .)}}</option>{{end}}</select></label>
+      </div>
+      <p class="note">{{t "The objective is recorded as intent and is part of the profile identity. The preservation choices below decide what a build preserves."}}</p>
+    </section>
+
+    <section class="region section" id="tuning-regions" aria-labelledby="tr-h">
+      <div class="region-h"><h2 id="tr-h">{{t "Semantic regions"}}</h2><span class="sub">{{t "from the backend analysis of this exact source"}}</span></div>
+      <p class="note">{{t "Auto keeps the canonical safe policy for the region. Preserved keeps every member of the region at source precision."}}</p>
+      <div class="table-wrap"><table class="data" id="tuning-region-table">
+        <caption class="vh">{{t "Preservation by semantic region"}}</caption>
+        <thead><tr><th scope="col">{{t "Region"}}</th><th scope="col">{{t "Members"}}</th><th scope="col">{{t "Preservation"}}</th><th scope="col">{{t "Result"}}</th></tr></thead>
+        <tbody>{{range .Regions}}
+          <tr data-region="{{.ID}}" data-effective="{{.Effective}}">
+            <th scope="row" class="strong"><label for="region-{{.ID}}">{{t .Label}}</label>{{with .Purpose}}<div class="note">{{t .}}</div>{{end}}</th>
+            <td class="num">{{if .Modules}}{{.Modules}} {{t "modules"}}{{end}}{{if and .Modules .Files}} · {{end}}{{if .Files}}{{.Files}} {{t "files"}}{{end}}</td>
+            <td><select id="region-{{.ID}}" name="region.{{.ID}}"><option value="auto"{{if not .Pinned}} selected{{end}}>{{t "Auto"}}</option><option value="pinned"{{if .Pinned}} selected{{end}}>{{t "Preserved at source precision"}}</option></select></td>
+            <td>{{template "semantic-state" .Effective}} <span class="note">{{t .Note}}</span></td>
+          </tr>{{end}}
+        </tbody>
+      </table></div>
+      <p class="note">{{t "Result describes the saved profile above. Edits take effect when you save."}}</p>
+    </section>
+
+    <div class="btn-row">
+      <button type="submit" class="btn primary" formaction="/tuning/build" data-pending="{{t "Handing the profile to Forge…"}}">{{t "Build candidate"}}</button>
+      <button type="submit" class="btn">{{t "Save profile"}}</button>
+    </div>
+    <p class="note">{{t "Build candidate saves this profile, then hands exactly that saved profile to Forge. Forge builds the candidate and owns its evaluation and Apply."}} <a href="/forge">{{t "Open Forge"}}</a></p>
+  </form>
+
+  <section class="region section" id="tuning-impact" aria-labelledby="tm-h">
+    <div class="region-h"><h2 id="tm-h">{{t "Impact"}}</h2><span class="sub">{{t "of the exact profile above"}}</span></div>
+    <div class="table-wrap"><table class="data" id="tuning-impact-table">
+      <caption class="vh">{{t "Impact of the profile"}}</caption>
+      <thead><tr><th scope="col">{{t "Measure"}}</th><th scope="col">{{t "State"}}</th><th scope="col">{{t "Value"}}</th><th scope="col">{{t "Basis"}}</th></tr></thead>
+      <tbody>{{range .Impact}}
+        <tr data-impact="{{.Key}}" data-state="{{.State}}">
+          <th scope="row" class="strong">{{t .Label}}</th>
+          <td>{{template "semantic-state" .State}}</td>
+          <td>{{if .Value}}{{.Value}}{{else}}<span class="muted">{{t "No valid evidence"}}</span>{{end}}</td>
+          <td>{{with .Basis}}<span class="note">{{.}}</span>{{end}}</td>
+        </tr>{{end}}
+      </tbody>
+    </table></div>
+    <p class="note">{{t "MEASURED values are observed from evidence of a candidate built from this exact profile. ESTIMATED values are derived by the named estimator and are not measurements. NOT_CHECKED means no valid evidence exists."}}</p>
+  </section>
+
+  {{with .Profiles}}
+  <section class="region section" id="tuning-profiles" aria-labelledby="tp-h">
+    <div class="region-h"><h2 id="tp-h">{{t "Saved profiles"}}</h2><span class="sub">{{t "newest first"}}</span></div>
+    <div class="table-wrap"><table class="data">
+      <caption class="vh">{{t "Saved profiles"}}</caption>
+      <thead><tr><th scope="col">{{t "Profile"}}</th><th scope="col">{{t "Objective"}}</th><th scope="col">{{t "Preserved regions"}}</th></tr></thead>
+      <tbody>{{range .}}
+        <tr data-profile="{{.ID}}"{{if .Current}} aria-current="true"{{end}}>
+          <td class="mono"><a href="/tuning?source={{$.Tuning.Source}}&amp;profile={{.ID}}" title="{{.ID}}">{{short .ID}}</a></td>
+          <td>{{t (objective .Objective)}}</td><td class="num">{{.Pinned}}</td>
+        </tr>{{end}}
+      </tbody>
+    </table></div>
+  </section>
+  {{end}}
+
+  {{with .Evidence}}
+  <section class="region section" id="tuning-evidence" aria-labelledby="te-h">
+    <div class="region-h"><h2 id="te-h">{{t "Evidence"}}</h2><span class="sub">{{t "generated from the saved profile; never an input"}}</span></div>
+    {{template "operator-evidence-open" $.Tuning.EvidenceDisclosure}}
+    <dl class="kv">
+      <dt>{{t "Recipe"}}</dt><dd>{{.Recipe}}</dd>
+      <dt>{{t "Recipe SHA-256"}}</dt><dd>{{.RecipeSHA256}}</dd>
+      <dt>{{t "Compiler"}}</dt><dd>{{.CompilerVersion}}</dd>
+    </dl>
+    <h3>{{t "Region mapping"}}</h3>
+    {{range .Regions}}
+    <details class="inline" data-evidence-region="{{.RegionID}}"><summary><span class="mono">{{.RegionID}}</span> · {{.Mode}}{{if .Preserved}} · {{.Precision}}{{end}}</summary>
+      {{with .RecipePatterns}}<p class="note">{{t "Recipe patterns"}}: <span class="mono">{{range .}}{{.}} {{end}}</span></p>{{end}}
+      {{with .Modules}}<pre>{{range .}}{{.}}
+{{end}}</pre>{{end}}
+      {{with .Files}}<pre>{{range .}}{{.}}
+{{end}}</pre>{{end}}
+    </details>
+    {{end}}
+    <h3>{{t "Preserved in the recipe"}}</h3>
+    <div class="table-wrap"><table class="data">
+      <caption class="vh">{{t "Preserved in the recipe"}}</caption>
+      <thead><tr><th scope="col">{{t "Pattern"}}</th><th scope="col">{{t "Scope"}}</th><th scope="col">{{t "Precision"}}</th><th scope="col">{{t "Regions"}}</th></tr></thead>
+      <tbody>{{range .Preserved}}<tr><td class="mono">{{.Pattern}}</td><td>{{.Scope}}</td><td class="mono">{{.Precision}}</td><td class="mono">{{range .Regions}}{{.}} {{end}}</td></tr>{{end}}</tbody>
+    </table></div>
+    {{template "operator-disclosure-close"}}
+  </section>
+  {{end}}
+  {{end}}
+</div>
+{{end}}
+{{template "close" .Chrome}}{{end}}
