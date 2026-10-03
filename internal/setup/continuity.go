@@ -302,10 +302,13 @@ func ReconcileActive(ctx context.Context, h home.Home, log io.Writer, obs *Obser
 	if err != nil {
 		return rec, false, fmt.Errorf("activating runtime %s: %w", next.Runtime, err)
 	}
-	if after, ok := AssessHome(h); !ok || after.Needs() {
+	after, ok := AssessHome(h)
+	if !ok || after.Needs() {
 		return rec, changed, fmt.Errorf("runtime %s was activated but is still not the dependency runtime this build requires (%s)", next.Runtime, after.Detail)
 	}
-	rec.State, rec.ActiveRuntime, rec.ActiveEnvironment = CompatCurrent, next.Runtime, rec.RequiredEnvironment
-	rec.Differences, rec.Detail = nil, "reconciled"
-	return rec, changed, nil
+	// Report the state that was actually activated. Reconciliation may reuse a
+	// verified schema-1 runtime whose dependency environment is equivalent to
+	// the current spec; that is intentionally CompatEquivalent, not current.
+	after.Detail = "reconciled"
+	return after, changed, nil
 }
