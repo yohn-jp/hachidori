@@ -38,6 +38,42 @@ const (
 	DefaultPort       = 7843
 )
 
+// LocalEndpoint is the currently managed loopback API endpoint. Its port is
+// used to resolve an automatic local tunnel port; Host is retained so the
+// composition boundary can prove that the endpoint is loopback-only.
+type LocalEndpoint struct {
+	Host string
+	Port int
+}
+
+// LocalEndpointFromAddr parses and validates a bound loopback API address.
+func LocalEndpointFromAddr(addr string) (LocalEndpoint, error) {
+	host, rawPort, err := net.SplitHostPort(addr)
+	if err != nil {
+		return LocalEndpoint{}, fmt.Errorf("local endpoint %q: %w", addr, err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		return LocalEndpoint{}, fmt.Errorf("local endpoint port %q: %w", rawPort, err)
+	}
+	e := LocalEndpoint{Host: host, Port: port}
+	if err := e.Validate(); err != nil {
+		return LocalEndpoint{}, err
+	}
+	return e, nil
+}
+
+// Validate accepts only a concrete loopback address and port.
+func (e LocalEndpoint) Validate() error {
+	if !isLoopback(e.Host) {
+		return fmt.Errorf("local endpoint host %q must be loopback", e.Host)
+	}
+	if e.Port < 1 || e.Port > 65535 {
+		return fmt.Errorf("local endpoint port %d out of range 1-65535", e.Port)
+	}
+	return nil
+}
+
 // Spec is the complete, non-secret description of one reverse tunnel.
 type Spec struct {
 	Destination string `json:"destination"` // [user@]host or an ssh_config Host alias

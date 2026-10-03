@@ -7,9 +7,10 @@ import (
 	"testing"
 
 	"github.com/yohn-jp/hachidori/internal/setup"
+	"github.com/yohn-jp/hachidori/internal/tunnel"
 )
 
-var nixos = Connection{Name: "nixos-dev", Destination: "dev@nixos", RemoteBind: "127.0.0.1", RemotePort: 7843, LocalPort: 7843}
+var nixos = Connection{Name: "nixos-dev", Destination: "dev@nixos", RemoteBind: "127.0.0.1", RemoteBindMode: ConnectionPinned, RemotePort: 7843, RemotePortMode: ConnectionPinned, LocalPort: 7843, LocalPortMode: ConnectionPinned}
 
 func TestConnectionCreateEditRemovePersistAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "settings.json")
@@ -17,7 +18,7 @@ func TestConnectionCreateEditRemovePersistAcrossRestart(t *testing.T) {
 	if err := s.SaveConnection(nixos); err != nil {
 		t.Fatal(err)
 	}
-	other := Connection{Name: "a-box", Destination: "buildhost", RemoteBind: "::1", RemotePort: 9000, LocalPort: 7843}
+	other := Connection{Name: "a-box", Destination: "buildhost", RemoteBind: "::1", RemoteBindMode: ConnectionPinned, RemotePort: 9000, RemotePortMode: ConnectionPinned, LocalPort: 7843, LocalPortMode: ConnectionPinned}
 	if err := s.SaveConnection(other); err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +28,7 @@ func TestConnectionCreateEditRemovePersistAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := (&Store{Path: path}).Connections() // a new process reads the file
-	if err != nil || len(got) != 2 || got[0] != other || got[1] != edited {
+	if err != nil || len(got) != 2 || withoutResolution(got[0]) != other || withoutResolution(got[1]) != edited {
 		t.Fatalf("after restart: %+v %v", got, err)
 	}
 	if got[1].Endpoint() != "http://127.0.0.1:7900" || got[0].Endpoint() != "http://[::1]:9000" {
@@ -39,7 +40,7 @@ func TestConnectionCreateEditRemovePersistAcrossRestart(t *testing.T) {
 	if err := s.RemoveConnection("a-box"); err == nil {
 		t.Fatal("removing a missing profile succeeded")
 	}
-	if got, _ := (&Store{Path: path}).Connections(); len(got) != 1 || got[0] != edited {
+	if got, _ := (&Store{Path: path}).Connections(); len(got) != 1 || withoutResolution(got[0]) != edited {
 		t.Fatalf("after remove: %+v", got)
 	}
 }
@@ -114,9 +115,118 @@ func TestProfilesMigrateFromPreProfileSettingsAndCoexistWithDefaults(t *testing.
 	if err := s.SetDefaults(Defaults{Device: DeviceCUDA, Model: setup.DefaultModel}); err != nil {
 		t.Fatal(err)
 	}
-	if c, _ := s.Connections(); len(c) != 1 || c[0] != nixos {
+	if c, _ := s.Connections(); len(c) != 1 || withoutResolution(c[0]) != nixos {
 		t.Fatalf("saving defaults lost the profile: %+v", c)
 	}
+}
+
+func TestAutoResolutionKeepsIntentSeparateFromConcreteSpec(t *testing.T) {
+	endpoint := tunnel.LocalEndpoint{Host: "127.0.0.1", Port: 9123}
+	auto := Connection{
+		Name: "auto-dev", Destination: "devhost",
+		RemoteBindMode: ConnectionAuto, RemotePortMode: ConnectionAuto, LocalPortMode: ConnectionAuto,
+	}
+	resolved, err := auto.Resolve(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := tunnel.Spec{Destination: "devhost", RemoteBind: "127.0.0.1", RemotePort: 9123, LocalPort: 9123}
+	if resolved.Spec != want {
+		t.Fatalf("resolved spec %+v, want %+v", resolved.Spec, want)
+	}
+	if resolved.Intent.RemoteBindMode != ConnectionAuto || resolved.Intent.RemotePortMode != ConnectionAuto || resolved.Intent.LocalPortMode != ConnectionAuto || resolved.Intent.RemoteBind != "" || resolved.Intent.RemotePort != 0 || resolved.Intent.LocalPort != 0 {
+		t.Fatalf("resolution overwrote stored intent: %+v", resolved.Intent)
+	}
+
+	// The production Settings store attaches the current managed endpoint to
+	// returned profiles, so the existing Connection.Spec dashboard seam sees
+	// the same concrete, validated result.
+	s := &Store{Path: filepath.Join(t.TempDir(), "settings.json")}
+	if err := s.SetLocalEndpoint(endpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveConnection(auto); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"remote_bind_mode": "auto"`, `"remote_port_mode": "auto"`, `"local_port_mode": "auto"`} {
+		if !strings.Contains(string(stored), want) {
+			t.Errorf("stored Auto intent lacks %s:\n%s", want, stored)
+		}
+	}
+	profiles, err := s.Connections()
+	if err != nil || len(profiles) != 1 || profiles[0].Spec() != want || profiles[0].Endpoint() != "http://127.0.0.1:9123" {
+		t.Fatalf("managed connection spec: %+v, %v", profiles, err)
+	}
+}
+
+func TestAutoResolutionAllowsPinnedOverridesAndRejectsUnsafeValues(t *testing.T) {
+	endpoint := tunnel.LocalEndpoint{Host: "127.0.0.1", Port: 9123}
+	profile := Connection{
+		Name: "override-dev", Destination: "devhost",
+		RemoteBind: "::1", RemoteBindMode: ConnectionPinned,
+		RemotePort: 9001, RemotePortMode: ConnectionPinned,
+		LocalPortMode: ConnectionAuto,
+	}
+	resolved, err := profile.Resolve(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (tunnel.Spec{Destination: "devhost", RemoteBind: "::1", RemotePort: 9001, LocalPort: 9123}); resolved.Spec != want {
+		t.Fatalf("pinned resolution %+v, want %+v", resolved.Spec, want)
+	}
+
+	for name, invalid := range map[string]Connection{
+		"public pinned bind": {
+			Name: "unsafe", Destination: "devhost", RemoteBind: "0.0.0.0", RemoteBindMode: ConnectionPinned,
+			RemotePort: 9123, RemotePortMode: ConnectionAuto, LocalPortMode: ConnectionAuto,
+		},
+		"invalid pinned port": {
+			Name: "bad-port", Destination: "devhost", RemoteBindMode: ConnectionAuto,
+			RemotePort: 0, RemotePortMode: ConnectionPinned, LocalPortMode: ConnectionAuto,
+		},
+		"auto with stale value": {
+			Name: "ambiguous", Destination: "devhost", RemoteBind: "127.0.0.1", RemoteBindMode: ConnectionAuto,
+			RemotePortMode: ConnectionAuto, LocalPortMode: ConnectionAuto,
+		},
+	} {
+		if _, err := invalid.Resolve(endpoint); err == nil {
+			t.Errorf("%s was silently resolved", name)
+		}
+	}
+	if _, err := profile.Resolve(tunnel.LocalEndpoint{Host: "0.0.0.0", Port: 9123}); err == nil {
+		t.Fatal("unsafe managed endpoint was accepted")
+	}
+}
+
+func TestLegacyConnectionValuesLoadAsPinned(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	body := `{"schema":"hachidori.settings/1","runtime_defaults":{},"connections":[{"name":"legacy","destination":"devhost","remote_bind":"::1","remote_port":9000,"local_port":7843}]}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := (&Store{Path: path}).Connections()
+	if err != nil || len(profiles) != 1 {
+		t.Fatalf("legacy profile: %+v %v", profiles, err)
+	}
+	c := profiles[0]
+	if c.RemoteBindMode != ConnectionPinned || c.RemotePortMode != ConnectionPinned || c.LocalPortMode != ConnectionPinned {
+		t.Fatalf("legacy modes: %+v", c)
+	}
+	if want := (tunnel.Spec{Destination: "devhost", RemoteBind: "::1", RemotePort: 9000, LocalPort: 7843}); c.Spec() != want {
+		t.Fatalf("legacy spec %+v, want %+v", c.Spec(), want)
+	}
+	if b, _ := os.ReadFile(path); string(b) != body {
+		t.Fatal("reading a legacy profile rewrote settings.json")
+	}
+}
+
+func withoutResolution(c Connection) Connection {
+	c.localEndpoint = tunnel.LocalEndpoint{}
+	return c
 }
 
 func TestInvalidStoredProfilesAreReportedAndLeftUntouched(t *testing.T) {

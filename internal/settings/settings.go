@@ -121,18 +121,31 @@ func ValidateLocale(l string) error {
 	return nil
 }
 
+// TransportMode records whether a connection transport value is automatically
+// resolved or explicitly pinned by the operator.
+type TransportMode string
+
+const (
+	ConnectionAuto   TransportMode = "auto"
+	ConnectionPinned TransportMode = "pinned"
+)
+
 // Connection is one named Development Connection profile: a declarative,
 // non-secret description of the SSH reverse tunnel that carries a development
-// host's loopback HACHIDORI_ENDPOINT to this host's loopback API. It is
-// exactly a tunnel.Spec plus a name. Live connection state is not part of it;
-// that stays in tunnel.Manager. There is no field for keys, passwords, agents
-// or known_hosts.
+// host's loopback HACHIDORI_ENDPOINT to this host's loopback API. Transport
+// values retain their Auto/pinned intent; Resolve produces the concrete
+// tunnel.Spec used by tunnel.Manager. Live connection state stays in
+// tunnel.Manager. There is no field for keys, passwords, agents or known_hosts.
 type Connection struct {
-	Name        string `json:"name"`
-	Destination string `json:"destination"`
-	RemoteBind  string `json:"remote_bind"`
-	RemotePort  int    `json:"remote_port"`
-	LocalPort   int    `json:"local_port"`
+	Name           string        `json:"name"`
+	Destination    string        `json:"destination"`
+	RemoteBind     string        `json:"remote_bind"`
+	RemoteBindMode TransportMode `json:"remote_bind_mode,omitempty"`
+	RemotePort     int           `json:"remote_port"`
+	RemotePortMode TransportMode `json:"remote_port_mode,omitempty"`
+	LocalPort      int           `json:"local_port"`
+	LocalPortMode  TransportMode `json:"local_port_mode,omitempty"`
+	localEndpoint  tunnel.LocalEndpoint
 }
 
 // MaxConnections bounds the saved profile list.
@@ -140,21 +153,125 @@ const MaxConnections = 32
 
 var connectionNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-// Spec is the tunnel description the manager connects.
+// ResolvedConnection keeps the stored operator intent separate from the
+// concrete, validated tunnel spec used by the live manager.
+type ResolvedConnection struct {
+	Intent Connection  `json:"intent"`
+	Spec   tunnel.Spec `json:"spec"`
+}
+
+var defaultLocalEndpoint = tunnel.LocalEndpoint{Host: tunnel.DefaultRemoteBind, Port: tunnel.DefaultPort}
+
+// Resolve interprets legacy values without a mode as pinned, resolves Auto
+// against the current managed loopback API endpoint, and validates the full
+// concrete spec before it can be passed to tunnel.Manager.
+func (c Connection) Resolve(endpoint tunnel.LocalEndpoint) (ResolvedConnection, error) {
+	c, err := c.normalized()
+	if err != nil {
+		return ResolvedConnection{}, err
+	}
+	if !connectionNameRe.MatchString(c.Name) {
+		return ResolvedConnection{}, fmt.Errorf("invalid connection name %q: use letters, digits, '.', '_' or '-' (up to 64, starting with a letter or digit)", c.Name)
+	}
+	if err := endpoint.Validate(); err != nil {
+		return ResolvedConnection{}, fmt.Errorf("resolve connection %q: %w", c.Name, err)
+	}
+
+	spec := tunnel.Spec{Destination: c.Destination}
+	if c.RemoteBindMode == ConnectionAuto {
+		spec.RemoteBind = tunnel.DefaultRemoteBind
+	} else {
+		spec.RemoteBind = c.RemoteBind
+	}
+	if c.RemotePortMode == ConnectionAuto {
+		spec.RemotePort = endpoint.Port
+	} else {
+		spec.RemotePort = c.RemotePort
+	}
+	if c.LocalPortMode == ConnectionAuto {
+		spec.LocalPort = endpoint.Port
+	} else {
+		spec.LocalPort = c.LocalPort
+	}
+	if err := spec.Validate(); err != nil {
+		return ResolvedConnection{}, err
+	}
+	return ResolvedConnection{Intent: c, Spec: spec}, nil
+}
+
+// Spec is the concrete tunnel description used by the dashboard's existing
+// connection seam. Settings attaches the current endpoint to profiles it
+// returns; standalone and legacy callers resolve against the safe default.
 func (c Connection) Spec() tunnel.Spec {
-	return tunnel.Spec{Destination: c.Destination, RemoteBind: c.RemoteBind, RemotePort: c.RemotePort, LocalPort: c.LocalPort}
+	endpoint := c.localEndpoint
+	if endpoint.Port == 0 {
+		endpoint = defaultLocalEndpoint
+	}
+	resolved, err := c.Resolve(endpoint)
+	if err != nil {
+		return tunnel.Spec{}
+	}
+	return resolved.Spec
 }
 
 // Endpoint is the HACHIDORI_ENDPOINT value a development host uses.
 func (c Connection) Endpoint() string { return c.Spec().CallerEndpoint() }
 
-// Validate accepts a plain profile name and only what tunnel.Spec accepts:
-// a plain destination and a loopback-to-loopback forward.
+// Validate checks the intent and its resolution against the safe default
+// endpoint. Store uses the actual managed endpoint when one is available.
 func (c Connection) Validate() error {
-	if !connectionNameRe.MatchString(c.Name) {
-		return fmt.Errorf("invalid connection name %q: use letters, digits, '.', '_' or '-' (up to 64, starting with a letter or digit)", c.Name)
+	_, err := c.Resolve(defaultLocalEndpoint)
+	return err
+}
+
+func (c Connection) normalized() (Connection, error) {
+	var err error
+	if c.RemoteBindMode, err = normalizeStringMode("remote bind", c.RemoteBindMode, c.RemoteBind); err != nil {
+		return Connection{}, err
 	}
-	return c.Spec().Validate()
+	if c.RemotePortMode, err = normalizeIntMode("remote port", c.RemotePortMode, c.RemotePort); err != nil {
+		return Connection{}, err
+	}
+	if c.LocalPortMode, err = normalizeIntMode("local port", c.LocalPortMode, c.LocalPort); err != nil {
+		return Connection{}, err
+	}
+	return c, nil
+}
+
+func normalizeStringMode(name string, mode TransportMode, value string) (TransportMode, error) {
+	switch mode {
+	case "": // Existing settings stored explicit values before mode fields existed.
+		if value == "" {
+			return "", fmt.Errorf("%s is missing both a mode and a pinned value", name)
+		}
+		return ConnectionPinned, nil
+	case ConnectionAuto:
+		if value != "" {
+			return "", fmt.Errorf("%s marked Auto also contains a pinned value", name)
+		}
+	case ConnectionPinned:
+	default:
+		return "", fmt.Errorf("%s has unknown mode %q", name, mode)
+	}
+	return mode, nil
+}
+
+func normalizeIntMode(name string, mode TransportMode, value int) (TransportMode, error) {
+	switch mode {
+	case "": // Existing settings stored explicit values before mode fields existed.
+		if value == 0 {
+			return "", fmt.Errorf("%s is missing both a mode and a pinned value", name)
+		}
+		return ConnectionPinned, nil
+	case ConnectionAuto:
+		if value != 0 {
+			return "", fmt.Errorf("%s marked Auto also contains a pinned value", name)
+		}
+	case ConnectionPinned:
+	default:
+		return "", fmt.Errorf("%s has unknown mode %q", name, mode)
+	}
+	return mode, nil
 }
 
 // record is the on-disk document. Field order is fixed, so the same values
@@ -181,8 +298,29 @@ type Store struct {
 	// Desktop is the desktop preference authority; nil means none.
 	Desktop Desktop
 
-	mu  sync.Mutex
-	mem record
+	mu            sync.Mutex
+	mem           record
+	localEndpoint tunnel.LocalEndpoint
+}
+
+// SetLocalEndpoint supplies the currently bound loopback API endpoint used
+// when a saved connection has Auto local or remote ports. It is process state,
+// not a second persisted settings authority.
+func (s *Store) SetLocalEndpoint(endpoint tunnel.LocalEndpoint) error {
+	if err := endpoint.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.localEndpoint = endpoint
+	return nil
+}
+
+func (s *Store) currentLocalEndpoint() tunnel.LocalEndpoint {
+	if s.localEndpoint.Port == 0 {
+		return defaultLocalEndpoint
+	}
+	return s.localEndpoint
 }
 
 // Defaults reads the saved runtime defaults. A missing file is not an error;
@@ -200,7 +338,13 @@ func (s *Store) Connections() ([]Connection, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, err := s.load()
-	return r.Connections, err
+	if err != nil {
+		return nil, err
+	}
+	for i := range r.Connections {
+		r.Connections[i].localEndpoint = s.currentLocalEndpoint()
+	}
+	return r.Connections, nil
 }
 
 func (s *Store) load() (record, error) {
@@ -236,14 +380,19 @@ func (s *Store) load() (record, error) {
 		}
 	}
 	seen := map[string]bool{}
-	for _, c := range r.Connections {
-		if err := c.Validate(); err != nil {
+	for i, c := range r.Connections {
+		normalized, err := c.normalized()
+		if err != nil {
+			return record{}, fmt.Errorf("settings %s: connection %q: %w", s.Path, c.Name, err)
+		}
+		if _, err := normalized.Resolve(s.currentLocalEndpoint()); err != nil {
 			return record{}, fmt.Errorf("settings %s: connection %q: %w", s.Path, c.Name, err)
 		}
 		if seen[c.Name] {
 			return record{}, fmt.Errorf("settings %s: duplicate connection %q", s.Path, c.Name)
 		}
 		seen[c.Name] = true
+		r.Connections[i] = normalized
 	}
 	return r, nil
 }
@@ -372,10 +521,17 @@ func (s *Store) ModifyUpdateSettings(fn func(*update.Settings) error) error {
 // SaveConnection validates and stores a profile, creating it or replacing the
 // profile of the same name. It never starts, stops or inspects a tunnel.
 func (s *Store) SaveConnection(c Connection) error {
-	if err := c.Validate(); err != nil {
+	var err error
+	if c, err = c.normalized(); err != nil {
 		return err
 	}
+	// A profile returned by Connections carries a transient endpoint for Spec;
+	// never retain it as part of the stored intent.
+	c.localEndpoint = tunnel.LocalEndpoint{}
 	return s.update(func(r *record) error {
+		if _, err := c.Resolve(s.currentLocalEndpoint()); err != nil {
+			return err
+		}
 		for i := range r.Connections {
 			if r.Connections[i].Name == c.Name {
 				r.Connections[i] = c
