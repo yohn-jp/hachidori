@@ -100,11 +100,9 @@ func Run(homeFlag string, out io.Writer) bool {
 	if err == nil {
 		if _, serr := os.Stat(python); serr != nil {
 			err = fmt.Errorf("private python missing: %s", python)
-		} else if got, _ := setup.FileSHA256(h.WorkerScript(a)); got != rm.Worker["worker/hachidori_worker.py"] {
-			err = fmt.Errorf("worker script digest mismatch")
 		}
 		if err == nil {
-			err = setup.CheckWorkerContract(a, rm)
+			err = setup.CheckRuntimeCompatibility(a, rm)
 		}
 	}
 	if err != nil {
@@ -112,7 +110,8 @@ func Run(homeFlag string, out io.Writer) bool {
 		return skipRest(later[1:]...)
 	}
 	report(Check{Name: "runtime", Status: "pass", Owner: "hachidori",
-		Detail: fmt.Sprintf("%s (python %s, %s, torch %s, device %s)", a.Runtime, rm.PythonVersion, rm.Spec.Provider, rm.Spec.Torch, a.Device)})
+		Detail: fmt.Sprintf("dependency runtime %s (python %s, %s, torch %s, device %s); worker %.12s (abi %s)",
+			rm.EnvironmentID(), rm.PythonVersion, rm.Spec.Provider, rm.Spec.Torch, a.Device, setup.WorkerDigest(), setup.BuildWorker().ABI)})
 
 	model, err := setup.ActiveModel(a)
 	if err == nil {

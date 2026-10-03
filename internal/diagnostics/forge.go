@@ -93,7 +93,8 @@ type ForgeIdentity struct {
 	Variant               string `json:"variant,omitempty"`
 	VariantManifestSHA256 string `json:"variant_manifest_sha256,omitempty"`
 	VariantBuildID        string `json:"variant_build_id,omitempty"`
-	Runtime               string `json:"runtime,omitempty"`
+	Runtime               string `json:"runtime,omitempty"`       // dependency runtime identity (the environment)
+	Worker                string `json:"worker_sha256,omitempty"` // worker implementation delivered by this build
 }
 
 // ForgeOptimization is the recipe and optimizer of a build or of the variant

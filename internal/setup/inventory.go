@@ -33,9 +33,15 @@ type Inventory struct {
 	// build cannot start (for example one materialized before the current
 	// worker contract). It is what a start of the active pair would be
 	// refused for; it never changes the record.
-	ActiveProblem string         `json:"active_problem,omitempty"`
-	Runtimes      []RuntimeEntry `json:"runtimes"`
-	Models        []ModelEntry   `json:"models"`
+	ActiveProblem string `json:"active_problem,omitempty"`
+	// Reconciliation is the state of the active dependency runtime against
+	// the one this build requires; Worker is the worker implementation this
+	// build delivers. They are separate evidence: a worker-only update changes
+	// Worker and leaves every dependency runtime identity as it was.
+	Reconciliation *Reconciliation `json:"reconciliation,omitempty"`
+	Worker         WorkerIdentity  `json:"worker"`
+	Runtimes       []RuntimeEntry  `json:"runtimes"`
+	Models         []ModelEntry    `json:"models"`
 	// Variants are the derived System One variants under the home, with the
 	// certification state resolved from their records. Optimizer is the
 	// optimizer runtime that builds them (absent from Runtimes: it never
@@ -46,7 +52,11 @@ type Inventory struct {
 
 // RuntimeEntry is one supported runtime identity (one per device).
 type RuntimeEntry struct {
-	ID           string `json:"id"` // runtime identity (directory under runtime/)
+	ID string `json:"id"` // dependency runtime identity the build requires for the device
+	// Directory is the directory under runtime/ that holds it when that is not
+	// ID: a runtime materialized under the previous identity scheme that
+	// declares exactly this environment.
+	Directory    string `json:"directory,omitempty"`
 	Device       string `json:"device"`
 	Platform     string `json:"platform"`
 	Python       string `json:"python"`
@@ -97,7 +107,11 @@ func Inspect(h home.Home, verify bool) Inventory {
 			activeModel = m.ID
 		}
 		inv.ActiveProblem = activeRuntimeProblem(h, a)
+		if r, ok := AssessHome(h); ok {
+			inv.Reconciliation = &r
+		}
 	}
+	inv.Worker = BuildWorker()
 
 	for _, device := range Devices {
 		e := RuntimeEntry{Device: device}
@@ -108,14 +122,18 @@ func Inspect(h home.Home, verify bool) Inventory {
 			continue
 		}
 		e.ID, e.Platform, e.Python, e.Provider, e.Torch, e.Supported = spec.ID(), spec.Platform, spec.Python, spec.Provider, spec.Torch, true
-		e.Active = inv.Active != nil && a.Runtime == e.ID
-		dir := h.Path("runtime", e.ID)
+		name := RuntimeDirFor(h, spec)
+		if name != e.ID {
+			e.Directory = name
+		}
+		e.Active = inv.Active != nil && a.Runtime == name
+		dir := h.Path("runtime", name)
 		if _, err := os.Stat(dir); err == nil {
 			var m home.RuntimeManifest
 			switch err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &m); {
 			case err != nil:
 				e.Problem = "incomplete runtime: " + err.Error()
-			case m.Identity != e.ID || m.Spec != spec:
+			case CheckRuntimeManifest(name, m, spec) != nil:
 				e.Problem = "manifest does not match the desired runtime spec"
 			default:
 				e.Materialized = true
@@ -170,7 +188,11 @@ func inspectOptimizer(h home.Home, verify bool) *RuntimeEntry {
 	}
 	e := &RuntimeEntry{ID: spec.ID(), Device: spec.Flavor, Platform: spec.Platform, Python: spec.Python, Provider: spec.Provider,
 		Torch: spec.Torch, Supported: true}
-	dir := h.Path("runtime", e.ID)
+	name := RuntimeDirFor(h, spec)
+	if name != e.ID {
+		e.Directory = name
+	}
+	dir := h.Path("runtime", name)
 	if _, err := os.Stat(dir); err != nil {
 		return e
 	}
@@ -178,7 +200,7 @@ func inspectOptimizer(h home.Home, verify bool) *RuntimeEntry {
 	switch err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &m); {
 	case err != nil:
 		e.Problem = "incomplete runtime: " + err.Error()
-	case m.Identity != e.ID || m.Spec != spec:
+	case CheckRuntimeManifest(name, m, spec) != nil:
 		e.Problem = "manifest does not match the desired optimizer spec"
 	default:
 		e.Materialized = true
@@ -194,16 +216,15 @@ func inspectOptimizer(h home.Home, verify bool) *RuntimeEntry {
 }
 
 // activeRuntimeProblem explains why the active runtime cannot be started by
-// this build, or returns "". The activated runtime must carry the worker
-// script this build embeds: that script is the other half of the launch
-// contract (command line and protocol), and an immutable runtime keeps the one
-// it was materialized with.
+// this build, or returns "". The activated runtime must be, or declare exactly,
+// the dependency runtime this build requires for its device (the worker is
+// delivered by the build and is not part of that comparison).
 func activeRuntimeProblem(h home.Home, a home.Active) string {
 	var rm home.RuntimeManifest
 	if err := home.ReadJSON(h.Path("runtime", a.Runtime, "manifest.json"), &rm); err != nil {
 		return "" // an unreadable runtime is reported by the start itself
 	}
-	if err := CheckWorkerContract(a, rm); err != nil {
+	if err := CheckRuntimeCompatibility(a, rm); err != nil {
 		return err.Error()
 	}
 	return ""
@@ -294,7 +315,7 @@ func Verify(h home.Home, kind, id string, obs *Observer) error {
 			return fmt.Errorf("runtime %q is not a supported catalog runtime", id)
 		}
 		spec, _ := Desired(device)
-		dir := h.Path("runtime", id)
+		dir := h.Path("runtime", RuntimeDirFor(h, spec))
 		if _, err := os.Stat(dir); err != nil {
 			return fmt.Errorf("runtime %s is not materialized", id)
 		}
@@ -357,11 +378,12 @@ func ActivateTarget(h home.Home, device, modelID string, opt ActivateOptions, lo
 		return false, err
 	}
 	obs.phase(PhaseRuntime)
-	dir := h.Path("runtime", spec.ID())
+	name := RuntimeDirFor(h, spec)
+	dir := h.Path("runtime", name)
 	if _, err := os.Stat(dir); err != nil {
 		return false, fmt.Errorf("runtime %s (%s) is not materialized; materialize it first", spec.ID(), device)
 	}
-	obs.step(StepVerify, "runtime "+spec.ID())
+	obs.step(StepVerify, "runtime "+name)
 	if err := verifyPublished(h, dir, spec); err != nil {
 		return false, fmt.Errorf("runtime %s failed verification: %w", spec.ID(), err)
 	}
@@ -373,7 +395,7 @@ func ActivateTarget(h home.Home, device, modelID string, opt ActivateOptions, lo
 	if err := verifyModel(mdir, m, obs); err != nil {
 		return false, fmt.Errorf("model %s failed verification: %w", m.ID, err)
 	}
-	next := home.Active{Runtime: spec.ID(), ModelID: m.ID, Model: ModelDirName(m), Device: device}
+	next := home.Active{Runtime: name, ModelID: m.ID, Model: ModelDirName(m), Device: device}
 	if opt.Variant != "" {
 		obs.phase(PhaseVariant)
 		if !SupportsVariants(m) {
@@ -478,7 +500,7 @@ func Repair(h home.Home, device, modelID string, log io.Writer, obs *Observer) e
 		aside = append(aside, moved{final, old})
 		return nil
 	}
-	rdir := h.Path("runtime", spec.ID())
+	rdir := h.Path("runtime", RuntimeDirFor(h, spec))
 	if _, err := os.Stat(rdir); err == nil {
 		if bad := verifyPublished(h, rdir, spec); bad != nil {
 			if err := setAside(rdir, bad); err != nil {
@@ -526,13 +548,16 @@ func Remove(h home.Home, kind, id string, obs *Observer) error {
 	var base, target string
 	switch kind {
 	case KindRuntime:
-		if _, ok := runtimeDevice(id); !ok {
+		device, ok := runtimeDevice(id)
+		if !ok {
 			return fmt.Errorf("runtime %q is not a supported catalog runtime", id)
 		}
-		if hasActive && a.Runtime == id {
+		spec, _ := Desired(device)
+		name := RuntimeDirFor(h, spec)
+		if hasActive && a.Runtime == name {
 			return fmt.Errorf("runtime %s: %w", id, ErrActive)
 		}
-		base, target = h.Path("runtime"), h.Path("runtime", id)
+		base, target = h.Path("runtime"), h.Path("runtime", name)
 		obs.phase(PhaseRuntime)
 	case KindModel:
 		m, err := modelByID(id)

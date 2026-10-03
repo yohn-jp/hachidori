@@ -48,7 +48,11 @@ type ForgeRunTarget struct {
 	Quantization          string `json:"quantized_execution,omitempty"`
 	QuantizedModules      int    `json:"quantized_modules,omitempty"`
 
+	// Runtime is the dependency runtime identity (the environment); WorkerSHA256
+	// is the worker implementation that ran in it. A worker-only update changes
+	// the second and not the first.
 	Runtime         string `json:"runtime"`
+	WorkerSHA256    string `json:"worker_sha256,omitempty"`
 	RequestedDevice string `json:"requested_device"`
 	Device          string `json:"device"`
 	RequestedDType  string `json:"requested_dtype,omitempty"`

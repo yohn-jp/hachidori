@@ -269,7 +269,7 @@ func TestActiveRecordCompatibility(t *testing.T) {
 // Existing runtime identities are unchanged by the optimizer role field: only
 // a spec that names the role derives a role-prefixed identity.
 func TestRuntimeSpecRoleDoesNotChangeServingIdentity(t *testing.T) {
-	s := RuntimeSpec{Schema: "s", Platform: "linux/amd64", Python: "3.12", Provider: "laya==1", Torch: "2+cpu", Flavor: "cpu", UV: "1", UVSHA256: "a", Project: "p", Lock: "l", Worker: "w"}
+	s := RuntimeSpec{Schema: "s", Platform: "linux/amd64", Python: "3.12", Provider: "laya==1", Torch: "2+cpu", Flavor: "cpu", UV: "1", UVSHA256: "a", Project: "p", Lock: "l", WorkerABI: "w"}
 	b, _ := json.Marshal(s)
 	if strings.Contains(string(b), "role") {
 		t.Fatalf("a serving spec encodes a role: %s", b)

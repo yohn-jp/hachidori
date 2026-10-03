@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func TestResidentConfigLaunchesEachModelFromTheActiveRuntime(t *testing.T) {
 	}
 	for _, id := range []string{"", def} { // the default route is WorkerConfig itself
 		cfg, rt, err := server.ResidentConfig(h, id, io.Discard)
-		if err != nil || rt != wantRT || !slices.Equal(cfg.Args, want.Args) || cfg.Python != want.Python {
+		if err != nil || !reflect.DeepEqual(rt, wantRT) || !slices.Equal(cfg.Args, want.Args) || cfg.Python != want.Python {
 			t.Fatalf("default resident %q: %+v %v", id, rt, err)
 		}
 	}

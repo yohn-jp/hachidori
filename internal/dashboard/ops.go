@@ -349,7 +349,7 @@ const (
 // no maintenance workspace.
 var opOwners = map[string]string{
 	"setup": ownerModels, "materialize": ownerModels, "repair": ownerModels, "activate": ownerModels,
-	"verify": ownerModels, "remove": ownerModels, "desired_state": ownerModels,
+	"verify": ownerModels, "remove": ownerModels, "desired_state": ownerModels, "runtime_reconcile": ownerModels,
 	"optimize": ownerForge, "certify": ownerForge, "forge_certify": ownerForge, "forge_build_evaluate": ownerForge,
 	"preflight": ownerForge, "probe": ownerForge, "execute": ownerForge, "apply": ownerForge,
 }
@@ -358,7 +358,7 @@ var opOwners = map[string]string{
 // the element (data-kind) for evidence and tests.
 var opKindLabels = map[string]string{
 	"setup": "Set up", "materialize": "Materialize", "repair": "Repair", "activate": "Activate",
-	"verify": "Verify", "remove": "Remove", "desired_state": "Apply desired state",
+	"verify": "Verify", "remove": "Remove", "desired_state": "Apply desired state", "runtime_reconcile": "Reconcile runtime",
 	"optimize": "Build variant", "certify": "Certify variant", "forge_certify": "Certify variant",
 	"forge_build_evaluate": "Build and evaluate", "preflight": "Preflight", "probe": "Probe variant",
 	"execute": "Execute", "apply": "Apply variant", "update": "Update",
@@ -375,6 +375,7 @@ var opOutcomes = map[string]string{
 	"verify":               "Verified against its pinned digest.",
 	"remove":               "Removed from HACHIDORI_HOME.",
 	"desired_state":        "Desired state applied: the runtime serves the requested target.",
+	"runtime_reconcile":    "Runtime reconciled: the required dependency runtime is active; models and variants were reused.",
 	"optimize":             "Variant built.",
 	"certify":              "Certification recorded.",
 	"forge_certify":        "Certification recorded.",

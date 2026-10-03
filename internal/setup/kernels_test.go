@@ -29,18 +29,18 @@ func TestClefKernelRuntimeContract(t *testing.T) {
 		if !slices.Equal(clefKernelDistributions(cuda), want) {
 			t.Fatalf("wrong Clef kernel pins for %s: %v", plat, clefKernelDistributions(cuda))
 		}
-		if cuda.Project != digest(specFile("pyproject.toml")) || cuda.Lock != digest(specFile("uv.lock")) || cuda.Worker != WorkerDigest() {
+		if cuda.Project != digest(specFile("pyproject.toml")) || cuda.Lock != digest(specFile("uv.lock")) {
 			t.Fatal("kernel materialization/dispatch is outside runtime identity")
 		}
-		for _, field := range []string{"project", "lock", "worker"} {
+		for _, field := range []string{"project", "lock", "worker_abi"} {
 			old := cuda
 			switch field {
 			case "project":
 				old.Project = strings.Repeat("0", 64)
 			case "lock":
 				old.Lock = strings.Repeat("0", 64)
-			case "worker":
-				old.Worker = strings.Repeat("0", 64)
+			case "worker_abi":
+				old.WorkerABI = "hachidori.worker-runtime/2"
 			}
 			if old.ID() == cuda.ID() {
 				t.Fatalf("%s changes do not change identity", field)

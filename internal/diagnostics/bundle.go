@@ -107,11 +107,16 @@ type System struct {
 	CPUs int    `json:"cpus"`
 }
 
+// Runtime separates the dependency runtime identity (the environment) from the
+// worker implementation that runs in it.
 type Runtime struct {
-	Runtime string `json:"runtime"`
-	ModelID string `json:"model_id"`
-	Model   string `json:"model"`
-	Device  string `json:"device"`
+	Runtime      string `json:"runtime"`
+	Directory    string `json:"runtime_directory,omitempty"`
+	WorkerSHA256 string `json:"worker_sha256,omitempty"`
+	WorkerABI    string `json:"worker_abi,omitempty"`
+	ModelID      string `json:"model_id"`
+	Model        string `json:"model"`
+	Device       string `json:"device"`
 }
 
 type Provider struct {
@@ -174,7 +179,7 @@ func Collect(src Source) (Facts, []string) {
 		Schema: FactsSchema,
 		App:    App{GoVersion: runtime.Version(), Executable: identify(src.Executable)},
 		System: System{OS: runtime.GOOS, Arch: runtime.GOARCH, CPUs: runtime.NumCPU()},
-		Runtime: Runtime{Runtime: st.Runtime.Runtime, ModelID: st.Runtime.ModelID,
+		Runtime: Runtime{Runtime: st.Runtime.Runtime, Directory: st.Runtime.RuntimeDirectory, ModelID: st.Runtime.ModelID,
 			Model: st.Runtime.Model, Device: st.Runtime.Device},
 		WebView2: WebView2{Version: src.WebView2},
 	}
@@ -185,6 +190,9 @@ func Collect(src Source) (Facts, []string) {
 				f.App.Revision = kv.Value
 			}
 		}
+	}
+	if wb := st.Runtime.Worker; wb != nil {
+		f.Runtime.WorkerSHA256, f.Runtime.WorkerABI = wb.SHA256, wb.ABI
 	}
 	info := st.Worker.Info
 	str := func(k string) string { v, _ := info[k].(string); return s.Line(v, maxMessageBytes) }

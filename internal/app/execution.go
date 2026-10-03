@@ -432,7 +432,7 @@ func stabilityError(t ExecutionTarget, set *ResidentSet, run eval.ModelRun, term
 func forgeTarget(t ExecutionTarget, model home.ModelManifest, v *home.VariantManifest, rt server.Runtime, info map[string]any) eval.ForgeRunTarget {
 	src := home.SourceOf(model)
 	ft := eval.ForgeRunTarget{Kind: t.Kind, Model: src.ID, Provider: src.Provider, Repo: src.Repo, Revision: src.Revision, SourceFilesSHA256: src.FilesSHA256,
-		Runtime: rt.Runtime, RequestedDevice: t.Device, Device: str(info, "device"), RequestedDType: t.DType, DType: normDType(str(info, "dtype"))}
+		Runtime: rt.Runtime, WorkerSHA256: workerSHA(rt), RequestedDevice: t.Device, Device: str(info, "device"), RequestedDType: t.DType, DType: normDType(str(info, "dtype"))}
 	if v != nil {
 		ft.Variant, ft.VariantManifestSHA256, ft.Recipe, ft.Scheme = v.ID, v.ManifestSHA256(), v.Recipe.Name, v.Weights.Scheme
 		ft.Quantization, ft.QuantizedModules = str(info, "quantized_execution"), int(num(info, "weights_quantized_modules"))
@@ -457,4 +457,13 @@ func awaitReady(ctx context.Context, set *ResidentSet) (worker.Snapshot, error) 
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+}
+
+// workerSHA is the digest of the worker implementation a status names, or ""
+// when it names none.
+func workerSHA(rt server.Runtime) string {
+	if rt.Worker == nil {
+		return ""
+	}
+	return rt.Worker.SHA256
 }

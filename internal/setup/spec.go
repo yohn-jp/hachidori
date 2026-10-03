@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"runtime"
 	"sort"
@@ -19,7 +18,7 @@ import (
 )
 
 // SpecSchema versions the Runtime Spec contract and its identity derivation.
-const SpecSchema = "hachidori.runtime-spec/1"
+const SpecSchema = home.SpecSchema
 
 // Runtime environment intent. The authoritative package set is the uv
 // project in runtimespec/ (pyproject.toml + uv.lock); these values are what
@@ -44,9 +43,9 @@ const (
 	// the upstream joint_schema_model.py of the digest-pinned release is
 	// imported from the model directory by the worker's clef adapter, on top
 	// of the runtime's transformers. Its pin is the adapter contract version;
-	// the adapter itself is part of the worker script, whose digest is part of
-	// the runtime identity, and the distributions it needs are verified
-	// explicitly (clefDistributions).
+	// the adapter itself is part of the worker script, which is delivered by
+	// the build and is not part of the runtime identity, and the distributions
+	// it needs are verified explicitly (clefDistributions).
 	providerClef       = home.ProviderClef
 	clefAdapterVersion = "1"
 )
@@ -89,12 +88,15 @@ const (
 //go:embed optimizerspec/pyproject.toml optimizerspec/uv.lock
 var optimizerSpecFS embed.FS
 
-// runtimeKind selects the embedded uv project and private script a Runtime
-// Spec is materialized from: the serving runtime or the optimizer runtime.
+// runtimeKind selects the embedded uv project a Runtime Spec is materialized
+// from and the private script that runs in it: the serving runtime or the
+// optimizer runtime. The script is delivered separately from the runtime
+// (DeliverWorker); it is not part of the environment.
 type runtimeKind struct {
-	file      func(name string) []byte
-	script    []byte
-	scriptRel string // slash separated, relative to the runtime directory
+	file       func(name string) []byte
+	script     []byte
+	scriptName string // file name of the delivered script
+	role       string // home.RoleOptimizer | "" serving
 }
 
 func kindOf(spec home.RuntimeSpec) runtimeKind {
@@ -107,10 +109,10 @@ func kindOf(spec home.RuntimeSpec) runtimeKind {
 				}
 				return b
 			},
-			script: optpy.Script, scriptRel: "worker/hachidori_optimizer.py",
+			script: optpy.Script, scriptName: "hachidori_optimizer.py", role: home.RoleOptimizer,
 		}
 	}
-	return runtimeKind{file: specFile, script: py.Script, scriptRel: "worker/hachidori_worker.py"}
+	return runtimeKind{file: specFile, script: py.Script, scriptName: "hachidori_worker.py"}
 }
 
 // DesiredOptimizer is the Runtime Spec of the optimizer runtime on the
@@ -136,7 +138,8 @@ func desiredOptimizerFor(plat string) (home.RuntimeSpec, error) {
 		UVSHA256: uv.BinarySHA256,
 		Project:  digest(k.file("pyproject.toml")),
 		Lock:     digest(k.file("uv.lock")),
-		Worker:   digest(k.script),
+
+		WorkerABI: home.WorkerABIOptimizer,
 	}, nil
 }
 
@@ -230,35 +233,9 @@ func desiredFor(device, plat string) (home.RuntimeSpec, error) {
 		UVSHA256: uv.BinarySHA256,
 		Project:  digest(specFile("pyproject.toml")),
 		Lock:     digest(specFile("uv.lock")),
-		Worker:   digest(py.Script),
+
+		WorkerABI: home.WorkerABIServing,
 	}, nil
-}
-
-// WorkerDigest is the digest of the worker script this build embeds and
-// materializes into every runtime it creates.
-func WorkerDigest() string { return digest(py.Script) }
-
-// ErrWorkerContract marks an activated runtime whose worker script is not the
-// one this build embeds.
-var ErrWorkerContract = errors.New("runtime carries a different worker script")
-
-// CheckWorkerContract is the launch-contract authority for an activated
-// runtime. The worker script is half of the contract between Hachidori and its
-// private Python process (its command line and its protocol); the other half
-// is built into this executable. A runtime is immutable, so one materialized
-// by an older build keeps its older script, which can be internally
-// consistent (its manifest, identity and digests all agree) and still not
-// understand the arguments this build passes. Starting it would only fail in
-// the interpreter's argument parser, so it is refused here with the cause and
-// the recovery instead.
-func CheckWorkerContract(a home.Active, rm home.RuntimeManifest) error {
-	if rm.Spec.Worker == WorkerDigest() {
-		return nil
-	}
-	return fmt.Errorf("%w: runtime %s was materialized by an older Hachidori (worker %s, this build %s) and cannot be started by this build. "+
-		"Materialize the current runtime and activate it: Settings, Models & runtimes, choose %s and your model, Materialize, Activate, then Restart; "+
-		"or run `hachidori setup --device %s`. Installed models are reused",
-		ErrWorkerContract, a.Runtime, shortDigest(rm.Spec.Worker), shortDigest(WorkerDigest()), a.Device, a.Device)
 }
 
 func shortDigest(d string) string {

@@ -297,17 +297,17 @@ func TestRuntimeSpecIdentity(t *testing.T) {
 		t.Fatal("CUDA/CPU identities collide")
 	}
 	mutations := map[string]func(*home.RuntimeSpec){
-		"schema":   func(s *home.RuntimeSpec) { s.Schema = "hachidori.runtime-spec/2" },
-		"platform": func(s *home.RuntimeSpec) { s.Platform = "linux/amd64" },
-		"python":   func(s *home.RuntimeSpec) { s.Python = "3.12.12" },
-		"provider": func(s *home.RuntimeSpec) { s.Provider = "laya==0.3.22,opendecider==0.3.0" },
-		"torch":    func(s *home.RuntimeSpec) { s.Torch = "2.11.1+cu128" },
-		"flavor":   func(s *home.RuntimeSpec) { s.Flavor = "cu129" },
-		"uv":       func(s *home.RuntimeSpec) { s.UV = "0.12.20" },
-		"uv_sha":   func(s *home.RuntimeSpec) { s.UVSHA256 = strings.Repeat("1", 64) },
-		"project":  func(s *home.RuntimeSpec) { s.Project = strings.Repeat("2", 64) },
-		"lock":     func(s *home.RuntimeSpec) { s.Lock = strings.Repeat("3", 64) },
-		"worker":   func(s *home.RuntimeSpec) { s.Worker = strings.Repeat("4", 64) },
+		"schema":     func(s *home.RuntimeSpec) { s.Schema = "hachidori.runtime-spec/3" },
+		"platform":   func(s *home.RuntimeSpec) { s.Platform = "linux/amd64" },
+		"python":     func(s *home.RuntimeSpec) { s.Python = "3.12.12" },
+		"provider":   func(s *home.RuntimeSpec) { s.Provider = "laya==0.3.22,opendecider==0.3.0" },
+		"torch":      func(s *home.RuntimeSpec) { s.Torch = "2.11.1+cu128" },
+		"flavor":     func(s *home.RuntimeSpec) { s.Flavor = "cu129" },
+		"uv":         func(s *home.RuntimeSpec) { s.UV = "0.12.20" },
+		"uv_sha":     func(s *home.RuntimeSpec) { s.UVSHA256 = strings.Repeat("1", 64) },
+		"project":    func(s *home.RuntimeSpec) { s.Project = strings.Repeat("2", 64) },
+		"lock":       func(s *home.RuntimeSpec) { s.Lock = strings.Repeat("3", 64) },
+		"worker_abi": func(s *home.RuntimeSpec) { s.WorkerABI = "hachidori.worker-runtime/2" },
 	}
 	seen := map[string]string{a.ID(): "base"}
 	for name, mut := range mutations {
@@ -587,9 +587,9 @@ func TestInvalidRuntimeNotActivated(t *testing.T) {
 	// A published runtime whose content no longer verifies is refused too.
 	os.RemoveAll(partial)
 	f.mustRun("cuda")
-	os.WriteFile(filepath.Join(partial, "worker", "hachidori_worker.py"), []byte("print('x')"), 0o644)
+	os.Remove(filepath.Join(partial, filepath.FromSlash(pythonRelPath())))
 	now := f.active()
-	if _, err := f.run("cuda"); err == nil || !strings.Contains(err.Error(), "worker script digest mismatch") {
+	if _, err := f.run("cuda"); err == nil || !strings.Contains(err.Error(), "private python missing") {
 		t.Fatalf("tampered runtime: %v", err)
 	}
 	if !bytes.Equal(f.active(), now) {

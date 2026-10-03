@@ -26,8 +26,8 @@ func TestOptimizerRuntimeIsSeparateAndDeterministic(t *testing.T) {
 		t.Fatal(err)
 	}
 	if spec.Role != "optimizer" || spec.ID() == serving.ID() || !strings.HasPrefix(spec.ID(), "optimizer-cpu-") ||
-		spec.Provider != "llmcompressor==0.14.0,compressed-tensors==0.19.0" || spec.Worker != digest(optpy.Script) ||
-		spec.Project == serving.Project || spec.Lock == serving.Lock || spec.Worker == serving.Worker {
+		spec.Provider != "llmcompressor==0.14.0,compressed-tensors==0.19.0" || spec.WorkerABI != home.WorkerABIOptimizer ||
+		spec.Project == serving.Project || spec.Lock == serving.Lock || spec.WorkerABI == serving.WorkerABI {
 		t.Fatalf("optimizer spec %+v vs serving %+v", spec, serving)
 	}
 	if again, _ := DesiredOptimizer(); again.ID() != spec.ID() {
@@ -49,7 +49,7 @@ func TestOptimizerRuntimeIsSeparateAndDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureOptimizer: %v\n%s", err, log.String())
 	}
-	if rt.ID != spec.ID() || rt.Manifest.Spec != spec || !strings.HasSuffix(filepath.ToSlash(rt.Script), "worker/hachidori_optimizer.py") {
+	if rt.ID != spec.ID() || rt.Manifest.Spec != spec || !strings.HasSuffix(filepath.ToSlash(rt.Script), "workers/"+digest(optpy.Script)+"/hachidori_optimizer.py") {
 		t.Fatalf("runtime %+v", rt)
 	}
 	if got, _ := FileSHA256(rt.Script); got != digest(optpy.Script) {
@@ -95,15 +95,25 @@ func TestOptimizerRuntimeIsSeparateAndDeterministic(t *testing.T) {
 		t.Fatal("activation succeeded without a serving runtime")
 	}
 
-	// A tampered optimizer runtime is refused and never modified in place.
+	// The delivered optimizer script is content addressed: a tampered copy is
+	// replaced by the exact script of this build, and the runtime is untouched.
 	if err := os.WriteFile(rt.Script, []byte("import os"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EnsureOptimizer(f.H, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "never modified in place") {
-		t.Fatalf("a tampered optimizer runtime was reused: %v", err)
+	healed, err := FindOptimizer(f.H)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := FindOptimizer(f.H); err == nil {
-		t.Fatal("FindOptimizer accepted a tampered script")
+	if got, _ := FileSHA256(healed.Script); got != digest(optpy.Script) {
+		t.Fatal("a tampered optimizer script was launched")
+	}
+
+	// A damaged optimizer runtime is refused and never modified in place.
+	if err := os.Remove(rt.Python); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureOptimizer(f.H, io.Discard, nil); err == nil || !strings.Contains(err.Error(), "never modified in place") {
+		t.Fatalf("a damaged optimizer runtime was reused: %v", err)
 	}
 }
 

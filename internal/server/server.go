@@ -72,13 +72,31 @@ type Residents interface {
 // executes a derived variant, Variant says which one and how it is quantized;
 // it is execution provenance, never a different model identity, and it is
 // absent for the upstream source artifact.
+//
+// Runtime is the dependency runtime identity: the immutable Python/CUDA
+// environment the worker runs in, derived only from its material contract.
+// RuntimeDirectory is where it lives when that is not its identity (a runtime
+// materialized under the previous identity scheme). Worker is the Hachidori
+// worker implementation delivered by this build, observed separately: a
+// worker-only update changes Worker and leaves Runtime as it was.
 type Runtime struct {
-	Home    string   `json:"home"`
-	Runtime string   `json:"runtime"`
-	ModelID string   `json:"model_id"` // catalog model identity
-	Model   string   `json:"model"`    // model directory: <repo>/<revision>
-	Device  string   `json:"device"`
-	Variant *Variant `json:"variant,omitempty"`
+	Home             string       `json:"home"`
+	Runtime          string       `json:"runtime"`
+	RuntimeDirectory string       `json:"runtime_directory,omitempty"`
+	Worker           *WorkerBuild `json:"worker_build,omitempty"`
+	ModelID          string       `json:"model_id"` // catalog model identity
+	Model            string       `json:"model"`    // model directory: <repo>/<revision>
+	Device           string       `json:"device"`
+	Variant          *Variant     `json:"variant,omitempty"`
+}
+
+// WorkerBuild is the identity of the worker implementation that runs: the
+// digest of the delivered script and the worker/runtime ABI it requires. ABI
+// is compared with the runtime's declared ABI at launch; the digest is
+// evidence only.
+type WorkerBuild struct {
+	SHA256 string `json:"sha256"`
+	ABI    string `json:"abi"`
 }
 
 // Variant is the identity of the variant a resident executes, from its
@@ -505,11 +523,12 @@ func targetRecord(h home.Home, device string, model home.ModelManifest) (home.Ac
 	if err != nil {
 		return home.Active{}, home.RuntimeManifest{}, home.ModelManifest{}, err
 	}
+	name := setup.RuntimeDirFor(h, spec)
 	var rm home.RuntimeManifest
-	if err := home.ReadJSON(filepath.Join(h.Path("runtime", spec.ID()), "manifest.json"), &rm); err != nil || rm.Identity != spec.ID() || rm.Spec != spec {
+	if err := home.ReadJSON(filepath.Join(h.Path("runtime", name), "manifest.json"), &rm); err != nil || setup.CheckRuntimeManifest(name, rm, spec) != nil {
 		return home.Active{}, home.RuntimeManifest{}, home.ModelManifest{}, fmt.Errorf("the %s runtime %s is not materialized for this build (run `hachidori setup --device %s`)", device, spec.ID(), device)
 	}
-	a := home.Active{Runtime: spec.ID(), ModelID: model.ID, Model: setup.ModelDirName(model), Device: device}
+	a := home.Active{Runtime: name, ModelID: model.ID, Model: setup.ModelDirName(model), Device: device}
 	var mm home.ModelManifest
 	if err := home.ReadJSON(filepath.Join(h.ModelDir(a), "hachidori-model.json"), &mm); err != nil {
 		return home.Active{}, home.RuntimeManifest{}, home.ModelManifest{}, fmt.Errorf("source model %s is not materialized in this home: %w", model.ID, err)
@@ -534,15 +553,21 @@ func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm hom
 	if _, err := os.Stat(python); err != nil {
 		return worker.Config{}, Runtime{}, fmt.Errorf("private python missing: %w", err)
 	}
-	script := h.WorkerScript(a)
-	got, err := setup.FileSHA256(script)
-	if err != nil || got != rm.Worker["worker/hachidori_worker.py"] {
-		return worker.Config{}, Runtime{}, fmt.Errorf("worker script %s does not match runtime manifest", script)
+	// The worker is delivered by this build beside the dependency runtime and
+	// runs in it; it is not part of the runtime.
+	delivered, err := setup.DeliverWorker(h)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
 	}
+	script := delivered.Path
 	modelDir := h.ModelDir(a)
 	args := setup.PythonArgs(script, "--model-dir", modelDir, "--device", a.Device,
 		"--manifest", filepath.Join(modelDir, "hachidori-model.json"), "--provider", model.Provider)
-	status := Runtime{Home: h.Root, Runtime: a.Runtime, ModelID: model.ID, Model: a.Model, Device: a.Device}
+	status := Runtime{Home: h.Root, Runtime: rm.EnvironmentID(), ModelID: model.ID, Model: a.Model, Device: a.Device,
+		Worker: &WorkerBuild{SHA256: delivered.SHA256, ABI: delivered.ABI}}
+	if a.Runtime != status.Runtime {
+		status.RuntimeDirectory = a.Runtime
+	}
 	variant, err := launchVariant(h, a, rm, model, probe)
 	if err != nil {
 		return worker.Config{}, Runtime{}, err
@@ -567,13 +592,13 @@ func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm hom
 		Log:            log,
 		StartTimeout:   10 * time.Minute,
 		RequestTimeout: 2 * time.Minute,
-		// The worker script is half of the launch contract (its command line
-		// and protocol); a runtime materialized by an older build keeps its
-		// older script. The supervisor refuses such a launch with the cause
-		// instead of starting a process that can only die in argument
-		// parsing. The binding itself still comes up, so the dashboard can
-		// show why and offer the recovery (Materialize, Activate, Restart).
-		Preflight: func() error { return setup.CheckWorkerContract(a, rm) },
+		// The worker of this build runs only in the dependency runtime this
+		// build requires (or one that declares exactly that environment),
+		// and only if that runtime was derived for the worker's ABI. The
+		// supervisor refuses any other launch with the cause. The binding
+		// itself still comes up, so the dashboard can show why; reconciliation
+		// materializes and activates the required runtime.
+		Preflight: func() error { return setup.CheckRuntimeCompatibility(a, rm) },
 	}
 	return cfg, status, nil
 }

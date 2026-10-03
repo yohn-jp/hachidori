@@ -103,7 +103,10 @@ func reconcile(ctx context.Context, h home.Home, device, modelID string, log io.
 		return home.Active{}, fmt.Errorf("private uv: %w", err)
 	}
 	enter(PhaseRuntime)
-	id := spec.ID()
+	// The dependency runtime is found by its identity, or as a runtime of the
+	// previous identity scheme that declares exactly this environment: either
+	// is verified and reused, never rematerialized.
+	id := RuntimeDirFor(h, spec)
 	final := h.Path("runtime", id)
 	stage := ""
 	if _, err := os.Stat(final); err == nil {
@@ -111,7 +114,11 @@ func reconcile(ctx context.Context, h home.Home, device, modelID string, log io.
 		if err := verifyPublished(h, final, spec); err != nil {
 			return home.Active{}, fmt.Errorf("runtime %s exists but failed verification; it is never modified in place (repair it, or remove %s to rematerialize): %w", id, final, err)
 		}
-		fmt.Fprintf(log, "runtime %s verified, reusing\n", id)
+		if id != spec.ID() {
+			fmt.Fprintf(log, "runtime %s (previous identity scheme) declares the required dependency runtime %s, verified, reusing\n", id, spec.ID())
+		} else {
+			fmt.Fprintf(log, "runtime %s verified, reusing\n", id)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return home.Active{}, err
 	} else if stage, err = materializeRuntime(h, uv, spec, log, obs); err != nil {
@@ -208,12 +215,6 @@ func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Wr
 		"sync", "--locked", "--no-build", "--no-install-project", "--no-python-downloads", "--extra", spec.Flavor); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Join(stage, "worker"), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(stage, filepath.FromSlash(kind.scriptRel)), kind.script, 0o644); err != nil {
-		return "", err
-	}
 	obs.step(StepVerify, "runtime "+spec.ID())
 	p, err := verifyRuntime(h, stage, spec)
 	if err != nil {
@@ -222,7 +223,6 @@ func materializeRuntime(h home.Home, uv uvTool, spec home.RuntimeSpec, log io.Wr
 	m := home.RuntimeManifest{
 		Identity: spec.ID(), Spec: spec, PythonVersion: p.Python, PythonRelPath: pythonRelPath(),
 		BasePython: p.BasePrefix, Installed: p.Installed,
-		Worker: map[string]string{kind.scriptRel: spec.Worker},
 	}
 	// The manifest is written last: its presence marks a complete runtime.
 	if err := home.WriteJSON(filepath.Join(stage, "manifest.json"), m); err != nil {
@@ -237,8 +237,8 @@ func verifyPublished(h home.Home, dir string, spec home.RuntimeSpec) error {
 	if err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &m); err != nil {
 		return fmt.Errorf("incomplete runtime: %w", err)
 	}
-	if m.Identity != spec.ID() || m.Spec != spec {
-		return fmt.Errorf("manifest identity %q does not match desired spec %s", m.Identity, spec.ID())
+	if err := CheckRuntimeManifest(filepath.Base(dir), m, spec); err != nil {
+		return err
 	}
 	if m.PythonRelPath != pythonRelPath() {
 		return fmt.Errorf("unexpected interpreter path %q", m.PythonRelPath)
@@ -260,15 +260,13 @@ const runtimeProbeCode = `import json, sys, importlib.metadata as md
 print(json.dumps({"python": "%d.%d.%d" % sys.version_info[:3], "prefix": sys.prefix, "base_prefix": sys.base_prefix,
  "installed": sorted({"%s==%s" % (d.metadata["Name"], d.version) for d in md.distributions()})}))`
 
-// verifyRuntime is Hachidori's own check of a materialized environment: the
-// worker digest, and, from the private interpreter run isolated and offline,
-// the exact Python, provider and torch versions and that the environment and
-// its base interpreter live under HACHIDORI_HOME.
+// verifyRuntime is Hachidori's own check of a materialized environment: from
+// the private interpreter run isolated and offline, the exact Python, provider
+// and torch versions and that the environment and its base interpreter live
+// under HACHIDORI_HOME. The worker is not part of the environment and is not
+// checked here (see DeliverWorker).
 func verifyRuntime(h home.Home, dir string, spec home.RuntimeSpec) (runtimeProbe, error) {
 	var p runtimeProbe
-	if got, err := FileSHA256(filepath.Join(dir, filepath.FromSlash(kindOf(spec).scriptRel))); err != nil || got != spec.Worker {
-		return p, fmt.Errorf("worker script digest mismatch")
-	}
 	python := filepath.Join(dir, filepath.FromSlash(pythonRelPath()))
 	if _, err := os.Stat(python); err != nil {
 		return p, fmt.Errorf("private python missing: %w", err)

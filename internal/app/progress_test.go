@@ -227,14 +227,14 @@ func TestMaintenanceOutputGoesToTheSetupLog(t *testing.T) {
 // preflight, not of a worker phase, and keeps the cause the authority gave.
 func TestRuntimeRefusedBeforeStartIsAPreflightFailure(t *testing.T) {
 	e := newEnv(t, "/h", true)
-	e.openErr = setup.ErrWorkerContract
+	e.openErr = setup.ErrRuntimeStale
 	err := e.c.Start()
 	var f *Failure
 	if !errors.As(err, &f) || f.Source != SourceRuntime || f.Phase != PhasePreflight {
 		t.Fatalf("Start = %v", err)
 	}
 	s := e.c.Snapshot()
-	if s.State != Failed || s.Failure == nil || s.Failure.Phase != PhasePreflight || s.Failure.Message != setup.ErrWorkerContract.Error() {
+	if s.State != Failed || s.Failure == nil || s.Failure.Phase != PhasePreflight || s.Failure.Message != setup.ErrRuntimeStale.Error() {
 		t.Fatalf("snapshot %+v failure %+v", s, s.Failure)
 	}
 }

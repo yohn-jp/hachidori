@@ -302,3 +302,62 @@ func TestReconcileDesiredStatePreservesPrimaryAndResidentRollbackFailures(t *tes
 		t.Fatalf("primary and rollback were not preserved: %#v", err)
 	}
 }
+
+// rewriteActiveRuntime turns the active runtime into another self-consistent
+// runtime (its identity is the one its own spec derives) and returns its name.
+func rewriteActiveRuntime(t *testing.T, e *applyEnv, mut func(*home.RuntimeSpec)) string {
+	t.Helper()
+	var a home.Active
+	var rm home.RuntimeManifest
+	if err := home.ReadJSON(e.h.Path("state", "active-runtime.json"), &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.ReadJSON(e.h.Path("runtime", a.Runtime, "manifest.json"), &rm); err != nil {
+		t.Fatal(err)
+	}
+	old := a.Runtime
+	mut(&rm.Spec)
+	rm.Identity, a.Runtime = rm.Spec.ID(), rm.Spec.ID()
+	if err := os.Rename(e.h.Path("runtime", old), e.h.Path("runtime", rm.Identity)); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.WriteJSON(e.h.Path("runtime", rm.Identity, "manifest.json"), rm); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.WriteJSON(e.h.Path("state", "active-runtime.json"), a); err != nil {
+		t.Fatal(err)
+	}
+	return rm.Identity
+}
+
+// Auto resolves the device from an activation whose runtime is an older
+// dependency environment of that device: the desired-state transaction is what
+// provisions the required runtime, so that activation is a valid baseline. The
+// device-runtime invariant that remains is the real one: the activation's
+// runtime must be a runtime of its device.
+func TestReconcileDesiredStateAutoAcceptsAnOlderRuntimeOfTheSameDevice(t *testing.T) {
+	e := newApplyEnv(t, "accepted")
+	wireDesiredRig(t, e)
+	older := rewriteActiveRuntime(t, e, func(s *home.RuntimeSpec) { s.Lock = strings.Repeat("0", 64) })
+	tx, err := e.c.beginDesiredState(desiredSource(e, DeviceIntent{Mode: DeviceModeAuto}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := tx.resolveAutoDevice()
+	if err != nil || a.Runtime != older || a.Device != "cuda" {
+		t.Fatalf("resolveAutoDevice = %+v, %v", a, err)
+	}
+}
+
+func TestReconcileDesiredStateAutoRejectsARuntimeOfAnotherDevice(t *testing.T) {
+	e := newApplyEnv(t, "accepted")
+	wireDesiredRig(t, e)
+	rewriteActiveRuntime(t, e, func(s *home.RuntimeSpec) { s.Flavor, s.Torch, s.Lock = "cpu", "2.11.0+cpu", strings.Repeat("1", 64) })
+	tx, err := e.c.beginDesiredState(desiredSource(e, DeviceIntent{Mode: DeviceModeAuto}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tx.resolveAutoDevice(); err == nil || !strings.Contains(err.Error(), "not a runtime of its cuda device") {
+		t.Fatalf("resolveAutoDevice = %v", err)
+	}
+}

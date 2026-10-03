@@ -254,8 +254,11 @@ func collectForge(root string, f ForgeFailure, cause error) (in diagnostics.Forg
 			return err
 		}
 		in.Identity.Runtime = spec.ID()
+		if f.Kind != OpOptimize {
+			in.Identity.Worker = setup.WorkerDigest()
+		}
 		var rm home.RuntimeManifest
-		if err := home.ReadJSON(h.Path("runtime", spec.ID(), "manifest.json"), &rm); err != nil {
+		if err := home.ReadJSON(h.Path("runtime", setup.RuntimeDirFor(h, spec), "manifest.json"), &rm); err != nil {
 			return fmt.Errorf("runtime %s manifest: %w", spec.ID(), err)
 		}
 		in.Runtime.Python = rm.PythonVersion
