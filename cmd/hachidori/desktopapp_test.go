@@ -276,6 +276,22 @@ func TestPreflightFailureStartsNothing(t *testing.T) {
 
 var _ dashboard.Models = modelManager{}
 
+func TestForgeResolutionProjectionPreservesAutoAndOverrides(t *testing.T) {
+	resolution := forgeResolution(&app.ForgeBuildEvaluateResolution{
+		Source: "clef-flash", Recipe: "clef-flash-w4a16-rtn-g128", Variant: "clef-flash--r--aaaaaaaaaaaa",
+		CandidateDevice: app.ForgeResolvedValue{Mode: app.ForgeSelectionAuto, Value: "cuda"},
+		ReferenceDevice: app.ForgeResolvedValue{Mode: app.ForgeSelectionOverride, Value: "cpu"},
+		ReferenceDType:  app.ForgeResolvedValue{Mode: app.ForgeSelectionAuto, Value: "bfloat16"},
+		CandidateDType:  "bfloat16",
+	})
+	if resolution == nil || resolution.Source != "clef-flash" || resolution.Variant != "clef-flash--r--aaaaaaaaaaaa" ||
+		resolution.CandidateDevice != (dashboard.ForgeResolvedValue{Mode: "Auto", Value: "cuda"}) ||
+		resolution.ReferenceDevice != (dashboard.ForgeResolvedValue{Mode: "Override", Value: "cpu"}) ||
+		resolution.ReferenceDType != (dashboard.ForgeResolvedValue{Mode: "Auto", Value: "bfloat16"}) || resolution.CandidateDType != "bfloat16" {
+		t.Fatalf("resolved plan projection %+v", resolution)
+	}
+}
+
 // The dashboard's manager is the application controller over the real setup
 // authority: the inventory lists only catalog identities, an activation
 // whose artifacts are not materialized is refused without writing anything,

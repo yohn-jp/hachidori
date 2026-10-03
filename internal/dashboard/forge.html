@@ -1,7 +1,7 @@
-{{/* Forge: the System One variant lifecycle. build -> preflight/probe -> self-contained certification -> explicit apply. Every stage and label is derived from backend records on each render; nothing here is remembered. */}}
+{{/* Forge collects semantic build/evaluation intent and renders the backend-owned operation and candidate evidence. */}}
 {{define "forge"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>{{t "Forge"}}</h1><p class="lede">{{t "Build a quantized System One variant, check it, certify it from an evaluation dataset and apply it explicitly. Each step is one backend operation; a verdict never applies a variant by itself."}}</p></div>
+  <div><h1>{{t "Forge"}}</h1><p class="lede">{{t "Choose a source, optimization profile and evaluation suite. One Build & evaluate operation produces a candidate with evidence; Apply is always explicit."}}</p></div>
 </header>
 {{template "last" .Last}}
 {{with .Forge}}
@@ -19,6 +19,17 @@
   {{template "op-refresh" "forge-workspace"}}
   {{end}}
   {{with .Last}}{{template "op-last" .}}{{end}}
+  {{with .Forge.Resolution}}
+  <section class="region section" id="forge-resolution" aria-labelledby="frp-h">
+    <div class="region-h"><h2 id="frp-h">{{t "Resolved execution choices"}}</h2><span class="sub mono">{{.Source}} · {{.Recipe}}{{with .Variant}} · {{.}}{{end}}</span></div>
+    <dl class="kv">
+      <dt>{{t "Candidate device"}}</dt><dd>{{t .CandidateDevice.Mode}} → <span class="mono">{{.CandidateDevice.Value}}</span></dd>
+      <dt>{{t "Reference device"}}</dt><dd>{{t .ReferenceDevice.Mode}} → <span class="mono">{{.ReferenceDevice.Value}}</span></dd>
+      <dt>{{t "Reference precision"}}</dt><dd>{{t .ReferenceDType.Mode}} → <span class="mono">{{.ReferenceDType.Value}}</span></dd>
+      {{with .CandidateDType}}<dt>{{t "Candidate precision"}}</dt><dd class="mono">{{.}}</dd>{{end}}
+    </dl>
+  </section>
+  {{end}}
 
   <section class="region section" id="forge-artifact" aria-labelledby="fa-h">
     <div class="region-h"><h2 id="fa-h">{{t "Execution artifact"}}</h2><span class="sub">{{t "what serves now and what the next start serves"}}</span></div>
@@ -28,16 +39,56 @@
   <section class="region section" id="forge-flow" aria-labelledby="ff-h">
     <div class="region-h"><h2 id="ff-h">{{t "Lifecycle"}}</h2><span class="sub">{{t "the normal path, in order"}}</span></div>
     <ol class="forge-flow">
-      <li><strong>{{t "Build"}}</strong> {{t "a variant from a source model with a canonical recipe."}}</li>
-      <li><strong>{{t "Preflight and probe"}}</strong> {{t "check readiness, then load the variant once on a device."}}</li>
-      <li><strong>{{t "Certify"}}</strong> {{t "from an evaluation dataset, Question Definitions and a policy; Hachidori produces the reference and the variant runs itself."}}</li>
-      <li><strong>{{t "Apply"}}</strong> {{t "the accepted variant: one explicit operation that activates it, rebinds the runtime and proves it serves."}}</li>
+      <li><strong>{{t "Source"}}</strong></li>
+      <li><strong>{{t "Optimization profile"}}</strong></li>
+      <li><strong>{{t "Evaluation suite"}}</strong></li>
+      <li><strong>{{t "Build & evaluate"}}</strong></li>
+      <li><strong>{{t "Candidate"}}</strong> {{t "with exact evidence"}}</li>
+      <li><strong>{{t "Apply"}}</strong> {{t "explicitly"}}</li>
     </ol>
   </section>
 
   <section class="region section" id="forge-build" aria-labelledby="fb-h">
-    <div class="region-h"><h2 id="fb-h">{{t "Source and recipes"}}</h2><span class="sub">{{t "1 · Build"}}</span></div>
-    <p class="note">{{t "A variant is a derived, quantized execution artifact of one source model. The source stays intact and keeps its identity; a variant is applied only with an accepted certification record, and never falls back to the source if it cannot start."}}</p>
+    <div class="region-h"><h2 id="fb-h">{{t "Build & evaluate"}}</h2><span class="sub">{{t "one backend operation"}}</span></div>
+    <p class="note">{{t "The source remains unchanged. Hachidori runs readiness checks, builds the selected profile, evaluates the exact candidate and records its certification evidence. An accepted candidate is never applied automatically."}}</p>
+    {{if .Controls}}
+    <form method="post" action="/forge/build-evaluate" class="stack" id="forge-intent-form">
+      <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge">
+      {{with .Form.Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
+      <div class="region" role="group" aria-labelledby="forge-source-profile-h">
+        <div class="region-h"><h3 id="forge-source-profile-h">{{t "Source"}} → {{t "Optimization profile"}}</h3></div>
+        <div class="fields">
+          <label class="field">{{t "Source"}}<select name="source" required>{{range .Sources}}<option value="{{.ID}}"{{if eq .ID $.Forge.Form.Source}} selected{{end}}>{{.ID}}{{if not .Materialized}} · {{t "not materialized"}}{{end}}</option>{{end}}</select></label>
+          <label class="field">{{t "Optimization profile"}}<select name="profile" required>{{range .Sources}}{{range .Recipes}}<option value="{{.}}"{{if eq . $.Forge.Form.Profile}} selected{{end}}>{{.}}</option>{{end}}{{end}}</select></label>
+        </div>
+      </div>
+      <div class="region" role="group" aria-labelledby="forge-evaluation-h">
+        <div class="region-h"><h3 id="forge-evaluation-h">{{t "Evaluation suite"}}</h3></div>
+        <div class="path-form">
+          <label class="field wide">{{t "Evaluation dataset (JSONL, absolute path)"}}<input type="text" name="dataset" value="{{.Form.Dataset}}" required autocomplete="off" spellcheck="false" placeholder="/path/to/dataset.jsonl"></label>
+          {{if .PathPicker}}<button type="submit" class="btn" formaction="/forge/pick" name="pick" value="dataset" formnovalidate>{{t "Choose file"}}</button>{{end}}
+        </div>
+        <label class="field wide"><span>{{t "Question Definition files or directories (absolute paths, one per line)"}}</span><textarea name="questions" rows="2" spellcheck="false">{{.Form.Questions}}</textarea></label>
+        {{if .PathPicker}}<div class="btn-row"><button type="submit" class="btn" formaction="/forge/pick" name="pick" value="question-file" formnovalidate>{{t "Choose file"}}</button><button type="submit" class="btn" formaction="/forge/pick" name="pick" value="question-folder" formnovalidate>{{t "Choose folder"}}</button></div>{{end}}
+        <div class="path-form">
+          <label class="field wide">{{t "Policy file (optional; default is the built-in profile)"}}<input type="text" name="policy" value="{{.Form.Policy}}" autocomplete="off" spellcheck="false"></label>
+          {{if .PathPicker}}<button type="submit" class="btn" formaction="/forge/pick" name="pick" value="policy" formnovalidate>{{t "Choose file"}}</button>{{end}}
+        </div>
+      </div>
+      <details class="region" id="forge-execution-overrides" data-keep="forge-execution-overrides">
+        <summary>{{t "Execution overrides"}}</summary>
+        <p class="note">{{t "Auto uses the backend's validated defaults. Overrides are pinned for this operation and are never silently replaced."}}</p>
+        <div class="fields">
+          <label class="field">{{t "Candidate device"}}<select name="device"><option value=""{{if eq .Form.Device ""}} selected{{end}}>{{t "Auto"}}</option>{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $.Forge.Form.Device}} selected{{end}}>{{t "Override"}}: {{.}}</option>{{end}}</select><span class="sub">{{t "Auto uses the device from a valid active runtime/model activation; pin a device when none is active."}}</span></label>
+          <label class="field">{{t "Reference device"}}<select name="reference_device"><option value=""{{if eq .Form.ReferenceDevice ""}} selected{{end}}>{{t "Auto"}}</option>{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $.Forge.Form.ReferenceDevice}} selected{{end}}>{{t "Override"}}: {{.}}</option>{{end}}</select></label>
+          <label class="field">{{t "Reference precision"}}<select name="reference_dtype"><option value=""{{if eq .Form.ReferenceDType ""}} selected{{end}}>{{t "Auto"}}</option><option value="bfloat16"{{if eq .Form.ReferenceDType "bfloat16"}} selected{{end}}>{{t "Override"}}: bfloat16</option><option value="float32"{{if eq .Form.ReferenceDType "float32"}} selected{{end}}>{{t "Override"}}: float32</option></select></label>
+          <label class="field">{{t "Provisioning"}}<select name="provisioning"><option value="auto"{{if eq .Form.Provisioning "auto"}} selected{{end}}>{{t "Auto · materialize missing prerequisites when required"}}</option><option value="never"{{if eq .Form.Provisioning "never"}} selected{{end}}>{{t "Do not provision"}}</option></select></label>
+        </div>
+      </details>
+      <div class="btn-row"><button type="submit" class="btn primary" data-pending="{{t "Building and evaluating…"}}">{{t "Build & evaluate"}}</button></div>
+    </form>
+    {{else}}<p class="muted">{{t "Forge actions are unavailable."}}</p>{{end}}
+    <p class="note">{{t "Preflight, provisioning, build, probe, reference execution, candidate execution, certification and evidence recording run as progress phases of the one operation. Apply remains a separate explicit action."}}</p>
     {{with .Inventory.Optimizer}}<dl class="kv" id="optimizer-runtime"><dt>{{t "Optimizer runtime"}}</dt><dd class="mono">{{.ID}} · {{if .Materialized}}{{t "materialized"}}{{else}}{{t "not materialized (the first optimization materializes it)"}}{{end}}{{if .Verified}} · {{t "verified"}}{{end}}{{with .Problem}} <span class="bad-t">{{.}}</span>{{end}}</dd></dl>{{end}}
     <div class="table-wrap"><table class="data" id="forge-sources">
       <thead><tr><th scope="col">{{t "Source"}}</th><th scope="col">{{t "Revision"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Recipes"}}</th><th scope="col">{{t "Variants"}}</th></tr></thead>
@@ -48,18 +99,10 @@
         <tr><td colspan="5" class="muted">{{t "No source model supports variants."}}</td></tr>{{end}}
       </tbody>
     </table></div>
-    {{if .Controls}}{{range $.Models.OptimizeModels}}
-    <form method="post" action="/forge/optimize" class="region" id="optimize-{{.ID}}">
-      <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="model" value="{{.ID}}">
-      <div class="fields"><label class="field">{{t "Recipe"}} ({{.ID}})
-        <select name="recipe">{{range .Recipes}}<option value="{{.}}">{{.}}</option>{{end}}</select></label></div>
-      <div class="btn-row"><button type="submit" class="btn" formaction="/forge/preflight" name="kind" value="optimize">{{t "Preflight"}}</button><button type="submit" class="btn primary">{{t "Build variant"}}</button></div>
-    </form>
-    {{end}}{{end}}
   </section>
 
   <section class="region section" id="forge-variants" aria-labelledby="fv-h">
-    <div class="region-h"><h2 id="fv-h">{{t "System One variants"}}</h2><span class="sub">{{t "immutable provenance and lifecycle, from the records"}}</span></div>
+    <div class="region-h"><h2 id="fv-h">{{t "Candidates"}}</h2><span class="sub">{{t "exact provenance, certification and serving state from backend records"}}</span></div>
     {{range .Items}}
     <article class="region variant-card" data-variant="{{.ID}}" id="variant-{{.ID}}"{{if .Active}} aria-current="true"{{end}} aria-labelledby="vh-{{.ID}}">
       <div class="region-h"><h3 class="mono" id="vh-{{.ID}}">{{.ID}}</h3>
@@ -83,32 +126,8 @@
 
       {{if $.Forge.Controls}}{{if and (not .Problem) .SourceMaterialized}}
       {{$vid := .ID}}{{$src := .SourceID}}
-      <form method="post" action="/forge/probe" class="region step" id="probe-{{$vid}}" aria-labelledby="sp-{{$vid}}">
-        <h4 id="sp-{{$vid}}">{{t "2 · Preflight and probe"}}</h4>
-        <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="variant" value="{{$vid}}"><input type="hidden" name="model" value="{{$src}}">
-        <div class="fields"><label class="field">{{t "Device"}}<select name="device">{{$ad := $.Forge.ActiveDevice}}{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label></div>
-        <div class="btn-row"><button type="submit" class="btn" formaction="/forge/preflight" name="kind" value="probe">{{t "Preflight"}}</button><button type="submit" class="btn">{{t "Probe"}}</button></div>
-        <p class="note">{{t "A probe loads the variant in its own worker, asks one typed decision and stops it. It is not a certification and changes no resident, activation or route."}}</p>
-      </form>
-
-      <form method="post" action="/forge/certify" class="region step" id="certify-{{$vid}}" aria-labelledby="sc-{{$vid}}">
-        <h4 id="sc-{{$vid}}">{{t "3 · Certify"}}</h4>
-        <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="forge"><input type="hidden" name="variant" value="{{$vid}}">
-        <div class="fields">
-          <label class="field wide">{{t "Evaluation dataset (JSONL, absolute path)"}}<input type="text" name="dataset" required autocomplete="off" spellcheck="false" placeholder="/path/to/dataset.jsonl"></label>
-          <label class="field wide">{{t "Question Definition files or directories (absolute paths, one per line)"}}<textarea name="questions" rows="2" spellcheck="false"></textarea></label>
-          <label class="field wide">{{t "Policy file (optional; default is the built-in profile)"}}<input type="text" name="policy" autocomplete="off" spellcheck="false"></label>
-          <label class="field">{{t "Variant device"}}<select name="device">{{$ad := $.Forge.ActiveDevice}}{{range $.Forge.Devices}}<option value="{{.}}"{{if eq . $ad}} selected{{end}}>{{.}}</option>{{end}}</select></label>
-          <label class="field">{{t "Reference device"}}<select name="reference_device"><option value="">{{t "default (cpu)"}}</option>{{range $.Forge.Devices}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
-          <label class="field">{{t "Reference precision"}}<select name="reference_dtype"><option value="">{{t "default"}}</option><option value="bfloat16">bfloat16</option><option value="float32">float32</option></select></label>
-        </div>
-        <label class="check"><input type="checkbox" name="materialize" value="1"> {{t "Materialize a missing serving runtime first (never activates)"}}</label>
-        <div class="btn-row"><button type="submit" class="btn primary" data-pending="{{t "Certifying…"}}">{{t "Certify variant"}}</button></div>
-        <p class="note">{{t "One operation: Hachidori checks readiness, probes the variant, runs the source reference and the variant on the same dataset, compares them under the policy and records the evidence and the verdict. It never activates anything, and an accepted verdict does not apply the variant."}}</p>
-      </form>
-
       <div class="region step" id="apply-{{$vid}}" role="group" aria-labelledby="sa-{{$vid}}">
-        <h4 id="sa-{{$vid}}">{{t "4 · Apply"}}</h4>
+        <h4 id="sa-{{$vid}}">{{t "6 · Apply"}}</h4>
         {{if $.Forge.RestartRequired}}<p class="muted">{{t "Restart the runtime in Models before applying a variant."}}</p>
         {{else if .CanApply}}
         <form method="post" action="/forge/apply" data-confirm="{{t "Apply this certified variant? The runtime is rebound to it and verified; if anything fails, the previous serving target is restored."}}">
