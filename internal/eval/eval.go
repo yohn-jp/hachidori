@@ -262,7 +262,7 @@ func RunEvidence(d Endpoint, cases []Case, opt Options) (Report, error) {
 }
 
 func run(d Decider, cases []Case, opt Options) Report {
-	r, _ := runDetailed(d, cases, opt, nil)
+	r, _ := runDetailed(d, cases, opt, nil, nil)
 	return r
 }
 
@@ -284,23 +284,31 @@ type runDetail struct {
 
 // runDetailed is run plus the detail above. hook, when not nil, is called
 // after the warmup requests ("after_warmup") and after every pass
-// ("after_pass_N"); it never influences the run.
-func runDetailed(d Decider, cases []Case, opt Options, hook func(phase string)) (Report, runDetail) {
+// ("after_pass_N"); it never influences the run. terminal, when not nil, is
+// asked about every failed request and ends the run after the first one it
+// reports true for (see ResidentOptions.Terminal).
+func runDetailed(d Decider, cases []Case, opt Options, hook func(phase string), terminal func(err error) bool) (Report, runDetail) {
 	r := Report{Schema: EvidenceSchema, Cases: len(cases), StartedAt: time.Now().UTC().Format(time.RFC3339),
 		PerQuestion: map[string]QuestionStats{}, WarmupRequests: opt.Warmup, Passes: max(opt.Passes, 1),
 		Errors: []RequestError{}, Results: []Observation{}, Definitions: definitions(cases)}
 	var det runDetail
+	// aborted ends the run after a failed request the caller declared terminal:
+	// the first causal failure is authority and nothing further is sent.
+	aborted := func(err error) bool { return terminal != nil && terminal(err) }
+	var lat, inf []float64
 	for i := 0; i < opt.Warmup; i++ {
 		c := cases[i%len(cases)]
 		if _, err := d.Decide(c.Request()); err != nil {
 			cls, msg := classify(err)
 			r.Errors = append(r.Errors, RequestError{Phase: "warmup", CaseID: c.ID, Class: cls, Message: msg})
+			if aborted(err) {
+				goto scored
+			}
 		}
 	}
 	if hook != nil {
 		hook("after_warmup")
 	}
-	var lat, inf []float64
 	for pass := 0; pass < r.Passes; pass++ {
 		for ci, c := range cases {
 			t0 := time.Now()
@@ -309,6 +317,9 @@ func runDetailed(d Decider, cases []Case, opt Options, hook func(phase string)) 
 			if err != nil {
 				cls, msg := classify(err)
 				r.Errors = append(r.Errors, RequestError{Phase: "pass", Pass: pass + 1, CaseID: c.ID, Class: cls, Message: msg})
+				if aborted(err) {
+					goto scored
+				}
 				continue
 			}
 			lat = append(lat, ms)
@@ -352,6 +363,7 @@ func runDetailed(d Decider, cases []Case, opt Options, hook func(phase string)) 
 			hook(fmt.Sprintf("after_pass_%d", pass+1))
 		}
 	}
+scored:
 	r.Observations = len(r.Results)
 	r.ChoiceAccuracy, r.MeanConfidence, r.ECE = score(r.Results)
 	groups := map[string][]Observation{}

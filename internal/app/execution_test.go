@@ -83,6 +83,11 @@ func fakeExecWorker(spec string) {
 		case "stats":
 			emit(map[string]any{"id": req.ID, "ok": true, "stats": map[string]any{"host_rss_bytes": 1e9, "memory_allocated": 5e9, "memory_reserved": 6e9, "memory_free": 5e9, "memory_total": 12e9}})
 		case "decide":
+			// Every request that reaches the worker, in any mode, is counted.
+			if f, err := os.OpenFile(filepath.Join(marker, "decides"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				_, _ = f.WriteString("x")
+				_ = f.Close()
+			}
 			if mode == "slow" {
 				_ = os.WriteFile(filepath.Join(marker, "deciding"), nil, 0o644)
 				time.Sleep(1500 * time.Millisecond)
@@ -607,4 +612,152 @@ func cudaRuntimeID(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return spec.ID()
+}
+
+// decidesSeen is how many decide requests reached the fake worker.
+func decidesSeen(t *testing.T, marker string) int {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(marker, "decides"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return len(b)
+}
+
+// A CPU reference execution may legitimately be slow, so it gets a longer,
+// still bounded, per-request timeout; a CUDA execution keeps the serving
+// bound. The serving launch the execution is derived from is unchanged.
+func TestExecutionRequestTimeoutByDevice(t *testing.T) {
+	if CPUExecutionRequestTimeout != 10*time.Minute || CUDAExecutionRequestTimeout != 2*time.Minute {
+		t.Fatalf("cpu %v, cuda %v", CPUExecutionRequestTimeout, CUDAExecutionRequestTimeout)
+	}
+	h, v := forgeHome(t)
+	deps := execDeps(t, "ok", t.TempDir()).withDefaults()
+	for _, tc := range []struct {
+		target ExecutionTarget
+		want   time.Duration
+	}{
+		{sourceTarget("cpu", "bfloat16"), 10 * time.Minute},
+		{sourceTarget("cuda", "float32"), 2 * time.Minute},
+		{variantTarget(v, "cuda"), 2 * time.Minute},
+	} {
+		cfg, _, err := executionLaunch(deps, h, tc.target, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ExecutionRequestTimeout(tc.target.Device); cfg.RequestTimeout != tc.want || got != tc.want {
+			t.Fatalf("%s: launch timeout %v, resolved %v, want %v", tc.target, cfg.RequestTimeout, got, tc.want)
+		}
+		if cfg.StartTimeout != 20*time.Second {
+			t.Fatalf("%s: the startup timeout changed to %v", tc.target, cfg.StartTimeout)
+		}
+	}
+	// The serving launch of the same worker keeps its own bound.
+	spec, err := setup.Desired("cpu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rdir := h.Path("runtime", spec.ID())
+	var rm home.RuntimeManifest
+	if err := home.ReadJSON(filepath.Join(rdir, "manifest.json"), &rm); err != nil {
+		t.Fatal(err)
+	}
+	script := h.WorkerScript(home.Active{Runtime: spec.ID(), ModelID: setup.ClefFlash})
+	for path, body := range map[string]string{filepath.Join(rdir, filepath.FromSlash(rm.PythonRelPath)): "", script: "# worker"} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum, err := setup.FileSHA256(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm.Worker = map[string]string{"worker/hachidori_worker.py": sum}
+	if err := home.WriteJSON(filepath.Join(rdir, "manifest.json"), rm); err != nil {
+		t.Fatal(err)
+	}
+	serving, _, err := server.SourceConfig(h, "cpu", setup.ClefFlash, "bfloat16", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serving.RequestTimeout != 2*time.Minute || serving.StartTimeout != 10*time.Minute {
+		t.Fatalf("serving timeouts changed: request %v, start %v", serving.RequestTimeout, serving.StartTimeout)
+	}
+}
+
+// A worker that dies under a request ends the run at that request: the rest
+// of the dataset is never sent, nothing is recorded, and the error keeps the
+// worker's own failure reachable.
+func TestExecuteTerminalWorkerLossAbortsAndKeepsTheCause(t *testing.T) {
+	h, _ := forgeHome(t)
+	marker := t.TempDir()
+	_, err := RunExecution(context.Background(), h, ExecuteParams{Target: sourceTarget("cuda", "float32"), Input: execInput()}, execDeps(t, "crash_on_decide", marker), io.Discard)
+	if err == nil {
+		t.Fatal("a run whose worker died succeeded")
+	}
+	if n := decidesSeen(t, marker); n != 1 {
+		t.Fatalf("%d requests reached the worker; none may follow the terminal failure", n)
+	}
+	var wf *worker.Failure
+	if !errors.As(err, &wf) || wf.Class != worker.ClassCrash {
+		t.Fatalf("the worker failure is not in the chain: %v (%#v)", err, wf)
+	}
+	var se *ExecutionStabilityError
+	if !errors.As(err, &se) || !se.Terminal || se.Failure != wf || se.State != worker.StateFailed || se.StartPID == 0 || se.StartStarts != 1 {
+		t.Fatalf("stability error %#v", se)
+	}
+	if se.StatusError == "" || !strings.Contains(err.Error(), "final status could not be read") || !strings.Contains(err.Error(), "worker_crash") ||
+		!strings.Contains(err.Error(), "nothing is recorded") || !strings.Contains(err.Error(), "source "+setup.ClefFlash+" on cuda") {
+		t.Fatalf("message %q", err)
+	}
+	if got := runsOnDisk(h); len(got) != 0 {
+		t.Fatalf("an unstable run left evidence %v", got)
+	}
+}
+
+// A healthy worker's own request error is the run's data, not a reason to
+// stop: every request is sent and the run is not an unstable one.
+func TestExecuteHealthyInferenceErrorsDoNotAbort(t *testing.T) {
+	h, _ := forgeHome(t)
+	marker := t.TempDir()
+	res, err := RunExecution(context.Background(), h, ExecuteParams{Target: sourceTarget("cuda", "float32"), Input: execInput()}, execDeps(t, "decide_error", marker), io.Discard)
+	var se *ExecutionStabilityError
+	if errors.As(err, &se) {
+		t.Fatalf("a healthy worker's error was treated as terminal: %v", err)
+	}
+	if n := decidesSeen(t, marker); n != 3 {
+		t.Fatalf("%d of 3 requests were sent (err %v, result %+v)", n, err, res)
+	}
+}
+
+// The stability error names what it knows and nothing more.
+func TestExecutionStabilityErrorProvenance(t *testing.T) {
+	failure := &worker.Failure{Class: worker.ClassUnresponsive, Message: "no response within 10m0s"}
+	unreadable := &ExecutionStabilityError{Target: "source clef-flash on cpu", State: worker.StateFailed, Starts: 1, StartPID: 4242, StartStarts: 1,
+		StatusError: "status: connection refused", Failure: failure, FailureDetail: failure.Message, Terminal: true}
+	msg := unreadable.Error()
+	for _, want := range []string{"source clef-flash on cpu", "worker state failed", "1 start(s)", "start pid 4242/starts 1", "final status could not be read: status: connection refused",
+		"worker_unresponsive: no response within 10m0s", "terminal worker failure", "nothing is recorded"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message lacks %q: %s", want, msg)
+		}
+	}
+	var wf *worker.Failure
+	if !errors.As(fmt.Errorf("the reference execution failed: %w", unreadable), &wf) || wf != failure {
+		t.Fatal("the worker failure is not reachable through wrapping")
+	}
+
+	changed := &ExecutionStabilityError{Target: "variant v on cuda", State: worker.StateReady, Starts: 2, StartPID: 10, StartStarts: 1, EndPID: 10, EndStarts: 2,
+		Changed: []string{"worker start count (1 -> 2)"}}
+	msg = changed.Error()
+	if !strings.Contains(msg, "end pid 10/starts 2") || !strings.Contains(msg, "changed: worker start count (1 -> 2)") ||
+		strings.Contains(msg, "could not be read") || strings.Contains(msg, "terminal") || errors.As(changed, &wf) && wf != failure {
+		t.Fatalf("identity-change message %q", msg)
+	}
+	if changed.Unwrap() != nil {
+		t.Fatal("an error without a worker failure wraps one")
+	}
 }

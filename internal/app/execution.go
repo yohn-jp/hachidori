@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/client"
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
@@ -116,6 +117,107 @@ func (e *ExecutionError) Unwrap() []error {
 		}
 	}
 	return errs
+}
+
+// Per-request timeouts of an isolated Forge execution worker. A CPU execution
+// is the deliberately slow reference path (correct-but-slow fallback kernels
+// are legitimate there), so it is allowed longer; a CUDA execution keeps the
+// tighter bound of a serving worker. Both are bounded, and neither changes the
+// serving timeout (server.workerConfig) or the startup timeout.
+const (
+	CPUExecutionRequestTimeout  = 10 * time.Minute
+	CUDAExecutionRequestTimeout = 2 * time.Minute
+)
+
+// ExecutionRequestTimeout is the per-request worker timeout of an isolated
+// execution on device ("cpu" or "cuda").
+func ExecutionRequestTimeout(device string) time.Duration {
+	if device == "cpu" {
+		return CPUExecutionRequestTimeout
+	}
+	return CUDAExecutionRequestTimeout
+}
+
+// ExecutionStabilityError is an execution whose worker was not provably the
+// same worker throughout the run. It carries the bounded provenance of the
+// worker and, when the supervisor recorded one, wraps the actual worker
+// failure so that errors.As reaches it: the first causal failure is authority.
+type ExecutionStabilityError struct {
+	Target  string
+	State   string // the supervisor state when the run ended
+	Starts  int    // supervisor start count when the run ended
+	Failure *worker.Failure
+	// FailureDetail is Failure's message as shown: redacted and bounded. The
+	// worker's own text stays on Failure for diagnostics, which redact it
+	// themselves.
+	FailureDetail string
+
+	StartPID, StartStarts int
+	EndPID, EndStarts     int
+	// StatusError is why the worker could not be read after the run; empty
+	// when it could, in which case Changed names what differed.
+	StatusError string
+	Changed     []string
+	// Terminal is set when the run was ended early because the worker was
+	// terminally lost; the remaining requests were not sent.
+	Terminal bool
+}
+
+func (e *ExecutionStabilityError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "the execution of %s did not stay the same worker throughout the run; nothing is recorded", e.Target)
+	fmt.Fprintf(&b, " (worker state %s, %d start(s), start pid %d/starts %d", e.State, e.Starts, e.StartPID, e.StartStarts)
+	switch {
+	case e.StatusError != "":
+		b.WriteString("; final status could not be read: " + e.StatusError)
+	default:
+		fmt.Fprintf(&b, ", end pid %d/starts %d", e.EndPID, e.EndStarts)
+		if len(e.Changed) > 0 {
+			b.WriteString("; changed: " + strings.Join(e.Changed, ", "))
+		}
+	}
+	b.WriteString(")")
+	if e.Terminal {
+		b.WriteString("; the run was ended at the first terminal worker failure")
+	}
+	if e.Failure != nil {
+		b.WriteString(": " + e.Failure.Class + ": " + e.FailureDetail)
+	}
+	return b.String()
+}
+
+func (e *ExecutionStabilityError) Unwrap() error {
+	if e.Failure == nil {
+		return nil
+	}
+	return e.Failure
+}
+
+// executionLaunch resolves the launch of the isolated worker and bounds its
+// per-request timeout by the execution device. The launch the serving
+// configuration resolves is not changed: only this session's copy is.
+func executionLaunch(deps ExecutionDeps, h home.Home, t ExecutionTarget, log io.Writer) (worker.Config, server.Runtime, error) {
+	cfg, rt, err := deps.Config(h, t, log)
+	if err != nil {
+		return cfg, rt, err
+	}
+	cfg.RequestTimeout = ExecutionRequestTimeout(t.Device)
+	return cfg, rt, nil
+}
+
+// executionTerminal is the single-worker run's abort rule: a worker-level
+// failure answered for a request, or a worker the supervisor has given up on
+// (FAILED; this session never restarts it), can only repeat the first causal
+// failure. A healthy worker's own request error (inference_failed and the
+// like) is not terminal.
+func executionTerminal(set *ResidentSet, hit *bool) func(error) bool {
+	return func(err error) bool {
+		var ae *client.APIError
+		if (errors.As(err, &ae) && ae.Class == api.ErrWorkerFailure) || set.State() == worker.StateFailed {
+			*hit = true
+		}
+		return *hit
+	}
 }
 
 // ExecutionDeps are the replaceable parts of RunExecution.
@@ -235,7 +337,7 @@ func RunExecution(ctx context.Context, h home.Home, p ExecuteParams, deps Execut
 			return res, &setup.PreflightError{Report: rep}
 		}
 	}
-	cfg, rt, err := deps.Config(h, t, log)
+	cfg, rt, err := executionLaunch(deps, h, t, log)
 	if err != nil {
 		return res, err
 	}
@@ -273,8 +375,10 @@ func RunExecution(ctx context.Context, h home.Home, p ExecuteParams, deps Execut
 	go srv.Serve(ln)
 	defer srv.Close()
 	in := p.Input
+	var terminal bool
 	run, err := eval.RunResident(client.New("http://"+ln.Addr().String()), in.Cases, in.DatasetSHA256, in.Labelled, model.ID,
-		eval.ResidentOptions{Options: eval.Options{Warmup: in.Warmup, Passes: in.Passes}, HighConfidence: in.HighConfidence})
+		eval.ResidentOptions{Options: eval.Options{Warmup: in.Warmup, Passes: in.Passes}, HighConfidence: in.HighConfidence,
+			Terminal: executionTerminal(set, &terminal)})
 	if cerr := ctx.Err(); cerr != nil {
 		return res, fmt.Errorf("execution cancelled: %w", cerr)
 	}
@@ -282,8 +386,8 @@ func RunExecution(ctx context.Context, h home.Home, p ExecuteParams, deps Execut
 		return res, err
 	}
 	run.Endpoint, run.Dataset = "forge-execution", in.Dataset
-	if !run.Run.ResidentStable {
-		return res, errors.New("the execution worker did not stay the same worker throughout the run; nothing is recorded")
+	if !run.Run.ResidentStable || terminal {
+		return res, stabilityError(t, set, run.Run, terminal, scrub)
 	}
 	if err := verifyExecution(t, model, v, run.Run.Identity.Provider); err != nil {
 		return res, fmt.Errorf("execution provenance of the recorded run: %w", err)
@@ -297,6 +401,30 @@ func RunExecution(ctx context.Context, h home.Home, p ExecuteParams, deps Execut
 		return res, fmt.Errorf("the run could not be recorded: %w", err)
 	}
 	return ExecutionResult{EvidenceID: rec.ID, Target: ft, Observations: len(run.Run.Observations), ErrorCount: run.Run.ErrorCount}, nil
+}
+
+// stabilityError is the failure of a run that is not provably one worker: its
+// provenance from the run's own readings, and the supervisor's last failure.
+func stabilityError(t ExecutionTarget, set *ResidentSet, run eval.ModelRun, terminal bool, scrub redact.Scrubber) *ExecutionStabilityError {
+	snap := set.Snapshot()
+	e := &ExecutionStabilityError{Target: t.String(), State: snap.State, Starts: snap.Starts, Failure: set.Default().Supervisor.LastFailure(),
+		StartPID: run.Identity.WorkerPID, StartStarts: run.Identity.WorkerStarts,
+		EndPID: run.IdentityEnd.WorkerPID, EndStarts: run.IdentityEnd.WorkerStarts, Terminal: terminal}
+	if in := run.Instability; in != nil {
+		e.StatusError, e.Changed = scrub.Line(in.StatusError, 512), in.Changed
+	}
+	// The supervisor records a dead worker's failure moments after the request
+	// that saw it died; give it a bounded moment rather than lose the cause.
+	for deadline := time.Now().Add(2 * time.Second); e.Failure == nil && (terminal || e.StatusError != "") && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		e.Failure = set.Default().Supervisor.LastFailure()
+	}
+	if e.Failure != nil {
+		e.FailureDetail = scrub.Line(e.Failure.Message, 512)
+	}
+	snap = set.Snapshot()
+	e.State, e.Starts = snap.State, snap.Starts
+	return e
 }
 
 // forgeTarget is the identity a recorded run is bound to: the resolved
