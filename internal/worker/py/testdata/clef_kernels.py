@@ -237,7 +237,9 @@ class KernelTests(unittest.TestCase):
             module = qwen()
             provider = ClefProvider('model', device, {'files': {}})
             with patch.dict(sys.modules, kernel_modules()):
-                provider.kernel_paths = configure(module, torch(), device, 'bfloat16')
+                provider.kernel_paths = configure(
+                    module, torch(), device, 'bfloat16',
+                    platform='win32' if device == 'cuda' else 'linux')
             provider.transformers = types.SimpleNamespace(__version__='5.17.0')
             provider.quantized = 7
             provider.want_dtype = 'bfloat16'
