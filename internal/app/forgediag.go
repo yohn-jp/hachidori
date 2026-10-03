@@ -15,6 +15,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/optimize"
+	"github.com/yohn-jp/hachidori/internal/redact"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -394,6 +395,32 @@ func optimizationOf(r home.Recipe, engine, version string) *diagnostics.ForgeOpt
 		o.Preserved = append(o.Preserved, p.Pattern)
 	}
 	return o
+}
+
+// ConsoleTail is the operator console's view of the setup log: the last
+// diagnostics.MaxForgeLogLines lines of the most recent section of this kind
+// of operation, each scrubbed and bounded exactly like a Forge diagnostic's
+// log tail (paths and secrets replaced, at most diagnostics.MaxForgeLineBytes
+// per line). at is when the log was last written: output the backend really
+// produced, zero when there is no log. It is read-only; an unreadable log is
+// an empty tail.
+func ConsoleTail(root, kind string) (lines []string, at time.Time) {
+	if root == "" {
+		return nil, time.Time{}
+	}
+	path := SetupLogPath(root)
+	raw, err := logTail(path, kind, diagnostics.MaxForgeLogLines)
+	if err != nil && len(raw) == 0 {
+		return nil, time.Time{}
+	}
+	s := redact.New(root)
+	for _, l := range raw {
+		lines = append(lines, s.Line(l, diagnostics.MaxForgeLineBytes))
+	}
+	if fi, err := os.Stat(path); err == nil {
+		at = fi.ModTime()
+	}
+	return lines, at
 }
 
 // logTail returns the last lines of the setup log's most recent section of

@@ -240,7 +240,11 @@ type Operation struct {
 	ForgeResolution *ForgeBuildEvaluateResolution `json:"forge_resolution,omitempty"`
 	Started         time.Time                     `json:"started"`
 	Finished        time.Time                     `json:"finished,omitzero"`
-	Failure         *Failure                      `json:"failure,omitempty"`
+	// Activity is when the operation last reported a phase or step: the
+	// latest real backend movement, never a timer. It is Started until the
+	// first report.
+	Activity time.Time `json:"activity,omitzero"`
+	Failure  *Failure  `json:"failure,omitempty"`
 	// Cancellable is always false: setup materialization is not safely
 	// interruptible, and Stop/Restart are bounded by the worker's own
 	// shutdown timeout.
@@ -545,6 +549,7 @@ func (c *Controller) notify() {
 func (c *Controller) begin(kind, device, model string) *Operation {
 	c.seq++
 	op := &Operation{ID: fmt.Sprintf("op-%d-%d", time.Now().UnixMilli(), c.seq), Kind: kind, Device: device, Model: model, Started: time.Now()}
+	op.Activity = op.Started
 	c.op, c.opDone = op, make(chan struct{})
 	c.notify()
 	return op
@@ -707,12 +712,14 @@ func (c *Controller) observerFor(op *Operation) *setup.Observer {
 			op.Phase = string(ph)
 			op.Phases = append(op.Phases, string(ph))
 			op.Progress = nil // a step belongs to the phase it was reported in
+			op.Activity = time.Now()
 			c.notify()
 			c.mu.Unlock()
 		},
 		OnProgress: func(pr setup.Progress) {
 			c.mu.Lock()
 			op.Progress = &pr
+			op.Activity = time.Now()
 			c.notify()
 			c.mu.Unlock()
 		},

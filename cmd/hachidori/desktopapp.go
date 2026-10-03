@@ -583,8 +583,19 @@ func modelOp(o *app.Operation, root string) *dashboard.ModelOp {
 	if o.Failure != nil {
 		op.Failure, op.FailurePhase, op.FailureStep, op.Diagnostic = o.Failure.Message, o.Failure.Phase, o.Failure.Step, o.Failure.Diagnostic
 	}
+	op.Activity = o.Activity
 	if root != "" {
 		op.Log = app.SetupLogPath(root)
+		var at time.Time
+		op.Console, at = app.ConsoleTail(root, o.Kind)
+		// The tail is the newest section of this kind of action. It is this
+		// action's own output only when it was last written within the action's
+		// lifetime; otherwise a newer action of the kind owns it.
+		if !at.IsZero() && !at.Before(o.Started) && (o.Finished.IsZero() || !at.After(o.Finished.Add(2*time.Second))) {
+			op.ConsoleAt = at
+		} else {
+			op.Console = nil
+		}
 	}
 	return op
 }

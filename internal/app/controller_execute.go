@@ -203,6 +203,7 @@ func (c *Controller) phase(op *Operation, ph string) {
 	c.mu.Lock()
 	op.Phase = ph
 	op.Phases = append(op.Phases, ph)
+	op.Activity = time.Now()
 	c.notify()
 	c.mu.Unlock()
 }
