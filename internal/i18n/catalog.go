@@ -950,7 +950,7 @@ var ja = map[string]string{
 	"Auto":                       "自動",
 	"Override":                   "上書き",
 	"Auto uses the backend's validated defaults. Overrides are pinned for this operation and are never silently replaced.": "自動ではバックエンドが検証した既定値を使います。上書き値はこの操作に固定され、暗黙に置き換えられません。",
-	"Auto requires a valid active variant; pin a device when none is active.":                                              "自動には有効なバリアントが有効化されている必要があります。有効なバリアントがない場合はデバイスを指定してください。",
+	"Auto uses the device from a valid active runtime/model activation; pin a device when none is active.":                 "自動では有効なランタイム／モデルの有効化記録からデバイスを選びます。有効な記録がない場合はデバイスを指定してください。",
 	"Provisioning": "リソース準備",
 	"Auto · materialize missing prerequisites when required": "自動 · 必要な場合に不足する前提リソースを展開",
 	"Do not provision":               "展開しない",
