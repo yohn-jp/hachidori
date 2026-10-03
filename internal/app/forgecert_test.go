@@ -264,6 +264,7 @@ func TestForgeCertificationRejectionIsRecordedAndActivatesNothing(t *testing.T) 
 
 // 3: the candidate must be exactly the variant, by identity and manifest.
 func TestForgeCertificationRefusesACandidateThatIsNotTheExactVariant(t *testing.T) {
+	forgeSource(t) // Install the shared read-only catalog before parallel cases start.
 	for name, bend := range map[string]func(*eval.ForgeRun){
 		"another manifest": func(r *eval.ForgeRun) { r.Target.VariantManifestSHA256 = strings.Repeat("0", 64) },
 		"another variant":  func(r *eval.ForgeRun) { r.Target.Variant = "clef-flash--w4a16--000000000000" },
@@ -272,6 +273,7 @@ func TestForgeCertificationRefusesACandidateThatIsNotTheExactVariant(t *testing.
 		"another device":   func(r *eval.ForgeRun) { r.Target.Device = "cpu" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newCertEnv(t)
 			e.deps.Execute = func(ctx context.Context, root string, p ExecuteParams, log io.Writer) (ExecutionResult, error) {
 				res, err := e.execute(ctx, root, p, log)
@@ -325,6 +327,7 @@ func TestForgeCertificationRefusesAWorkerThatLoadedTheSource(t *testing.T) {
 
 // 5, 6: the two runs must be the same semantic evaluation input, by digest.
 func TestForgeCertificationRefusesRunsOfDifferentEvaluationInputs(t *testing.T) {
+	forgeSource(t) // Keep the catalog immutable while independent cases run.
 	for name, tc := range map[string]struct {
 		bend func(*ExecuteParams)
 		want string
@@ -345,6 +348,7 @@ func TestForgeCertificationRefusesRunsOfDifferentEvaluationInputs(t *testing.T) 
 		}, "observation order differs"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newCertEnv(t)
 			e.deps.Execute = func(ctx context.Context, root string, p ExecuteParams, log io.Writer) (ExecutionResult, error) {
 				if p.Target.Kind == eval.ForgeTargetVariant {

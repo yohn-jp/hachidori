@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -137,9 +138,13 @@ func forgeSource(t *testing.T) home.Home {
 	if err := home.WriteJSON(filepath.Join(dir, "hachidori-model.json"), m); err != nil {
 		t.Fatal(err)
 	}
-	old := setup.Models
-	setup.Models = []home.ModelManifest{m}
-	t.Cleanup(func() { setup.Models = old })
+	// A parent may install this catalog before running independent subtests.
+	// Do not mutate package state from those parallel fixtures.
+	if len(setup.Models) != 1 || !reflect.DeepEqual(setup.Models[0], m) {
+		old := setup.Models
+		setup.Models = []home.ModelManifest{m}
+		t.Cleanup(func() { setup.Models = old })
+	}
 	for _, device := range []string{"cpu", "cuda"} {
 		spec, err := setup.Desired(device)
 		if err != nil {
