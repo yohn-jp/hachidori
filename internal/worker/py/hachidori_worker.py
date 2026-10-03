@@ -127,20 +127,25 @@ def fla_clef_conv(conv, hidden_states, weight, bias=None, activation=None, **kwa
     return output.transpose(1, 2)
 
 
-def configure_clef_kernels(qwen, torch, device, dtype):
+def configure_clef_kernels(qwen, torch, device, dtype, platform=None):
     """Bind upstream FLA kernels for supported CUDA inference, or explicit refs.
 
     Import success establishes availability only. Successful calls through these
     bindings establish active execution; failures propagate without CPU or
     reference retries. The resident never downloads or kernelizes from the Hub.
     """
+    platform = platform or sys.platform
     reason = "CPU reference execution"
     supported = False
     if device == "cuda":
         capability = torch.cuda.get_device_capability()
-        supported = capability[0] >= 8 and dtype == "bfloat16"
-        reason = ("Triton 3.6 requires CUDA compute capability >= 8.0" if capability[0] < 8
-                  else "float32 uses the high-precision reference path")
+        supported = platform == "win32" and capability[0] >= 8 and dtype == "bfloat16"
+        if platform != "win32":
+            reason = "optimized Clef kernels are supported only on native Windows"
+        elif capability[0] < 8:
+            reason = "Triton 3.6 requires CUDA compute capability >= 8.0"
+        else:
+            reason = "float32 uses the high-precision reference path"
     bindings = [
         ("causal_conv1d_fn", "causal_conv1d_fn"),
         ("torch_chunk_gated_delta_rule", "chunk_gated_delta_rule"),
