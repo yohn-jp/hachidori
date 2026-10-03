@@ -9,8 +9,10 @@ package dashboard
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/yohn-jp/hachidori/internal/redact"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
@@ -304,6 +306,7 @@ type nextStart struct {
 	// Variant is the variant the activation record selects ("" for the source
 	// artifact) and VariantDiffers whether the runtime executes another one.
 	Variant        string
+	VariantLabel   string // the operator's name of Variant, from the inventory's manifest
 	VariantDiffers bool
 	// Problem is why the active pair cannot be started by this build.
 	Problem    string
@@ -322,6 +325,7 @@ func nextOf(st ModelsState, rt server.Runtime) *nextStart {
 			}
 		}
 		n.Variant = a.Variant
+		n.VariantLabel = variantLabels(st.Inventory.Variants)[a.Variant]
 		running := ""
 		if rt.Variant != nil {
 			running = rt.Variant.ID
@@ -330,4 +334,138 @@ func nextOf(st ModelsState, rt server.Runtime) *nextStart {
 		n.Differs = n.Model != "" && (n.Model != rt.ModelID || n.Device != rt.Device || n.VariantDiffers)
 	}
 	return n
+}
+
+// Workspaces that own a long-running operation. The owning workspace shows its
+// full phases, progress and console while it runs; every other workspace shows
+// only the compact headline in the shell and, once it ends, a compact summary.
+const (
+	ownerModels = "models"
+	ownerForge  = "forge"
+)
+
+// opOwners is where each operation is started and followed. An operation kind
+// that is not listed (an update download, which has its own panel) belongs to
+// no maintenance workspace.
+var opOwners = map[string]string{
+	"setup": ownerModels, "materialize": ownerModels, "repair": ownerModels, "activate": ownerModels,
+	"verify": ownerModels, "remove": ownerModels, "desired_state": ownerModels,
+	"optimize": ownerForge, "certify": ownerForge, "forge_certify": ownerForge, "forge_build_evaluate": ownerForge,
+	"preflight": ownerForge, "probe": ownerForge, "execute": ownerForge, "apply": ownerForge,
+}
+
+// opKindLabels name an operation kind for the operator. The raw kind stays on
+// the element (data-kind) for evidence and tests.
+var opKindLabels = map[string]string{
+	"setup": "Set up", "materialize": "Materialize", "repair": "Repair", "activate": "Activate",
+	"verify": "Verify", "remove": "Remove", "desired_state": "Apply desired state",
+	"optimize": "Build variant", "certify": "Certify variant", "forge_certify": "Certify variant",
+	"forge_build_evaluate": "Build and evaluate", "preflight": "Preflight", "probe": "Probe variant",
+	"execute": "Execute", "apply": "Apply variant", "update": "Update",
+}
+
+// opOutcomes state what a successfully finished operation did, in the words the
+// owning action already uses. They restate the plan the operation completed;
+// they add no measurement.
+var opOutcomes = map[string]string{
+	"setup":                "Runtime and model are set up and activated.",
+	"materialize":          "Materialized. It is not activated until you activate it.",
+	"repair":               "Repaired and verified.",
+	"activate":             "Activated. A running worker keeps its current runtime until you restart it.",
+	"verify":               "Verified against its pinned digest.",
+	"remove":               "Removed from HACHIDORI_HOME.",
+	"desired_state":        "Desired state applied: the runtime serves the requested target.",
+	"optimize":             "Variant built.",
+	"certify":              "Certification recorded.",
+	"forge_certify":        "Certification recorded.",
+	"forge_build_evaluate": "Candidate built and evaluated. Applying it stays your decision.",
+	"preflight":            "Preflight recorded.",
+	"probe":                "Probe recorded.",
+	"apply":                "Applied: the runtime is READY on the variant and answered a typed decision.",
+	"update":               "The update was downloaded and verified.",
+}
+
+func opOwner(kind string) string { return opOwners[kind] }
+
+// OwnedBy reports whether the workspace nav owns the operation.
+func (o ModelOp) OwnedBy(nav string) bool { return opOwners[o.Kind] == nav }
+
+// opLabel is the operator's name of an operation kind.
+func opLabel(kind string) string {
+	if l, ok := opKindLabels[kind]; ok {
+		return l
+	}
+	return kind
+}
+
+// opOutcome is what a successfully finished operation accomplished, or "".
+func opOutcome(o ModelOp) string {
+	if o.Failure != "" {
+		return ""
+	}
+	return opOutcomes[o.Kind]
+}
+
+// opTarget is what an operation acted on: its device, model and target.
+func opTarget(o ModelOp) string {
+	return strings.Join(strings.Fields(o.Device+" "+o.Model+" "+o.Target), " ")
+}
+
+// opHref is where an operation is followed.
+func opHref(kind string) string {
+	switch opOwners[kind] {
+	case ownerModels:
+		return "/models"
+	case ownerForge:
+		return "/forge"
+	}
+	if kind == "update" {
+		return "/settings/updates"
+	}
+	return "/"
+}
+
+// LastActivity is the latest real backend movement of the operation: the later
+// of its last reported phase or step and the last write of its own log output.
+// It is zero when the backend reported none; it is never the dashboard's clock.
+func (o ModelOp) LastActivity() time.Time {
+	if o.ConsoleAt.After(o.Activity) {
+		return o.ConsoleAt
+	}
+	return o.Activity
+}
+
+// Console bounds. The adapter already scrubs and bounds the tail; the
+// dashboard repeats both so that no source can widen what the console shows.
+const (
+	consoleLines     = 100
+	consoleLineBytes = 512
+)
+
+// consoleTail is the bounded, redacted recent output of an operation.
+func consoleTail(o ModelOp) []string {
+	lines := o.Console
+	if len(lines) > consoleLines {
+		lines = lines[len(lines)-consoleLines:]
+	}
+	s := redact.New("")
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, s.Line(l, consoleLineBytes))
+	}
+	return out
+}
+
+// opHeadline is the compact line every workspace shows while an operation is
+// running: what it is, where it is and how long it has run. It is the only
+// view of a running operation outside the workspace that owns it.
+type opHeadline struct {
+	Label, Position, Elapsed, Href, Kind string
+}
+
+func headlineOf(o *ModelOp) *opHeadline {
+	if o == nil || !o.Finished.IsZero() {
+		return nil
+	}
+	return &opHeadline{Label: opLabel(o.Kind), Position: phasePosition(*o), Elapsed: since(o.Started), Href: opHref(o.Kind), Kind: o.Kind}
 }

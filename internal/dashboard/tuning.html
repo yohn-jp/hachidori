@@ -26,7 +26,7 @@
     </dl>
     {{with .Regression}}
     <h3>{{t "Measured regression"}}</h3>
-    <p class="note">{{t "MEASURED from compatible evidence: the same source model, dataset and question identities. Choice accuracy of the candidate against the source model."}}</p>
+    <p class="note prose">{{t "MEASURED from compatible evidence: the same source model, dataset and question identities. Choice accuracy of the candidate against the source model."}}</p>
     <div class="table-wrap"><table class="data" id="tuning-regression-table">
       <caption class="vh">{{t "Measured accuracy regression"}}</caption>
       <thead><tr><th scope="col">{{t "Question"}}</th><th scope="col">{{t "Observations"}}</th><th scope="col">{{t "Source model"}}</th><th scope="col">{{t "Candidate"}}</th></tr></thead>
@@ -100,7 +100,7 @@
     {{end}}
 
     <h3>{{t "Measured quality difference"}}</h3>
-    <p class="note">{{t "MEASURED from compatible evidence: the same source model, dataset and question identities. Differences are B minus A and do not say which candidate is better."}}</p>
+    <p class="note prose">{{t "MEASURED from compatible evidence: the same source model, dataset and question identities. Differences are B minus A and do not say which candidate is better."}}</p>
     <div class="table-wrap"><table class="data" id="tuning-compare-quality-table">
       <caption class="vh">{{t "Measured quality difference"}}</caption>
       <thead><tr><th scope="col">{{t "Measure"}}</th><th scope="col">{{t "State"}}</th><th scope="col">{{t "Candidate A"}}</th><th scope="col">{{t "Candidate B"}}</th><th scope="col">{{t "B - A"}}</th><th scope="col">{{t "Basis"}}</th></tr></thead>
@@ -130,8 +130,8 @@
           <td><span class="note">{{t .Basis}}</span></td></tr>{{end}}
       </tbody>
     </table></div>
-    <p class="note">{{t "Resource figures are shown only where both candidates' evidence records them. NOT_CHECKED means no valid evidence exists; nothing is estimated in its place."}}</p>
-    <p class="note" id="tuning-compare-no-attribution">{{t "This comparison states what was measured and how the profiles differ. It does not show which profile difference caused a measured difference, and it makes no recommendation."}}</p>
+    <p class="note prose">{{t "Resource figures are shown only where both candidates' evidence records them. NOT_CHECKED means no valid evidence exists; nothing is estimated in its place."}}</p>
+    <p class="note prose" id="tuning-compare-no-attribution">{{t "This comparison states what was measured and how the profiles differ. It does not show which profile difference caused a measured difference, and it makes no recommendation."}}</p>
     {{end}}
   </section>
   {{end}}
@@ -161,7 +161,7 @@
           <input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="source" value="{{$.Tuning.Source}}">{{if $.Tuning.Saved}}<input type="hidden" name="profile" value="{{$.Tuning.ProfileID}}">{{end}}
           <label class="check"><input type="radio" name="budget_mode" value="auto"{{if .Auto}} checked{{end}}> {{t "Auto"}}</label>
           <label class="check"><input type="radio" name="budget_mode" value="explicit"{{if not .Auto}} checked{{end}}> {{t "Override"}}</label>
-          <input name="budget_gib" value="{{.OverrideGiB}}" inputmode="decimal" aria-label="{{t "Memory budget in GiB"}}" placeholder="GiB" style="max-width:7rem">
+          <input name="budget_gib" value="{{.OverrideGiB}}" inputmode="decimal" aria-label="{{t "Memory budget in GiB"}}" placeholder="GiB">
           <button type="submit" class="btn">{{t "Save budget"}}</button>
         </form>
       </details>
@@ -260,7 +260,7 @@
     </dl>
     <h3>{{t "Region mapping"}}</h3>
     {{range .Regions}}
-    <details class="inline" data-evidence-region="{{.RegionID}}"><summary><span class="mono">{{.RegionID}}</span> · {{.Mode}}{{if .Preserved}} · {{.Precision}}{{end}}</summary>
+    <details class="inline" id="evidence-region-{{.RegionID}}" data-evidence-region="{{.RegionID}}"><summary><span class="mono">{{.RegionID}}</span> · {{.Mode}}{{if .Preserved}} · {{.Precision}}{{end}}</summary>
       {{with .RecipePatterns}}<p class="note">{{t "Recipe patterns"}}: <span class="mono">{{range .}}{{.}} {{end}}</span></p>{{end}}
       {{with .Modules}}<pre>{{range .}}{{.}}
 {{end}}</pre>{{end}}

@@ -243,11 +243,14 @@ func TestIrreversibleActionsConfirm(t *testing.T) {
 func TestLiveRefreshIsBoundedAndQuiet(t *testing.T) {
 	e := newEnv(t)
 	body := e.get(t, "/").Body.String()
-	for _, want := range []string{`if (document.hidden) return;`, `if (dst.innerHTML !== src.innerHTML) dst.innerHTML = src.innerHTML;`,
+	for _, want := range []string{`if (document.hidden) return;`, `hachidoriUI.swap(dst, src);`,
 		`document.addEventListener("visibilitychange"`, `<span class="vh" id="sync-live" role="status"></span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("runtime page lacks %q", want)
 		}
+	}
+	if !strings.Contains(body, `if (dst.innerHTML === src.innerHTML) return false;`) {
+		t.Error("the shared swap does not leave an unchanged slot alone")
 	}
 	if regexp.MustCompile(`id="sync-text"[^>]*(role=|aria-live)`).MatchString(body) {
 		t.Error("the ticking sync timestamp is a live region")

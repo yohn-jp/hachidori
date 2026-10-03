@@ -39,7 +39,7 @@
   /* geometry */
   --r: 6px; --r-lg: 8px; --r-pill: 99px;  /* radius is for controls and transient surfaces, never for grouping content */
   --ctl-h: 2rem;           /* buttons, inputs, selects: one control height */
-  --measure: 72ch;         /* prose measure: ledes, notes, explanations */
+  --measure: 72ch;         /* long-form prose only (.lede, .prose, .empty): a short helper or label uses its container's width */
   --ws-max: 88rem;         /* workspace content width on wide windows */
   --col-min: 14rem;        /* narrowest column that may hold a label and a machine identity */
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, .32);  /* the only elevation: dialogs and popovers */
@@ -97,24 +97,40 @@ code, pre, .mono { font-family: var(--mono); font-size: .92em; }
 .skip { position: absolute; left: -999px; top: var(--sp-2); z-index: 20; padding: var(--sp-2) var(--sp-3); border-radius: var(--r); background: var(--surface); color: var(--text); }
 .skip:focus { left: var(--sp-3); }
 .lede { color: var(--text-2); max-width: var(--measure); }
-.note { font-size: var(--fs-small); color: var(--text-3); max-width: var(--measure); }
+/* A note is short helper text: it fills the width of the section that holds it
+   and wraps only where that width ends. Long explanatory paragraphs opt in to
+   a reading measure with .prose. */
+.note { font-size: var(--fs-small); color: var(--text-3); text-wrap: pretty; }
 .note code { color: var(--text-2); }
+.prose { max-width: var(--measure); text-wrap: pretty; }
 .empty { color: var(--text-3); max-width: var(--measure); }
+h1, h2 { text-wrap: balance; }
 .sub { color: var(--text-3); font-size: var(--fs-small); font-weight: 400; }
 .stack { display: grid; gap: var(--sp-3); align-content: start; min-width: 0; }
 
 /* ---- state vocabulary ---------------------------------------------------- */
-.dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+/* Every state is carried by its word and by the shape of its glyph, never by
+   color alone: ok is a filled disc, attention a triangle, failure a diamond, idle
+   a hollow ring, work in progress a pulsing disc. A glyph is .dot, a .badge, a
+   .semantic-state or a .status word. */
+.dot, .badge::before, .semantic-state::before, .status::before { content: ""; display: inline-block; width: 8px; height: 8px; box-sizing: border-box; border: 1.5px solid currentColor;
+  background: var(--glyph-fill, currentColor); clip-path: var(--glyph-clip, circle(50%)); flex: none; }
+.tone-ok, .tone-active { --glyph-clip: circle(50%); --glyph-fill: currentColor; }
+.tone-warn { --glyph-clip: polygon(50% 0, 100% 100%, 0 100%); --glyph-fill: currentColor; }
+.tone-bad { --glyph-clip: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); --glyph-fill: currentColor; }
+.tone-idle { --glyph-clip: circle(50%); --glyph-fill: transparent; }
+.dot { vertical-align: middle; }
 /* Only work in progress moves; a warning or failure holds still. */
 .tone-active .dot { animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 .badge { display: inline-flex; align-items: center; gap: .35rem; padding: .125rem var(--sp-2); border-radius: var(--r-pill); font-size: var(--fs-label); font-weight: 650; letter-spacing: .05em;
   text-transform: uppercase; white-space: nowrap; color: var(--tone, var(--idle)); background: var(--tone-soft, var(--idle-soft)); }
-.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.state-word { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-figure); font-weight: 700; line-height: 1.15; letter-spacing: .05em; text-transform: uppercase; color: var(--tone); }
-.state-word .dot { width: 10px; height: 10px; }
+.badge::before, .semantic-state::before, .status::before { width: 8px; height: 8px; }
+.status { display: inline-flex; align-items: center; gap: .35rem; font-size: var(--fs-label); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; color: var(--tone, var(--text)); }
+.state-word { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-figure); font-weight: 700; line-height: 1.15; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; color: var(--tone); }
+.state-word .dot { width: 12px; height: 12px; }
 .state-word.compact { font-size: var(--fs-value); letter-spacing: .06em; }
-.state-word.compact .dot { width: 8px; height: 8px; }
+.state-word.compact .dot { width: 9px; height: 9px; }
 /* A message colors its text and rule by state; it never fills the surface. */
 .msg { padding: var(--sp-2) var(--sp-3); border-radius: var(--r); border: 1px solid var(--line); overflow-wrap: anywhere; max-width: var(--ws-max); }
 .msg.bad { border-color: var(--bad); color: var(--bad); }
@@ -141,42 +157,76 @@ code, pre, .mono { font-family: var(--mono); font-size: .92em; }
 .intent dd { display: grid; gap: var(--sp-1); align-content: start; min-width: 0; margin: 0; padding: var(--sp-3) 0; border-top: 1px solid var(--line); }
 .intent dd > .value { font-size: var(--fs-value); font-weight: 600; overflow-wrap: break-word; }
 .intent dd > .value.tone-ok, .intent dd > .value.tone-warn, .intent dd > .value.tone-bad { color: var(--tone); }
-.intent dd select, .intent dd input { max-width: 28rem; }
 .intent-action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--line); }
 @media (max-width: 40rem) { .intent { grid-template-columns: minmax(0, 1fr); } .intent dd { border-top: 0; padding-top: 0; } }
 
 /* ---- controls ------------------------------------------------------------- */
+/* Actions. A secondary action is the plain .btn; the one primary action of a
+   region is .primary; a destructive action is .danger, whose outline and red
+   text are the same everywhere (it is never a bare colored word, even when
+   .quiet drops the other buttons' outline). */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: var(--ctl-h); padding: .3rem .85rem; border-radius: var(--r); border: 1px solid var(--line-2);
   background: var(--raised); color: var(--text); font: inherit; font-size: var(--fs-body); font-weight: 560; line-height: 1.3; text-decoration: none; cursor: pointer; white-space: nowrap;
   transition: background var(--dur-fast), border-color var(--dur-fast); }
 .btn:hover:not(:disabled) { border-color: var(--text-3); }
+.btn:active:not(:disabled) { background: var(--inset); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 86%, var(--text)); }
 .btn.quiet { background: transparent; border-color: transparent; color: var(--text-2); }
 .btn.quiet:hover:not(:disabled) { background: var(--raised); color: var(--text); border-color: transparent; }
-.btn.danger { background: transparent; color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line-2)); }
-.btn.danger:hover:not(:disabled) { background: var(--bad-soft); border-color: var(--bad); }
-.btn.danger.quiet { border-color: transparent; }
-.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.danger, .btn.danger.quiet { background: transparent; color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line-2)); }
+.btn.danger:hover:not(:disabled), .btn.danger.quiet:hover:not(:disabled) { background: var(--bad-soft); color: var(--bad); border-color: var(--bad); }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 /* Pending: the submitted control shows that its action is working until the
    response replaces the page. */
 .btn[aria-busy="true"] { cursor: progress; }
 .btn[aria-busy="true"]::after { content: ""; width: .7em; height: .7em; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+
+/* Entry controls share one box: the same height, radius, border, padding and
+   type, in one family of states. Structure, not a box size, tells them apart:
+   a .field holds one control and fills the width of its cell; .fields lays
+   several out in a grid; a numeric entry is as wide as its digits; a textarea
+   is the long-form entry; a .rows list holds repeatable options. */
 input, textarea, select { width: 100%; min-width: 0; min-height: var(--ctl-h); padding: .3rem .55rem; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--inset);
-  color: var(--text); font: inherit; font-size: var(--fs-body); }
+  color: var(--text); font: inherit; font-size: var(--fs-body); transition: border-color var(--dur-fast); }
 input[spellcheck="false"], textarea { font-family: var(--mono); font-size: var(--fs-code); }
 textarea { resize: vertical; line-height: 1.5; }
+input[type="number"], input[inputmode="decimal"], input[inputmode="numeric"] { width: 12ch; max-width: 100%; text-align: right; font-variant-numeric: tabular-nums; }
+/* A selection reads as one even when closed: a raised face and a pointer, with the
+   native arrow and the native keyboard and list behavior left in place. */
+select { background: var(--raised); cursor: pointer; padding-right: 1.75rem; text-overflow: ellipsis; }
+input:hover:not(:disabled):not([readonly]), textarea:hover:not(:disabled):not([readonly]), select:hover:not(:disabled) { border-color: var(--text-3); }
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline: var(--focus); outline-offset: 0; border-color: var(--accent); box-shadow: var(--focus-ring); }
-input::placeholder, textarea::placeholder { color: var(--text-3); }
-input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; accent-color: var(--accent); }
-textarea[readonly] { background: var(--surface); color: var(--text-2); }
-input[aria-invalid="true"], textarea[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--bad); }
+input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
+/* Read-only is a value you can select and copy but not change: a flat face and a
+   dashed border. Disabled is unavailable: faded, with a not-allowed pointer. */
+input[readonly], textarea[readonly] { background: var(--surface); color: var(--text-2); border-style: dashed; }
+input:disabled, textarea:disabled, select:disabled { background: var(--surface); color: var(--text-3); opacity: .6; cursor: not-allowed; }
+/* Invalid: a red border and a double rule, with the reason in a .field-error
+   beside the control (a mark and words, not color alone). */
+input[aria-invalid="true"], textarea[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--bad); border-style: double; border-width: 3px; padding-block: calc(.3rem - 2px); padding-inline: calc(.55rem - 2px); }
+.field-error { color: var(--bad); font-size: var(--fs-small); font-weight: 500; }
+.field-error::before { content: "\2715\00a0"; }
 .field { display: grid; gap: var(--sp-1); font-size: var(--fs-small); font-weight: 500; color: var(--text-2); min-width: 0; }
+/* An optional field says so in words, quietly. */
+.optional { font-weight: 400; color: var(--text-3); }
 .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: var(--sp-3); align-items: end; }
 .fields .wide { grid-column: 1 / -1; }
-label.check { display: flex; align-items: center; gap: var(--sp-2); color: var(--text); }
+/* Repeatable options: one structured grid whose header names the columns and
+   whose rows are divided by hairlines; the controls inside sit flat in it. */
+.rows { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(0, 2fr); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.rows > .h { padding: var(--sp-2) var(--sp-3); background: var(--raised); border-bottom: 1px solid var(--line); }
+.rows > input { border-color: transparent; border-radius: 0; border-bottom-color: var(--line); background: var(--inset); }
+.rows > input:last-child, .rows > input:nth-last-child(2) { border-bottom-color: transparent; }
+.rows > :nth-child(odd) { border-right: 1px solid var(--line); }
+.rows > input:focus-visible { border-color: var(--accent); position: relative; }
+.h.optional { font-weight: 400; }
+.h { font-size: var(--fs-label); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+label.check { display: flex; align-items: center; gap: var(--sp-2); color: var(--text); cursor: pointer; }
+input[type="checkbox"], input[type="radio"] { width: 1rem; height: 1rem; min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); flex: none; cursor: pointer; }
+input[type="checkbox"]:disabled, input[type="radio"]:disabled, label.check:has(:disabled) { cursor: not-allowed; }
 fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 legend { padding: 0; font-size: var(--fs-small); font-weight: 500; color: var(--text-2); }
 pre { margin: 0; padding: var(--sp-3); background: var(--inset); border: 1px solid var(--line); border-radius: var(--r); overflow: auto; max-height: 22rem; white-space: pre-wrap;
@@ -191,8 +241,9 @@ pre { margin: 0; padding: var(--sp-3); background: var(--inset); border: 1px sol
 @media (forced-colors: active) {
   :focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
   .badge, .msg, .btn { border: 1px solid CanvasText; }
+  input[readonly], textarea[readonly] { border-style: dashed; }
   .section { border-top-color: CanvasText; }
   .btn.primary { border-color: Highlight; }
-  .dot, .badge::before { background: CanvasText; forced-color-adjust: none; }
+  .dot, .badge::before, .semantic-state::before, .status::before { background: CanvasText; forced-color-adjust: none; }
   [aria-current] { outline: 2px solid Highlight; outline-offset: -2px; }
 }

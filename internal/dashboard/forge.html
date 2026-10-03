@@ -14,11 +14,11 @@
   </div>
   {{end}}
   {{with .Inventory.ActiveProblem}}<div class="last tone-bad" role="alert" id="active-problem"><strong>{{t "CANNOT START"}}</strong><span class="msg-text">{{t "The active runtime cannot be started by this version of Hachidori."}} {{.}}</span></div>{{end}}
-  {{with .Busy}}
+  {{with .Busy}}{{if .OwnedBy "forge"}}
   {{template "op-busy" .}}
   {{template "op-refresh" "forge-workspace"}}
-  {{end}}
-  {{with .Last}}{{template "op-last" .}}{{end}}
+  {{end}}{{end}}
+  {{with .Last}}{{if .OwnedBy "forge"}}{{template "op-last" .}}{{else}}{{template "op-last-compact" .}}{{end}}{{end}}
 
   <section id="forge-build" aria-labelledby="fb-h">
     <h2 class="vh" id="fb-h">{{t "Build candidate"}}</h2>
@@ -66,7 +66,7 @@
     {{range .Items}}{{$st := .Status}}
     <article class="candidate" data-variant="{{.ID}}" id="variant-{{.ID}}" data-fit="{{.Fit.Fit}}"{{if .Active}} aria-current="true"{{end}} aria-labelledby="vh-{{.ID}}">
       <div class="candidate-head">
-        <h3 class="id" id="vh-{{.ID}}">{{.ID}}</h3>
+        <h3{{if eq .Label .ID}} class="id"{{end}} id="vh-{{.ID}}" title="{{.ID}}">{{.Label}}</h3>
         <span class="badge tone-{{$st.Tone}}" data-status>{{t $st.Word}}</span>
       </div>
       <dl class="spec">
@@ -95,6 +95,7 @@
 
       {{template "operator-details-open" (disclosure (print "variant-details-" .ID) "Provenance and lifecycle")}}
       <dl class="kv">
+        <dt>{{t "Variant ID"}}</dt><dd class="mono" data-variant-id>{{.ID}}</dd>
         <dt>{{t "Source"}}</dt><dd class="mono">{{.SourceID}}@{{.SourceRevision}}{{if not .SourceMaterialized}} <span class="bad-t">{{t "source not materialized"}}</span>{{end}}</dd>
         <dt>{{t "Recipe"}}</dt><dd class="mono">{{.Recipe}} · {{.Engine}} {{.EngineVersion}}</dd>
         <dt>{{t "Precision"}}</dt><dd class="mono">{{.Scheme}} · {{.Bits}}-bit g{{.GroupSize}} · {{t "compute"}} {{.DType}} · {{t "preserved at higher precision"}}: {{len .Preserved}}</dd>
@@ -121,7 +122,7 @@
 
   {{if and .Controls .Items}}
   {{template "operator-advanced-open" (disclosure "forge-advanced" "Low-level and experimental activation")}}
-    <p class="note warn-t">{{t "These actions are not steps of the lifecycle above. They only change the activation record: a running worker keeps what it started with until you restart it, and nothing proves the variant serves. Use Apply for a certified variant."}}</p>
+    <p class="note prose warn-t">{{t "These actions are not steps of the lifecycle above. They only change the activation record: a running worker keeps what it started with until you restart it, and nothing proves the variant serves. Use Apply for a certified variant."}}</p>
     <div class="table-wrap"><table class="data" id="advanced-activation">
       <thead><tr><th scope="col">{{t "Variant"}}</th><th scope="col">{{t "Certification"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
       <tbody>{{range .Items}}{{if and (not .Problem) .SourceMaterialized}}
@@ -163,13 +164,13 @@
   </table></div>
   <section id="forge-readiness-region" aria-labelledby="fr-h">
     <h3 id="fr-h">{{t "Forge readiness"}}</h3>
-    <p class="note">{{t "A preflight reports what Hachidori can know before an expensive operation: integrity, runtime, recipe, disk, RAM and the requested device. It never claims that a model fits: an unknown stays unknown. A probe loads one persisted variant in its own worker and asks one typed decision; it is not a certification and changes no resident, activation or route."}}</p>
+    <p class="note prose">{{t "A preflight reports what Hachidori can know before an expensive operation: integrity, runtime, recipe, disk, RAM and the requested device. It never claims that a model fits: an unknown stays unknown. A probe loads one persisted variant in its own worker and asks one typed decision; it is not a certification and changes no resident, activation or route."}}</p>
     <div id="forge-readiness">
     {{range .Preflights}}{{template "forge-preflight" .}}{{else}}<p class="muted">{{t "No preflight recorded yet."}}</p>{{end}}
     {{if .Diagnostics}}
     <h4>{{t "Failure diagnostics"}}</h4>
     <ul class="diagnostics-list" id="forge-diagnostics">{{range .Diagnostics}}<li><a class="mono" href="/forge/diagnostics/{{.ID}}" download>{{.ID}}</a> · {{.Kind}}{{with .Phase}} · {{t "phase"}} {{.}}{{end}} · {{.Created}}<div class="muted">{{.Error}}</div></li>{{end}}</ul>
-    <p class="note">{{t "A diagnostic holds identities, versions, resource observations and a bounded, redacted error and log tail. It never holds weights, datasets or credentials. CLI:"}} <span class="mono">hachidori forge diagnostics list|show|export</span></p>
+    <p class="note prose">{{t "A diagnostic holds identities, versions, resource observations and a bounded, redacted error and log tail. It never holds weights, datasets or credentials. CLI:"}} <span class="mono">hachidori forge diagnostics list|show|export</span></p>
     {{end}}
     </div>
   </section>

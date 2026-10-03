@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/tuning"
 	"github.com/yohn-jp/hachidori/internal/tunnel"
 	"github.com/yohn-jp/hachidori/internal/worker"
@@ -398,4 +399,53 @@ type distView struct {
 
 func distOf(probs map[string]float64, choice, expected string) distView {
 	return distView{Rows: probRows(probs, choice), Expected: expected}
+}
+
+// modelTitle is a catalog model's display name: the words of its catalog ID
+// ("clef-flash" is "Clef Flash"). A catalog ID is a human slug, not an opaque
+// identity, so this is presentation of the catalog's own name.
+func modelTitle(id string) string {
+	words := strings.FieldsFunc(id, func(r rune) bool { return r == '-' || r == '_' })
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
+}
+
+// variantTitle is the operator's name of a variant, "Clef Flash · W4A16", from
+// the structured source model and weight scheme its manifest records. It is ""
+// unless both are known: the label is never reconstructed from the opaque
+// variant ID, and a caller without one shows the exact ID.
+func variantTitle(sourceID, scheme string) string {
+	if sourceID == "" || scheme == "" {
+		return ""
+	}
+	return modelTitle(sourceID) + " · " + scheme
+}
+
+// variantLabels names every variant of an inventory by its title. Variants of
+// the same source and scheme would read identically, so exactly those carry the
+// first eight digits of their manifest digest to tell them apart (or, with no
+// digest to use, their exact ID); the exact ID stays in each variant's details
+// and evidence.
+func variantLabels(vs []setup.VariantEntry) map[string]string {
+	count := map[string]int{}
+	for _, v := range vs {
+		count[variantTitle(v.SourceID, v.Scheme)]++
+	}
+	out := make(map[string]string, len(vs))
+	for _, v := range vs {
+		t := variantTitle(v.SourceID, v.Scheme)
+		switch {
+		case t == "":
+			out[v.ID] = v.ID
+		case count[t] > 1 && v.ManifestSHA256 == "":
+			out[v.ID] = v.ID // nothing structured tells them apart: the exact identity does
+		case count[t] > 1:
+			out[v.ID] = t + " · #" + v.ManifestSHA256[:min(8, len(v.ManifestSHA256))]
+		default:
+			out[v.ID] = t
+		}
+	}
+	return out
 }

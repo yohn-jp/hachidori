@@ -481,8 +481,8 @@ func TestExecutionArtifactIsAlwaysExplicit(t *testing.T) {
 			t.Errorf("%s next-start artifact:\n%s", p, next)
 		}
 	}
-	if b := e.get(t, "/").Body.String(); !has(b, `id="runtime-variant"`, "VARIANT "+id+" · W4A16 · accepted") || has(b, `id="runtime-source"`) {
-		t.Error("the Runtime page does not say VARIANT with its exact ID")
+	if b := e.get(t, "/").Body.String(); !has(b, `id="runtime-variant"`, `data-variant-id="`+id+`"`, "VARIANT Clef Flash · W4A16 · accepted", `id="runtime-variant-id">`+id+`<`) || has(b, `id="runtime-source"`) {
+		t.Error("the Runtime page does not say VARIANT with its readable label and keep the exact ID")
 	}
 	if b := e.get(t, "/live").Body.String(); !has(b, `id="statusbar-artifact">VARIANT `+id+`<`) {
 		t.Error("the status bar does not say VARIANT")
@@ -666,23 +666,26 @@ func TestOptimizeOperationProgressIsTruthful(t *testing.T) {
 	e, fm, _ := forgeEnv(t, variantInventory())
 	fm.state.Busy = &ModelOp{Kind: "optimize", Model: "clef-flash", Target: "recipe clef-flash-w4a16-rtn-g128", Plan: plan,
 		Phases: plan[:7], Phase: "quantizing", Step: "materializing", Detail: "25 Linear modules", Started: time.Now().Add(-90 * time.Second)}
-	for _, p := range []string{"/forge", "/models"} {
-		body := e.get(t, p).Body.String()
-		for _, want := range []string{`id="models-busy"`, "Quantizing", "Loading source model", "Resolving modules", "25 Linear modules"} {
-			if !strings.Contains(body, want) {
-				t.Errorf("%s busy view lacks %q", p, want)
-			}
+	// Forge owns the optimization: it shows the phases and the step. Models
+	// shows only the headline in the shell.
+	body := e.get(t, "/forge").Body.String()
+	for _, want := range []string{`id="models-busy"`, "Quantizing", "Loading source model", "Resolving modules", "25 Linear modules"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/forge busy view lacks %q", want)
 		}
-		busy := body[strings.Index(body, `id="models-busy"`):]
-		busy = busy[:strings.Index(busy, "</div>")+6]
-		if strings.Contains(busy, "aria-valuenow") || strings.Contains(busy, "%)") {
-			t.Errorf("a percentage was shown for an indeterminate step:\n%s", busy)
-		}
+	}
+	busy := body[strings.Index(body, `id="models-busy"`):]
+	busy = busy[:strings.Index(busy, "</div>")+6]
+	if strings.Contains(busy, "aria-valuenow") || strings.Contains(busy, "%)") {
+		t.Errorf("a percentage was shown for an indeterminate step:\n%s", busy)
+	}
+	if other := e.get(t, "/models").Body.String(); strings.Contains(other, `id="models-busy"`) || !strings.Contains(other, `class="op-headline`) {
+		t.Error("/models shows more than the headline of an operation Forge owns")
 	}
 	fm.state.Busy = nil
 	fm.state.Last = &ModelOp{Kind: "optimize", Model: "clef-flash", Plan: plan, Phases: plan[:5], Phase: "quantizing", Failure: "optimizer quantize: out of memory",
 		FailurePhase: "quantizing", FailureStep: "materializing", Started: time.Now().Add(-time.Minute), Finished: time.Now()}
-	body := e.get(t, "/forge").Body.String()
+	body = e.get(t, "/forge").Body.String()
 	for _, want := range []string{`id="models-last"`, "optimizer quantize: out of memory", "Failed in phase <strong>Quantizing</strong>"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("failure view lacks %q", want)
