@@ -139,6 +139,39 @@ class ResidentContract(unittest.TestCase):
         self.assertIsNone(p.registered_resident)
         self.assertEqual(self.text.calls, [])
 
+    def test_replacement_releases_previous_resident_before_prefill(self):
+        p = self.provider
+        p.check_capacity_readiness = lambda: None
+        first_state = 'first'
+        first_ref = 'sha256:' + hashlib.sha256(first_state.encode()).hexdigest()
+        q = {'id': 'q', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        p.register_resident(first_ref, first_state, [q])
+
+        released = []
+        old = p.registered_resident[2]
+        original_del = getattr(type(old), '__del__', None)
+        # The resident type is slot-based and not weak-referenceable. Replace the
+        # tuple payload with a tiny sentinel whose destructor records when the last
+        # reference is dropped; the replacement path only needs tuple identity here.
+        class Sentinel:
+            def __del__(self):
+                released.append(True)
+        sentinel = Sentinel()
+        p.registered_resident = (first_ref, first_state, sentinel)
+        del sentinel
+        del old
+
+        second_state = 'second'
+        second_ref = 'sha256:' + hashlib.sha256(second_state.encode()).hexdigest()
+        original_build = p.build_resident
+        def build(state, questions):
+            self.assertTrue(released, 'evicted resident stayed alive during replacement prefill')
+            return original_build(state, questions)
+        p.build_resident = build
+        p.register_resident(second_ref, second_state, [q])
+        self.assertEqual(p.registered_resident[0], second_ref)
+        self.assertIsNone(original_del)
+
     def test_resident_payload_headroom_is_checked_before_publish(self):
         p = self.provider
         calls = 0
