@@ -108,7 +108,14 @@ func readBootstrapFile(path string) ([]byte, error) {
 	var data []byte
 	var err error
 	for i := 0; i < attempts; i++ {
-		data, err = os.ReadFile(path)
+		var f *os.File
+		f, err = openBootstrapReadFile(path)
+		if err == nil {
+			data, err = io.ReadAll(f)
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+		}
 		if err == nil || !retryableBootstrapReadError(err) {
 			return data, err
 		}
