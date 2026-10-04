@@ -64,12 +64,17 @@ func (r *DecideRequest) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	_, r.inlineSupplied = fields["state"]
-	_, r.refSupplied = fields["state_ref"]
+	_, hasState := fields["state"]
+	_, hasRef := fields["state_ref"]
+	r.inlineSupplied = hasState && hasRef
 	type plain DecideRequest
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	return dec.Decode((*plain)(r))
+	if err := dec.Decode((*plain)(r)); err != nil {
+		return err
+	}
+	r.refSupplied = hasRef && r.StateRef == ""
+	return nil
 }
 
 // RegisterState is the immutable content-addressed registration input.
@@ -303,8 +308,7 @@ func (r *DecideRequest) Validate() error {
 		return fmt.Errorf("state exceeds %d bytes", MaxStateBytes)
 	}
 	if (strings.TrimSpace(r.State) == "") == (r.StateRef == "") ||
-		(r.inlineSupplied && r.refSupplied) ||
-		(r.refSupplied && r.StateRef == "") {
+		r.inlineSupplied || r.refSupplied {
 		return fmt.Errorf("exactly one of state or state_ref is required")
 	}
 	if r.StateRef != "" && (len(r.StateRef) != 71 || !strings.HasPrefix(r.StateRef, "sha256:")) {
