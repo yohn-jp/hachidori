@@ -105,7 +105,6 @@ func TestSharedPrimitiveStylesReachProductionShell(t *testing.T) {
 	}
 }
 
-
 func TestExecutionTargetPresentationKeepsHumanLabelSeparateFromIdentity(t *testing.T) {
 	source := sourceTargetPresentation("clef-flash")
 	if source.Kind != "SOURCE" || source.Title != "Clef Flash" || source.ID != "clef-flash" {
