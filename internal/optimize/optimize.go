@@ -27,6 +27,11 @@ import (
 type Request struct {
 	Model  string // catalog model ID
 	Recipe string // recipe name
+	// Device is the optimizer device: "cpu" or "cuda". Empty is the cpu. There
+	// is no automatic choice: the device is named, it selects the optimizer
+	// runtime flavor, it is recorded in the variant, and a build on cuda that
+	// cannot use the accelerator fails instead of running on the cpu.
+	Device string
 	// CompiledRecipe is set only when Tuning names a stored semantic profile;
 	// it is the canonical recipe produced by the tuning compiler.
 	CompiledRecipe *home.Recipe
@@ -62,6 +67,57 @@ type MismatchError struct {
 func (e *MismatchError) Error() string {
 	return fmt.Sprintf("rebuilding the contract of variant %s produced different artifacts (%s); the published variant is unchanged and the new build was discarded",
 		e.Variant, strings.Join(e.Files, ", "))
+}
+
+// FatalError is a failure the optimizer itself reported (a fatal protocol
+// event): the class names the cause, for example cuda_unavailable,
+// cuda_out_of_memory or quantize. A failed build is never retried on another
+// device.
+type FatalError struct {
+	Class   string
+	Message string
+	Stderr  string // tail of the optimizer's stderr, with its own leading newline
+}
+
+func (e *FatalError) Error() string {
+	return fmt.Sprintf("optimizer %s: %s%s", e.Class, e.Message, e.Stderr)
+}
+
+// CUDAUnavailableError is returned when a build resolved to cuda but the
+// pinned CUDA optimizer runtime does not see a usable accelerator. Hachidori
+// never continues such a build on the cpu.
+type CUDAUnavailableError struct {
+	Runtime string
+	Reason  string
+	Facts   setup.AcceleratorFacts
+}
+
+func (e *CUDAUnavailableError) Error() string {
+	return fmt.Sprintf("optimizer device cuda is unavailable in runtime %s: %s; the build is not continued on the cpu (use --device cpu for a cpu build)", e.Runtime, e.Reason)
+}
+
+// RequireCUDA checks the accelerator facts observed with the private
+// interpreter of the cuda optimizer runtime against the runtime's pinned torch:
+// torch must be the pinned CUDA build, import cleanly and report a usable CUDA
+// device with a name and a VRAM total. It returns a *CUDAUnavailableError
+// otherwise.
+func RequireCUDA(runtime string, spec home.RuntimeSpec, f setup.AcceleratorFacts) error {
+	fail := func(format string, a ...any) error {
+		return &CUDAUnavailableError{Runtime: runtime, Reason: fmt.Sprintf(format, a...), Facts: f}
+	}
+	switch {
+	case f.Error != "":
+		return fail("torch could not report CUDA: %s", f.Error)
+	case f.Torch != spec.Torch:
+		return fail("torch %q is not the pinned %s", f.Torch, spec.Torch)
+	case f.TorchCUDA == "":
+		return fail("torch %s is not a CUDA build", f.Torch)
+	case !f.CUDAAvailable:
+		return fail("torch %s (CUDA %s) reports no usable CUDA device", f.Torch, f.TorchCUDA)
+	case f.DeviceName == "" || f.VRAMTotal == 0:
+		return fail("torch %s (CUDA %s) reported no device name or VRAM", f.Torch, f.TorchCUDA)
+	}
+	return nil
 }
 
 // Runner starts the optimizer process. Production uses the optimizer
@@ -107,7 +163,8 @@ type Deps struct {
 	// OptimizerRuntime is the runtime identity recorded when Runner is set.
 	OptimizerRuntime string
 	// Preflight overrides the observations of the preflight Build runs before
-	// any expensive work (host disk and RAM, tests).
+	// any expensive work (host disk and RAM, and the accelerator probe, which
+	// Build also uses to check a cuda optimizer runtime after it is materialized).
 	Preflight PreflightDeps
 }
 
@@ -131,6 +188,12 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 		return Result{}, fmt.Errorf("model %s has no variants (only System One models are optimized)", model.ID)
 	}
 	canonical, err := LookupRecipe(model.ID, req.Recipe)
+	if err != nil {
+		return Result{}, err
+	}
+	// The optimizer device is concrete from here on: it selects the runtime,
+	// is passed to the optimizer, and is recorded. It is never changed again.
+	device, err := setup.ResolveOptimizerDevice(req.Device)
 	if err != nil {
 		return Result{}, err
 	}
@@ -177,15 +240,23 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	// Refuse an obviously impossible build before the optimizer runtime is
 	// materialized or the multi-GB source is loaded. The source was just
 	// verified, so its digests are not hashed again.
-	if _, err := RequirePreflight(ctx, h, PreflightRequest{Kind: setup.PreflightOptimize, Model: model.ID, Recipe: recipe.Name, Verified: true}, deps.Preflight, obs); err != nil {
+	if _, err := RequirePreflight(ctx, h, PreflightRequest{Kind: setup.PreflightOptimize, Model: model.ID, Recipe: recipe.Name, Device: device, Verified: true}, deps.Preflight, obs); err != nil {
 		return Result{}, err
 	}
 	runner := deps.Runner
 	runtimeID := deps.OptimizerRuntime
 	if runner == nil {
-		rt, err := setup.EnsureOptimizer(h, log, obs)
+		rt, err := setup.EnsureOptimizer(h, device, log, obs)
 		if err != nil {
 			return Result{}, err
+		}
+		if device == home.OptimizerDeviceCUDA {
+			// The pinned CUDA runtime is proven to see the accelerator with
+			// its own interpreter before anything is loaded; a build that
+			// resolved to cuda never continues without it.
+			if err := requireCUDARuntime(ctx, h, rt, deps.Preflight.Accelerator, log); err != nil {
+				return Result{}, err
+			}
 		}
 		runner = processRunner{python: rt.Python, script: rt.Script, env: rt.Env(h), dir: h.Path("state")}
 		runtimeID = rt.ID
@@ -194,7 +265,7 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	if now == nil {
 		now = time.Now
 	}
-	opt := home.Optimizer{Engine: recipe.Engine, Version: setup.OptimizerEngineVersion, Runtime: runtimeID, Device: "cpu"}
+	opt := home.Optimizer{Engine: recipe.Engine, Version: setup.OptimizerEngineVersion, Runtime: runtimeID, Device: device}
 	recipeSHA := recipe.SHA256()
 	buildID := home.DeriveBuildIDWithTuning(src, model.Provider, opt, recipeSHA, nil, req.Tuning)
 	existing, err := findByBuild(h, model, buildID)
@@ -234,7 +305,7 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 		return Result{}, err
 	}
 
-	fmt.Fprintf(log, "optimizing %s (%s@%s) with recipe %s, optimizer runtime %s\n", model.ID, model.Repo, model.Revision[:12], recipe.Name, runtimeID)
+	fmt.Fprintf(log, "optimizing %s (%s@%s) with recipe %s, optimizer runtime %s, optimizer device %s\n", model.ID, model.Repo, model.Revision[:12], recipe.Name, runtimeID, device)
 	enter(setup.PhaseStarting)
 	engine, err := runOptimizer(ctx, runner, []string{"--source-dir", h.Path("models", filepath.FromSlash(setup.ModelDirName(model))),
 		"--recipe", recipeFile, "--out", stage, "--device", opt.Device}, log, enter, obs)
@@ -244,6 +315,10 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	if engine.Engine != recipe.Engine || engine.Version != setup.OptimizerEngineVersion {
 		return Result{}, fmt.Errorf("the optimizer reported engine %s %s, the pinned optimizer is %s %s; the build is refused, not recorded under another engine",
 			engine.Engine, engine.Version, recipe.Engine, setup.OptimizerEngineVersion)
+	}
+	if engine.Device != opt.Device {
+		return Result{}, fmt.Errorf("the optimizer reported device %q, the build resolved to %q; the build is refused, not recorded under another device",
+			engine.Device, opt.Device)
 	}
 	opt.Versions = engine.Versions
 
@@ -321,6 +396,26 @@ func Build(ctx context.Context, h home.Home, req Request, deps Deps, log io.Writ
 	}
 	fmt.Fprintf(log, "variant %s published\n", v.ID)
 	return Result{Variant: v, Dir: final}, nil
+}
+
+// requireCUDARuntime observes the CUDA of the materialized cuda optimizer
+// runtime with its private interpreter (the accelerator probe the preflight
+// uses) and refuses the build unless it is usable. The device name, CUDA
+// version and VRAM it saw are logged with the build.
+func requireCUDARuntime(ctx context.Context, h home.Home, rt setup.OptimizerRuntime,
+	probe func(context.Context, home.Home, string) (setup.AcceleratorFacts, error), log io.Writer) error {
+	if probe == nil {
+		probe = setup.ProbeAccelerator
+	}
+	f, err := probe(ctx, h, rt.Python)
+	if err != nil {
+		return &CUDAUnavailableError{Runtime: rt.ID, Reason: "the CUDA device could not be observed: " + err.Error()}
+	}
+	if err := RequireCUDA(rt.ID, rt.Manifest.Spec, f); err != nil {
+		return err
+	}
+	fmt.Fprintf(log, "optimizer cuda: torch %s (CUDA %s), %s, %s VRAM total, %s free\n", f.Torch, f.TorchCUDA, f.DeviceName, setup.Bytes(f.VRAMTotal), setup.Bytes(f.VRAMFree))
+	return nil
 }
 
 func equalStrings(a, b []string) bool {
@@ -403,6 +498,9 @@ type engineFacts struct {
 	Engine   string
 	Version  string
 	Versions map[string]string
+	// Device is the device the backend will run on, as the optimizer resolved
+	// it before loading anything.
+	Device string
 }
 
 type event struct {
@@ -414,6 +512,7 @@ type event struct {
 	Engine   string            `json:"engine"`
 	Version  string            `json:"version"`
 	Versions map[string]string `json:"versions"`
+	Device   string            `json:"device"`
 }
 
 // phaseOf maps the optimizer's own phases onto operation phases. importing is
@@ -454,7 +553,9 @@ func runOptimizer(ctx context.Context, r Runner, args []string, log io.Writer, e
 			mu.Lock()
 			switch ev.Event {
 			case "engine":
-				facts = engineFacts{Engine: ev.Engine, Version: ev.Version, Versions: ev.Versions}
+				facts.Engine, facts.Version, facts.Versions = ev.Engine, ev.Version, ev.Versions
+			case "device":
+				facts.Device = ev.Device
 			case "phase":
 				if ph, ok := phaseOf[ev.Phase]; ok {
 					enter(ph)
@@ -480,7 +581,7 @@ func runOptimizer(ctx context.Context, r Runner, args []string, log io.Writer, e
 	case ctx.Err() != nil:
 		return facts, fmt.Errorf("optimization cancelled: %w", ctx.Err())
 	case fatal != nil:
-		return facts, fmt.Errorf("optimizer %s: %s%s", fatal.Class, fatal.Message, stderr.context())
+		return facts, &FatalError{Class: fatal.Class, Message: fatal.Message, Stderr: stderr.context()}
 	case err != nil:
 		return facts, fmt.Errorf("optimizer exited: %v%s", err, stderr.context())
 	case !done:

@@ -25,13 +25,14 @@ type OptimizerRuntime struct {
 // and verified, so it is always offline.
 func (o OptimizerRuntime) Env(h home.Home) []string { return h.Env(filepath.Dir(o.Python), true) }
 
-// FindOptimizer returns the optimizer runtime if it is already materialized,
+// FindOptimizer returns the optimizer runtime of a concrete device (cpu or
+// cuda) if it is already materialized,
 // checking its manifest identity (not re-verifying its packages). It never
 // materializes anything and never touches the network. The optimizer script is
 // delivered by this build beside the runtime (DeliverOptimizer), so an
 // optimizer runtime survives a script-only change.
-func FindOptimizer(h home.Home) (OptimizerRuntime, error) {
-	spec, err := DesiredOptimizer()
+func FindOptimizer(h home.Home, device string) (OptimizerRuntime, error) {
+	spec, err := DesiredOptimizer(device)
 	if err != nil {
 		return OptimizerRuntime{}, err
 	}
@@ -40,7 +41,7 @@ func FindOptimizer(h home.Home) (OptimizerRuntime, error) {
 	var m home.RuntimeManifest
 	if err := home.ReadJSON(filepath.Join(dir, "manifest.json"), &m); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return OptimizerRuntime{}, fmt.Errorf("the optimizer runtime %s is not materialized (run `hachidori variant optimize`, which materializes it)", spec.ID())
+			return OptimizerRuntime{}, fmt.Errorf("the optimizer runtime %s is not materialized (run `hachidori variant optimize --device %s`, which materializes it)", spec.ID(), device)
 		}
 		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: %w", name, err)
 	}
@@ -54,15 +55,16 @@ func FindOptimizer(h home.Home) (OptimizerRuntime, error) {
 	return OptimizerRuntime{ID: name, Dir: dir, Python: filepath.Join(dir, filepath.FromSlash(m.PythonRelPath)), Manifest: m, Script: d.Path}, nil
 }
 
-// EnsureOptimizer materializes the optimizer runtime if it is not present,
+// EnsureOptimizer materializes the optimizer runtime of a concrete device (cpu
+// or cuda) if it is not present,
 // through the same staged, verified and atomically published path as the
 // serving runtime, and returns it. This is the one place the optimizer's
 // network access happens (the private uv installs the locked packages);
 // optimization itself is offline. An existing runtime is verified and reused,
 // never modified in place.
-func EnsureOptimizer(h home.Home, log io.Writer, obs *Observer) (OptimizerRuntime, error) {
+func EnsureOptimizer(h home.Home, device string, log io.Writer, obs *Observer) (OptimizerRuntime, error) {
 	obs.phase(PhasePreparing)
-	spec, err := DesiredOptimizer()
+	spec, err := DesiredOptimizer(device)
 	if err != nil {
 		return OptimizerRuntime{}, err
 	}
@@ -75,7 +77,7 @@ func EnsureOptimizer(h home.Home, log io.Writer, obs *Observer) (OptimizerRuntim
 		if err := verifyPublished(h, final, spec); err != nil {
 			return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s exists but failed verification; it is never modified in place (remove %s to rematerialize): %w", spec.ID(), final, err)
 		}
-		return FindOptimizer(h)
+		return FindOptimizer(h, device)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return OptimizerRuntime{}, err
 	}
@@ -97,5 +99,5 @@ func EnsureOptimizer(h home.Home, log io.Writer, obs *Observer) (OptimizerRuntim
 		return OptimizerRuntime{}, fmt.Errorf("optimizer runtime %s: published runtime failed verification: %w", spec.ID(), err)
 	}
 	fmt.Fprintf(log, "optimizer runtime %s published\n", spec.ID())
-	return FindOptimizer(h)
+	return FindOptimizer(h, device)
 }

@@ -308,3 +308,55 @@ func TestLoadVariantResolvesRecords(t *testing.T) {
 		t.Fatal("a variant resolved under another model")
 	}
 }
+
+// The concrete optimizer device is part of the build contract unless it is the
+// cpu: a cpu build keeps the identity existing variants have, a cuda build is a
+// different contract and never shares a build or variant identity with a cpu
+// build, even when both produce the same bytes. The optimizer runtime stays
+// provenance. A policy such as "auto" is never a recordable device.
+func TestOptimizerDeviceSeparatesBuildIdentity(t *testing.T) {
+	cpu := testVariant(nil)
+	if priorRecipeOnlyBuildID(cpu) != cpu.BuildID {
+		t.Fatal("a cpu build no longer derives the identity existing variants were built with")
+	}
+	unrecorded := testVariant(nil)
+	unrecorded.Optimizer.Device = ""
+	unrecorded.Seal()
+	if unrecorded.BuildID != cpu.BuildID {
+		t.Fatal("a manifest that predates the device record no longer derives as the cpu")
+	}
+
+	cuda := testVariant(nil)
+	cuda.Optimizer.Device, cuda.Optimizer.Runtime = OptimizerDeviceCUDA, "optimizer-cu128-x"
+	cuda.Seal()
+	if cuda.BuildID == cpu.BuildID || cuda.ID == cpu.ID {
+		t.Fatalf("a cuda and a cpu build of the same contract and bytes share an identity: build %v id %v", cuda.BuildID == cpu.BuildID, cuda.ID == cpu.ID)
+	}
+	if err := cuda.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := cuda.Optimizer; got.Device != "cuda" || got.Runtime != "optimizer-cu128-x" {
+		t.Fatalf("the manifest does not record the concrete device and runtime: %+v", got)
+	}
+	// Only the device is identity: the same device on another runtime is the same contract.
+	again := cuda
+	again.Optimizer.Runtime = "optimizer-cu128-y"
+	again.Seal()
+	if again.ID != cuda.ID {
+		t.Fatal("the optimizer runtime changed the variant identity")
+	}
+	// An edited device is rejected: the derived identity no longer recomputes.
+	forged := cuda
+	forged.Optimizer.Device = OptimizerDeviceCPU
+	if err := forged.Validate(); err == nil {
+		t.Fatal("a cuda variant relabelled as cpu was accepted")
+	}
+	for _, device := range []string{"auto", "gpu", "CUDA"} {
+		bad := testVariant(nil)
+		bad.Optimizer.Device = device
+		bad.Seal()
+		if err := bad.Validate(); err == nil {
+			t.Errorf("optimizer device %q was accepted as a recorded device", device)
+		}
+	}
+}

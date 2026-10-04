@@ -132,7 +132,7 @@ func forgePreflight(args []string) error {
 	model := fs.String("model", setup.ClefFlash, "catalog model ID (materialize, optimize)")
 	recipe := fs.String("recipe", "", "canonical recipe name (optimize; default: the model's first recipe)")
 	variant := fs.String("variant", "", "variant ID (probe, certify)")
-	device := fs.String("device", "", "device the operation runs on: cuda or cpu (required for materialize, probe and certify; optional for optimize, where it checks the serving device ahead of time). There is no default and no fallback")
+	device := fs.String("device", "", "device the operation runs on: cuda or cpu (required for materialize, probe and certify; optional for optimize, where it names the optimizer device: cpu by default, or cuda). There is no automatic choice and no fallback")
 	quick := fs.Bool("quick", false, "do not hash the artifacts: their digests are then reported UNKNOWN, not PASS")
 	refDType := fs.String("reference-dtype", "", "certify: dtype of the high-precision reference (float32 or bfloat16; default $HACHIDORI_CLEF_DTYPE or the release's own)")
 	asJSON := fs.Bool("json", false, "print the machine-readable report")

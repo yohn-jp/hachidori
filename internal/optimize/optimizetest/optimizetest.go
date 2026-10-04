@@ -40,7 +40,9 @@ type Runner struct {
 	// "incomplete" writes everything but exits 0 without the done event;
 	// "noreport" completes without writing the optimizer report;
 	// "unpreserved" completes with a saved config that ignores no module;
-	// "wrong-scheme" saves an 8-bit config.
+	// "wrong-scheme" saves an 8-bit config;
+	// "cuda-unavailable" reports the typed cuda_unavailable fatal (only for
+	// --device cuda) before loading anything, as the real optimizer does.
 	Fail string
 	// Salt changes the written model bytes, as a nondeterministic rebuild would.
 	Salt string
@@ -51,6 +53,8 @@ type Runner struct {
 	OnStart func(ctx context.Context, out string) error
 	// Calls counts runs.
 	Calls int
+	// Devices records the --device of every run.
+	Devices []string
 }
 
 // Run implements optimize.Runner.
@@ -64,7 +68,8 @@ func (r *Runner) Run(ctx context.Context, args []string, events, log io.Writer) 
 		}
 		return ""
 	}
-	src, recipePath, out := get("--source-dir"), get("--recipe"), get("--out")
+	src, recipePath, out, device := get("--source-dir"), get("--recipe"), get("--out"), get("--device")
+	r.Devices = append(r.Devices, device)
 	emit := func(v map[string]any) {
 		b, _ := json.Marshal(v)
 		fmt.Fprintln(events, string(b))
@@ -84,6 +89,11 @@ func (r *Runner) Run(ctx context.Context, args []string, events, log io.Writer) 
 	emit(map[string]any{"event": "phase", "phase": "importing"})
 	emit(map[string]any{"event": "engine", "engine": engine, "version": version,
 		"versions": map[string]string{"llmcompressor": version, "compressed-tensors": "0.19.0", "torch": "2.11.0+cpu", "transformers": "5.17.0"}})
+	if r.Fail == "cuda-unavailable" && device == "cuda" {
+		emit(map[string]any{"event": "fatal", "class": "cuda_unavailable", "message": "cuda was requested but torch reports no usable CUDA device"})
+		return errors.New("exit status 3")
+	}
+	emit(map[string]any{"event": "device", "device": device, "backend": device})
 	emit(map[string]any{"event": "phase", "phase": "loading_source", "detail": src})
 	emit(map[string]any{"event": "phase", "phase": "preparing"})
 
@@ -167,7 +177,7 @@ func (r *Runner) Run(ctx context.Context, args []string, events, log io.Writer) 
 			pm[m] = map[string]any{"patterns": pats, "source_precision": "bfloat16", "written_dtype": "BF16"}
 		}
 		rep := map[string]any{"schema": "hachidori.optimizer-report/1", "engine": engine, "scheme": recipe.Scheme, "algorithm": recipe.Algorithm,
-			"device": "cpu", "linear_modules": len(Modules), "quantized_modules": len(quantized), "preserved_modules": pm,
+			"device": device, "linear_modules": len(Modules), "quantized_modules": len(quantized), "preserved_modules": pm,
 			"quantization_config_ignore": ignore}
 		if err := writeJSON(filepath.Join(out, setup.OptimizerReportFile), rep); err != nil {
 			return err

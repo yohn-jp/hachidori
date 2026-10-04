@@ -79,10 +79,9 @@ var carriedProviders = map[string]bool{providerClef: true}
 const (
 	optimizerEngine = "llmcompressor"
 
-	llmCompressorVersion   = "0.14.0"
-	compressedTensorsPin   = "0.19.0"
-	optimizerProviderPins  = optimizerEngine + "==" + llmCompressorVersion + ",compressed-tensors==" + compressedTensorsPin
-	optimizerDeviceFlavour = "cpu"
+	llmCompressorVersion  = "0.14.0"
+	compressedTensorsPin  = "0.19.0"
+	optimizerProviderPins = optimizerEngine + "==" + llmCompressorVersion + ",compressed-tensors==" + compressedTensorsPin
 )
 
 //go:embed optimizerspec/pyproject.toml optimizerspec/uv.lock
@@ -115,12 +114,33 @@ func kindOf(spec home.RuntimeSpec) runtimeKind {
 	return runtimeKind{file: specFile, script: py.Script, scriptName: "hachidori_worker.py"}
 }
 
-// DesiredOptimizer is the Runtime Spec of the optimizer runtime on the
-// current platform. The optimizer's first recipe transforms on the CPU, so
-// the runtime is always the CPU flavor.
-func DesiredOptimizer() (home.RuntimeSpec, error) { return desiredOptimizerFor(platform()) }
+// ResolveOptimizerDevice is the concrete optimizer device a request names:
+// cpu or cuda. An empty request is the cpu, the contract's explicit default;
+// there is no automatic choice, and a device that is not one of the two is
+// refused rather than mapped to another.
+func ResolveOptimizerDevice(requested string) (string, error) {
+	switch requested {
+	case "", home.OptimizerDeviceCPU:
+		return home.OptimizerDeviceCPU, nil
+	case home.OptimizerDeviceCUDA:
+		return home.OptimizerDeviceCUDA, nil
+	}
+	return "", fmt.Errorf("optimizer device must be cpu or cuda, got %q", requested)
+}
 
-func desiredOptimizerFor(plat string) (home.RuntimeSpec, error) {
+// DesiredOptimizer is the Runtime Spec of the optimizer runtime for a concrete
+// device (cpu or cuda) on the current platform. Both flavors are materialized
+// from the one locked optimizer project (the cpu and cu128 extras), so they
+// differ in the torch build and flavor, hence in identity, and nothing else.
+func DesiredOptimizer(device string) (home.RuntimeSpec, error) {
+	return desiredOptimizerFor(device, platform())
+}
+
+func desiredOptimizerFor(device, plat string) (home.RuntimeSpec, error) {
+	flavor, ok := flavors[device]
+	if !ok {
+		return home.RuntimeSpec{}, fmt.Errorf("optimizer device must be cuda or cpu, got %q", device)
+	}
 	uv, err := uvFor(plat)
 	if err != nil {
 		return home.RuntimeSpec{}, err
@@ -132,8 +152,8 @@ func desiredOptimizerFor(plat string) (home.RuntimeSpec, error) {
 		Platform: plat,
 		Python:   pythonVersion,
 		Provider: optimizerProviderPins,
-		Torch:    torchVersion + "+" + optimizerDeviceFlavour,
-		Flavor:   optimizerDeviceFlavour,
+		Torch:    torchVersion + "+" + flavor,
+		Flavor:   flavor,
 		UV:       uvVersion,
 		UVSHA256: uv.BinarySHA256,
 		Project:  digest(k.file("pyproject.toml")),
