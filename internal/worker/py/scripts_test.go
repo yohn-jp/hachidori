@@ -161,3 +161,14 @@ func TestTrialReplacementOnRealTorch(t *testing.T) {
 		}
 	}
 }
+
+func TestClefCapacityContract(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3")
+	}
+	cmd := exec.Command(python, "-B", filepath.Join("testdata", "capacity.py"), "hachidori_worker.py")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Clef capacity: %v\n%s", err, out)
+	}
+}

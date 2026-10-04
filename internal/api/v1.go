@@ -241,10 +241,18 @@ type ErrorBody struct {
 	Error  ErrorInfo `json:"error"`
 }
 
+// CapacityInfo reports the authoritative input shape behind an admission denial.
+type CapacityInfo struct {
+	Metric   string `json:"metric"`
+	Limit    uint64 `json:"limit"`
+	Observed uint64 `json:"observed"`
+}
+
 // ErrorInfo describes one failure.
 type ErrorInfo struct {
-	Class   string `json:"class"`
-	Message string `json:"message"`
+	Class    string        `json:"class"`
+	Message  string        `json:"message"`
+	Capacity *CapacityInfo `json:"capacity,omitempty"`
 }
 
 // Health is the minimal /health payload.

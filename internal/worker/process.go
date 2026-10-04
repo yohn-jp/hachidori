@@ -45,8 +45,9 @@ func (f *Failure) Error() string { return f.Class + ": " + f.Message }
 
 // RequestError is a per-request failure reported by a healthy worker.
 type RequestError struct {
-	Class   string
-	Message string
+	Class    string
+	Message  string
+	Capacity *api.CapacityInfo `json:"capacity,omitempty"`
 }
 
 func (e *RequestError) Error() string { return e.Class + ": " + e.Message }

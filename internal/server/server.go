@@ -584,6 +584,18 @@ func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm hom
 	if dtype != "" {
 		args = append(args, "--dtype", dtype)
 	}
+	if model.Provider == "clef" {
+		profile, profileErr := resolveCapacityProfile(h, a, rm, model, mm, variant)
+		if profileErr != "" {
+			args = append(args, "--capacity-profile-error", profileErr)
+		} else if profile != nil {
+			encoded, err := json.Marshal(profile)
+			if err != nil {
+				return worker.Config{}, Runtime{}, fmt.Errorf("encode capacity profile: %w", err)
+			}
+			args = append(args, "--capacity-profile", string(encoded))
+		}
+	}
 	cfg := worker.Config{
 		Python:         python,
 		Args:           args,
@@ -672,7 +684,12 @@ const maxErrorDetail = 1024
 func writeWorkerErr(w http.ResponseWriter, sc redact.Scrubber, err error) {
 	var re *worker.RequestError
 	if errors.As(err, &re) {
-		writeErr(w, re.Class, sc.Line(re.Message, maxErrorDetail))
+		if re.Capacity != nil && re.Class == api.ErrCapacity {
+			writeJSON(w, statusFor[api.ErrCapacity], api.ErrorBody{Schema: api.SchemaV1,
+				Error: api.ErrorInfo{Class: re.Class, Message: sc.Line(re.Message, maxErrorDetail), Capacity: re.Capacity}})
+		} else {
+			writeErr(w, re.Class, sc.Line(re.Message, maxErrorDetail))
+		}
 		return
 	}
 	var f *worker.Failure

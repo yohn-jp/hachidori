@@ -79,7 +79,8 @@ func (p CapacityProfile) Validate() error {
 
 // Validate checks the versioned profile document and rejects duplicate target
 // identities. An empty profile list is valid; a worker with no matching entry
-// reports its capacity as unconfigured and stays not ready.
+// reports its capacity as unconfigured and stays not ready on Clef CUDA.
+// CPU launches do not require a GPU capacity profile.
 func (ps CapacityProfiles) Validate() error {
 	if ps.Schema != CapacityProfilesSchema {
 		return fmt.Errorf("schema must be %q", CapacityProfilesSchema)

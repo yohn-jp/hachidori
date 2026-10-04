@@ -421,6 +421,7 @@ func TestOpenAPISchemasMatchGoTypes(t *testing.T) {
 		{"BatchResponse", reflect.TypeFor[api.BatchResponse](), nil},
 		{"ErrorBody", reflect.TypeFor[api.ErrorBody](), nil},
 		{"ErrorInfo", reflect.TypeFor[api.ErrorInfo](), nil},
+		{"CapacityInfo", reflect.TypeFor[api.CapacityInfo](), nil},
 		{"Health", reflect.TypeFor[api.Health](), nil},
 		{"Status", reflect.TypeFor[Status](), nil},
 		{"Runtime", reflect.TypeFor[Runtime](), nil},
@@ -506,7 +507,7 @@ func kindMatches(doc string, t reflect.Type) bool {
 		return doc == "boolean"
 	case reflect.Float32, reflect.Float64:
 		return doc == "number"
-	case reflect.Int, reflect.Int32, reflect.Int64:
+	case reflect.Int, reflect.Int32, reflect.Int64, reflect.Uint64:
 		return doc == "integer"
 	case reflect.Slice:
 		return doc == "array"

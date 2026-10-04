@@ -232,6 +232,13 @@ def configure_clef_kernels(qwen, torch, device, dtype, platform=None):
     return evidence
 
 
+class CapacityError(Exception):
+    """A deterministic pre-device admission denial, never a worker failure."""
+    def __init__(self, metric, limit, observed):
+        self.details = {"metric": metric, "limit": limit, "observed": observed}
+        super().__init__("%s: observed %s; limit/required %s" % (metric, observed, limit))
+
+
 class Provider:
     """The provider-neutral part of the resident model: device policy, lifecycle
     phases, warmup, grouping of requests and status. Adapters supply import, load,
@@ -309,6 +316,11 @@ class Provider:
             fatal("device_unavailable", "model placed on %s instead of requested %s"
                   % (placed, self.requested))
         self.load_ms = (time.perf_counter() - t0) * 1000.0
+        if self.name == "clef":
+            try:
+                self.check_capacity_readiness()
+            except CapacityError as e:
+                fatal("capacity", str(e))
 
     def warmup(self):
         emit({"event": "phase", "phase": "warming"})
@@ -321,9 +333,16 @@ class Provider:
                 raise RuntimeError("warmup produced invalid choice %r" % (choice,))
         except SystemExit:
             raise
+        except CapacityError as e:
+            fatal("capacity", str(e))
         except Exception as e:  # noqa: BLE001
             fatal("warmup", "%s: %s" % (type(e).__name__, e))
         self.warmup_ms = (time.perf_counter() - t0) * 1000.0
+        if self.name == "clef":
+            try:
+                self.check_capacity_readiness()
+            except CapacityError as e:
+                fatal("capacity", str(e))
 
     def sync(self):
         if self.requested == "cuda":
@@ -380,6 +399,7 @@ class Provider:
         if self.name == "clef":
             out["w4_linear_paths"] = self.extra_info()["w4_linear_paths"]
             out["clef_batch"] = dict(getattr(self, "batch_profile", {}))
+            out["capacity"] = self.capacity_status()
             if self.requested == "cuda":
                 out["memory_peak_allocated"] = self.torch.cuda.max_memory_allocated()
         # Host RAM of this worker process, only when it can actually be read.
@@ -1245,40 +1265,105 @@ class ClefProvider(Provider):
     def placed_dtype(self):
         return self.reference().dtype
 
-    def predict(self, states, questions):
-        torch = self.torch
+    def capacity_status(self):
+        return {"profile": getattr(self, "capacity_profile", None),
+                "model_context_tokens": CLEF_MAX_LENGTH,
+                "headroom": getattr(self, "capacity_headroom", None),
+                "last_rejection": getattr(self, "capacity_rejection", None)}
+
+    def check_capacity_readiness(self):
+        profile = getattr(self, "capacity_profile", None)
+        if self.requested == "cuda" and not profile:
+            fatal("capacity", "capacity_profile: " + getattr(self, "capacity_profile_error", "missing"))
+        if profile and profile["max_input_tokens"] > CLEF_MAX_LENGTH:
+            raise CapacityError("max_input_tokens", CLEF_MAX_LENGTH, profile["max_input_tokens"])
+        if self.requested != "cuda":
+            return
+        free, total = self.torch.cuda.mem_get_info(self.placed_device())
+        # Include reusable allocator blocks in the usable workspace budget:
+        # warmup may reserve them, but they remain available for inference.
+        reserved = self.torch.cuda.memory_reserved(self.placed_device())
+        allocated = self.torch.cuda.memory_allocated(self.placed_device())
+        usable = free + max(0, reserved - allocated)
+        required = profile["required_gpu_headroom_bytes"]
+        self.capacity_headroom = {"required_bytes": required, "usable_bytes": usable,
+                                  "device_total_bytes": total, "resident_allocated_bytes": allocated,
+                                  "allocator_reserved_bytes": reserved}
+        if usable < required:
+            raise CapacityError("gpu_headroom_bytes", required, usable)
+
+    def _encode_inputs(self, states, questions):
         if not hasattr(self, "batch_profile"):
             self.batch_profile = {"forwards": 0, "records": 0, "encode_ms": 0.0,
                                   "collate_ms": 0.0, "model_enqueue_ms": 0.0, "post_transfer_ms": 0.0,
                                   "padded_tokens": 0}
         start = time.perf_counter()
         encoded = []
+        profile = getattr(self, "capacity_profile", None)
         for state in states:
+            # The pinned encoder slices to max_length. sys.maxsize disables
+            # that slicing; reject the full CPU shape before device collation.
             record = self.jsm.encode_record(self.tokenizer, {"state": state, "questions": questions},
-                                            max_length=CLEF_MAX_LENGTH)
-            if len(record.input_ids) >= CLEF_MAX_LENGTH:
-                log("state truncated to the model's %d-token context" % CLEF_MAX_LENGTH)
+                                            max_length=sys.maxsize)
+            limit = min(CLEF_MAX_LENGTH, profile["max_input_tokens"]) if profile else CLEF_MAX_LENGTH
+            self._capacity_limit("input_tokens", limit, len(record.input_ids))
+            if profile:
+                state_count = len(self.jsm._tokens(self.tokenizer, self.jsm.render(state)))
+                self._capacity_limit("state_tokens", profile["max_state_tokens"], state_count)
             encoded.append(record)
         self.batch_profile["encode_ms"] += (time.perf_counter() - start) * 1000
-        out = [None] * len(encoded)
-        # Execute records in stable encoded-length order so alternating short/long
-        # inputs do not degenerate into one forward per State. Restore caller order
-        # after each bounded model batch.
-        indexed = sorted(enumerate(encoded), key=lambda pair: len(pair[1].input_ids))
+        for batch in self._encoded_batches(encoded):
+            if profile:
+                self._capacity_limit("batch_items", profile["max_batch_items"], len(batch))
+                self._capacity_limit("batch_padded_tokens", profile["max_batch_padded_tokens"],
+                                     len(batch) * max(len(r.input_ids) for _, r in batch))
+        return encoded
+
+    def _capacity_limit(self, metric, limit, observed):
+        if observed > limit:
+            error = CapacityError(metric, limit, observed)
+            self.capacity_rejection = error.details
+            raise error
+
+    def _encoded_batches(self, encoded):
         pending = []
-        for index, record in indexed:
+        for index, record in sorted(enumerate(encoded), key=lambda pair: len(pair[1].input_ids)):
             length = len(record.input_ids)
             if pending and (len(pending) >= 8 or
                             max(max(len(r.input_ids) for _, r in pending), length) * (len(pending) + 1) > 8192 or
                             length > 2 * min(len(r.input_ids) for _, r in pending) or
                             2 * length < max(len(r.input_ids) for _, r in pending)):
-                batch = self._predict_batch([r for _, r in pending], torch)
-                for (original, _), result in zip(pending, batch):
-                    out[original] = result
+                yield pending
                 pending = []
             pending.append((index, record))
         if pending:
-            batch = self._predict_batch([r for _, r in pending], torch)
+            yield pending
+
+    def decide(self, items):
+        # Admit every question group before executing any group on the GPU.
+        groups = {}
+        for i, item in enumerate(items):
+            groups.setdefault(json.dumps(item["questions"], sort_keys=True), []).append(i)
+        prepared = []
+        for indices in groups.values():
+            questions = to_typed(items[indices[0]]["questions"])
+            records = self._encode_inputs([items[i]["state"] for i in indices], questions)
+            prepared.append((indices, items[indices[0]]["questions"], records))
+        results = [None] * len(items)
+        for indices, questions, records in prepared:
+            outputs = self._predict_encoded(records)
+            for i, out in zip(indices, outputs):
+                results[i] = from_typed(questions, out["answers"])
+        self.sync()
+        return results
+
+    def predict(self, states, questions):
+        return self._predict_encoded(self._encode_inputs(states, questions))
+
+    def _predict_encoded(self, encoded):
+        out = [None] * len(encoded)
+        for pending in self._encoded_batches(encoded):
+            batch = self._predict_batch([r for _, r in pending], self.torch)
             for (original, _), result in zip(pending, batch):
                 out[original] = result
         return out
@@ -1322,6 +1407,7 @@ class ClefProvider(Provider):
         execution = "variant" if self.variant else ("trial" if self.trial_session else "source")
         info = {"transformers_version": self.transformers.__version__, "weights_quantized_modules": self.quantized,
                 "execution": execution, "kernel_paths": self.kernel_paths}
+        info["capacity"] = self.capacity_status()
         info["w4_linear_paths"] = {name: dict(module._hachidori_w4[0])
                                    for name, module in self.backbone.named_modules()
                                    if hasattr(module, "_hachidori_w4")}
@@ -1369,6 +1455,9 @@ def serve(provider):
             else:
                 emit({"id": rid, "ok": False,
                       "error": {"class": "request_invalid", "message": "unknown op %r" % op}})
+        except CapacityError as e:
+            emit({"id": rid, "ok": False,
+                  "error": {"class": "capacity", "message": str(e), "capacity": e.details}})
         except TrialError as e:
             emit({"id": rid, "ok": False, "error": {"class": e.cls, "message": str(e)}})
         except (ValueError, TypeError, KeyError) as e:
@@ -1395,6 +1484,8 @@ def main():
     ap.add_argument("--variant-manifest", help="clef only: the variant manifest (hachidori.variant/1) of --variant-dir")
     ap.add_argument("--trial-session", action="store_true",
                     help="clef only: serve the pinned source model as a RAM-resident tuning trial session")
+    ap.add_argument("--capacity-profile", help="exact target-bound configured Clef capacity JSON")
+    ap.add_argument("--capacity-profile-error", help="typed missing/invalid profile condition from host")
     args = ap.parse_args()
     if args.dtype and args.provider not in ("opendecider", "clef"):
         ap.error("--dtype is only supported by the opendecider and clef providers")
@@ -1412,6 +1503,9 @@ def main():
         with open(args.variant_manifest, encoding="utf-8") as f:
             variant = json.load(f)
     provider = PROVIDERS[args.provider](args.model_dir, args.device, manifest, args.dtype, args.variant_dir, variant, args.trial_session)
+    if args.provider == "clef":
+        provider.capacity_profile = json.loads(args.capacity_profile) if args.capacity_profile else None
+        provider.capacity_profile_error = args.capacity_profile_error or "missing"
     provider.initialize()
     provider.warmup()
     emit({"event": "ready", "info": provider.info()})
