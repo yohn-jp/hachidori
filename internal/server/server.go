@@ -300,6 +300,11 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 			}
 			items[i] = worker.Item{State: q.State, StateRef: q.StateRef, Questions: q.Questions}
 		}
+		resolvedBytes := 0
+		for _, item := range items {
+			resolvedBytes += len(item.State)
+		}
+		entry.SetStateRefs(refs, resolvedBytes)
 		entry.Admit()
 		observer := requestObserver{entry: entry, decider: d, runtime: rt}
 		if mode == api.RouteAuto { // validated above

@@ -43,6 +43,7 @@ type Summary struct {
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 	StateBytes     int        `json:"state_bytes"`
 	StateRef       string     `json:"state_ref,omitempty"`
+	StateRefs      []string   `json:"state_refs,omitempty"`
 	TokenCount     *int       `json:"token_count,omitempty"`
 	QuestionCount  int        `json:"question_count"`
 	ItemCount      int        `json:"item_count"`
@@ -149,6 +150,14 @@ func (r *Request) SetStateRef(ref string, stateBytes int) {
 	r.store.mu.Lock()
 	defer r.store.mu.Unlock()
 	r.entry.summary.StateRef = ref
+	r.entry.summary.StateBytes = stateBytes
+}
+
+// SetStateRefs records each effective State identity in batch input order.
+func (r *Request) SetStateRefs(refs []string, stateBytes int) {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	r.entry.summary.StateRefs = append([]string(nil), refs...)
 	r.entry.summary.StateBytes = stateBytes
 }
 
