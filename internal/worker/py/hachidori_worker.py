@@ -1439,6 +1439,10 @@ class ClefProvider(Provider):
         self.resident_usage = {}
         self.check_capacity_readiness()
         resident = self.build_resident(state, to_typed(questions))
+        # The resident payload itself consumes device memory. Re-evaluate the
+        # authoritative #264 headroom contract while the completed object is
+        # live, before publishing it for request execution.
+        self.check_capacity_readiness()
         self.registered_resident = (ref, state, resident)
         return self.resident_info(resident)
 
