@@ -8,6 +8,7 @@ import unittest
 worker = runpy.run_path(sys.argv.pop(1))
 ClefProvider = worker['ClefProvider']
 ClefResidentState = worker['ClefResidentState']
+CapacityError = worker['CapacityError']
 
 
 class Storage:
@@ -60,10 +61,14 @@ class ResidentContract(unittest.TestCase):
     def setUp(self):
         self.provider = p = ClefProvider.__new__(ClefProvider)
         p.requested, p.want_dtype = 'cuda', 'bfloat16'
-        p.variant = {'id': 'clef-flash--clef-flash-w4a16-rtn-g128--6cdd68bf9677'}
-        p.digests = {'joint_schema_model.py':
-                     '0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3'}
-        p.kernel_paths = {'fla': 'pinned'}
+        digest = '0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3'
+        p.variant = {'id': 'clef-flash--clef-flash-w4a16-rtn-g128--6cdd68bf9677',
+                     'files': {'joint_schema_model.py': digest}}
+        p.digests = {'joint_schema_model.py': digest}
+        p.kernel_paths = {'causal_conv1d_fn': {
+            'selected': 'optimized', 'availability': 'available',
+            'implementation': 'fla.modules.conv.causal_conv1d',
+            'execution': 'not_observed', 'reason': 'pinned fla-core Triton kernels'}}
         p.transformers = types.SimpleNamespace(__version__='5.17.0')
         p.torch = types.SimpleNamespace(__version__='2.11.0+cu128', long='long',
                                         inference_mode=contextlib.nullcontext,
@@ -128,19 +133,21 @@ class ResidentContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'incompatible'):
             p.predict_resident(resident, state, {'q1': {}})
 
-    def test_effective_prefix_uses_encoder_truncation(self):
+    def test_over_context_is_rejected_before_prefill(self):
         p = self.provider
         state = 's' * 17000
-        resident = p.build_resident(state, {'q1': {}})
-        self.assertEqual(resident.prefix_tokens, worker['CLEF_MAX_LENGTH'] - 3)
-        self.assertTrue(all(n <= 512 for n in self.text.calls))
-        self.assertEqual(sum(self.text.calls), resident.prefix_tokens)
-        # Identical effective prefix is the identity, even if raw State differs
-        # only after the encoder's truncation boundary.
-        same = p.build_resident(state + 'more', {'q1': {}})
-        self.assertEqual(resident.identity, same.identity)
-        self.assertEqual(p.predict_resident(resident, state + 'more', {'q2': {}})[0]
-                         ['answers']['q2']['choice'], 'yes')
+        with self.assertRaises(CapacityError):
+            p.build_resident(state, {'q1': {}})
+        self.assertEqual(self.text.calls, [])
+
+    def test_mutable_kernel_observation_does_not_change_identity(self):
+        p = self.provider
+        resident = p.build_resident('state', {'q1': {}})
+        before = resident.identity
+        p.kernel_paths['causal_conv1d_fn']['execution'] = 'optimized_active'
+        self.assertEqual(p._resident_artifact(), before[0])
+        result, _ = p.predict_resident(resident, 'state', {'q2': {}})
+        self.assertEqual(result['answers']['q2']['choice'], 'yes')
 
     def test_failed_construction_never_returns_resident(self):
         self.text.fail_at = 2
