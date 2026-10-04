@@ -231,3 +231,43 @@ func TestExistingWorkspacesAreUnchangedByTheTuningWorkspace(t *testing.T) {
 		}
 	}
 }
+
+
+func TestWave1RuntimeAndModelsHierarchy(t *testing.T) {
+	e, fm, _ := forgeEnv(t, variantInventory())
+	withResidency(e, fm, &fakeResidency{})
+
+	runtime := e.get(t, "/").Body.String()
+	state := strings.Index(runtime, `class="readiness-panel`)
+	activity := strings.Index(runtime, `id="runtime-activity"`)
+	if state < 0 || activity < 0 || state > activity {
+		t.Fatalf("authoritative runtime state does not lead activity history: state=%d activity=%d", state, activity)
+	}
+	if !strings.Contains(runtime, `<p class="state-word"><span class="dot"></span>READY</p>`) {
+		t.Fatal("Runtime does not use the shared authoritative workspace state")
+	}
+
+	models := e.get(t, "/models").Body.String()
+	for _, want := range []string{
+		`id="desired-state"`,
+		"Resident targets",
+		`id="execution-artifact"`,
+		"Execution targets",
+		"Artifact inventory &amp; maintenance",
+		`class="execution-target-title"`,
+		"Source model",
+	} {
+		if !strings.Contains(models, want) {
+			t.Errorf("Models lacks %q", want)
+		}
+	}
+	desired := strings.Index(models, `id="desired-state"`)
+	residents := strings.Index(models, `id="resident-selection"`)
+	inventory := strings.Index(models, `id="models-runtimes"`)
+	if desired < 0 || residents < desired || inventory < residents {
+		t.Fatalf("resident desired state is not integrated before maintenance inventory: desired=%d residents=%d inventory=%d", desired, residents, inventory)
+	}
+	if strings.Contains(models[:inventory], `action="/models/verify"`) {
+		t.Fatal("maintenance verification leaked into the primary execution-target decision surface")
+	}
+}
