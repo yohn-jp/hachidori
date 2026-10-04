@@ -269,6 +269,7 @@ func (s *shell) quit() {
 }
 
 func (s *shell) finishQuit() {
+	s.quitPending = false
 	s.closeWebView()
 	s.tray.remove()
 	procDestroyWindow.Call(s.hwnd)
