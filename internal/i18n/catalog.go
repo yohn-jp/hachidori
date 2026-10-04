@@ -267,7 +267,9 @@ var ja = map[string]string{
 	"Choose resource":         "リソースを選択",
 	"Closing this window hides Hachidori to the system tray and the inference runtime keeps running. Use the tray icon to open it again, or choose": "このウィンドウを閉じると Hachidori はシステムトレイに格納され、推論ランタイムは動作し続けます。トレイアイコンから再度開くか、トレイメニューの",
 	"runtime behavior on this host": "このホストでのランタイム動作",
+
 	"Desktop startup preferences are owned by Settings. Diagnostics reports host behavior but does not change those preferences.": "デスクトップの起動設定は設定画面で管理します。診断ではホストの動作を表示しますが、これらの設定は変更しません。",
+
 	"Open desktop settings": "デスクトップ設定を開く",
 	"Compare stored evidence":   "保存済みエビデンスを比較",
 	"Comparison":                "比較",
