@@ -705,6 +705,31 @@ func ProbeConfig(h home.Home, device, variantID string, log io.Writer) (worker.C
 	return workerConfigFor(h, a, rm, mm, log, true, "")
 }
 
+// CapacityCalibrationConfig is the exact persisted-variant launch used only by
+// capacity calibration. It is identical to ProbeConfig except that the Clef
+// worker is explicitly allowed to start without a pre-existing capacity
+// profile. The worker accepts only the capacity_calibrate operation in that
+// mode; ordinary serving never receives this flag.
+func CapacityCalibrationConfig(h home.Home, device, variantID string, log io.Writer) (worker.Config, Runtime, error) {
+	cfg, rt, err := ProbeConfig(h, device, variantID, log)
+	if err != nil {
+		return worker.Config{}, Runtime{}, err
+	}
+	if rt.ModelID != setup.ClefFlash || device != "cuda" {
+		return worker.Config{}, Runtime{}, fmt.Errorf("capacity calibration requires a Clef CUDA variant")
+	}
+	args := make([]string, 0, len(cfg.Args)+1)
+	for i := 0; i < len(cfg.Args); i++ {
+		if cfg.Args[i] == "--capacity-profile" || cfg.Args[i] == "--capacity-profile-error" {
+			i++
+			continue
+		}
+		args = append(args, cfg.Args[i])
+	}
+	cfg.Args = append(args, "--capacity-calibration")
+	return cfg, rt, nil
+}
+
 // SourceConfig is ProbeConfig for the pinned source model modelID on an
 // explicit device: the exact-target launch of a source execution session. dtype
 // is the explicit reference dtype of a provider with a dtype control (empty
