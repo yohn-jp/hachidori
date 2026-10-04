@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
@@ -136,6 +137,18 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 				}
 			}
 		})
+		// A combined shape can exceed capacity even when its constituent
+		// requests fit. The authoritative worker denies that shape before a
+		// forward; retry each original item independently, preserving errors.
+		var isolated []batchReply
+		var rejection *RequestError
+		if coalesced && errors.As(err, &rejection) && (rejection.Class == api.ErrCapacity || rejection.Class == api.ErrRequestInvalid) {
+			isolated = make([]batchReply, len(pending))
+			for i, item := range items {
+				part, elapsed, failure := p.Decide([]Item{item})
+				isolated[i] = batchReply{results: part, ms: elapsed, err: failure}
+			}
+		}
 		finished := time.Now()
 		for _, req := range pending {
 			if req.observer != nil {
@@ -170,7 +183,12 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 			}
 		}
 		offset := 0
-		for _, req := range pending {
+		for i, req := range pending {
+			if isolated != nil {
+				req.reply <- isolated[i]
+				offset += len(req.items)
+				continue
+			}
 			var part [][]api.Result
 			if err == nil {
 				part = results[offset : offset+len(req.items)]
