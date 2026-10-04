@@ -114,6 +114,7 @@ func newApplyEnv(t *testing.T, certify string, opts ...applyOpt) *applyEnv {
 		},
 		RestoreTimeout: 20 * time.Second, ReadyTimeout: 20 * time.Second, SmokeTimeout: 10 * time.Second,
 		Maintenance: Maintenance{ActivateVariant: e.activateVariant,
+			CalibrateCapacity: func(context.Context, string, string, string, io.Writer) error { return nil },
 			Materialize: func(root, device, model string, log io.Writer, obs *setup.Observer) error {
 				e.mu.Lock()
 				e.materials++
