@@ -71,28 +71,33 @@ func TestEveryWorkspaceSharesTheShell(t *testing.T) {
 	}
 }
 
-// The shell readiness restates the worker state from /v1/status, and the
-// live fragment carries it so every workspace follows state changes.
-func TestShellReadinessFollowsRuntimeState(t *testing.T) {
+// The shell projects one operator-facing workspace state. Supervision is
+// authoritative for STOPPED, so a stale worker phase cannot leave the shell
+// claiming STARTING after rollback or shutdown.
+func TestShellReadinessFollowsAuthoritativeRuntimeState(t *testing.T) {
 	e := newEnv(t)
 	for _, tc := range []struct {
-		state string
-		ready bool
-		tone  string
-		word  string
+		running bool
+		state   string
+		ready   bool
+		tone    string
+		word    string
 	}{
-		{worker.StateReady, true, "ok", "READY"},
-		{worker.StateStarting, false, "warn", "starting"},
-		{worker.StateFailed, false, "bad", "failed"},
-		{worker.StateStopped, false, "idle", "stopped"},
+		{true, worker.StateReady, true, "ok", "READY"},
+		{true, worker.StateStarting, false, "warn", "STARTING"},
+		{true, worker.StateFailed, false, "bad", "NEEDS ATTENTION"},
+		{false, worker.StateStopped, false, "idle", "STOPPED"},
+		// Reproduces the observed post-rollback seam: the worker snapshot may
+		// still carry a starting phase after supervision is already stopped.
+		{false, worker.StateStarting, false, "idle", "STOPPED"},
 	} {
 		e.rt.mu.Lock()
-		e.rt.snap.State, e.rt.snap.Ready = tc.state, tc.ready
+		e.rt.run, e.rt.snap.State, e.rt.snap.Ready = tc.running, tc.state, tc.ready
 		e.rt.mu.Unlock()
 		want := `<span class="readiness tone-` + tc.tone + `" aria-label="Runtime ` + tc.word + `"><span class="dot"></span>` + tc.word + `</span>`
 		for _, p := range []string{"/live", "/workbench", "/errors"} {
 			if !strings.Contains(e.get(t, p).Body.String(), want) {
-				t.Errorf("%s in state %s lacks %s", p, tc.state, want)
+				t.Errorf("%s running=%v state=%s lacks %s", p, tc.running, tc.state, want)
 			}
 		}
 	}
@@ -454,9 +459,11 @@ func TestSettingsWorkspaceInShell(t *testing.T) {
 			t.Errorf("settings lacks %q", want)
 		}
 	}
-	// Existing workflows stay reachable: Diagnostics keeps the desktop panel.
-	if !strings.Contains(e.get(t, "/diagnostics").Body.String(), `action="/desktop/prefs"`) {
-		t.Error("diagnostics lost the desktop panel")
+	// Settings is the single preference authority. Diagnostics reports desktop
+	// behavior and links here, but exposes no duplicate mutation form.
+	diag := e.get(t, "/diagnostics").Body.String()
+	if strings.Contains(diag, `action="/desktop/prefs"`) || !strings.Contains(diag, `href="/settings#settings-desktop"`) {
+		t.Error("diagnostics duplicates desktop preferences or lacks the Settings handoff")
 	}
 }
 
