@@ -68,7 +68,9 @@ class AccountNameTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 require_account_name()
         self.assertIn('no account name', str(caught.exception))
-        self.assertIsInstance(caught.exception.__cause__, ImportError)
+        # getpass.getuser() may surface ImportError or OSError when every
+        # account-name source is unavailable, depending on Python/platform.
+        self.assertIsInstance(caught.exception.__cause__, (ImportError, OSError))
 
     def test_supplied_account_name_passes(self):
         env, pwd = without_identity()
