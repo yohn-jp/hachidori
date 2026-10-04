@@ -1437,6 +1437,10 @@ class ClefProvider(Provider):
         # published. #264 checks input shape before build touches the device.
         self.registered_resident = None
         self.resident_usage = {}
+        # Drop the local reference too. Otherwise the evicted resident remains
+        # alive throughout construction of its replacement and both GPU payloads
+        # can coexist transiently, defeating the one-object residency bound.
+        current = None
         self.check_capacity_readiness()
         resident = self.build_resident(state, to_typed(questions))
         # The resident payload itself consumes device memory. Re-evaluate the
