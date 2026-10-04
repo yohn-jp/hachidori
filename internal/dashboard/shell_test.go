@@ -23,6 +23,7 @@ import (
 var workspaces = []struct{ path, nav, label string }{
 	{"/", "runtime", "Runtime"},
 	{"/workbench", "workbench", "Workbench"},
+	{"/requests", "requests", "Request history"},
 	{"/experiments", "experiments", "Experiments"},
 	{"/errors", "evidence", "Evidence"},
 	{"/diagnostics", "diagnostics", "Diagnostics"},
@@ -93,6 +94,23 @@ func TestShellReadinessFollowsRuntimeState(t *testing.T) {
 			if !strings.Contains(e.get(t, p).Body.String(), want) {
 				t.Errorf("%s in state %s lacks %s", p, tc.state, want)
 			}
+		}
+	}
+}
+
+func TestRuntimeSeparatesWaitingExecutionAndAdmission(t *testing.T) {
+	e := newEnv(t)
+	e.rt.mu.Lock()
+	e.rt.snap.QueueDepth, e.rt.snap.InFlight = 2, 1
+	e.rt.mu.Unlock()
+	body := e.get(t, "/").Body.String()
+	for _, want := range []string{
+		`<dt>Queue depth</dt><dd>2 <small>waiting</small></dd>`,
+		`<dt>In-flight</dt><dd>1</dd>`,
+		`<dt>Admission slots</dt><dd>3 / 64</dd>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("runtime load projection lacks %q", want)
 		}
 	}
 }

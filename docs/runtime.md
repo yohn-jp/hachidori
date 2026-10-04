@@ -45,7 +45,7 @@ defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
 | endpoint | success | notes |
 |---|---|---|
 | `GET /health` | `200 {"ready":true,"state":"ready"}` | `503` with the same body while starting, restarting or failed |
-| `GET /v1/status` | `200` | runtime (model ID, device), provider (name, version, the loaded model's ID and revision, device, dtype, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, queue depth, inference p50/p95; with several residents, `residents` lists each one's own such document |
+| `GET /v1/status` | `200` | runtime (model ID, device), provider (name, version, the loaded model's ID and revision, device, dtype, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, waiting `queue_depth`, executing `in_flight`, admission `queue_limit`, inference p50/p95; with several residents, `residents` lists each one's own such document |
 | `POST /v1/decide` | `200` | one state, 1–32 `choice` questions; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
 | `POST /v1/decide/batch` | `200` | 1–64 decide requests; requests sharing a question set share forward passes; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
 | `GET /openapi.json` | `200` | the OpenAPI 3.1 description of this API (below) |
@@ -131,12 +131,13 @@ that resident only:
 `default`, `running` (false after an operator stop) and its own `status`
 (runtime identity with requested device, worker state, phase, PID, restarts,
 provider details with device, dtype and load/warmup ms, accelerator memory,
-last failure, request/error counters, queue depth and limit, p50/p95). It is
+last failure, request/error counters, waiting queue depth, in-flight request
+count and admission limit, p50/p95). It is
 the same projection the controller and the dashboard consume
 (`ResidentSet.Status`); a failed resident does not change another's entry.
 `hachidori decide -model ID request.json` sets the target from the command line.
 The dashboard's Runtime page lists every resident in its own row (state, PID,
-device, load/warmup, counters, queue, latency, GPU memory) and names a failed
+device, load/warmup, counters, waiting / in-flight counts, latency, GPU memory) and names a failed
 non-default resident in the attention list; it restates the status document and
 keeps no lifecycle state of its own.
 
@@ -471,7 +472,10 @@ dataset / eval / benchmark             hachidori dashboard (127.0.0.1:7844)
                                          Hachidori API 127.0.0.1:7843 -> resident worker
 ```
 
-It holds no runtime state of its own:
+Operational status and actions project their existing authorities. The one
+bounded history store records decide requests in process memory for the
+Request History workspace; it is shared with the API server, resets on process
+restart, and is omitted from saved files and diagnostic exports.
 
 | surface | authority |
 |---|---|
@@ -482,11 +486,12 @@ It holds no runtime state of its own:
 | Experiment Runner (`/experiments`) | `internal/eval` (`question.Load`, `eval.Load`, `eval.RunEvidence`) run caller-side in the dashboard process against the same inference API address |
 | Evidence / Error Explorer (`/errors`) | `internal/eval/explore`, a pure read-only consumer of `eval.Report` (`hachidori.evidence.v1`); no endpoint access |
 | Question Workbench (`/workbench`) | a caller of the existing `POST /v1/decide` on the dashboard's inference API address; `internal/question` / `internal/api` validation and compilation |
+| Request History (`/requests`) | the API server's bounded, process-local history of `POST /v1/decide` and `POST /v1/decide/batch`; `GET /api/requests` returns live counts and recent summaries, and `GET /api/requests/{id}` returns retained request/response detail |
 
 The page is one workstation shell: a persistent navigation for **Runtime**
 (`/`, readiness, model/accelerator identity and lifecycle actions),
 **Workbench** (`/workbench`), **Experiments** (`/experiments`), **Evidence**
-(`/errors`, the Error Explorer) and, separated from them, **Diagnostics**
+(`/errors`, the Error Explorer), **Request history** (`/requests`) and, separated from them, **Diagnostics**
 (`/diagnostics`: doctor, the last worker failure, the SSH tunnel launcher and
 the Desktop panel). A compact readiness indicator and the runtime identity
 (provider, model, device, inference API address) are restated from the

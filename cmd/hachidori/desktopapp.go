@@ -31,6 +31,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/firstrun"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/optimize"
+	"github.com/yohn-jp/hachidori/internal/requesthistory"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
@@ -245,6 +246,7 @@ func (a *desktopApp) run() error {
 	// One form token for the whole process: every dashboard a runtime
 	// rebind creates accepts the pages the window already shows.
 	formToken := dashboard.NewToken()
+	requests := requesthistory.New()
 	apiAddr := a.APIAddr
 	open := func(root string) (app.Runtime, error) {
 		if a.Open != nil {
@@ -267,12 +269,13 @@ func (a *desktopApp) run() error {
 		// runtime, whether it is the one worker or a resident set.
 		bind := func(status func() server.Status, lc dashboard.Lifecycle, dec server.Decider, info server.Runtime, started time.Time) {
 			dash := dashboard.New(dashboard.Config{
-				APIAddr:   apiAddr,
-				Status:    status,
-				Lifecycle: lc,
-				Doctor:    func(out io.Writer) bool { return doctor.Run(root, out) },
-				Tunnel:    tun,
-				PrefsPath: h.Path("state", "dashboard.json"),
+				APIAddr:        apiAddr,
+				Status:         status,
+				RequestHistory: requests,
+				Lifecycle:      lc,
+				Doctor:         func(out io.Writer) bool { return doctor.Run(root, out) },
+				Tunnel:         tun,
+				PrefsPath:      h.Path("state", "dashboard.json"),
 				// Saved experiment history lives under HACHIDORI_HOME only.
 				HistoryDir:       h.Path("state", "history"),
 				EvaluationSample: h.InariSampleEvaluation(),
@@ -305,7 +308,7 @@ func (a *desktopApp) run() error {
 			if prev != nil {
 				prev.StopExperiment()
 			}
-			sw.set(server.HandlerSince(dec, info, started), dash)
+			sw.set(server.HandlerSinceWithHistory(dec, info, started, requests), dash)
 		}
 		rt, err := a.openRuntime(rctx, lf, prefs.Residents, bind)(root)
 		if err != nil {
