@@ -138,6 +138,7 @@ jobs:
           if ([version]$ver -lt [version]'3.9') { throw "Python $ver is older than 3.9" }
           "HACHIDORI_E2E_PYTHON=$py" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Run shard ${{ matrix.shard }}
+        if: ${{ always() }}
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path (Join-Path $env:HACHIDORI_E2E_EVIDENCE_DIR '${{ matrix.shard }}') | Out-Null

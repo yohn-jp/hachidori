@@ -6,5 +6,12 @@
     "host-kill-no-orphan-worker",
     "corrupt-activation-record-recovery",
     "damaged-worker-script-replaced"
-  ]
+  ],
+  "dependencies": {
+    "worker-kill-recovers": ["candidate-identity"],
+    "repeated-failure-needs-attention": ["candidate-identity"],
+    "host-kill-no-orphan-worker": ["candidate-identity"],
+    "corrupt-activation-record-recovery": ["candidate-identity"],
+    "damaged-worker-script-replaced": ["candidate-identity"]
+  }
 }

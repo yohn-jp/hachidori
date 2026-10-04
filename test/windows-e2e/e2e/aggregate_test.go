@@ -78,6 +78,53 @@ func TestAggregatePassesOnlyWhenEverythingAgrees(t *testing.T) {
 	}
 }
 
+func TestMarkdownRetainsInvalidOutcomeDiagnostics(t *testing.T) {
+	cert := Certification{
+		Status: OutcomeFail,
+		Shards: []ShardVerdict{{
+			Shard: ShardRuntime, Status: OutcomeFail, Scenarios: 1,
+			Outcomes: []ScenarioVerdict{{ID: "scenario-a", Outcome: OutcomeMissing}},
+			Problems: []string{`required scenario "scenario-a" has invalid outcome evidence: BLOCKED outcome has no dependency evidence`},
+		}},
+	}
+	if summary := cert.Markdown(); !strings.Contains(summary, "has invalid outcome evidence") {
+		t.Fatalf("summary hides why the outcome evidence was rejected: %s", summary)
+	}
+}
+
+func TestAggregateCountsAndSummarizesEveryOutcome(t *testing.T) {
+	f := newFixture(t)
+	f.writeRequired(t, ShardRuntime, `{"scenarios":["candidate-identity","fail-point","blocked-point","skip-point","missing-point","pass-point"],"dependencies":{"blocked-point":["fail-point"]}}`)
+	f.writeResult(t, ShardRuntime, func(r *Result) {
+		r.Required = []string{"candidate-identity", "fail-point", "blocked-point", "skip-point", "missing-point", "pass-point"}
+		r.Scenarios = []ScenarioResult{
+			{ID: "candidate-identity", Outcome: OutcomePass},
+			{ID: "fail-point", Outcome: OutcomeFail},
+			{ID: "blocked-point", Outcome: OutcomeBlocked, Blocked: &BlockedInfo{Reason: BlockReasonPrerequisiteNotPassed, Dependencies: []ScenarioDependency{{Kind: DependencyScenario, ID: "fail-point", Outcome: OutcomeFail}}}},
+			{ID: "skip-point", Outcome: OutcomeSkip},
+			{ID: "pass-point", Outcome: OutcomePass},
+		}
+		r.Status = OutcomeFail
+	})
+	f.writeResult(t, ShardRecovery, func(r *Result) {
+		r.Scenarios[1].Outcome = OutcomeFail
+		r.Status = OutcomeFail
+	})
+	cert := Aggregate(f.input())
+	if cert.Status != OutcomeFail || cert.Counts != (OutcomeCounts{Pass: 11, Fail: 2, Blocked: 1, Skip: 1, Missing: 1}) {
+		t.Fatalf("unexpected aggregate counts or verdict: %s %+v", cert.Status, cert.Counts)
+	}
+	markdown := cert.Markdown()
+	if !strings.Contains(markdown, "| 11 | 2 | 1 | 1 | 1 |") {
+		t.Fatalf("summary has unstable or incomplete counts: %s", markdown)
+	}
+	for _, point := range []string{"scenario `fail-point`: **FAIL**", "scenario `blocked-point`: **BLOCKED**", "scenario `skip-point`: **SKIP**", "scenario `missing-point`: **MISSING**", "scenario `extra-recovery`: **FAIL**"} {
+		if !strings.Contains(markdown, point) {
+			t.Errorf("summary omitted %q:\n%s", point, markdown)
+		}
+	}
+}
+
 func TestAggregateFailsClosed(t *testing.T) {
 	cases := map[string]func(t *testing.T, f fixture, in *AggregateInput){
 		"missing shard result": func(t *testing.T, f fixture, in *AggregateInput) {
@@ -160,6 +207,9 @@ func TestWriteCertificationAndReleaseGate(t *testing.T) {
 	if !strings.Contains(string(md), "certification: PASS") || !strings.Contains(string(md), f.cand.SHA256) {
 		t.Fatalf("summary lacks verdict or identity: %s", md)
 	}
+	if !strings.Contains(string(md), "| PASS | FAIL | BLOCKED | SKIP | MISSING |") || !strings.Contains(string(md), "| 12 | 0 | 0 | 0 | 0 |") {
+		t.Fatalf("summary lacks stable scenario counts: %s", md)
+	}
 	data, err := os.ReadFile(filepath.Join(dir, "certification.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -190,6 +240,16 @@ func TestWriteCertificationAndReleaseGate(t *testing.T) {
 		}},
 		"physical": {expect, "", func(b []byte) []byte {
 			return []byte(strings.Replace(string(b), `"physical_pass": false`, `"physical_pass": true`, 1))
+		}},
+		"blocked scenario": {expect, "", func(b []byte) []byte {
+			var c Certification
+			_ = json.Unmarshal(b, &c)
+			c.Shards[0].Outcomes[0].Outcome = OutcomeBlocked
+			c.Shards[0].Outcomes[0].Blocked = &BlockedInfo{Reason: BlockReasonPrerequisiteNotPassed, Dependencies: []ScenarioDependency{{Kind: DependencyScenario, ID: "candidate-identity", Outcome: OutcomeFail}}}
+			c.Counts.Pass--
+			c.Counts.Blocked++
+			out, _ := json.Marshal(c)
+			return out
 		}},
 		"garbage": {expect, "", func([]byte) []byte { return []byte("not json") }},
 	} {

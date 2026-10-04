@@ -134,6 +134,14 @@ func TestShardsConsumeAndVerifyTheSharedCandidate(t *testing.T) {
 	}
 }
 
+func TestShardRunnerWritesPreflightEvidenceAfterCandidateFailure(t *testing.T) {
+	shard := job(load(t), "shard")
+	run := regexp.MustCompile(`(?s)- name: Run shard \$\{\{ matrix\.shard \}\}\r?\n\s+if: \$\{\{ always\(\) \}\}\r?\n.*?go test -count=1`).FindString(shard)
+	if run == "" {
+		t.Fatal("the shard test runner must run after candidate verification fails so Main can retain BLOCKED/MISSING outcomes")
+	}
+}
+
 func TestShardPackagesExist(t *testing.T) {
 	for _, s := range e2e.Shards {
 		for _, f := range []string{"e2e_test.go", "required.json"} {

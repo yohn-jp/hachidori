@@ -10,6 +10,10 @@ import (
 	"github.com/yohn-jp/hachidori/test/windows-e2e/e2e"
 )
 
+// TestCandidateIdentity is the shard's shared prerequisite: it certifies the
+// exact candidate bytes before any scenario can use the executable.
+func TestCandidateIdentity(t *testing.T) { e2e.VerifyCandidateScenario(t) }
+
 // TestCleanProfileStartsFirstRun proves W01.2 against the packaged executable:
 // a clean profile (no bootstrap.json, no HACHIDORI_HOME) starts in the
 // first-run state and writes nothing before Install.

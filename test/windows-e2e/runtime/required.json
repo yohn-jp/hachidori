@@ -6,5 +6,12 @@
     "quit-leaves-no-worker-or-port",
     "same-home-relaunch",
     "cuda-unavailable-no-cpu-fallback"
-  ]
+  ],
+  "dependencies": {
+    "cpu-ready-typed-inference": ["candidate-identity"],
+    "stop-start-restart": ["candidate-identity"],
+    "quit-leaves-no-worker-or-port": ["candidate-identity"],
+    "same-home-relaunch": ["candidate-identity"],
+    "cuda-unavailable-no-cpu-fallback": ["candidate-identity"]
+  }
 }
