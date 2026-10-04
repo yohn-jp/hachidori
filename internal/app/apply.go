@@ -409,7 +409,7 @@ func (t *applyTx) validate(ctx context.Context) error {
 			return err
 		}
 		if t.hasVariant && t.p.Device == "cuda" && t.model.Provider == home.ProviderClef {
-			if err := ensureVariantCapacity(ctx, h, t.variant.ID, t.p.Device, t.log); err != nil {
+			if err := t.c.cfg.Maintenance.CalibrateCapacity(ctx, t.root, t.variant.ID, t.p.Device, t.log); err != nil {
 				return fmt.Errorf("capacity calibration: %w", err)
 			}
 		}
