@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,12 +67,28 @@ func (h Home) ResolveState(ref string) (string, error) {
 	if len(ref) != 71 || !strings.HasPrefix(ref, "sha256:") || len(digest) != 64 {
 		return "", fmt.Errorf("invalid state_ref %q", ref)
 	}
-	if _, err := hex.DecodeString(digest); err != nil {
-		return "", fmt.Errorf("invalid state_ref: %w", err)
+	raw, err := hex.DecodeString(digest)
+	if err != nil || len(raw) != sha256.Size || hex.EncodeToString(raw) != digest {
+		return "", fmt.Errorf("invalid state_ref %q", ref)
 	}
-	data, err := os.ReadFile(h.Path("state", "registered", digest))
+	// Root confines the canonical digest lookup to the registered-State store.
+	// The public reference never becomes an unrestricted filesystem path.
+	root, err := os.OpenRoot(h.Path("state", "registered"))
 	if err != nil {
 		return "", fmt.Errorf("unavailable state_ref %q: %w", ref, err)
+	}
+	defer root.Close()
+	f, err := root.Open(digest)
+	if err != nil {
+		return "", fmt.Errorf("unavailable state_ref %q: %w", ref, err)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, (64<<10)+1))
+	closeErr := f.Close()
+	if err != nil {
+		return "", fmt.Errorf("unavailable state_ref %q: %w", ref, err)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("unavailable state_ref %q: %w", ref, closeErr)
 	}
 	if StateRef(string(data)) != ref || len(data) > 64<<10 || strings.TrimSpace(string(data)) == "" {
 		return "", fmt.Errorf("corrupt state_ref %q", ref)
