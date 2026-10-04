@@ -58,7 +58,12 @@ func replaceBootstrapFile(replacement, replaced string) error {
 
 func retryableBootstrapReadError(err error) bool {
 	return errors.Is(err, windows.ERROR_SHARING_VIOLATION) ||
-		errors.Is(err, windows.ERROR_LOCK_VIOLATION)
+		errors.Is(err, windows.ERROR_LOCK_VIOLATION) ||
+		// ReplaceFileW can briefly make the destination name unavailable while
+		// switching the old and replacement file. The locator parent still
+		// exists, so retry FILE_NOT_FOUND but not PATH_NOT_FOUND: a genuinely
+		// absent first-run locator remains a bounded, deterministic miss.
+		errors.Is(err, windows.ERROR_FILE_NOT_FOUND)
 }
 
 func retryableBootstrapReplaceError(err error) bool {
