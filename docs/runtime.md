@@ -451,7 +451,7 @@ parsed or retried.
 
 Which model is the default is decided by recorded evidence, not by size or
 upstream claims; see "Decision-model comparison" in `certification.md`.
-- stderr: logs, appended to `<home>/logs/worker.log`; the last 64 lines are attached to failures.
+- stderr: logs, appended to `<home>/logs/worker.log`; the last 64 lines are attached to failures. A failed provider import or model load logs a bounded traceback (the last 12 frames of each chained exception, the last 32 lines) just before the `fatal` line, so it travels in that tail under the same redaction and bounds.
 
 ## Host dashboard
 
@@ -1855,7 +1855,9 @@ The worker environment is constructed, not inherited: `PYTHONNOUSERSITE=1`,
 `HOME`/`USERPROFILE`/`APPDATA`/`LOCALAPPDATA`/`TMP`/`TEMP`/`XDG_CACHE_HOME`,
 `HF_HOME`, `HF_HUB_CACHE`, `HF_XET_CACHE`, `TORCH_HOME`, `TORCHINDUCTOR_CACHE_DIR`,
 `TRITON_CACHE_DIR`, `CUDA_CACHE_PATH` and `PIP_CACHE_DIR` under `cache/`,
-`HF_HUB_OFFLINE=1` while serving. Host variables passed through: `CUDA_VISIBLE_DEVICES`,
+`USERNAME=hachidori` (a fixed account name: `getpass.getuser()` has no `pwd` fallback on native
+Windows, and `torch._inductor.codecache` calls it while being imported), `HF_HUB_OFFLINE=1`
+while serving. Host variables passed through: `CUDA_VISIBLE_DEVICES`,
 proxy/CA settings (setup downloads), OS essentials on Windows, and `LD_LIBRARY_PATH`
 on Linux (host GPU driver location, e.g. NixOS `/run/opengl-driver/lib`).
 
