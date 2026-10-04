@@ -1,7 +1,11 @@
 name: Go Windows development release
 
+# Pull requests only: the shared workflow tests and builds the Windows
+# executable without publishing. Development release publication moved to
+# windows-e2e.yml, which publishes the certified candidate after the Windows E2E
+# certification passes; a push to main must not publish from here.
 on:
-  push:
+  pull_request:
     branches: [main]
 
 permissions: {}
@@ -12,6 +16,7 @@ jobs:
     with:
       binary-name: hachidori
       build-target: ./cmd/hachidori
+      development-line: "0.3"
     permissions:
       actions: read
       contents: write
