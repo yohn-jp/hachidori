@@ -131,6 +131,7 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 			close(req.started)
 		}
 		execution, counts, coalesced := coalesceStates(pending, items)
+		registrationRejected := false
 		notify := func(at time.Time) {
 			for _, req := range pending {
 				if req.observer != nil {
@@ -148,6 +149,7 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 					"state_ref": batch[0].StateRef, "state": batch[0].State, "questions": batch[0].Questions})
 				if err != nil {
 					residentRef = ""
+					registrationRejected = true
 					return nil, 0, err
 				}
 				var metadata struct {
@@ -170,7 +172,7 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 		// forward; retry each original item independently, preserving errors.
 		var isolated []batchReply
 		var rejection *RequestError
-		if coalesced && errors.As(err, &rejection) && (rejection.Class == api.ErrCapacity || rejection.Class == api.ErrRequestInvalid) {
+		if coalesced && errors.As(err, &rejection) && (rejection.Class == api.ErrCapacity || (registrationRejected && rejection.Class == api.ErrRequestInvalid)) {
 			isolated = make([]batchReply, len(pending))
 			for i, item := range items {
 				part, elapsed, failure := execute([]Item{item}, func(time.Time) {})

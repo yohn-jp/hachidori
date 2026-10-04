@@ -115,10 +115,16 @@ func TestHelperWorker(t *testing.T) {
 			os.Exit(0)
 		case (mode == "crash_on_decide" || mode == "clef_crash") && req.Op == "decide":
 			os.Exit(7)
-		case mode == "hang_on_decide" && req.Op == "decide":
+		case mode == "hang_on_decide" && req.Op == "decide" || mode == "clef_hang_resident" && req.Op == "resident_decide":
 			time.Sleep(time.Minute)
 		case req.Op == "resident_register":
-			if mode == "clef_capacity" && len(req.Questions) > 1 {
+			invalidQuestion := false
+			for _, q := range req.Questions {
+				invalidQuestion = invalidQuestion || q.ID == "bad"
+			}
+			if mode == "clef_invalid_question" && invalidQuestion {
+				emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "bad question"}})
+			} else if mode == "clef_capacity" && len(req.Questions) > 1 {
 				emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{
 					"class": "capacity", "message": "combined input too large",
 					"capacity": map[string]any{"metric": "input_tokens", "limit": 1, "observed": len(req.Questions)}}})

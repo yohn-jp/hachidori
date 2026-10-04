@@ -139,6 +139,21 @@ class ResidentContract(unittest.TestCase):
         self.assertIsNone(p.registered_resident)
         self.assertEqual(self.text.calls, [])
 
+    def test_resident_decide_admits_before_suffix(self):
+        p = self.provider
+        p.check_capacity_readiness = lambda: None
+        p.sync = lambda: None
+        state = 'policy'
+        ref = 'sha256:' + hashlib.sha256(state.encode()).hexdigest()
+        q = {'id': 'q', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        p.register_resident(ref, state, [q])
+        before = list(self.text.calls)
+        p.capacity_profile = {'max_input_tokens': 8192, 'max_state_tokens': 1,
+                              'max_batch_items': 8, 'max_batch_padded_tokens': 8192}
+        with self.assertRaises(CapacityError):
+            p.decide_resident([{'state_ref': ref, 'state': state, 'questions': [q]}])
+        self.assertEqual(self.text.calls, before)
+
     def test_chunk_forks_identity_and_accounting(self):
         p = self.provider
         state = 's' * 1100
