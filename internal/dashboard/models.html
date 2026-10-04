@@ -29,7 +29,7 @@
         <select name="target" required>
           <option value="" selected disabled>{{t "Choose an execution target"}}</option>
           <optgroup label="SOURCE">
-            {{range .Models}}<option value="source:{{.ID}}">SOURCE · {{.ID}}</option>{{end}}
+            {{range .Models}}<option value="source:{{.ID}}">SOURCE · {{modelTitle .ID}}</option>{{end}}
           </optgroup>
           {{if .Variants}}<optgroup label="{{t "Certified VARIANT"}}">
             {{range .Variants}}{{if .CanActivate}}<option value="variant:{{.ID}}" title="{{.ID}}">VARIANT · {{.Label}}</option>{{end}}{{end}}
@@ -48,59 +48,9 @@
       <label class="check"><input type="checkbox" name="allow_provision" value="1"><span>{{t "Allow this operation to repair or materialize a missing runtime or source model."}}</span></label>
       <div class="btn-row"><button type="submit" class="btn primary">{{t "Apply desired state"}}</button></div>
     </form>
-  </section>
-
-  <section class="region section" id="execution-artifact" aria-labelledby="ea-h">
-    <div class="region-h"><h2 id="ea-h">{{t "Execution artifact"}}</h2><span class="sub">{{t "what is serving now and the active target"}}</span></div>
-    {{template "artifacts" $.Art}}
-    <p class="note prose">{{t "SOURCE is the upstream model artifact. A VARIANT is a derived, quantized artifact of one source with its own exact identity; it is never substituted for the source or for another variant."}} <a href="/forge">{{t "Open Forge"}}</a></p>
-  </section>
-
-  <section class="region section" id="models-runtimes" aria-labelledby="sm-h">
-  <div class="region-h"><h2 id="sm-h">{{t "Models & runtimes"}}</h2><span class="sub">{{t "catalog-pinned identities under HACHIDORI_HOME"}}</span></div>
-  <h3>{{t "Runtimes"}}</h3>
-  <div class="table-wrap"><table class="data" id="runtime-inventory">
-    <thead><tr><th scope="col">{{t "Device"}}</th><th scope="col">{{t "Identity"}}</th><th scope="col">{{t "Immutable facts"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
-    <tbody>{{range .Runtimes}}
-      <tr{{if .Active}} aria-current="true"{{end}}>
-        <td class="strong">{{.Device}}</td>
-        <td class="mono">{{.ID}}</td>
-        <td class="mono">{{.Platform}} · python {{.Python}} · {{.Provider}} · torch {{.Torch}}</td>
-        <td>{{if not .Supported}}<span class="badge tone-bad">{{t "unsupported"}}</span>{{else if .Active}}<span class="badge tone-ok">{{t "active"}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
-          {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
-          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
-          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
-        <td class="nowrap">{{if .Materialized}}
-          <form method="post" action="/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
-          {{if not .Active}}<form method="post" action="/models/remove" class="inline" data-confirm="{{t "Remove this runtime from HACHIDORI_HOME?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
-        {{end}}</td>
-      </tr>{{end}}
-    </tbody>
-  </table></div>
-
-  <h3>{{t "Models"}}</h3>
-  <div class="table-wrap"><table class="data" id="model-inventory">
-    <thead><tr><th scope="col">{{t "Model"}}</th><th scope="col">{{t "Immutable facts"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
-    <tbody>{{range .Models}}
-      <tr{{if .Active}} aria-current="true"{{end}}>
-        <td class="strong">{{.ID}}{{with .Description}}<div class="muted">{{.}}</div>{{end}}</td>
-        <td class="mono">{{.Provider}} · {{.Repo}}@{{.Revision}} · {{.Files}} {{t "pinned file(s)"}}</td>
-        <td>{{if .Running}}<span class="badge tone-ok">{{t "running"}}</span>{{end}}{{if .Active}}<span class="badge tone-ok">{{if and $.Models.RestartRequired (not .Running)}}{{t "active · applies on restart"}}{{else}}{{t "active"}}{{end}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
-          {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
-          {{if .PartialBytes}}<div class="muted partial-download">{{t "interrupted download kept for resume (not a materialized model):"}} {{bytesIn .PartialBytes}} · {{t "Materialize again to resume it"}}</div>{{end}}
-          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
-          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
-        <td class="nowrap">{{if .Materialized}}
-          <form method="post" action="/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn">{{t "Verify"}}</button></form>
-          {{if not .Active}}<form method="post" action="/models/remove" class="inline" data-confirm="{{t "Remove this model from HACHIDORI_HOME?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
-        {{end}}</td>
-      </tr>{{end}}
-    </tbody>
-  </table></div>
-  {{with .Variants}}<p class="note" id="models-variants-note">{{len .}} {{t "System One variant(s) are derived from these models; they are built, certified and applied in Forge."}} <a href="/forge">{{t "Open Forge"}}</a></p>{{end}}
-
   {{with .Residency}}
-  <h3 id="resident-selection-h">{{t "Resident models"}}</h3>
+  <h3 id="resident-selection-h">{{t "Resident targets"}}</h3>
+  <p class="note prose">{{t "These additional models are part of the same desired execution state. Applying reconciles the execution target and resident set together."}}</p>
   {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
   <div id="resident-selection">
     <div class="table-wrap"><table class="data" aria-labelledby="resident-selection-h">
@@ -121,6 +71,56 @@
   </div>
   <p class="note prose">{{t "Additional residents are reconciled with the execution target when you apply the desired state. The active target is always the default resident. Each resident is its own worker process, and a failed one never stops the others."}}</p>
   {{end}}
+  </section>
+
+  <section class="region section" id="execution-artifact" aria-labelledby="ea-h">
+    <div class="region-h"><h2 id="ea-h">{{t "Execution targets"}}</h2><span class="sub">{{t "what is serving now and what the next start will run"}}</span></div>
+    {{template "artifacts" $.Art}}
+    <p class="note prose">{{t "SOURCE is the upstream model artifact. A VARIANT is a derived, quantized artifact of one source with its own exact identity; it is never substituted for the source or for another variant."}} <a href="/forge">{{t "Open Forge"}}</a></p>
+  </section>
+
+  <section class="region section" id="models-runtimes" aria-labelledby="sm-h">
+  <div class="region-h"><h2 id="sm-h">{{t "Artifact inventory & maintenance"}}</h2><span class="sub">{{t "exact identities, verification and removal"}}</span></div>
+  <h3>{{t "Runtimes"}}</h3>
+  <div class="table-wrap"><table class="data" id="runtime-inventory">
+    <thead><tr><th scope="col">{{t "Device"}}</th><th scope="col">{{t "Identity"}}</th><th scope="col">{{t "Immutable facts"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
+    <tbody>{{range .Runtimes}}
+      <tr{{if .Active}} aria-current="true"{{end}}>
+        <td class="strong">{{.Device}}</td>
+        <td class="mono">{{.ID}}</td>
+        <td class="mono">{{.Platform}} · python {{.Python}} · {{.Provider}} · torch {{.Torch}}</td>
+        <td>{{if not .Supported}}<span class="badge tone-bad">{{t "unsupported"}}</span>{{else if .Active}}<span class="badge tone-ok">{{t "active"}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
+          {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
+          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
+          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="nowrap">{{if .Materialized}}
+          <form method="post" action="/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn quiet">{{t "Verify"}}</button></form>
+          {{if not .Active}}<form method="post" action="/models/remove" class="inline" data-confirm="{{t "Remove this runtime from HACHIDORI_HOME?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="runtime"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
+        {{end}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table></div>
+
+  <h3>{{t "Models"}}</h3>
+  <div class="table-wrap"><table class="data" id="model-inventory">
+    <thead><tr><th scope="col">{{t "Model"}}</th><th scope="col">{{t "Immutable facts"}}</th><th scope="col">{{t "Status"}}</th><th scope="col">{{t "Actions"}}</th></tr></thead>
+    <tbody>{{range .Models}}
+      <tr{{if .Active}} aria-current="true"{{end}}>
+        <td class="strong">{{.ID}}{{with .Description}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="mono">{{.Provider}} · {{.Repo}}@{{.Revision}} · {{.Files}} {{t "pinned file(s)"}}</td>
+        <td>{{if .Running}}<span class="badge tone-ok">{{t "running"}}</span>{{end}}{{if .Active}}<span class="badge tone-ok">{{if and $.Models.RestartRequired (not .Running)}}{{t "active · applies on restart"}}{{else}}{{t "active"}}{{end}}</span>{{else if .Materialized}}<span class="badge">{{t "materialized"}}</span>{{else}}<span class="badge">{{t "not materialized"}}</span>{{end}}
+          {{if .Verified}}<span class="tag">{{t "verified"}}</span>{{end}}
+          {{if .PartialBytes}}<div class="muted partial-download">{{t "interrupted download kept for resume (not a materialized model):"}} {{bytesIn .PartialBytes}} · {{t "Materialize again to resume it"}}</div>{{end}}
+          {{with .Problem}}<div class="bad-t">{{.}}</div>{{end}}
+          {{with .Check}}<div class="muted">{{.}}</div>{{end}}</td>
+        <td class="nowrap">{{if .Materialized}}
+          <form method="post" action="/models/verify" class="inline"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn quiet">{{t "Verify"}}</button></form>
+          {{if not .Active}}<form method="post" action="/models/remove" class="inline" data-confirm="{{t "Remove this model from HACHIDORI_HOME?"}}"><input type="hidden" name="token" value="{{$.Token}}"><input type="hidden" name="return" value="models"><input type="hidden" name="kind" value="model"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn danger">{{t "Remove"}}</button></form>{{end}}
+        {{end}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table></div>
+  {{with .Variants}}<p class="note" id="models-variants-note">{{len .}} {{t "System One variant(s) are derived from these models; they are built, certified and applied in Forge."}} <a href="/forge">{{t "Open Forge"}}</a></p>{{end}}
 
   <details class="region" id="models-choice">
     <summary>{{t "Advanced artifact actions"}}</summary>
@@ -165,9 +165,11 @@
 
 {{define "artifact"}}
 <p class="artifact-kind"><span class="badge{{if eq .Kind "VARIANT"}} tone-ok{{end}}">{{.Kind}}</span>{{if .Experimental}} <span class="badge tone-bad">{{t "experimental/uncertified"}}</span>{{end}}</p>
+<h4 class="execution-target-title">{{if .Title}}{{.Title}}{{else}}{{modelTitle .Model}}{{end}}</h4>
+{{with .Detail}}<p class="sub">{{.}}</p>{{end}}
 <dl class="kv">
-  <dt>{{t "Model"}}</dt><dd class="mono">{{.Model}}</dd>
-  {{if eq .Kind "VARIANT"}}<dt>{{t "Variant"}}</dt><dd class="mono">{{.Variant}}</dd>
+  <dt>{{t "Source model"}}</dt><dd>{{modelTitle .Model}} <span class="mono sub">{{.Model}}</span></dd>
+  {{if eq .Kind "VARIANT"}}<dt>{{t "Variant ID"}}</dt><dd class="mono">{{.Variant}}</dd>
   {{with .Scheme}}<dt>{{t "Precision"}}</dt><dd class="mono">{{.}}{{if $.Bits}} · {{$.Bits}}-bit{{end}}{{with $.DType}} · {{t "compute"}} {{.}}{{end}}</dd>{{end}}
   {{with .Certification}}<dt>{{t "Certification"}}</dt><dd>{{.}}</dd>{{end}}
   {{else}}<dt>{{t "Artifact"}}</dt><dd>{{t "the upstream source artifact (no variant)"}}</dd>{{end}}

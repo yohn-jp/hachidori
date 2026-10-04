@@ -1529,6 +1529,15 @@ var ja = map[string]string{
 
 func init() {
 	ja["runtime behavior on this host"] = "このホストでのランタイム動作"
+	ja["Resident targets"] = "常駐ターゲット"
+	ja["These additional models are part of the same desired execution state. Applying reconciles the execution target and resident set together."] = "これらの追加モデルは同じ希望実行状態の一部です。適用すると、実行ターゲットと常駐セットをまとめて整合します。"
+	ja["Execution targets"] = "実行ターゲット"
+	ja["what is serving now and what the next start will run"] = "現在提供中の対象と次回起動で実行する対象"
+	ja["Artifact inventory & maintenance"] = "成果物インベントリと保守"
+	ja["exact identities, verification and removal"] = "正確なID、検証、削除"
+	ja["Source model"] = "ソースモデル"
+	ja["Recent runtime activity"] = "最近のランタイム操作"
+	ja["operation outcome and evidence"] = "操作結果とエビデンス"
 	ja["Desktop startup preferences are owned by Settings. Diagnostics reports host behavior but does not change those preferences."] = "デスクトップの起動設定は設定画面で管理します。診断ではホストの動作を表示しますが、これらの設定は変更しません。"
 	ja["Open desktop settings"] = "デスクトップ設定を開く"
 }

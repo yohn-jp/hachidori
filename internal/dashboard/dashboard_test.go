@@ -208,7 +208,7 @@ func TestStatusIsTheV1StatusDocument(t *testing.T) {
 	e.rt.mu.Lock()
 	e.rt.snap.State, e.rt.snap.Ready, e.rt.snap.PID = worker.StateStopped, false, 0
 	e.rt.mu.Unlock()
-	if live := e.get(t, "/live").Body.String(); !strings.Contains(live, ">stopped<") || strings.Contains(live, "READY") {
+	if live := e.get(t, "/live").Body.String(); !strings.Contains(live, ">NEEDS ATTENTION<") || strings.Contains(live, "READY") {
 		t.Fatalf("live fragment does not follow runtime state:\n%s", live)
 	}
 }
@@ -1040,7 +1040,9 @@ func TestModelsManagerSeparatesSelectionActivationAndRunning(t *testing.T) {
 		t.Error("the form pre-selects a model that is not the active one")
 	}
 	run, next := section(body, `id="artifact-running"`, `id="artifact-next"`), section(body, `id="artifact-next"`, `id="artifact-differs"`)
-	if !strings.Contains(run, `<dd class="mono">laya-base</dd>`) || !strings.Contains(next, `<dd class="mono">opendecider-nano</dd>`) || !strings.Contains(body, `id="artifact-differs"`) {
+	if !strings.Contains(run, `<h4 class="execution-target-title">Laya Base</h4>`) || !strings.Contains(run, `<span class="mono sub">laya-base</span>`) ||
+		!strings.Contains(next, `<h4 class="execution-target-title">Opendecider Nano</h4>`) || !strings.Contains(next, `<span class="mono sub">opendecider-nano</span>`) ||
+		!strings.Contains(body, `id="artifact-differs"`) {
 		t.Errorf("running and next-start artifacts are not told apart:\nrunning:%s\nnext:%s", run, next)
 	}
 	e.rt.mu.Lock()
@@ -1060,7 +1062,7 @@ func TestModelsManagerSeparatesSelectionActivationAndRunning(t *testing.T) {
 	}
 	e.d = New(cfg)
 	body = e.get(t, "/models").Body.String()
-	if run := section(body, `id="artifact-running"`, `id="artifact-next"`); !strings.Contains(run, `<dd class="mono">opendecider-nano</dd>`) || strings.Contains(body, "applies on restart") || strings.Contains(body, `id="restart-required"`) || strings.Contains(body, `id="artifact-differs"`) {
+	if run := section(body, `id="artifact-running"`, `id="artifact-next"`); !strings.Contains(run, `<h4 class="execution-target-title">Opendecider Nano</h4>`) || !strings.Contains(run, `<span class="mono sub">opendecider-nano</span>`) || strings.Contains(body, "applies on restart") || strings.Contains(body, `id="restart-required"`) || strings.Contains(body, `id="artifact-differs"`) {
 		t.Error("after restart the manager still reports a pending change")
 	}
 }
