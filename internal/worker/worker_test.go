@@ -134,6 +134,8 @@ func TestHelperWorker(t *testing.T) {
 				registered = req.StateRef
 				emit(map[string]any{"id": req.ID, "ok": true, "result": map[string]any{"supported": true, "artifact": "fake", "effective_prefix": "fake", "payload_bytes": 2}})
 			}
+		case req.Op == "resident_decide" && mode == "clef_invalid_question" && req.Items[0].Questions[0].ID == "bad":
+			emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "bad question"}})
 		case req.Op == "resident_decide" && (registered == "" || req.Items[0].StateRef != registered):
 			emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "resident mismatch"}})
 		case req.Op == "stats":
