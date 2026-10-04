@@ -377,11 +377,12 @@ func schemas() obj {
 			"last_failure":       ref("Failure"),
 			"requests":           obj{"type": "integer", "description": "Requests handled."},
 			"errors":             obj{"type": "object", "additionalProperties": obj{"type": "integer"}, "description": "Error counts by class."},
-			"queue_depth":        obj{"type": "integer", "description": "Requests queued or in flight."},
-			"queue_limit":        obj{"type": "integer", "description": "Maximum queued or in-flight requests."},
+			"queue_depth":        obj{"type": "integer", "description": "Requests waiting for a worker call; excludes in-flight requests."},
+			"in_flight":          obj{"type": "integer", "description": "Requests whose worker call is executing."},
+			"queue_limit":        obj{"type": "integer", "description": "Maximum admitted requests, waiting or in flight."},
 			"inference_p50_ms":   num("Median inference latency in milliseconds."),
 			"inference_p95_ms":   num("95th-percentile inference latency in milliseconds."),
-		}, "state", "phase", "ready", "starts", "restarts_in_window", "requests", "errors", "queue_depth", "queue_limit", "inference_p50_ms", "inference_p95_ms"),
+		}, "state", "phase", "ready", "starts", "restarts_in_window", "requests", "errors", "queue_depth", "in_flight", "queue_limit", "inference_p50_ms", "inference_p95_ms"),
 
 		"Failure": object("The worker's last failure.", obj{
 			"class":       str("Failure class."),

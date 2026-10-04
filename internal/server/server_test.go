@@ -7,8 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/requesthistory"
+	"github.com/yohn-jp/hachidori/internal/route"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -17,6 +20,35 @@ type fake struct {
 	err   error
 	calls int
 }
+
+type identityFake struct {
+	*fake
+	identities map[string]requesthistory.Identity
+	failModel  string
+	policy     *route.Router
+}
+
+func (f *identityFake) Identity(model string) (api.Served, bool) {
+	identity, ok := f.identities[model]
+	if !ok {
+		return api.Served{}, false
+	}
+	return api.Served{Model: identity.Model}, true
+}
+
+func (f *identityFake) RequestIdentity(model string) (requesthistory.Identity, bool) {
+	identity, ok := f.identities[model]
+	return identity, ok
+}
+
+func (f *identityFake) DecideOn(model string, items []worker.Item) ([][]api.Result, float64, error) {
+	if model == f.failModel {
+		return nil, 0, &worker.RequestError{Class: api.ErrInferenceFailed, Message: "selected resident failed"}
+	}
+	return f.fake.Decide(items)
+}
+
+func (f *identityFake) AutoRouter() *route.Router { return f.policy }
 
 func (f *fake) Decide(items []worker.Item) ([][]api.Result, float64, error) {
 	f.calls++
@@ -90,6 +122,98 @@ func TestDecide(t *testing.T) {
 	}
 	if rec, m := do(h, "GET", "/v1/status", ""); rec.Code != 200 || m["runtime"].(map[string]any)["device"] != "cpu" {
 		t.Fatalf("status: %d %v", rec.Code, m)
+	}
+}
+
+func TestRequestHistoryProjectsSingleBatchAndFailure(t *testing.T) {
+	requests := requesthistory.New()
+	rt := Runtime{Runtime: "rt-1", ModelID: "m-1", Model: "org/model@rev", Device: "cuda",
+		Variant: &Variant{ID: "variant-1"}}
+	h := HandlerSinceWithHistory(&fake{ready: true}, rt, time.Now(), requests)
+	if rec, _ := do(h, "POST", "/v1/decide", body); rec.Code != http.StatusOK {
+		t.Fatalf("single decision: %d %s", rec.Code, rec.Body)
+	}
+	batch := `{"schema":"hachidori.v1","requests":[` + body + `,` + body + `]}`
+	if rec, _ := do(h, "POST", "/v1/decide/batch", batch); rec.Code != http.StatusOK {
+		t.Fatalf("batch decision: %d %s", rec.Code, rec.Body)
+	}
+	view := requests.List()
+	if view.QueueDepth != 0 || view.InFlight != 0 || view.ActiveItems != 0 || len(view.Entries) != 2 {
+		t.Fatalf("history view %+v", view)
+	}
+	if got := view.Entries[0]; got.Endpoint != "/v1/decide/batch" || got.ItemCount != 2 || got.State != "completed" || got.Runtime.Model != "m-1" || got.Runtime.Variant != "variant-1" {
+		t.Fatalf("batch projection %+v", got)
+	}
+	if got := view.Entries[1]; got.Endpoint != "/v1/decide" || got.ItemCount != 1 || got.QuestionCount != 1 || got.StateBytes != 1 || got.State != "completed" {
+		t.Fatalf("single projection %+v", got)
+	}
+	detail, ok := requests.Get(view.Entries[0].ID)
+	if !ok || !strings.Contains(string(detail.Input), "requests") || !strings.Contains(string(detail.Output), "responses") || !strings.Contains(string(detail.Output), "confidence") {
+		t.Fatalf("batch detail is not inspectable: found=%v input=%s output=%s", ok, detail.Input, detail.Output)
+	}
+
+	if rec, _ := do(h, "POST", "/v1/decide", `{"schema":"hachidori.v1","state":"bad","questions":[]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("rejected request status: %d %s", rec.Code, rec.Body)
+	}
+	view = requests.List()
+	if got := view.Entries[0]; got.State != "rejected" || got.ErrorClass != api.ErrRequestInvalid || got.HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("rejected request projection %+v", got)
+	}
+
+	failedStore := requesthistory.New()
+	failed := HandlerSinceWithHistory(&fake{ready: true, err: &worker.RequestError{Class: api.ErrInferenceFailed, Message: "typed failure"}}, rt, time.Now(), failedStore)
+	if rec, _ := do(failed, "POST", "/v1/decide", body); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed decision: %d %s", rec.Code, rec.Body)
+	}
+	entry := failedStore.List().Entries[0]
+	if entry.State != "failed" || entry.ErrorClass != api.ErrInferenceFailed || entry.ErrorMessage != "typed failure" {
+		t.Fatalf("execution failure projection %+v", entry)
+	}
+
+	timeoutStore := requesthistory.New()
+	timeout := HandlerSinceWithHistory(&fake{ready: true, err: &worker.Failure{Class: worker.ClassUnresponsive, Message: "no response"}}, rt, time.Now(), timeoutStore)
+	if rec, _ := do(timeout, "POST", "/v1/decide", body); rec.Code != http.StatusBadGateway {
+		t.Fatalf("timed out decision: %d %s", rec.Code, rec.Body)
+	}
+	entry = timeoutStore.List().Entries[0]
+	if entry.State != "timed_out" || entry.ErrorClass != api.ErrWorkerFailure || entry.ErrorMessage == "" {
+		t.Fatalf("timed out request projection %+v", entry)
+	}
+}
+
+func TestRequestHistoryUsesSelectedResidentIdentityIncludingAutoFailure(t *testing.T) {
+	defaultIdentity := requesthistory.Identity{Runtime: "runtime-default", Model: "default-model", Device: "cuda:0", Variant: "default-variant"}
+	selectedIdentity := requesthistory.Identity{Runtime: "runtime-selected", Model: "selected-model", Device: "cuda:0", Variant: "selected-variant"}
+	identities := map[string]requesthistory.Identity{"selected-model": selectedIdentity}
+	rt := Runtime{Runtime: defaultIdentity.Runtime, ModelID: defaultIdentity.Model, Device: defaultIdentity.Device,
+		Variant: &Variant{ID: defaultIdentity.Variant}}
+
+	targetedStore := requesthistory.New()
+	targeted := &identityFake{fake: &fake{ready: true}, identities: identities}
+	h := HandlerSinceWithHistory(targeted, rt, time.Now(), targetedStore)
+	selectedBody := strings.Replace(body, `"state":"s"`, `"state":"s","model":"selected-model"`, 1)
+	if rec, _ := do(h, "POST", "/v1/decide", selectedBody); rec.Code != http.StatusOK {
+		t.Fatalf("targeted decision: %d %s", rec.Code, rec.Body)
+	}
+	if got := targetedStore.List().Entries[0].Runtime; got != selectedIdentity {
+		t.Fatalf("targeted execution identity %+v, want %+v", got, selectedIdentity)
+	}
+
+	failedStore := requesthistory.New()
+	backend := &identityFake{fake: &fake{ready: true}, identities: identities, failModel: "selected-model"}
+	policy, err := route.New(route.Policy{Schema: route.PolicySchema, ID: "history-test", Default: route.Rule{First: "selected-model"}}, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.policy = policy
+	h = HandlerSinceWithHistory(backend, rt, time.Now(), failedStore)
+	autoBody := strings.Replace(body, `"state":"s"`, `"state":"s","route":"auto"`, 1)
+	if rec, _ := do(h, "POST", "/v1/decide", autoBody); rec.Code != http.StatusFailedDependency {
+		t.Fatalf("auto decision: %d %s", rec.Code, rec.Body)
+	}
+	entry := failedStore.List().Entries[0]
+	if entry.State != "failed" || entry.Runtime != selectedIdentity || entry.ErrorClass != api.ErrRoutingFailed {
+		t.Fatalf("auto failure lost selected execution identity: %+v", entry)
 	}
 }
 
