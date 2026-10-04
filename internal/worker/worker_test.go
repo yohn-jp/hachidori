@@ -71,11 +71,12 @@ func TestHelperWorker(t *testing.T) {
 	registered := ""
 	for sc.Scan() {
 		var req struct {
-			ID       int64  `json:"id"`
-			Op       string `json:"op"`
-			Items    []Item `json:"items"`
-			StateRef string `json:"state_ref"`
-			State    string `json:"state"`
+			ID        int64          `json:"id"`
+			Op        string         `json:"op"`
+			Items     []Item         `json:"items"`
+			StateRef  string         `json:"state_ref"`
+			State     string         `json:"state"`
+			Questions []api.Question `json:"questions"`
 		}
 		_ = json.Unmarshal(sc.Bytes(), &req)
 		if mode == "hold_decide" && req.Op == "decide" {
@@ -117,7 +118,11 @@ func TestHelperWorker(t *testing.T) {
 		case mode == "hang_on_decide" && req.Op == "decide":
 			time.Sleep(time.Minute)
 		case req.Op == "resident_register":
-			if req.StateRef != home.StateRef(req.State) {
+			if mode == "clef_capacity" && len(req.Questions) > 1 {
+				emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{
+					"class": "capacity", "message": "combined input too large",
+					"capacity": map[string]any{"metric": "input_tokens", "limit": 1, "observed": len(req.Questions)}}})
+			} else if req.StateRef != home.StateRef(req.State) {
 				emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "State reference mismatch"}})
 			} else {
 				registered = req.StateRef

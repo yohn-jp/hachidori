@@ -126,6 +126,19 @@ class ResidentContract(unittest.TestCase):
             p.decide_resident([{'state_ref': ref, 'state': 'different', 'questions': [q1]}])
         self.assertIs(p.registered_resident[2], resident)
 
+    def test_registration_capacity_denied_before_prefill(self):
+        p = self.provider
+        p.check_capacity_readiness = lambda: None
+        p.capacity_profile = {'max_input_tokens': 8192, 'max_state_tokens': 1,
+                              'max_batch_items': 8, 'max_batch_padded_tokens': 8192}
+        state = 'policy'
+        ref = 'sha256:' + hashlib.sha256(state.encode()).hexdigest()
+        q = {'id': 'q', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        with self.assertRaises(CapacityError):
+            p.register_resident(ref, state, [q])
+        self.assertIsNone(p.registered_resident)
+        self.assertEqual(self.text.calls, [])
+
     def test_chunk_forks_identity_and_accounting(self):
         p = self.provider
         state = 's' * 1100

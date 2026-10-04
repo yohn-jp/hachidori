@@ -46,8 +46,9 @@ defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
 |---|---|---|
 | `GET /health` | `200 {"ready":true,"state":"ready"}` | `503` with the same body while starting, restarting or failed |
 | `GET /v1/status` | `200` | runtime (model ID, device), provider (name, version, the loaded model's ID and revision, device, dtype, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, waiting `queue_depth`, executing `in_flight`, admission `queue_limit`, inference p50/p95; with several residents, `residents` lists each one's own such document |
-| `POST /v1/decide` | `200` | one state, 1–32 `choice` questions; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
-| `POST /v1/decide/batch` | `200` | 1–64 decide requests; requests sharing a question set share forward passes; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
+| `POST /v1/states` | `200` | persist `{ "state": "..." }` beneath `HACHIDORI_HOME/state/registered`; returns `{ "state_ref": "sha256:<digest>" }` for the exact UTF-8 content (not a model cache or admission reservation) |
+| `POST /v1/decide` | `200` | exactly one of inline `state` or registered `state_ref`, 1–32 `choice` questions; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
+| `POST /v1/decide/batch` | `200` | 1–64 decide requests, each with inline `state` or `state_ref`; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
 | `GET /openapi.json` | `200` | the OpenAPI 3.1 description of this API (below) |
 
 The API is host-local like the dashboard: a request whose `Host` is not a
@@ -91,6 +92,27 @@ its entropy-based `confidence`; for OpenDecider-nano it is the softmax
 probability of the reported option. The request and result shapes are the same
 for every model; which model answered is reported by `/v1/status` (and, for a
 directly targeted request, by `served` in the response, below).
+
+### Registered State and Clef execution
+
+State references are SHA-256 addresses of exact State bytes, not mutable names.
+Registration only persists content; admission to a device occurs when a
+referenced request is dispatched. Missing or corrupted objects fail rather than
+selecting another State. Responses and request history carry the effective
+reference, including inline State. The bounded Clef scheduler may combine
+independently arriving requests with the same registered State and distinct
+Question IDs; it demultiplexes results to the original requests. This is not
+`/v1/decide/batch` transport semantics. Capacity-denied combined shapes are
+retried as separate requests against the same authoritative worker admission.
+
+A pinned, certified Clef CUDA worker can attach one completed #270 continuation
+to an explicit registered State. Its execution identity binds the effective
+encoded prefix and artifact in addition to the content reference. The worker
+admits input before prefill and before suffix execution, forks the immutable
+cache per request, and exposes payload/fork/working-set measurements in its
+capacity status. Unsupported artifacts use ordinary full-State execution with
+the same resolved State; non-Clef providers and inline requests remain on their
+existing paths.
 
 ### Multi-resident serving and direct selection
 

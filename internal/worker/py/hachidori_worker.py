@@ -1436,6 +1436,7 @@ class ClefProvider(Provider):
         # Bound residency to one completed object; failed construction is not
         # published. #264 checks input shape before build touches the device.
         self.registered_resident = None
+        self.resident_usage = {}
         self.check_capacity_readiness()
         resident = self.build_resident(state, to_typed(questions))
         self.registered_resident = (ref, state, resident)
