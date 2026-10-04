@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -717,6 +718,9 @@ func CapacityCalibrationConfig(h home.Home, device, variantID string, log io.Wri
 	}
 	if rt.ModelID != setup.ClefFlash || device != "cuda" {
 		return worker.Config{}, Runtime{}, fmt.Errorf("capacity calibration requires a Clef CUDA variant")
+	}
+	if len(cfg.Args) > math.MaxInt-1 {
+		return worker.Config{}, Runtime{}, fmt.Errorf("too many worker args")
 	}
 	args := make([]string, 0, len(cfg.Args)+1)
 	for i := 0; i < len(cfg.Args); i++ {
