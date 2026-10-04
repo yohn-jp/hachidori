@@ -134,12 +134,12 @@ func (r Recipe) Validate() error {
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
 
 // Optimizer is the engine facts of the build: which backend, which version,
-// in which optimizer runtime.
+// in which optimizer runtime and on which concrete device.
 type Optimizer struct {
 	Engine  string `json:"engine"`
 	Version string `json:"version"`
 	Runtime string `json:"runtime"` // optimizer runtime identity (directory under runtime/)
-	Device  string `json:"device"`  // device the transformation ran on
+	Device  string `json:"device"`  // concrete device the transformation ran on: cpu | cuda
 	// Versions are the versions of every library the engine reported.
 	Versions map[string]string `json:"versions"`
 }
@@ -239,8 +239,8 @@ type VariantManifest struct {
 	// version, recipe, calibration, tuning profile or any artifact byte changes.
 	ID string `json:"id"`
 	// BuildID is the identity of the build contract alone (source, engine,
-	// engine version, recipe, calibration and optional tuning profile), before
-	// any artifact exists. Two builds of one contract that produce different
+	// engine version, recipe, calibration, optional tuning profile and, unless
+	// it is the cpu, the optimizer device), before any artifact exists. Two builds of one contract that produce different
 	// bytes share a BuildID and have different IDs: the difference is visible,
 	// never merged.
 	BuildID       string            `json:"build_id"`
@@ -273,6 +273,13 @@ func SourceOf(m ModelManifest) VariantSource {
 	return VariantSource{ID: m.ID, Provider: m.Provider, Repo: m.Repo, Revision: m.Revision, FilesSHA256: SourceFilesSHA256(m.Files)}
 }
 
+// Optimizer devices a variant can have been built on. A device is always a
+// concrete one: a build never records a policy such as "auto".
+const (
+	OptimizerDeviceCPU  = "cpu"
+	OptimizerDeviceCUDA = "cuda"
+)
+
 // DeriveBuildID is the identity of a build contract.
 func DeriveBuildID(src VariantSource, provider string, opt Optimizer, recipeSHA string, cal *Calibration) string {
 	return DeriveBuildIDWithTuning(src, provider, opt, recipeSHA, cal, nil)
@@ -281,7 +288,17 @@ func DeriveBuildID(src VariantSource, provider string, opt Optimizer, recipeSHA 
 // DeriveBuildIDWithTuning is the identity of a build contract, including its
 // optional exact tuning provenance. A nil tuning record preserves the
 // recipe-only identity of existing variants.
+//
+// The concrete optimizer device is part of the contract unless it is the cpu:
+// a cpu build keeps the identity every existing variant was derived with, and
+// a cuda build is a different contract, so it never resolves to, reproduces or
+// publishes over a cpu build (or the reverse), whatever bytes either produced.
+// The optimizer runtime stays provenance.
 func DeriveBuildIDWithTuning(src VariantSource, provider string, opt Optimizer, recipeSHA string, cal *Calibration, tuning *TuningProvenance) string {
+	device := ""
+	if opt.Device != "" && opt.Device != OptimizerDeviceCPU {
+		device = opt.Device
+	}
 	b, err := json.Marshal(struct {
 		Schema      string            `json:"schema"`
 		Source      VariantSource     `json:"source"`
@@ -291,7 +308,8 @@ func DeriveBuildIDWithTuning(src VariantSource, provider string, opt Optimizer, 
 		Recipe      string            `json:"recipe_sha256"`
 		Calibration *Calibration      `json:"calibration,omitempty"`
 		Tuning      *TuningProvenance `json:"tuning,omitempty"`
-	}{VariantSchema, src, provider, opt.Engine, opt.Version, recipeSHA, cal, tuning})
+		Device      string            `json:"device,omitempty"`
+	}{VariantSchema, src, provider, opt.Engine, opt.Version, recipeSHA, cal, tuning, device})
 	if err != nil {
 		panic(err)
 	}
@@ -369,6 +387,11 @@ func (m VariantManifest) Validate() error {
 	}
 	if m.Optimizer.Engine != m.Recipe.Engine || m.Optimizer.Version == "" {
 		return fmt.Errorf("variant optimizer %s/%s does not match recipe engine %q", m.Optimizer.Engine, m.Optimizer.Version, m.Recipe.Engine)
+	}
+	switch m.Optimizer.Device {
+	case "", OptimizerDeviceCPU, OptimizerDeviceCUDA: // "" is a manifest that predates the device record; it derives as the cpu
+	default:
+		return fmt.Errorf("variant optimizer device %q is not a concrete device (cpu or cuda)", m.Optimizer.Device)
 	}
 	if m.Weights.Scheme != m.Recipe.Scheme || m.Weights.Bits == 0 || m.Weights.Format == "" || m.Weights.DType == "" {
 		return fmt.Errorf("variant weights %+v do not declare the recipe scheme %q", m.Weights, m.Recipe.Scheme)

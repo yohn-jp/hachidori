@@ -244,7 +244,7 @@ func collectForge(root string, f ForgeFailure, cause error) (in diagnostics.Forg
 		var err error
 		switch {
 		case f.Kind == OpOptimize:
-			spec, err = setup.DesiredOptimizer()
+			spec, err = optimizerSpecFor(f.Device)
 		case f.Device != "":
 			spec, err = setup.Desired(f.Device)
 		default:
@@ -468,4 +468,14 @@ func logTail(path, kind string, max int) ([]string, error) {
 		lines = lines[len(lines)-max:]
 	}
 	return lines, nil
+}
+
+// optimizerSpecFor is the Runtime Spec of the optimizer runtime of the device a
+// forge operation named (an empty device is the cpu optimizer).
+func optimizerSpecFor(device string) (home.RuntimeSpec, error) {
+	dev, err := setup.ResolveOptimizerDevice(device)
+	if err != nil {
+		return home.RuntimeSpec{}, err
+	}
+	return setup.DesiredOptimizer(dev)
 }

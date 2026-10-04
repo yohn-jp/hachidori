@@ -72,7 +72,7 @@ func TestWorkerOnlyChangeDoesNotChangeRuntimeIdentity(t *testing.T) {
 		}
 		before = append(before, s.ID())
 	}
-	opt, _ := DesiredOptimizer()
+	opt, _ := DesiredOptimizer("cpu")
 	before = append(before, opt.ID())
 	workerBefore := BuildWorker()
 
@@ -83,7 +83,7 @@ func TestWorkerOnlyChangeDoesNotChangeRuntimeIdentity(t *testing.T) {
 		s, _ := Desired(d)
 		after = append(after, s.ID())
 	}
-	opt, _ = DesiredOptimizer()
+	opt, _ = DesiredOptimizer("cpu")
 	after = append(after, opt.ID())
 	for i := range before {
 		if before[i] != after[i] {

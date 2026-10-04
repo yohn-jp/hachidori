@@ -26,9 +26,10 @@ type PreflightRequest struct {
 	Model   string // catalog model ID (optimize/materialize); a variant's own source for probe/certify
 	Recipe  string // optimize: recipe name
 	Variant string // probe/certify: variant ID
-	// Device is the device the operation will run on: "cuda" or "cpu". It is
-	// the optimizer's own cpu for an optimization unless a serving device is
-	// being checked ahead of time. It is never defaulted or substituted.
+	// Device is the device the operation will run on: "cuda" or "cpu". For an
+	// optimization it is the optimizer device and selects the optimizer
+	// runtime (an empty one is the cpu optimizer, as it always was). It is
+	// never otherwise defaulted or substituted.
 	Device string
 	// Verified: the caller has just verified the artifacts' digests itself
 	// (Build does, right before it calls Preflight), so they are not hashed
@@ -136,7 +137,10 @@ func PreflightBindingOf(h home.Home, req PreflightRequest) setup.PreflightBindin
 	var err error
 	switch {
 	case req.Kind == setup.PreflightOptimize:
-		spec, err = setup.DesiredOptimizer()
+		var dev string
+		if dev, err = setup.ResolveOptimizerDevice(req.Device); err == nil {
+			spec, err = setup.DesiredOptimizer(dev)
+		}
 	case req.Device != "":
 		spec, err = setup.Desired(req.Device)
 	default:
@@ -209,6 +213,9 @@ type preflight struct {
 	rm     home.RuntimeManifest
 	spec   home.RuntimeSpec
 	rtOK   bool
+	// optSpec is the Runtime Spec of the optimizer runtime of the requested
+	// optimizer device (optimize only).
+	optSpec home.RuntimeSpec
 }
 
 func (p *preflight) add(id, area string, st setup.FindingStatus, summary string, facts map[string]any) {
@@ -376,13 +383,19 @@ var relevantDists = []string{"torch", "transformers", "compressed-tensors", "llm
 
 // optimizerRuntime checks the optimizer runtime that builds variants.
 func (p *preflight) optimizerRuntime() {
-	spec, err := setup.DesiredOptimizer()
+	device, err := setup.ResolveOptimizerDevice(p.req.Device)
+	if err != nil {
+		p.add("runtime.optimizer", setup.AreaRuntime, setup.FindingBlocker, err.Error()+"; there is no automatic choice and no fallback", map[string]any{"device": p.req.Device})
+		return
+	}
+	spec, err := setup.DesiredOptimizer(device)
 	if err != nil {
 		p.add("runtime.optimizer", setup.AreaRuntime, setup.FindingBlocker, "no optimizer runtime exists for this platform: "+err.Error(), nil)
 		return
 	}
-	facts := map[string]any{"runtime": spec.ID(), "python": spec.Python, "torch": spec.Torch, "engine": setup.OptimizerEngine, "engine_version": setup.OptimizerEngineVersion}
-	rt, err := setup.FindOptimizer(p.h)
+	facts := map[string]any{"device": device, "runtime": spec.ID(), "python": spec.Python, "torch": spec.Torch, "flavor": spec.Flavor, "engine": setup.OptimizerEngine, "engine_version": setup.OptimizerEngineVersion}
+	p.optSpec = spec
+	rt, err := setup.FindOptimizer(p.h, device)
 	if err != nil {
 		if _, serr := os.Stat(p.h.Path("runtime", setup.RuntimeDirFor(p.h, spec))); serr != nil {
 			p.add("runtime.optimizer", setup.AreaRuntime, setup.FindingWarning,
@@ -492,11 +505,35 @@ func (p *preflight) accelerator() {
 	}
 	facts["device_name"], facts["device_count"], facts["capability"] = f.DeviceName, f.DeviceCount, f.Capability
 	facts["vram_total_bytes"], facts["vram_free_bytes"] = f.VRAMTotal, f.VRAMFree
+	if p.req.Kind == setup.PreflightOptimize {
+		// The optimizer's CUDA runtime must be the pinned CUDA torch build.
+		if err := RequireCUDA(p.optSpec.ID(), p.optSpec, f); err != nil {
+			p.add("accelerator.device", setup.AreaAccelerator, setup.FindingBlocker, err.Error(), facts)
+			return
+		}
+	}
 	p.add("accelerator.device", setup.AreaAccelerator, setup.FindingPass,
 		fmt.Sprintf("cuda was requested and torch %s (CUDA %s) sees %s with %s of %s VRAM free", f.Torch, f.TorchCUDA, f.DeviceName, setup.Bytes(f.VRAMFree), setup.Bytes(f.VRAMTotal)), facts)
+	if p.req.Kind == setup.PreflightOptimize {
+		p.optimizeVRAM(f)
+	}
 	if p.req.Kind == setup.PreflightProbe || p.req.Kind == setup.PreflightCertify {
 		p.vramFit(f)
 	}
+}
+
+// optimizeVRAM describes the accelerator working set of a cuda optimization.
+// The backend keeps the source weights in host RAM (memoryFor checks them
+// there) and moves one module's tensors to the accelerator at a time, so the
+// complete source weight size is deliberately not compared with VRAM. The
+// working set (the largest module and the algorithm's temporaries) is not
+// known before the optimizer runs, so the finding is UNKNOWN, never PASS.
+func (p *preflight) optimizeVRAM(f setup.AcceleratorFacts) {
+	facts := map[string]any{"source_weight_bytes": p.srcWeightBytes, "vram_total_bytes": f.VRAMTotal, "vram_free_bytes": f.VRAMFree,
+		"basis": "source weights stay in host RAM; the accelerator holds one module's tensors at a time; the complete source is not required to fit in VRAM"}
+	p.add("accelerator.vram", setup.AreaAccelerator, setup.FindingUnknown,
+		fmt.Sprintf("the optimizer holds the %s source weights in host RAM and uses the accelerator (%s free of %s VRAM) one module at a time; the source is not required to fit in VRAM, and the peak VRAM use is not known until the optimizer runs",
+			setup.Bytes(p.srcWeightBytes), setup.Bytes(f.VRAMFree), setup.Bytes(f.VRAMTotal)), facts)
 }
 
 // vramFit compares the variant's known weight bytes with the observed VRAM.

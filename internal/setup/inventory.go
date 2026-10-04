@@ -180,9 +180,10 @@ func Inspect(h home.Home, verify bool) Inventory {
 	return inv
 }
 
-// inspectOptimizer reports the optimizer runtime of this platform.
+// inspectOptimizer reports the cpu optimizer runtime of this platform, the
+// default optimizer device.
 func inspectOptimizer(h home.Home, verify bool) *RuntimeEntry {
-	spec, err := DesiredOptimizer()
+	spec, err := DesiredOptimizer(home.OptimizerDeviceCPU)
 	if err != nil {
 		return &RuntimeEntry{Device: "cpu", Problem: err.Error()}
 	}

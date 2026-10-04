@@ -576,7 +576,7 @@ func TestPreflightReportIsBoundToItsIdentities(t *testing.T) {
 	}
 
 	recipe, _ := optimize.LookupRecipe(m.ID, optimize.RecipeClefFlashW4A16)
-	opt, _ := setup.DesiredOptimizer()
+	opt, _ := setup.DesiredOptimizer("cpu")
 	r = pre(t, h, optimize.PreflightRequest{Verified: true}, host(1<<40, true, ram(64*gib, 60*gib)))
 	if b := r.Binding; b == nil || b.Kind != setup.PreflightOptimize || b.Recipe != recipe.Name || b.RecipeSHA256 != recipe.SHA256() || b.Runtime != opt.ID() ||
 		b.RuntimeManifestSHA256 != "" || b.Variant != "" || b.Device != "" || b.SourceManifestSHA256 != srcManifest {

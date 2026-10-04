@@ -1114,14 +1114,32 @@ activation.
 
 **Optimizer runtime.** The compression stack never enters the serving runtime.
 `hachidori variant optimize` materializes a second, deterministic runtime under
-`runtime/` (`optimizer-cpu-<digest>`: role `optimizer`, its own pinned
+`runtime/` (`optimizer-cpu-<digest>` or `optimizer-cu128-<digest>`: role `optimizer`, its own pinned
 `internal/setup/optimizerspec/` uv project and lock, its own script
 `hachidori_optimizer.py`, the same private uv, staged, verified and atomically
 published like the serving runtime) and never reuses or changes the serving one.
 That materialization is the only network access of the optimization lifecycle;
 the optimizer process itself is isolated and offline and receives only the
-verified source directory, the recipe and an empty staging directory. The first
-recipe transforms on the CPU (the optimizer runtime is the CPU flavor).
+verified source directory, the recipe and an empty staging directory.
+
+The optimizer device is named, never guessed: `hachidori variant optimize
+--device cpu|cuda` (default `cpu`; there is no `auto`). It selects the flavor of
+the one locked optimizer project (the `cpu` or `cu128` extra), is passed to the
+optimizer, and is recorded as the concrete `optimizer.device` and `optimizer.runtime`
+of the variant manifest. A cuda build has its own `build_id` (the device is part of
+the contract unless it is `cpu`, so every existing cpu identity is unchanged) and
+never resolves to, reproduces or overwrites a cpu build. Before loading anything the
+optimizer resolves the device its backend will use and requires it to be the
+requested one; a cuda build whose pinned CUDA torch sees no usable device fails with
+a typed `cuda_unavailable` (or `cuda_out_of_memory`) error and is never continued on
+the CPU. CUDA does not mean whole-model residency: the source stays in host RAM and
+the pinned `llmcompressor==0.14.0` / `compressed-tensors==0.19.0` data-free pipeline
+onloads one module's tensors to the accelerator at a time (`set_onload_device`; no
+`model.cuda()`). Preflight therefore keeps sizing RAM for the host-resident source,
+records the observed device name, CUDA version and VRAM, and reports VRAM as an
+accelerator working set that is not known before the run (`unknown`), never as the
+source size. Wall time and peak RAM/VRAM of a CUDA build are not measured by the
+portable tests; no speedup is claimed.
 
 **Build, publication and failure.**
 

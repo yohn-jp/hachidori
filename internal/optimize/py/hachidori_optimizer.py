@@ -16,6 +16,24 @@ recipe declares as preserved are excluded from quantization (the compressed-tens
 ignore list) and stay in the source precision; the output metadata is checked for
 exactly that. No scheme is ever substituted: a recipe the backend cannot apply as
 declared fails.
+
+Device policy. The Go builder names the concrete device (--device cpu|cuda) and starts
+the interpreter of the matching runtime flavor. This process never chooses or changes
+it: it resolves the device the backend will use BEFORE loading the source, requires it
+to be the requested one, reports it, and fails with a typed class (cuda_unavailable,
+device_mismatch, cuda_out_of_memory) rather than continuing on another device.
+
+CUDA does not mean whole-model residency. The source is loaded on the host and stays in
+host memory; no code here or in the pinned backend calls model.cuda() or model.to().
+In the pinned llmcompressor 0.14.0 / compressed-tensors 0.19.0 the data-free pipeline
+(llmcompressor.pipelines.data_free.pipeline.DataFreePipeline) calls
+llmcompressor.utils.dev.get_main_device() and
+compressed_tensors.offload.set_onload_device(model, device): every module is wrapped in
+a CPU offload cache whose tensors are moved to the accelerator only when the module's
+weight is accessed (weight observation, then per-module compression when saving) and
+released afterwards. get_main_device() is also what silently falls back to the cpu
+("No accelerator available") when torch has no accelerator; the explicit check below
+makes that a failure when cuda was requested.
 """
 import argparse
 import json
@@ -74,12 +92,44 @@ def module_precision(module):
     return "packed:" + str(packed.dtype).replace("torch.", "") if packed is not None else "unknown"
 
 
+def resolve_backend_device(torch, get_main_device, requested):
+    """The device the pinned backend's data-free pipeline will onload to, checked against
+    the requested one. Fails (typed) instead of continuing on another device."""
+    if requested == "cuda":
+        if not torch.cuda.is_available() or torch.version.cuda is None:
+            fail("cuda_unavailable", "cuda was requested but torch %s (CUDA %s) reports no usable CUDA device; "
+                 "the build is not continued on the cpu" % (torch.__version__, torch.version.cuda))
+    try:
+        backend = get_main_device()
+    except Exception as e:  # noqa: BLE001
+        fail("device_mismatch", "the backend could not resolve its device: %s: %s" % (type(e).__name__, e))
+    if backend.type != requested:
+        fail("cuda_unavailable" if requested == "cuda" else "device_mismatch",
+             "%s was requested but the backend would run on %s; the build is not continued on another device" % (requested, backend))
+    return backend
+
+
+def device_event(torch, requested, backend):
+    ev = {"event": "device", "device": requested, "backend": str(backend)}
+    if requested == "cuda":
+        free, total = torch.cuda.mem_get_info(backend)
+        ev.update({"name": torch.cuda.get_device_name(backend), "cuda": torch.version.cuda,
+                   "vram_total_bytes": int(total), "vram_free_bytes": int(free)})
+    return ev
+
+
+def failure_class(torch, e, default):
+    """cuda_out_of_memory for an accelerator allocation failure, otherwise the stage's class."""
+    oom = getattr(torch.cuda, "OutOfMemoryError", None)
+    return "cuda_out_of_memory" if oom is not None and isinstance(e, oom) else default
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source-dir", required=True)
     ap.add_argument("--recipe", required=True, help="canonical Hachidori recipe (JSON)")
     ap.add_argument("--out", required=True, help="empty staging directory")
-    ap.add_argument("--device", required=True, choices=["cpu"], help="device the quantization runs on")
+    ap.add_argument("--device", required=True, choices=["cpu", "cuda"], help="concrete device the quantization runs on; never changed by this process")
     args = ap.parse_args()
     emit({"event": "hello", "protocol": PROTOCOL, "pid": os.getpid()})
 
@@ -99,11 +149,17 @@ def main():
         import transformers
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
+        from llmcompressor.utils.dev import get_main_device
         from transformers import Qwen3_5ForConditionalGeneration
     except Exception as e:  # noqa: BLE001
         fail("optimizer_import", "%s: %s" % (type(e).__name__, e))
     versions = {d: md.version(d) for d in ("llmcompressor", "compressed-tensors", "transformers", "torch", "accelerate")}
     emit({"event": "engine", "engine": "llmcompressor", "version": versions["llmcompressor"], "versions": versions})
+
+    # Resolve the device the backend will use before anything is loaded and require it
+    # to be the requested one: no silent cuda -> cpu fallback, no accidental cpu -> cuda.
+    backend_device = resolve_backend_device(torch, get_main_device, args.device)
+    emit(device_event(torch, args.device, backend_device))
 
     backbone_patterns = [p["pattern"] for p in recipe.get("preserved", []) if p.get("scope") == "backbone"]
 
@@ -132,7 +188,7 @@ def main():
         oneshot(model=model, recipe=modifier)
     except Exception as e:  # noqa: BLE001
         log(traceback.format_exc())
-        fail("quantize", "%s: %s" % (type(e).__name__, e))
+        fail(failure_class(torch, e, "quantize"), "%s: %s" % (type(e).__name__, e))
 
     quantized = sorted(n for n, m in model.named_modules() if getattr(m, "quantization_scheme", None) is not None
                        and isinstance(m, torch.nn.Linear))
@@ -152,7 +208,7 @@ def main():
             carried.append(rel)
     except Exception as e:  # noqa: BLE001
         log(traceback.format_exc())
-        fail("serialize", "%s: %s" % (type(e).__name__, e))
+        fail(failure_class(torch, e, "serialize"), "%s: %s" % (type(e).__name__, e))
 
     phase("verifying")
     try:

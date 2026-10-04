@@ -232,19 +232,23 @@ func variantOptimize(args []string) error {
 	homeFlag := fs.String("home", "", "HACHIDORI_HOME (default: $HACHIDORI_HOME)")
 	model := fs.String("model", setup.ClefFlash, "catalog model ID to optimize")
 	recipe := fs.String("recipe", optimize.RecipeClefFlashW4A16, "canonical recipe name (see `hachidori variant recipes`)")
+	device := fs.String("device", "", "optimizer device: cpu (default) or cuda. cuda materializes the CUDA optimizer runtime and fails, without falling back to the cpu, if its accelerator is unusable; there is no automatic choice")
 	reproduce := fs.Bool("reproduce", false, "rebuild a contract that already has a variant and compare the artifacts with it; nothing is published, and a difference is reported as an error")
 	fs.Parse(args)
+	if _, err := setup.ResolveOptimizerDevice(*device); err != nil {
+		return err
+	}
 	h, err := home.Resolve(*homeFlag)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	run := newForgeRun(h, app.OpOptimize, *model, "", *recipe, "")
+	run := newForgeRun(h, app.OpOptimize, *model, "", *recipe, *device)
 	log, closeLog := run.log()
 	defer closeLog()
 	fmt.Fprintln(os.Stderr, "== accepted")
-	res, err := optimize.Build(ctx, h, optimize.Request{Model: *model, Recipe: *recipe, Reproduce: *reproduce}, optimize.Deps{}, log, run.observer())
+	res, err := optimize.Build(ctx, h, optimize.Request{Model: *model, Recipe: *recipe, Device: *device, Reproduce: *reproduce}, optimize.Deps{}, log, run.observer())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "== failed")
 		if pe, ok := setup.AsPreflightError(err); ok {
@@ -260,7 +264,7 @@ func variantOptimize(args []string) error {
 		fmt.Fprintf(os.Stderr, "variant %s already exists for this contract; nothing was built (use -reproduce to rebuild and compare)\n", res.Variant.ID)
 	}
 	return printJSON(map[string]any{"variant": res.Variant.ID, "source": res.Variant.Source.ID, "scheme": res.Variant.Weights.Scheme,
-		"dir": res.Dir, "files": len(res.Variant.Files), "existing": res.Existing})
+		"dir": res.Dir, "files": len(res.Variant.Files), "existing": res.Existing, "optimizer_device": res.Variant.Optimizer.Device})
 }
 
 func cmdCertify(args []string) error {
