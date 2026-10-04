@@ -208,7 +208,7 @@ func TestStatusIsTheV1StatusDocument(t *testing.T) {
 	e.rt.mu.Lock()
 	e.rt.snap.State, e.rt.snap.Ready, e.rt.snap.PID = worker.StateStopped, false, 0
 	e.rt.mu.Unlock()
-	if live := e.get(t, "/live").Body.String(); !strings.Contains(live, ">stopped<") || strings.Contains(live, "READY") {
+	if live := e.get(t, "/live").Body.String(); !strings.Contains(live, ">NEEDS ATTENTION<") || strings.Contains(live, "READY") {
 		t.Fatalf("live fragment does not follow runtime state:\n%s", live)
 	}
 }
