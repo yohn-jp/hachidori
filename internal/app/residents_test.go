@@ -488,7 +488,7 @@ func TestPerWorkerSerializationAndCrossResidentParallelism(t *testing.T) {
 	// A is busy with a slow request; B answers meanwhile.
 	slow := make(chan error, 1)
 	go func() { _, _, err := s.DecideOn(modelA, item("sleep:400")); slow <- err }()
-	waitFor(t, "A busy", func() bool { return residentState(s, modelA).QueueDepth > 0 })
+	waitFor(t, "A busy", func() bool { return residentState(s, modelA).InFlight > 0 })
 	t0 := time.Now()
 	if got, _, _ := decideOn(t, s, modelB, "fast"); got != modelB {
 		t.Fatalf("served by %s", got)

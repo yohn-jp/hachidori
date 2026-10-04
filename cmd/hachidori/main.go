@@ -27,6 +27,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/question"
+	"github.com/yohn-jp/hachidori/internal/requesthistory"
 	"github.com/yohn-jp/hachidori/internal/route"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
@@ -288,7 +289,8 @@ func runHost(name string, args []string) error {
 		}
 	}
 
-	srv := &http.Server{Addr: *listen, Handler: server.HandlerSince(dec, rt, now), ReadHeaderTimeout: 10 * time.Second}
+	requests := requesthistory.New()
+	srv := &http.Server{Addr: *listen, Handler: server.HandlerSinceWithHistory(dec, rt, now, requests), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
 	fmt.Fprintf(os.Stderr, "hachidori: serving %s (runtime %s, model %s (%s), device %s); worker log %s\n",
@@ -306,12 +308,13 @@ func runHost(name string, args []string) error {
 	var dash *http.Server
 	if dashAddr != nil {
 		d := dashboard.New(dashboard.Config{
-			APIAddr:   *listen,
-			Status:    status,
-			Lifecycle: lc,
-			Doctor:    func(out io.Writer) bool { return doctor.Run(h.Root, out) },
-			Tunnel:    tunnel.NewManager(*sshExe),
-			PrefsPath: h.Path("state", "dashboard.json"),
+			APIAddr:        *listen,
+			Status:         status,
+			RequestHistory: requests,
+			Lifecycle:      lc,
+			Doctor:         func(out io.Writer) bool { return doctor.Run(h.Root, out) },
+			Tunnel:         tunnel.NewManager(*sshExe),
+			PrefsPath:      h.Path("state", "dashboard.json"),
 		})
 		// Terminate the managed ssh child on every exit path of this process
 		// that runs deferred code; see docs/runtime.md for hard kills.

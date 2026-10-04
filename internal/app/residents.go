@@ -11,6 +11,7 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/home"
+	"github.com/yohn-jp/hachidori/internal/requesthistory"
 	"github.com/yohn-jp/hachidori/internal/route"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/setup"
@@ -41,6 +42,12 @@ type Resident struct {
 // Decide runs items on this resident's worker.
 func (r *Resident) Decide(items []worker.Item) ([][]api.Result, float64, error) {
 	return r.Supervisor.Decide(items)
+}
+
+// DecideObserved preserves the supervisor's request admission and execution
+// boundaries for the HTTP request history.
+func (r *Resident) DecideObserved(items []worker.Item, observer worker.ExecutionObserver) ([][]api.Result, float64, error) {
+	return r.Supervisor.DecideObserved(items, observer)
 }
 
 // ResidentMember declares one member of a set: its identity and how to launch
@@ -91,9 +98,10 @@ var (
 	_ server.Decider  = (*ResidentSet)(nil)
 	_ server.Router   = (*ResidentSet)(nil)
 
-	_ server.AutoRouting     = (*ResidentSet)(nil)
-	_ server.RoutingReporter = (*ResidentSet)(nil)
-	_ route.Backend          = (*ResidentSet)(nil)
+	_ server.AutoRouting             = (*ResidentSet)(nil)
+	_ server.RoutingReporter         = (*ResidentSet)(nil)
+	_ server.RequestIdentityProvider = (*ResidentSet)(nil)
+	_ route.Backend                  = (*ResidentSet)(nil)
 )
 
 // NewResidentSet builds the set; every worker it starts ends when parent
@@ -153,14 +161,20 @@ func (s *ResidentSet) Started() time.Time { return s.started }
 // not_ready for itself only (naming the model). A model that is not a member
 // is a request_invalid error.
 func (s *ResidentSet) DecideOn(model string, items []worker.Item) ([][]api.Result, float64, error) {
+	return s.DecideOnObserved(model, items, nil)
+}
+
+// DecideOnObserved serves exactly one resident while preserving the request's
+// worker queue and execution observations.
+func (s *ResidentSet) DecideOnObserved(model string, items []worker.Item, observer worker.ExecutionObserver) ([][]api.Result, float64, error) {
 	if model == "" {
-		return s.def.Decide(items)
+		return s.def.DecideObserved(items, observer)
 	}
 	r, ok := s.byModel[model]
 	if !ok {
 		return nil, 0, &worker.RequestError{Class: api.ErrRequestInvalid, Message: "model " + model + " is not resident"}
 	}
-	res, ms, err := r.Decide(items)
+	res, ms, err := r.DecideObserved(items, observer)
 	var re *worker.RequestError
 	if errors.As(err, &re) && re.Class == api.ErrNotReady {
 		return nil, 0, &worker.RequestError{Class: api.ErrNotReady, Message: "model " + model + ": " + re.Message}
@@ -175,6 +189,20 @@ func (s *ResidentSet) Identity(model string) (api.Served, bool) {
 		return api.Served{}, false
 	}
 	return api.Served{Model: r.Model, Provider: r.Provider}, true
+}
+
+// RequestIdentity reports one resident's static execution identity without
+// querying worker statistics or waiting for inference.
+func (s *ResidentSet) RequestIdentity(model string) (requesthistory.Identity, bool) {
+	r, ok := s.byModel[model]
+	if !ok {
+		return requesthistory.Identity{}, false
+	}
+	id := requesthistory.Identity{Runtime: r.Info.Runtime, Model: r.Info.ModelID, Device: r.Info.Device}
+	if r.Info.Variant != nil {
+		id.Variant = r.Info.Variant.ID
+	}
+	return id, true
 }
 
 // SetRouting binds a routing policy over the set's residents: requests that
@@ -214,6 +242,11 @@ func (s *ResidentSet) RoutingStatus() *route.Status {
 // single-model callers (the HTTP API) keep working unchanged.
 func (s *ResidentSet) Decide(items []worker.Item) ([][]api.Result, float64, error) {
 	return s.def.Decide(items)
+}
+
+// DecideObserved is Decide with the default resident's lifecycle observer.
+func (s *ResidentSet) DecideObserved(items []worker.Item, observer worker.ExecutionObserver) ([][]api.Result, float64, error) {
+	return s.def.DecideObserved(items, observer)
 }
 func (s *ResidentSet) Ready() bool               { return s.def.Supervisor.Ready() }
 func (s *ResidentSet) State() string             { return s.def.Supervisor.State() }

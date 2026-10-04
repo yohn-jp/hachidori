@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/worker"
@@ -35,6 +36,12 @@ const (
 type Backend interface {
 	DecideOn(model string, items []worker.Item) ([][]api.Result, float64, error)
 	Identity(model string) (api.Served, bool)
+}
+
+// ObservedBackend is an optional Backend capability for propagating request
+// lifecycle boundaries to the worker supervisor.
+type ObservedBackend interface {
+	DecideOnObserved(model string, items []worker.Item, observer worker.ExecutionObserver) ([][]api.Result, float64, error)
 }
 
 // Router applies one Policy over a Backend. It is safe for concurrent use;
@@ -110,12 +117,18 @@ type at struct{ item, q int }
 // routing_failed error and no results. A failure of an optional handoff keeps
 // the first-path results and says so in the reason code.
 func (r *Router) Decide(items []worker.Item) (Outcome, error) {
-	out, err := r.decide(items)
+	return r.DecideObserved(items, nil)
+}
+
+// DecideObserved is Decide with request-level worker queue and execution
+// callbacks. Routing results and policy behavior are unchanged.
+func (r *Router) DecideObserved(items []worker.Item, observer worker.ExecutionObserver) (Outcome, error) {
+	out, err := r.decide(items, observer)
 	r.record(out, err)
 	return out, err
 }
 
-func (r *Router) decide(items []worker.Item) (Outcome, error) {
+func (r *Router) decide(items []worker.Item, observer worker.ExecutionObserver) (Outcome, error) {
 	n := len(items)
 	res := make([][]api.Result, n)
 	routed := make([][]api.RoutedResult, n)
@@ -142,7 +155,7 @@ func (r *Router) decide(items []worker.Item) (Outcome, error) {
 		if len(refs) == 0 {
 			continue
 		}
-		got, err := r.call(calls, m, items, refs)
+		got, err := r.call(calls, m, items, refs, observer)
 		if err != nil {
 			return Outcome{}, fail(CodeFirstPathFailed, m, err)
 		}
@@ -188,7 +201,7 @@ func (r *Router) decide(items []worker.Item) (Outcome, error) {
 			refs[k] = w.at
 			required = required || !rules[w.item][w.q].Handoff.Optional
 		}
-		got, err := r.call(calls, m, items, refs)
+		got, err := r.call(calls, m, items, refs, observer)
 		if err != nil {
 			if required {
 				return Outcome{}, fail(CodeRequiredHandoffFailed, m, err)
@@ -221,7 +234,7 @@ func (r *Router) decide(items []worker.Item) (Outcome, error) {
 // is sent only where a question of it was selected. The returned results are
 // flattened in refs order. A reply that does not answer exactly the selected
 // questions is a failure of that resident, never a partial answer.
-func (r *Router) call(log *callLog, m string, items []worker.Item, refs []at) ([]api.Result, error) {
+func (r *Router) call(log *callLog, m string, items []worker.Item, refs []at, observer worker.ExecutionObserver) ([]api.Result, error) {
 	var sub []worker.Item
 	last := -1
 	for _, a := range refs {
@@ -231,7 +244,24 @@ func (r *Router) call(log *callLog, m string, items []worker.Item, refs []at) ([
 		}
 		sub[len(sub)-1].Questions = append(sub[len(sub)-1].Questions, items[a.item].Questions[a.q])
 	}
-	got, ms, err := r.be.DecideOn(m, sub)
+	var got [][]api.Result
+	var ms float64
+	var err error
+	if target, ok := observer.(worker.TargetObserver); ok {
+		target.Target(m)
+	}
+	if be, ok := r.be.(ObservedBackend); ok {
+		got, ms, err = be.DecideOnObserved(m, sub, observer)
+	} else {
+		if observer != nil {
+			observer.Queued(time.Now())
+			observer.Started(time.Now())
+		}
+		got, ms, err = r.be.DecideOn(m, sub)
+		if observer != nil {
+			observer.Finished(time.Now())
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -305,6 +305,7 @@ hachidoriUI.install(document);
     <li><a href="/forge"{{if eq .Nav "forge"}} aria-current="page"{{end}}>{{t "Forge"}}</a></li>
     {{end}}{{if .HasTuning}}<li><a href="/tuning"{{if eq .Nav "tuning"}} aria-current="page"{{end}}>{{t "Tuning"}}</a></li>
     {{end}}<li><a href="/workbench"{{if eq .Nav "workbench"}} aria-current="page"{{end}}>{{t "Workbench"}}</a></li>
+    <li><a href="/requests"{{if eq .Nav "requests"}} aria-current="page"{{end}}>{{t "Request history"}}</a></li>
     <li><a href="/experiments"{{if eq .Nav "experiments"}} aria-current="page"{{end}}>{{t "Experiments"}}</a></li>
     <li><a href="/errors"{{if eq .Nav "evidence"}} aria-current="page"{{end}}>{{t "Evidence"}}</a></li>
   </ul>
@@ -547,7 +548,7 @@ hachidoriUI.install(document);
 <section class="region section" id="residents" aria-labelledby="res-h">
   <div class="region-h"><div><h2 id="res-h">{{t "Resident models"}}</h2><p class="sub">{{t "Each resident is its own worker process; its state is independent of the others."}}</p></div></div>
   <table class="data">
-    <thead><tr><th scope="col">{{t "Model"}}</th><th scope="col">{{t "State"}}</th><th scope="col">PID</th><th scope="col">{{t "Device"}}</th><th scope="col">{{t "Load / warmup"}}</th><th scope="col">{{t "Requests"}}</th><th scope="col">{{t "Errors"}}</th><th scope="col">{{t "Queue"}}</th><th scope="col">{{t "Latency p50 / p95"}}</th><th scope="col">{{t "GPU memory"}}</th></tr></thead>
+    <thead><tr><th scope="col">{{t "Model"}}</th><th scope="col">{{t "State"}}</th><th scope="col">PID</th><th scope="col">{{t "Device"}}</th><th scope="col">{{t "Load / warmup"}}</th><th scope="col">{{t "Requests"}}</th><th scope="col">{{t "Errors"}}</th><th scope="col">{{t "Waiting / in-flight"}}</th><th scope="col">{{t "Latency p50 / p95"}}</th><th scope="col">{{t "GPU memory"}}</th></tr></thead>
     <tbody>{{range .}}{{$rw := .Status.Worker}}{{$ri := $rw.Info}}
       <tr id="resident-{{.Model}}" data-model="{{.Model}}" data-state="{{if .Running}}{{$rw.State}}{{else}}stopped{{end}}">
         <td class="id">{{.Model}}<span class="sub">{{.Provider}}{{if .Default}} · {{t "default route"}}{{end}}</span></td>
@@ -557,7 +558,7 @@ hachidoriUI.install(document);
         <td class="num">{{get $ri "load_ms"}} / {{get $ri "warmup_ms"}} ms</td>
         <td class="num">{{$rw.Requests}}</td>
         <td class="num">{{errTotal $rw.Errors}}</td>
-        <td class="num">{{$rw.QueueDepth}} / {{$rw.QueueLimit}}</td>
+        <td class="num">{{$rw.QueueDepth}} / {{$rw.InFlight}}</td>
         <td class="num">{{ms $rw.LatencyP50MS}} / {{ms $rw.LatencyP95MS}}</td>
         <td class="num">{{with gpuMem $rw.Accelerator}}{{printf "%.0f" .Used}}%{{else}}-{{end}}</td>
       </tr>{{end}}
@@ -620,14 +621,17 @@ hachidoriUI.install(document);
 
 <section class="region section" aria-labelledby="load-h">
   <div class="region-h"><h2 id="load-h">{{t "Load"}}</h2><span class="sub">{{t "worker since start"}}</span></div>
-  {{$q := ratio $w.QueueDepth $w.QueueLimit}}
+  {{$admitted := add $w.QueueDepth $w.InFlight}}
+  {{$q := ratio $admitted $w.QueueLimit}}
   <dl class="metrics">
     <div class="metric"><dt>{{t "p50 latency"}}</dt><dd>{{ms $w.LatencyP50MS}}</dd></div>
     <div class="metric"><dt>{{t "p95 latency"}}</dt><dd>{{ms $w.LatencyP95MS}}</dd></div>
     <div class="metric"><dt>{{t "Requests"}}</dt><dd>{{$w.Requests}}</dd></div>
     <div class="metric"><dt>{{t "Errors"}}</dt><dd class="{{if errTotal $w.Errors}}warn-t{{end}}">{{errTotal $w.Errors}}</dd></div>
-    <div class="metric meter"><dt>{{t "Queue"}}</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
-      <div class="bar" role="img" aria-label="{{t "Queue"}} {{$w.QueueDepth}} / {{$w.QueueLimit}}"><span class="{{if ge $q 100.0}}bad{{else if ge $q 75.0}}warn{{end}}" style="width:{{printf "%.1f" $q}}%"></span></div></div>
+    <div class="metric"><dt>{{t "Queue depth"}}</dt><dd>{{$w.QueueDepth}} <small>{{t "waiting"}}</small></dd></div>
+    <div class="metric"><dt>{{t "In-flight"}}</dt><dd>{{$w.InFlight}}</dd></div>
+    <div class="metric meter"><dt>{{t "Admission slots"}}</dt><dd>{{$admitted}} / {{$w.QueueLimit}}</dd>
+      <div class="bar" role="img" aria-label="{{t "Admission slots"}} {{$admitted}} / {{$w.QueueLimit}}"><span class="{{if ge $q 100.0}}bad{{else if ge $q 75.0}}warn{{end}}" style="width:{{printf "%.1f" $q}}%"></span></div></div>
   </dl>
   {{with $w.Errors}}<p class="note">{{t "errors by class:"}} {{range $k, $v := .}}<span class="mono">{{$k}} {{$v}}</span> {{end}}</p>{{end}}
 </section>
@@ -911,7 +915,7 @@ hachidoriUI.install(document);
           <dt>{{t "worker PID"}}</dt><dd>{{if $w.PID}}{{$w.PID}}{{else}}-{{end}}</dd>
           <dt>{{t "starts / restarts"}}</dt><dd>{{$w.Starts}} / {{$w.Restarts}} {{t "in window"}}</dd>
           <dt>{{t "requests"}}</dt><dd>{{$w.Requests}}{{range $k, $v := $w.Errors}}; {{$k}} {{$v}}{{end}}</dd>
-          <dt>{{t "queue"}}</dt><dd>{{$w.QueueDepth}} / {{$w.QueueLimit}}</dd>
+          <dt>{{t "Queue depth"}}</dt><dd>{{$w.QueueDepth}} {{t "waiting"}} / {{$w.InFlight}} {{t "in-flight"}}</dd>
           <dt>{{t "latency"}}</dt><dd>p50 {{ms $w.LatencyP50MS}}, p95 {{ms $w.LatencyP95MS}}</dd>
         </dl>
       </div>

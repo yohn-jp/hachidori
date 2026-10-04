@@ -18,6 +18,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/eval"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/redact"
+	"github.com/yohn-jp/hachidori/internal/requesthistory"
 	"github.com/yohn-jp/hachidori/internal/route"
 	"github.com/yohn-jp/hachidori/internal/setup"
 	"github.com/yohn-jp/hachidori/internal/worker"
@@ -37,6 +38,12 @@ type Decider interface {
 	Snapshot() worker.Snapshot
 }
 
+// ObservedDecider is an optional Decider capability used to capture the
+// actual worker queue and dispatch boundaries without wrapping inference.
+type ObservedDecider interface {
+	DecideObserved(items []worker.Item, observer worker.ExecutionObserver) ([][]api.Result, float64, error)
+}
+
 // Router is implemented by a Decider that keeps several residents. DecideOn
 // serves items on exactly the named resident (a stable catalog model ID) and
 // nothing else: a model that is not resident is a request_invalid error, one
@@ -45,6 +52,17 @@ type Decider interface {
 type Router interface {
 	DecideOn(model string, items []worker.Item) ([][]api.Result, float64, error)
 	Identity(model string) (api.Served, bool)
+}
+
+// ObservedRouter is the observer-aware form of Router.
+type ObservedRouter interface {
+	DecideOnObserved(model string, items []worker.Item, observer worker.ExecutionObserver) ([][]api.Result, float64, error)
+}
+
+// RequestIdentityProvider reports a resident's static execution identity
+// without asking it for worker statistics.
+type RequestIdentityProvider interface {
+	RequestIdentity(model string) (requesthistory.Identity, bool)
 }
 
 // AutoRouting is implemented by a Decider that can route by policy. A nil
@@ -132,10 +150,20 @@ func Handler(d Decider, rt Runtime) http.Handler { return HandlerSince(d, rt, ti
 // HandlerSince is Handler with an explicit serving start time, so that other
 // host surfaces can report the same uptime via StatusBody.
 func HandlerSince(d Decider, rt Runtime, started time.Time) http.Handler {
-	return hostLocal(routes(d, rt, started))
+	return HandlerSinceWithHistory(d, rt, started, requesthistory.New())
 }
 
-func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
+// HandlerSinceWithHistory shares one bounded request history with the
+// dashboard that reads it. The worker and API behavior remains the same when
+// history is not queried.
+func HandlerSinceWithHistory(d Decider, rt Runtime, started time.Time, requests *requesthistory.Store) http.Handler {
+	if requests == nil {
+		requests = requesthistory.New()
+	}
+	return hostLocal(routes(d, rt, started, requests))
+}
+
+func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.Store) *http.ServeMux {
 	mux := http.NewServeMux()
 	sc := redact.New(rt.Home)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -153,50 +181,92 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 	mux.HandleFunc("POST /v1/decide", func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
 		var req api.DecideRequest
-		if !decode(w, r, &req) {
+		if err := decode(w, r, &req); err != nil {
+			msg := "invalid JSON body: " + err.Error()
+			entry := requests.Begin("/v1/decide", t0, requestIdentity(rt))
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, msg)
+			writeErr(w, api.ErrRequestInvalid, msg)
 			return
 		}
+		entry := requests.Begin("/v1/decide", t0, requestIdentity(rt))
+		entry.SetInput(req, len(req.State), len(req.Questions), 1)
+		if req.Route == api.RouteAuto {
+			entry.SetIdentity(requestBaseIdentity(rt))
+		} else {
+			entry.SetIdentity(requestedIdentity(d, rt, api.ModelRef(req.Model)))
+		}
 		if err := req.Validate(); err != nil {
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, err.Error())
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
+		entry.Admit()
+		observer := requestObserver{entry: entry, decider: d, runtime: rt}
 		items := []worker.Item{{State: req.State, Questions: req.Questions}}
 		if req.Route == api.RouteAuto {
-			out, rtr, err := decideRouted(d, items)
+			out, rtr, err := decideRouted(d, items, observer)
 			if err != nil {
+				finishRequestError(entry, sc, err)
 				writeWorkerErr(w, sc, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, api.DecideResponse{Schema: api.SchemaV1, Results: out.Items[0].Results,
+			resp := api.DecideResponse{Schema: api.SchemaV1, Results: out.Items[0].Results,
 				Timing:  &api.Timing{InferenceMS: out.InferenceMS, TotalMS: msSince(t0)},
-				Routing: rtr.Routing(out.Items[0], out.Providers)})
+				Routing: rtr.Routing(out.Items[0], out.Providers)}
+			entry.Complete(time.Now(), resp, http.StatusOK)
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
-		res, ms, served, err := decideTargeted(d, rt, api.ModelRef(req.Model), items)
+		res, ms, served, err := decideTargeted(d, rt, api.ModelRef(req.Model), items, observer)
 		if err != nil {
+			finishRequestError(entry, sc, err)
 			writeWorkerErr(w, sc, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, api.DecideResponse{Schema: api.SchemaV1, Results: res[0],
-			Timing: &api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}, Served: served})
+		resp := api.DecideResponse{Schema: api.SchemaV1, Results: res[0],
+			Timing: &api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}, Served: served}
+		entry.Complete(time.Now(), resp, http.StatusOK)
+		writeJSON(w, http.StatusOK, resp)
 	})
 	mux.HandleFunc("POST /v1/decide/batch", func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
 		var req api.BatchRequest
-		if !decode(w, r, &req) {
+		if err := decode(w, r, &req); err != nil {
+			msg := "invalid JSON body: " + err.Error()
+			entry := requests.Begin("/v1/decide/batch", t0, requestIdentity(rt))
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, msg)
+			writeErr(w, api.ErrRequestInvalid, msg)
 			return
 		}
+		entry := requests.Begin("/v1/decide/batch", t0, requestIdentity(rt))
+		stateBytes, questionCount := 0, 0
+		for _, item := range req.Requests {
+			stateBytes += len(item.State)
+			questionCount += len(item.Questions)
+		}
+		entry.SetInput(req, stateBytes, questionCount, len(req.Requests))
+		mode, _ := req.RouteMode()
+		if mode == api.RouteAuto {
+			entry.SetIdentity(requestBaseIdentity(rt))
+		} else {
+			target, _ := req.Target()
+			entry.SetIdentity(requestedIdentity(d, rt, target))
+		}
 		if err := req.Validate(); err != nil {
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, err.Error())
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
+		entry.Admit()
+		observer := requestObserver{entry: entry, decider: d, runtime: rt}
 		items := make([]worker.Item, len(req.Requests))
 		for i, q := range req.Requests {
 			items[i] = worker.Item{State: q.State, Questions: q.Questions}
 		}
-		if mode, _ := req.RouteMode(); mode == api.RouteAuto { // validated above
-			out, rtr, err := decideRouted(d, items)
+		if mode == api.RouteAuto { // validated above
+			out, rtr, err := decideRouted(d, items, observer)
 			if err != nil {
+				finishRequestError(entry, sc, err)
 				writeWorkerErr(w, sc, err)
 				return
 			}
@@ -205,12 +275,14 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 			for _, it := range out.Items {
 				resp.Responses = append(resp.Responses, api.DecideResponse{Schema: api.SchemaV1, Results: it.Results, Routing: rtr.Routing(it, nil)})
 			}
+			entry.Complete(time.Now(), resp, http.StatusOK)
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 		target, _ := req.Target() // validated above
-		res, ms, served, err := decideTargeted(d, rt, target, items)
+		res, ms, served, err := decideTargeted(d, rt, target, items, observer)
 		if err != nil {
+			finishRequestError(entry, sc, err)
 			writeWorkerErr(w, sc, err)
 			return
 		}
@@ -218,6 +290,7 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 		for _, rs := range res {
 			out.Responses = append(out.Responses, api.DecideResponse{Schema: api.SchemaV1, Results: rs})
 		}
+		entry.Complete(time.Now(), out, http.StatusOK)
 		writeJSON(w, http.StatusOK, out)
 	})
 	return mux
@@ -226,7 +299,7 @@ func routes(d Decider, rt Runtime, started time.Time) *http.ServeMux {
 // decideRouted routes items by the runtime's routing policy. A runtime
 // without a policy refuses the request; it never falls back to the default
 // resident.
-func decideRouted(d Decider, items []worker.Item) (route.Outcome, *route.Router, error) {
+func decideRouted(d Decider, items []worker.Item, observer worker.ExecutionObserver) (route.Outcome, *route.Router, error) {
 	var rtr *route.Router
 	if a, ok := d.(AutoRouting); ok {
 		rtr = a.AutoRouter()
@@ -235,7 +308,7 @@ func decideRouted(d Decider, items []worker.Item) (route.Outcome, *route.Router,
 		return route.Outcome{}, nil, &worker.RequestError{Class: api.ErrRoutingFailed,
 			Message: route.CodeNoPolicy + ": no routing policy is configured for this runtime (serve with --resident and --routing-policy); the request was not answered by any resident"}
 	}
-	out, err := rtr.Decide(items)
+	out, err := rtr.DecideObserved(items, observer)
 	return out, rtr, err
 }
 
@@ -245,9 +318,9 @@ func decideRouted(d Decider, items []worker.Item) (route.Outcome, *route.Router,
 // Router answers for its own members; a single-worker Decider answers only
 // for the model it serves. Anything else is a request_invalid error, never a
 // different resident.
-func decideTargeted(d Decider, rt Runtime, model string, items []worker.Item) ([][]api.Result, float64, *api.Served, error) {
+func decideTargeted(d Decider, rt Runtime, model string, items []worker.Item, observer worker.ExecutionObserver) ([][]api.Result, float64, *api.Served, error) {
 	if model == "" {
-		res, ms, err := d.Decide(items)
+		res, ms, err := decideObserved(d, items, observer)
 		return res, ms, nil, err
 	}
 	if r, ok := d.(Router); ok {
@@ -255,7 +328,19 @@ func decideTargeted(d Decider, rt Runtime, model string, items []worker.Item) ([
 		if !known {
 			return nil, 0, nil, &worker.RequestError{Class: api.ErrRequestInvalid, Message: "model " + model + " is not resident"}
 		}
-		res, ms, err := r.DecideOn(model, items)
+		if target, ok := observer.(worker.TargetObserver); ok {
+			target.Target(model)
+		}
+		var res [][]api.Result
+		var ms float64
+		var err error
+		if observed, ok := d.(ObservedRouter); ok {
+			res, ms, err = observed.DecideOnObserved(model, items, observer)
+		} else {
+			observeFallback(observer)
+			res, ms, err = r.DecideOn(model, items)
+			observeFinished(observer)
+		}
 		if err != nil {
 			return nil, 0, nil, err
 		}
@@ -268,11 +353,77 @@ func decideTargeted(d Decider, rt Runtime, model string, items []worker.Item) ([
 	if m, err := setup.LookupModel(rt.ModelID); err == nil {
 		served.Provider = m.Provider
 	}
-	res, ms, err := d.Decide(items)
+	res, ms, err := decideObserved(d, items, observer)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	return res, ms, &served, nil
+}
+
+func decideObserved(d Decider, items []worker.Item, observer worker.ExecutionObserver) ([][]api.Result, float64, error) {
+	if observed, ok := d.(ObservedDecider); ok {
+		return observed.DecideObserved(items, observer)
+	}
+	observeFallback(observer)
+	res, ms, err := d.Decide(items)
+	observeFinished(observer)
+	return res, ms, err
+}
+
+func observeFallback(observer worker.ExecutionObserver) {
+	if observer != nil {
+		at := time.Now()
+		observer.Queued(at)
+		observer.Started(at)
+	}
+}
+
+func observeFinished(observer worker.ExecutionObserver) {
+	if observer != nil {
+		observer.Finished(time.Now())
+	}
+}
+
+func requestIdentity(rt Runtime) requesthistory.Identity {
+	id := requesthistory.Identity{Runtime: rt.Runtime, Model: rt.ModelID, Device: rt.Device}
+	if rt.Variant != nil {
+		id.Variant = rt.Variant.ID
+	}
+	return id
+}
+
+func requestBaseIdentity(rt Runtime) requesthistory.Identity {
+	return requesthistory.Identity{Runtime: rt.Runtime, Device: rt.Device}
+}
+
+func requestedIdentity(d Decider, rt Runtime, model string) requesthistory.Identity {
+	if model == "" {
+		return requestIdentity(rt)
+	}
+	if p, ok := d.(RequestIdentityProvider); ok {
+		if identity, found := p.RequestIdentity(model); found {
+			return identity
+		}
+	}
+	id := requestIdentity(rt)
+	id.Model = model
+	if model != rt.ModelID {
+		id.Variant = ""
+	}
+	return id
+}
+
+type requestObserver struct {
+	entry   *requesthistory.Request
+	decider Decider
+	runtime Runtime
+}
+
+func (o requestObserver) Queued(at time.Time)   { o.entry.Queued(at) }
+func (o requestObserver) Started(at time.Time)  { o.entry.Started(at) }
+func (o requestObserver) Finished(at time.Time) { o.entry.Finished(at) }
+func (o requestObserver) Target(model string) {
+	o.entry.SetIdentity(requestedIdentity(o.decider, o.runtime, model))
 }
 
 // hostLocal enforces the same host-local boundary as the dashboard on the
@@ -662,18 +813,17 @@ func launchVariant(h home.Home, a home.Active, rm home.RuntimeManifest, model ho
 		Certification: cert, Source: VariantSource{ID: v.Source.ID, Provider: v.Source.Provider, Repo: v.Source.Repo, Revision: v.Source.Revision}}, nil
 }
 
-func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+func decode(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		writeErr(w, api.ErrRequestInvalid, "invalid JSON body: "+err.Error())
-		return false
+		return err
 	}
-	return true
+	return nil
 }
 
 // maxErrorDetail bounds the worker-supplied detail of an error response.
-const maxErrorDetail = 1024
+const maxErrorDetail = requesthistory.MaxMetadataStringBytes
 
 // writeWorkerErr answers a failed request. The error class is the stable,
 // public part; the detail is the worker's own text (Python exception text
@@ -682,22 +832,44 @@ const maxErrorDetail = 1024
 // and the text can carry local paths or credential-bearing URLs. The operator
 // sees the unredacted text in the worker log and the dashboard.
 func writeWorkerErr(w http.ResponseWriter, sc redact.Scrubber, err error) {
+	class, message := workerError(sc, err)
+	var re *worker.RequestError
+	if errors.As(err, &re) && re.Class == api.ErrCapacity && re.Capacity != nil {
+		writeJSON(w, statusFor[api.ErrCapacity], api.ErrorBody{Schema: api.SchemaV1,
+			Error: api.ErrorInfo{Class: class, Message: message, Capacity: re.Capacity}})
+		return
+	}
+	writeErr(w, class, message)
+}
+
+func workerError(sc redact.Scrubber, err error) (string, string) {
 	var re *worker.RequestError
 	if errors.As(err, &re) {
-		if re.Capacity != nil && re.Class == api.ErrCapacity {
-			writeJSON(w, statusFor[api.ErrCapacity], api.ErrorBody{Schema: api.SchemaV1,
-				Error: api.ErrorInfo{Class: re.Class, Message: sc.Line(re.Message, maxErrorDetail), Capacity: re.Capacity}})
-		} else {
-			writeErr(w, re.Class, sc.Line(re.Message, maxErrorDetail))
-		}
-		return
+		return re.Class, sc.Line(re.Message, maxErrorDetail)
 	}
 	var f *worker.Failure
 	if errors.As(err, &f) {
-		writeErr(w, api.ErrWorkerFailure, sc.Line(f.Class+": "+f.Message, maxErrorDetail))
+		return api.ErrWorkerFailure, sc.Line(f.Class+": "+f.Message, maxErrorDetail)
+	}
+	return api.ErrWorkerFailure, sc.Line(err.Error(), maxErrorDetail)
+}
+
+func finishRequestError(entry *requesthistory.Request, sc redact.Scrubber, err error) {
+	class, message := workerError(sc, err)
+	code, ok := statusFor[class]
+	if !ok {
+		code = http.StatusInternalServerError
+	}
+	var failure *worker.Failure
+	if errors.As(err, &failure) && failure.Class == worker.ClassUnresponsive {
+		entry.Timeout(time.Now(), code, class, message)
 		return
 	}
-	writeErr(w, api.ErrWorkerFailure, sc.Line(err.Error(), maxErrorDetail))
+	if !entry.WasStarted() {
+		entry.Reject(time.Now(), code, class, message)
+		return
+	}
+	entry.Fail(time.Now(), code, class, message)
 }
 
 var statusFor = map[string]int{

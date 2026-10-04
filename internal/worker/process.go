@@ -250,7 +250,13 @@ func (p *Process) kill() {
 
 // Decide answers items on the resident model.
 func (p *Process) Decide(items []Item) ([][]api.Result, float64, error) {
-	m, err := p.call(map[string]any{"op": "decide", "items": items})
+	return p.DecideObserved(items, nil)
+}
+
+// DecideObserved reports when this serialized worker starts receiving the
+// inference call. It does not add a lock or wait around execution.
+func (p *Process) DecideObserved(items []Item, started func(time.Time)) ([][]api.Result, float64, error) {
+	m, err := p.callObserved(map[string]any{"op": "decide", "items": items}, started)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -323,13 +329,21 @@ func (p *Process) lastStats() map[string]any {
 // pass cannot be abandoned, so callers cannot cancel; only RequestTimeout
 // (unresponsive worker) ends the wait early.
 func (p *Process) call(req map[string]any) (message, error) {
+	return p.callObserved(req, nil)
+}
+
+func (p *Process) callObserved(req map[string]any, started func(time.Time)) (message, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.callLocked(req)
+	return p.callLockedObserved(req, started)
 }
 
 // callLocked is call with p.mu already held.
 func (p *Process) callLocked(req map[string]any) (message, error) {
+	return p.callLockedObserved(req, nil)
+}
+
+func (p *Process) callLockedObserved(req map[string]any, started func(time.Time)) (message, error) {
 	select {
 	case <-p.done:
 		return message{}, p.failure()
@@ -339,6 +353,11 @@ func (p *Process) callLocked(req map[string]any) (message, error) {
 	id := p.nextID
 	req["id"] = id
 	line, _ := json.Marshal(req)
+	if started != nil {
+		// Publish execution before the worker can read the request from its
+		// pipe, so history never reports an already-running call as queued.
+		started(time.Now())
+	}
 	if _, err := p.stdin.Write(append(line, '\n')); err != nil {
 		p.kill()
 		<-p.done
