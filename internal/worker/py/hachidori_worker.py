@@ -1522,9 +1522,12 @@ class ClefProvider(Provider):
             raise ValueError("capacity calibration is available only in an isolated CUDA calibration worker")
         questions = to_typed(WARMUP_QUESTIONS)
         # Repetition is only a way to construct a deterministic real input.
-        # The authoritative limits below are the token counts produced by the
-        # pinned Clef tokenizer/encoder, never this repetition count.
-        state = ("capacity calibration state token " * 1024).strip()
+        # Keep the initial fixture deliberately modest: physical #264 evidence
+        # already established roughly 8.5 KB as a successful scale, while a
+        # much larger state had timed out. The authoritative limits below are
+        # the token counts produced by the pinned Clef tokenizer/encoder, never
+        # this repetition count.
+        state = ("capacity calibration state token " * 256).strip()
         record = self.jsm.encode_record(
             self.tokenizer, {"state": state, "questions": questions}, max_length=sys.maxsize)
         input_tokens = len(record.input_ids)
