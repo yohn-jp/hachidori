@@ -36,13 +36,14 @@ func (s *Supervisor) BatchMetrics() BatchMetrics {
 
 // batchRequest retains the original result boundary across a combined worker call.
 type batchRequest struct {
-	items   []Item
-	key     string
-	work    int
-	length  int
-	reply   chan batchReply
-	started chan struct{}
-	queued  time.Time
+	items    []Item
+	key      string
+	work     int
+	length   int
+	reply    chan batchReply
+	started  chan struct{}
+	queued   time.Time
+	observer ExecutionObserver
 }
 
 type batchReply struct {
@@ -120,7 +121,19 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 			items = append(items, req.items...)
 			close(req.started)
 		}
-		results, ms, err := p.Decide(items)
+		results, ms, err := p.DecideObserved(items, func(at time.Time) {
+			for _, req := range pending {
+				if req.observer != nil {
+					req.observer.Started(at)
+				}
+			}
+		})
+		finished := time.Now()
+		for _, req := range pending {
+			if req.observer != nil {
+				req.observer.Finished(finished)
+			}
+		}
 		s.mu.Lock()
 		s.batchCalls++
 		s.batchItems += int64(len(items))

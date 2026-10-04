@@ -6,11 +6,14 @@
 // (doctor, worker failures, the SSH reverse-tunnel launcher) and Settings
 // (desktop preferences, language, updates, development connections).
 //
-// It keeps no runtime state of its own. Status is the /v1/status document
-// (server.StatusBody), lifecycle actions go through worker.Lifecycle, doctor is
-// the same doctor.Run as the CLI, the tunnel is a tunnel.Manager, and the
-// workbench and experiment runner are callers of the existing inference API
-// at APIAddr (the runner through internal/eval).
+// Operational status and actions project their existing authorities. Decide
+// request history is the exception: it is a bounded, process-local projection
+// shared with the API server and is never persisted or included in diagnostics.
+// Status is the /v1/status document (server.StatusBody), lifecycle actions go
+// through worker.Lifecycle, doctor is the same doctor.Run as the CLI, the
+// tunnel is a tunnel.Manager, and the workbench and experiment runner are
+// callers of the existing inference API at APIAddr (the runner through
+// internal/eval).
 package dashboard
 
 import (
@@ -41,6 +44,7 @@ import (
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/i18n"
 	"github.com/yohn-jp/hachidori/internal/optimize"
+	"github.com/yohn-jp/hachidori/internal/requesthistory"
 	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/settings"
 	"github.com/yohn-jp/hachidori/internal/setup"
@@ -80,6 +84,9 @@ type Config struct {
 	// (state/history). Empty disables saving and listing experiment history;
 	// experiments then stay memory-only apart from explicit exports.
 	HistoryDir string
+	// RequestHistory is the process-local decide request history shared with
+	// the API server. Nil gives this dashboard an empty bounded history.
+	RequestHistory *requesthistory.Store
 	// EvaluationSample is the install-local, operator-visible sample bundle
 	// provisioned beneath HACHIDORI_HOME. Zero values disable sample defaults.
 	EvaluationSample home.EvaluationSample
@@ -508,7 +515,7 @@ type Prefs struct {
 //go:embed uistate.js
 var uiStateJS string
 
-//go:embed page.html workbench.html experiments.html errors.html updates.html models.html forge.html tuning.html
+//go:embed page.html workbench.html experiments.html errors.html updates.html models.html forge.html tuning.html requests.html
 var pageFS embed.FS
 
 // pageBase parses the workstation templates once; "t" is the catalog lookup,
@@ -561,7 +568,7 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"failureOf":       failureOf,
 	"objective":       objectiveLabel,
 	"policyLabel":     policyLabel,
-}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html", "updates.html", "models.html", "forge.html", "tuning.html"))
+}).ParseFS(pageFS, "page.html", "workbench.html", "experiments.html", "errors.html", "updates.html", "models.html", "forge.html", "tuning.html", "requests.html"))
 
 // pages are the workstation templates for each supported locale. Rendering
 // goes through the catalog, never through rewriting rendered HTML.
@@ -607,6 +614,9 @@ func pickWasCancelled(err error) bool { return errors.Is(err, ErrPickCancelled) 
 
 // New builds the dashboard.
 func New(cfg Config) *Dashboard {
+	if cfg.RequestHistory == nil {
+		cfg.RequestHistory = requesthistory.New()
+	}
 	token := cfg.Token
 	if token == "" {
 		token = NewToken()
@@ -620,6 +630,9 @@ func New(cfg Config) *Dashboard {
 	}
 	d.mux.HandleFunc("GET /{$}", d.render("page", "Runtime", "runtime"))
 	d.mux.HandleFunc("GET /diagnostics", d.render("diagnostics", "Diagnostics", "diagnostics"))
+	d.mux.HandleFunc("GET /requests", d.render("requests", "Request history", "requests"))
+	d.mux.HandleFunc("GET /api/requests", d.requestHistory)
+	d.mux.HandleFunc("GET /api/requests/{id}", d.requestHistoryDetail)
 	d.mux.HandleFunc("GET /live", d.render("live", "Runtime", "runtime"))
 	d.mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, cfg.Status())

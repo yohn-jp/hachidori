@@ -1,0 +1,169 @@
+{{define "requests"}}{{template "open" .Chrome}}
+<header class="ws-head">
+  <div><h1>{{t "Request history"}}</h1><p class="lede">{{t "Observe decide requests from admission through their typed result or failure."}}</p></div>
+  <button type="button" class="btn" id="request-refresh">{{t "Refresh"}}</button>
+</header>
+<p class="note">{{t "Waiting requests, in-flight requests, and semantic input items are counted separately."}} {{t "Request content stays in bounded process memory and is omitted from diagnostic exports."}}</p>
+
+<dl class="metrics secondary" aria-label="{{t "Current request activity"}}">
+  <div class="metric"><dt>{{t "Queue depth"}}</dt><dd id="request-queue">0</dd></div>
+  <div class="metric"><dt>{{t "In-flight requests"}}</dt><dd id="request-flight">0</dd></div>
+  <div class="metric"><dt>{{t "Active input items"}}</dt><dd id="request-items">0</dd></div>
+</dl>
+
+<section class="instrument-section" aria-labelledby="request-list-heading">
+  <div class="instrument-heading"><h2 id="request-list-heading">{{t "Recent requests"}}</h2><p class="note" id="request-updated" aria-live="polite">{{t "Loading request history…"}}</p></div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>{{t "Received"}}</th><th>{{t "Endpoint"}}</th><th>{{t "Lifecycle"}}</th><th class="num">{{t "Items"}}</th><th class="num">{{t "Total duration"}}</th><th>{{t "Result or failure"}}</th><th>{{t "Details"}}</th></tr></thead>
+      <tbody id="request-rows"><tr><td colspan="7" class="muted">{{t "Loading request history…"}}</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="instrument-section" aria-labelledby="request-detail-heading">
+  <div class="instrument-heading"><h2 id="request-detail-heading">{{t "Request details"}}</h2><p class="note" id="request-detail-empty">{{t "Choose a request to inspect its state, questions, and answers."}}</p></div>
+  <dl class="kv-grid" id="request-meta" hidden></dl>
+  <div class="kv-grid">
+    <section class="block"><h3>{{t "Received state and questions"}}</h3><pre id="request-input" class="op-line">—</pre></section>
+    <section class="block"><h3>{{t "Returned answers or typed failure"}}</h3><pre id="request-output" class="op-line">—</pre></section>
+  </div>
+</section>
+
+<script>
+(() => {
+  const rows = document.getElementById("request-rows");
+  const queue = document.getElementById("request-queue");
+  const flight = document.getElementById("request-flight");
+  const items = document.getElementById("request-items");
+  const updated = document.getElementById("request-updated");
+  const empty = document.getElementById("request-detail-empty");
+  const meta = document.getElementById("request-meta");
+  const input = document.getElementById("request-input");
+  const output = document.getElementById("request-output");
+  const labels = {
+    none: {{printf "%q" (t "No requests have been received yet.")}},
+    unavailable: {{printf "%q" (t "Request history is unavailable.")}},
+    runtime: {{printf "%q" (t "Runtime")}},
+    model: {{printf "%q" (t "Model")}},
+    device: {{printf "%q" (t "Device")}},
+    variant: {{printf "%q" (t "Variant")}},
+    stateBytes: {{printf "%q" (t "State bytes")}},
+    questions: {{printf "%q" (t "Questions")}},
+    items: {{printf "%q" (t "Items")}},
+    queueWait: {{printf "%q" (t "Queue wait")}},
+    service: {{printf "%q" (t "Service duration")}},
+    status: {{printf "%q" (t "HTTP status")}},
+    error: {{printf "%q" (t "Typed failure")}},
+    tokenCount: {{printf "%q" (t "Token count")}},
+    limited: {{printf "%q" (t "Some request content was omitted to stay within the history memory limit.")}}
+  };
+  let selected = "";
+
+  function cell(row, value, className) {
+    const td = document.createElement("td");
+    if (className) td.className = className;
+    td.textContent = value == null ? "" : String(value);
+    row.appendChild(td);
+    return td;
+  }
+
+  function when(value) {
+    return value ? new Date(value).toLocaleString() : "—";
+  }
+
+  function milliseconds(value) {
+    return Number(value || 0).toFixed(1) + " ms";
+  }
+
+  function showDetail(id) {
+    selected = id;
+    return fetch("/api/requests/" + encodeURIComponent(id)).then(response => {
+      if (!response.ok) throw new Error(labels.unavailable);
+      return response.json();
+    }).then(detail => {
+      empty.hidden = true;
+      meta.hidden = false;
+      meta.replaceChildren();
+      const values = [
+        ["ID", detail.id], ["Endpoint", detail.endpoint], ["Lifecycle", detail.state],
+        [{{printf "%q" (t "Received")}}, when(detail.received_at)],
+        [{{printf "%q" (t "Started at")}}, when(detail.started_at)],
+        [{{printf "%q" (t "Completed at")}}, when(detail.completed_at)],
+        [labels.runtime, detail.runtime && detail.runtime.runtime],
+        [labels.model, detail.runtime && detail.runtime.model],
+        [labels.device, detail.runtime && detail.runtime.device],
+        [labels.variant, detail.runtime && detail.runtime.variant],
+        [labels.stateBytes, detail.state_bytes], [labels.questions, detail.question_count],
+        [labels.items, detail.item_count], [labels.queueWait, milliseconds(detail.queue_wait_ms)],
+        [labels.service, milliseconds(detail.service_ms)], [{{printf "%q" (t "Total duration")}}, milliseconds(detail.total_ms)],
+        [labels.status, detail.http_status]
+      ];
+      if (detail.token_count != null) values.push([labels.tokenCount, detail.token_count]);
+      if (detail.error_class) values.push([labels.error, detail.error_class + ": " + (detail.error_message || "")]);
+      for (const [name, value] of values) {
+        if (value == null || value === "") continue;
+        const dt = document.createElement("dt");
+        const dd = document.createElement("dd");
+        dt.textContent = name;
+        dd.textContent = String(value);
+        meta.append(dt, dd);
+      }
+      input.textContent = detail.input ? JSON.stringify(detail.input, null, 2) : "—";
+      output.textContent = detail.output ? JSON.stringify(detail.output, null, 2) : (detail.error_class || "—");
+      if (detail.content_limited) output.textContent = labels.limited + "\n" + output.textContent;
+    }).catch(error => {
+      selected = "";
+      empty.hidden = false;
+      empty.textContent = error.message;
+      meta.hidden = true;
+    });
+  }
+
+  function refresh() {
+    return fetch("/api/requests").then(response => {
+      if (!response.ok) throw new Error(labels.unavailable);
+      return response.json();
+    }).then(view => {
+      queue.textContent = String(view.queue_depth || 0);
+      flight.textContent = String(view.in_flight || 0);
+      items.textContent = String(view.active_items || 0);
+      rows.replaceChildren();
+      const entries = view.entries || [];
+      if (!entries.length) {
+        const row = document.createElement("tr");
+        const td = cell(row, labels.none);
+        td.colSpan = 7;
+        rows.appendChild(row);
+      }
+      for (const entry of entries) {
+        const row = document.createElement("tr");
+        if (entry.id === selected) row.setAttribute("aria-current", "true");
+        cell(row, when(entry.received_at), "nowrap");
+        cell(row, entry.endpoint);
+        cell(row, entry.state);
+        cell(row, entry.item_count, "num");
+        cell(row, milliseconds(entry.total_ms), "num nowrap");
+        cell(row, entry.error_class ? entry.error_class + ": " + (entry.error_message || "") : entry.state === "completed" ? {{printf "%q" (t "completed")}} : "");
+        const action = cell(row, "");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "btn quiet";
+        button.textContent = {{printf "%q" (t "Open")}};
+        button.addEventListener("click", () => showDetail(entry.id));
+        action.appendChild(button);
+        rows.appendChild(row);
+      }
+      updated.textContent = new Date().toLocaleTimeString();
+      if (selected) showDetail(selected);
+    }).catch(error => {
+      updated.textContent = error.message;
+    });
+  }
+
+  document.getElementById("request-refresh").addEventListener("click", refresh);
+  refresh();
+  window.setInterval(refresh, 3000);
+})();
+</script>
+{{template "close" .Chrome}}{{end}}

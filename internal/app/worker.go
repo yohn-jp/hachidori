@@ -34,6 +34,12 @@ var _ server.Decider = (*WorkerBinding)(nil)
 func (b *WorkerBinding) Decide(items []worker.Item) ([][]api.Result, float64, error) {
 	return b.Supervisor.Decide(items)
 }
+
+// DecideObserved carries the request history's execution observer to the
+// same supervisor that serves the ordinary HTTP decision.
+func (b *WorkerBinding) DecideObserved(items []worker.Item, observer worker.ExecutionObserver) ([][]api.Result, float64, error) {
+	return b.Supervisor.DecideObserved(items, observer)
+}
 func (b *WorkerBinding) Ready() bool               { return b.Supervisor.Ready() }
 func (b *WorkerBinding) State() string             { return b.Supervisor.State() }
 func (b *WorkerBinding) Snapshot() worker.Snapshot { return b.Supervisor.Snapshot() }

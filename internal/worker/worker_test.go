@@ -361,7 +361,7 @@ func TestSnapshotDoesNotWaitBehindAnInference(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Snapshot waited for the in-flight inference")
 	}
-	if busy.State != StateReady || !busy.Ready || busy.QueueDepth != 1 {
+	if busy.State != StateReady || !busy.Ready || busy.QueueDepth != 0 || busy.InFlight != 1 {
 		t.Fatalf("runtime state is not current: %+v", busy)
 	}
 	if !busy.AcceleratorStale || busy.Accelerator["memory_total"] != float64(100) {
@@ -372,8 +372,103 @@ func TestSnapshotDoesNotWaitBehindAnInference(t *testing.T) {
 	if err := <-decided; err != nil {
 		t.Fatal(err)
 	}
-	if fresh := s.Snapshot(); fresh.AcceleratorStale || fresh.QueueDepth != 0 {
+	if fresh := s.Snapshot(); fresh.AcceleratorStale || fresh.QueueDepth != 0 || fresh.InFlight != 0 {
 		t.Fatalf("after the inference: stale=%v depth=%d", fresh.AcceleratorStale, fresh.QueueDepth)
+	}
+}
+
+type eventObserver struct {
+	mu          sync.Mutex
+	queuedCount int
+	startCount  int
+	finishCount int
+}
+
+func (o *eventObserver) Queued(time.Time) {
+	o.mu.Lock()
+	o.queuedCount++
+	o.mu.Unlock()
+}
+
+func (o *eventObserver) Started(time.Time) {
+	o.mu.Lock()
+	o.startCount++
+	o.mu.Unlock()
+}
+
+func (o *eventObserver) Finished(time.Time) {
+	o.mu.Lock()
+	o.finishCount++
+	o.mu.Unlock()
+}
+
+func (o *eventObserver) counts() (int, int, int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.queuedCount, o.startCount, o.finishCount
+}
+
+func TestDecideObservedSeparatesSupervisorQueueFromWorkerStart(t *testing.T) {
+	dir := t.TempDir()
+	cfg := fakeConfig(t, "hold_decide")
+	cfg.Env = append(cfg.Env, "HACHIDORI_FAKE_HOLD="+dir)
+	s := NewSupervisor(cfg, Policy{QueueDepth: 2})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	release := func() { _ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o644) }
+	t.Cleanup(func() { release(); cancel(); <-done })
+	waitState(t, s, StateReady)
+
+	first, second := &eventObserver{}, &eventObserver{}
+	firstDone := make(chan error, 1)
+	go func() { _, _, err := s.DecideObserved([]Item{item}, first); firstDone <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "started")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the worker never received the first request")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	secondDone := make(chan error, 1)
+	go func() { _, _, err := s.DecideObserved([]Item{item}, second); secondDone <- err }()
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		queued, started, _ := second.counts()
+		if queued == 1 {
+			if started != 0 {
+				t.Fatalf("second request started while the first worker call was held: %d starts", started)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second request was not admitted to the supervisor queue")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if snapshot := s.Snapshot(); snapshot.QueueDepth != 1 || snapshot.InFlight != 1 {
+		t.Fatalf("snapshot while one worker call and one request are waiting: queue=%d in-flight=%d", snapshot.QueueDepth, snapshot.InFlight)
+	}
+	if q, in, fin := first.counts(); q != 1 || in != 1 || fin != 0 {
+		t.Fatalf("first observer counts queued=%d started=%d finished=%d, want 1/1/0", q, in, fin)
+	}
+
+	release()
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if q, in, fin := second.counts(); q != 1 || in != 1 || fin != 1 {
+		t.Fatalf("second observer counts queued=%d started=%d finished=%d, want 1/1/1", q, in, fin)
+	}
+	if q, in, fin := first.counts(); q != 1 || in != 1 || fin != 1 {
+		t.Fatalf("first observer completion counts queued=%d started=%d finished=%d, want 1/1/1", q, in, fin)
 	}
 }
 

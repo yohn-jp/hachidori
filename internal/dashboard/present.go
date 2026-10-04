@@ -105,9 +105,9 @@ func alerts(v view) []alert {
 			warn = append(warn, a)
 		}
 	}
-	if w.QueueLimit > 0 && w.QueueDepth >= w.QueueLimit {
+	if w.QueueLimit > 0 && w.QueueDepth+w.InFlight >= w.QueueLimit {
 		warn = append(warn, alert{"warn", t("Inference queue is full"),
-			t("%d of %d slots in use.", w.QueueDepth, w.QueueLimit)})
+			t("%d of %d slots in use.", w.QueueDepth+w.InFlight, w.QueueLimit)})
 	}
 	if p := memPressureOf(w.Accelerator); p != nil && p.Level != "ok" {
 		a := alert{"warn", t("GPU memory pressure"), t("%.1f%% of device memory in use.", p.Pct)}

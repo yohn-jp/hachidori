@@ -66,6 +66,39 @@ type Supervisor struct {
 	requests  int64
 	errors    map[string]int64
 	latencies []float64 // recent inference_ms
+	waiting   int
+	inFlight  int
+}
+
+// ExecutionObserver receives request-level admission and worker-dispatch
+// boundaries. Callbacks run outside inference and must return promptly.
+type ExecutionObserver interface {
+	Queued(time.Time)
+	Started(time.Time)
+	Finished(time.Time)
+}
+
+type executionCallbacks struct {
+	started  func(time.Time)
+	finished func(time.Time)
+}
+
+func (executionCallbacks) Queued(time.Time) {}
+func (o executionCallbacks) Started(at time.Time) {
+	if o.started != nil {
+		o.started(at)
+	}
+}
+func (o executionCallbacks) Finished(at time.Time) {
+	if o.finished != nil {
+		o.finished(at)
+	}
+}
+
+// TargetObserver is an optional extension for a request that selects more
+// than one resident over the course of routing.
+type TargetObserver interface {
+	Target(string)
 }
 
 // NewSupervisor creates a supervisor; call Run to start the worker.
@@ -208,9 +241,62 @@ func (s *Supervisor) LastFailure() *Failure {
 
 // Decide runs items on the resident worker.
 func (s *Supervisor) Decide(items []Item) ([][]api.Result, float64, error) {
+	return s.DecideObserved(items, nil)
+}
+
+// DecideObserved runs items while reporting queue admission and the worker
+// call boundaries. The existing Decide behavior is unchanged when observer
+// is nil.
+func (s *Supervisor) DecideObserved(items []Item, observer ExecutionObserver) ([][]api.Result, float64, error) {
+	waiting, executing := false, false
+	markStarted := func(at time.Time) {
+		s.mu.Lock()
+		if waiting {
+			s.waiting--
+			waiting = false
+		}
+		if !executing {
+			s.inFlight++
+			executing = true
+		}
+		s.mu.Unlock()
+		if observer != nil {
+			observer.Started(at)
+		}
+	}
+	markFinished := func(at time.Time) {
+		s.mu.Lock()
+		if executing {
+			s.inFlight--
+			executing = false
+		}
+		s.mu.Unlock()
+		if observer != nil {
+			observer.Finished(at)
+		}
+	}
 	select {
 	case s.queue <- struct{}{}:
-		defer func() { <-s.queue }()
+		s.mu.Lock()
+		s.waiting++
+		waiting = true
+		s.mu.Unlock()
+		defer func() {
+			s.mu.Lock()
+			if waiting {
+				s.waiting--
+				waiting = false
+			}
+			if executing {
+				s.inFlight--
+				executing = false
+			}
+			s.mu.Unlock()
+			<-s.queue
+		}()
+		if observer != nil {
+			observer.Queued(time.Now())
+		}
 	default:
 		s.count(api.ErrCapacity)
 		return nil, 0, &RequestError{Class: api.ErrCapacity, Message: "request queue is full"}
@@ -229,7 +315,8 @@ func (s *Supervisor) Decide(items []Item) ([][]api.Result, float64, error) {
 	var err error
 	key, work, length := batchMetadata(items)
 	if batch != nil {
-		req := batchRequest{items: items, key: key, work: work, length: length, reply: make(chan batchReply, 1), started: make(chan struct{}), queued: time.Now()}
+		callbacks := executionCallbacks{started: markStarted, finished: markFinished}
+		req := batchRequest{items: items, key: key, work: work, length: length, reply: make(chan batchReply, 1), started: make(chan struct{}), queued: time.Now(), observer: callbacks}
 		select {
 		case batch <- req:
 		case <-batchCtx.Done():
@@ -245,7 +332,10 @@ func (s *Supervisor) Decide(items []Item) ([][]api.Result, float64, error) {
 			}
 		}
 	} else {
-		res, ms, err = p.Decide(items)
+		res, ms, err = p.DecideObserved(items, func(at time.Time) {
+			markStarted(at)
+		})
+		markFinished(time.Now())
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -306,7 +396,8 @@ type Snapshot struct {
 	LastFailure      *FailureView     `json:"last_failure,omitempty"`
 	Requests         int64            `json:"requests"`
 	Errors           map[string]int64 `json:"errors"`
-	QueueDepth       int              `json:"queue_depth"`
+	QueueDepth       int              `json:"queue_depth"` // requests waiting for a worker call
+	InFlight         int              `json:"in_flight"`   // requests whose worker call is executing
 	QueueLimit       int              `json:"queue_limit"`
 	LatencyP50MS     float64          `json:"inference_p50_ms"`
 	LatencyP95MS     float64          `json:"inference_p95_ms"`
@@ -326,7 +417,7 @@ func (s *Supervisor) Snapshot() Snapshot {
 	s.mu.Lock()
 	snap := Snapshot{State: s.state, Phase: s.phase, Ready: s.state == StateReady, Starts: s.starts,
 		Restarts: len(s.restarts), Info: s.info, Requests: s.requests, Errors: map[string]int64{},
-		QueueDepth: len(s.queue), QueueLimit: cap(s.queue)}
+		QueueDepth: s.waiting, InFlight: s.inFlight, QueueLimit: cap(s.queue)}
 	batch := s.batchMetricsLocked()
 	clef := s.info["provider"] == "clef"
 	for k, v := range s.errors {
