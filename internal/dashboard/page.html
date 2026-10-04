@@ -497,13 +497,11 @@ hachidoriUI.install(document);
 <div data-live="transport">{{template "transport" .}}</div>{{end}}
 
 {{define "overview"}}{{$w := .S.Worker}}{{$i := $w.Info}}{{$a := $w.Accelerator}}
-{{template "last" .Last}}
-{{with .Next}}{{template "op-panels" .}}{{end}}
 
 <section class="readiness-panel tone-{{.Rt.Tone}}" aria-labelledby="rd-h">{{$act := runtimeAction .}}{{$mp := memPressure $a}}
   <div>
     <h2 class="vh" id="rd-h">{{t "Inference runtime"}}</h2>
-    <p class="state-word"><span class="dot"></span>{{if $w.Ready}}READY{{else if .Rt.Paused}}{{t "PAUSED"}}{{else if not .Running}}{{t "STOPPED"}}{{else}}{{$w.State}}{{end}}</p>
+    <p class="state-word"><span class="dot"></span>{{.Rt.Word}}</p>
     {{if and (not $w.Ready) (or .Running (eq $w.State "failed"))}}
     {{with workerStages $w}}
     <ol class="stages" id="worker-stages" aria-label="{{t "Worker lifecycle"}}">{{range .}}<li class="{{.Status}}"{{if eq .Status "current"}} aria-current="step"{{end}}>{{t .Label}}</li>{{end}}</ol>
@@ -542,6 +540,12 @@ hachidoriUI.install(document);
     <dt>{{t "Device memory"}}</dt><dd class="mono">{{mib $a "memory_total"}}</dd>
   </dl>
   {{template "operator-disclosure-close"}}
+</section>
+
+<section class="region section" id="runtime-activity" aria-labelledby="runtime-activity-h">
+  <div class="region-h"><h2 id="runtime-activity-h">{{t "Recent runtime activity"}}</h2><span class="sub">{{t "operation outcome and evidence"}}</span></div>
+  {{template "last" .Last}}
+  {{with .Next}}{{template "op-panels" .}}{{end}}
 </section>
 
 {{with .S.Residents}}
