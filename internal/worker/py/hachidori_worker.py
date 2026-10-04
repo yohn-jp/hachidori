@@ -1509,6 +1509,63 @@ class ClefProvider(Provider):
                                                 hidden, batch["input_ids"], batch["attention_mask"]))
         return result, {"fork_bytes": fork_bytes, "working_bytes": working_bytes}
 
+    def calibrate_capacity(self):
+        """Measure one conservative, reproducible CUDA serving envelope.
+
+        Calibration deliberately proves a bounded useful shape rather than
+        searching for the OOM edge. The recorded headroom is the measured peak
+        workspace above the resident allocation plus a deterministic 25%/64MiB
+        margin. A larger envelope requires another explicit calibration policy;
+        it is never inferred from a successful Forge probe.
+        """
+        if self.requested != "cuda" or not getattr(self, "capacity_calibration", False):
+            raise ValueError("capacity calibration is available only in an isolated CUDA calibration worker")
+        questions = to_typed(WARMUP_QUESTIONS)
+        # Repetition is only a way to construct a deterministic real input.
+        # The authoritative limits below are the token counts produced by the
+        # pinned Clef tokenizer/encoder, never this repetition count.
+        state = ("capacity calibration state token " * 1024).strip()
+        record = self.jsm.encode_record(
+            self.tokenizer, {"state": state, "questions": questions}, max_length=sys.maxsize)
+        input_tokens = len(record.input_ids)
+        state_tokens = len(self.jsm._tokens(self.tokenizer, self.jsm.render(state)))
+        if input_tokens > CLEF_MAX_LENGTH:
+            raise ValueError("calibration fixture exceeds the Clef model context")
+        torch = self.torch
+        device = self.placed_device()
+        self.sync()
+        baseline = int(torch.cuda.memory_allocated(device))
+        torch.cuda.reset_peak_memory_stats(device)
+        self._predict_encoded([record])
+        self.sync()
+        peak = int(torch.cuda.max_memory_allocated(device))
+        workspace = max(1, peak - baseline)
+        margin = max(64 << 20, workspace // 4)
+        required = workspace + margin
+        free, total = torch.cuda.mem_get_info(device)
+        reserved = int(torch.cuda.memory_reserved(device))
+        allocated = int(torch.cuda.memory_allocated(device))
+        usable = int(free) + max(0, reserved - allocated)
+        if usable < required:
+            raise RuntimeError(
+                "calibrated request completed but reusable GPU headroom %d is below required %d"
+                % (usable, required))
+        return {
+            "max_state_tokens": state_tokens,
+            "max_input_tokens": input_tokens,
+            "max_batch_items": 1,
+            "max_batch_padded_tokens": input_tokens,
+            "required_gpu_headroom_bytes": required,
+            "measurement": {
+                "resident_allocated_bytes": baseline,
+                "peak_allocated_bytes": peak,
+                "workspace_bytes": workspace,
+                "safety_margin_bytes": margin,
+                "usable_headroom_bytes": usable,
+                "device_total_bytes": int(total),
+            },
+        }
+
     def capacity_status(self):
         current = getattr(self, "registered_resident", None)
         resident = ({"state_ref": current[0], **self.resident_info(current[2]),
@@ -1524,6 +1581,8 @@ class ClefProvider(Provider):
         if profile and profile["dtype"] != self.want_dtype:
             fatal("capacity", "capacity profile dtype does not match loaded execution dtype")
         if self.requested == "cuda" and not profile:
+            if getattr(self, "capacity_calibration", False):
+                return
             fatal("capacity", "capacity_profile: " + getattr(self, "capacity_profile_error", "missing"))
         if profile and profile["max_input_tokens"] > CLEF_MAX_LENGTH:
             raise CapacityError("max_input_tokens", CLEF_MAX_LENGTH, profile["max_input_tokens"])
@@ -1715,6 +1774,10 @@ def serve(provider):
                       "inference_ms": (time.perf_counter() - t0) * 1000.0})
             elif op == "stats":
                 emit({"id": rid, "ok": True, "stats": provider.stats()})
+            elif op == "capacity_calibrate":
+                if not isinstance(provider, ClefProvider):
+                    raise ValueError("capacity calibration requires Clef")
+                emit({"id": rid, "ok": True, "result": provider.calibrate_capacity()})
             elif isinstance(op, str) and op.startswith("trial_"):
                 if provider.trial is None:
                     emit({"id": rid, "ok": False,
@@ -1755,6 +1818,8 @@ def main():
                     help="clef only: serve the pinned source model as a RAM-resident tuning trial session")
     ap.add_argument("--capacity-profile", help="exact target-bound configured Clef capacity JSON")
     ap.add_argument("--capacity-profile-error", help="typed missing/invalid profile condition from host")
+    ap.add_argument("--capacity-calibration", action="store_true",
+                    help="clef CUDA only: isolated measured capacity calibration; never normal serving")
     args = ap.parse_args()
     if args.dtype and args.provider not in ("opendecider", "clef"):
         ap.error("--dtype is only supported by the opendecider and clef providers")
@@ -1772,10 +1837,13 @@ def main():
         with open(args.variant_manifest, encoding="utf-8") as f:
             variant = json.load(f)
     provider = PROVIDERS[args.provider](args.model_dir, args.device, manifest, args.dtype, args.variant_dir, variant, args.trial_session)
+    if args.capacity_calibration and (args.provider != "clef" or args.device != "cuda"):
+        ap.error("--capacity-calibration is only supported by Clef on CUDA")
     if args.provider == "clef":
         provider.capacity_profile = json.loads(args.capacity_profile) if args.capacity_profile else None
         provider.capacity_profile_error = args.capacity_profile_error or "missing"
-    if args.provider == "clef" and args.device == "cuda" and not provider.capacity_profile:
+        provider.capacity_calibration = args.capacity_calibration
+    if args.provider == "clef" and args.device == "cuda" and not provider.capacity_profile and not args.capacity_calibration:
         fatal("capacity", "capacity_profile: " + provider.capacity_profile_error)
     provider.initialize()
     provider.warmup()
