@@ -139,6 +139,24 @@ class ResidentContract(unittest.TestCase):
         self.assertIsNone(p.registered_resident)
         self.assertEqual(self.text.calls, [])
 
+    def test_resident_payload_headroom_is_checked_before_publish(self):
+        p = self.provider
+        calls = 0
+        def readiness():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise CapacityError('gpu_headroom_bytes', 100, 50)
+        p.check_capacity_readiness = readiness
+        state = 'policy'
+        ref = 'sha256:' + hashlib.sha256(state.encode()).hexdigest()
+        q = {'id': 'q', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        with self.assertRaises(CapacityError):
+            p.register_resident(ref, state, [q])
+        self.assertEqual(calls, 2)
+        self.assertIsNone(p.registered_resident)
+        self.assertGreater(len(self.text.calls), 0)
+
     def test_resident_decide_admits_before_suffix(self):
         p = self.provider
         p.check_capacity_readiness = lambda: None
