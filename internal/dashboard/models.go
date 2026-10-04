@@ -41,6 +41,10 @@ type ArtifactView struct {
 	Kind    string // ArtifactSource | ArtifactVariant
 	Model   string
 	Device  string // requested
+	// Title/Detail are the Wave 0 human-facing Execution Target composition.
+	// Exact model/variant identities remain in Model and Variant below.
+	Title  string
+	Detail string
 	// The exact variant, from the status document or the inventory.
 	Variant       string
 	Scheme        string
@@ -67,11 +71,14 @@ func artifactsOf(v view, mv *ModelsView) *ArtifactsView {
 	a := &ArtifactsView{}
 	if v.Running {
 		rt := v.S.Runtime
-		r := ArtifactView{Present: rt.ModelID != "", Kind: ArtifactSource, Model: rt.ModelID, Device: rt.Device,
+		p := sourceTargetPresentation(rt.ModelID)
+		r := ArtifactView{Present: rt.ModelID != "", Kind: ArtifactSource, Model: rt.ModelID, Device: rt.Device, Title: p.Title, Detail: p.Detail,
 			ReportedDevice: opt(v.S.Worker.Info, "device"), ReportedDType: opt(v.S.Worker.Info, "dtype")}
 		if rv := rt.Variant; rv != nil {
 			r.Kind, r.Variant, r.Scheme, r.Bits, r.DType, r.Certification = ArtifactVariant, rv.ID, rv.Scheme, rv.Bits, rv.DType, rv.Certification
 			r.Experimental = rv.Certification != "accepted"
+			p := variantTargetPresentation(setup.VariantEntry{ID: rv.ID, SourceID: rt.ModelID, Scheme: rv.Scheme, Bits: rv.Bits, DType: rv.DType, Certification: rv.Certification})
+			r.Title, r.Detail = p.Title, p.Detail
 		}
 		a.Running = r
 	}
@@ -80,7 +87,8 @@ func artifactsOf(v view, mv *ModelsView) *ArtifactsView {
 		if model == "" {
 			model = mv.ActiveModel // a record from before model selection names no model
 		}
-		n := ArtifactView{Present: true, Kind: ArtifactSource, Model: model, Device: act.Device}
+		p := sourceTargetPresentation(model)
+		n := ArtifactView{Present: true, Kind: ArtifactSource, Model: model, Device: act.Device, Title: p.Title, Detail: p.Detail}
 		if act.Variant != "" {
 			n.Kind, n.Variant, n.Experimental = ArtifactVariant, act.Variant, act.Experimental
 			n.Certification = "accepted"
@@ -93,6 +101,8 @@ func artifactsOf(v view, mv *ModelsView) *ArtifactsView {
 					if !act.Experimental {
 						n.Certification = e.Certification
 					}
+					p := variantTargetPresentation(e)
+					n.Title, n.Detail = p.Title, p.Detail
 				}
 			}
 		}
