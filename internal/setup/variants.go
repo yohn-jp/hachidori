@@ -199,6 +199,15 @@ func checkVariantFiles(dir string, v home.VariantManifest, obs *Observer) error 
 			return nil
 		}
 		if !want[rel] {
+			// CPython may materialize bytecode beside a carried Python module
+			// during normal variant execution. It is a derived runtime cache,
+			// never an immutable variant artifact. Keep the exception narrow:
+			// only .pyc files directly inside a __pycache__ directory qualify.
+			dir, name := filepath.Split(rel)
+			dir = strings.TrimSuffix(dir, "/")
+			if filepath.Base(filepath.FromSlash(dir)) == "__pycache__" && strings.HasSuffix(name, ".pyc") {
+				return nil
+			}
 			extra = append(extra, rel)
 		}
 		return nil
