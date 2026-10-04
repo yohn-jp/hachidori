@@ -834,16 +834,12 @@ hachidoriUI.install(document);
 
 {{with .Desktop}}
 <section class="region section" id="desktop" aria-labelledby="desktop-h">
-  <div class="region-h"><h2 id="desktop-h">{{t "Desktop"}}</h2><span class="sub">{{t "tray and sign-in"}}</span></div>
+  <div class="region-h"><h2 id="desktop-h">{{t "Desktop"}}</h2><span class="sub">{{t "runtime behavior on this host"}}</span></div>
   <p class="muted">{{t "Closing this window hides Hachidori to the system tray and the inference runtime keeps running. Use the tray icon to open it again, or choose"}} <strong>{{t "Quit Hachidori"}}</strong> {{t "from the tray menu to stop the runtime and exit."}}</p>
-  <form method="post" action="/desktop/prefs" class="region">
-    <input type="hidden" name="token" value="{{$.Token}}">
-    <label class="check"><input type="checkbox" name="start_at_sign_in" value="1"{{if .StartAtSignIn}} checked{{end}}> {{t "Start Hachidori when I sign in"}}</label>
-    <label class="check"><input type="checkbox" name="start_minimized" value="1"{{if .StartMinimized}} checked{{end}}> {{t "Start minimized (in the tray, when started at sign-in)"}}</label>
-    <div class="btn-row"><button type="submit" class="btn">{{t "Save"}}</button></div>
-    {{with .Err}}<p class="msg bad" role="alert">{{.}}</p>{{end}}
-  </form>
-  <p class="note">{{t "Start at sign-in adds one entry for the current user only (no administrator rights, no Windows service). Unchecking it removes the entry."}}</p>
+  {{if $.Chrome.HasSettings}}
+  <p class="note prose">{{t "Desktop startup preferences are owned by Settings. Diagnostics reports host behavior but does not change those preferences."}}</p>
+  <div class="btn-row"><a class="btn" href="/settings#settings-desktop">{{t "Open desktop settings"}}</a></div>
+  {{end}}
 </section>
 {{end}}
 {{template "close" .Chrome}}{{end}}
