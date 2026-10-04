@@ -232,7 +232,6 @@ func TestExistingWorkspacesAreUnchangedByTheTuningWorkspace(t *testing.T) {
 	}
 }
 
-
 func TestWave1RuntimeAndModelsHierarchy(t *testing.T) {
 	e, fm, _ := forgeEnv(t, variantInventory())
 	withResidency(e, fm, &fakeResidency{})
