@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -21,6 +22,38 @@ func openBootstrapReadFile(path string) (*os.File, error) {
 	}
 	defer root.Close()
 	return root.Open(filepath.Base(path))
+}
+
+var replaceFileW = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReplaceFileW")
+
+func replaceBootstrapFile(replacement, replaced string) error {
+	// MoveFileEx/os.Rename cannot replace a destination that another process
+	// has open, even when that reader grants delete sharing. ReplaceFileW is
+	// the Windows replacement primitive whose destination open explicitly
+	// requests FILE_SHARE_DELETE, matching the locator's atomic-read contract.
+	dst, err := windows.UTF16PtrFromString(replaced)
+	if err != nil {
+		return err
+	}
+	src, err := windows.UTF16PtrFromString(replacement)
+	if err != nil {
+		return err
+	}
+	ok, _, callErr := replaceFileW.Call(
+		uintptr(unsafe.Pointer(dst)),
+		uintptr(unsafe.Pointer(src)),
+		0, 0, 0, 0,
+	)
+	if ok != 0 {
+		return nil
+	}
+	if errors.Is(callErr, windows.ERROR_FILE_NOT_FOUND) ||
+		errors.Is(callErr, windows.ERROR_PATH_NOT_FOUND) {
+		// ReplaceFileW requires an existing destination. Initial creation (or
+		// a concurrent disappearance) retains the ordinary rename path.
+		return os.Rename(replacement, replaced)
+	}
+	return callErr
 }
 
 func retryableBootstrapReadError(err error) bool {
