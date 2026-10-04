@@ -179,21 +179,30 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 		writeJSON(w, http.StatusOK, StatusBody(d, rt, started))
 	})
 	mux.HandleFunc("POST /v1/states", func(w http.ResponseWriter, r *http.Request) {
+		entry := requests.Begin("/v1/states", time.Now(), requestIdentity(rt))
 		var input api.RegisterState
 		if err := decode(w, r, &input); err != nil {
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, err.Error())
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
+		entry.SetInput(input, len(input.State), 0, 0)
 		if input.Schema != api.SchemaV1 {
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, "schema must be hachidori.v1")
 			writeErr(w, api.ErrRequestInvalid, "schema must be hachidori.v1")
 			return
 		}
 		ref, err := (home.Home{Root: rt.Home}).RegisterState(input.State)
 		if err != nil {
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, err.Error())
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, api.StateReference{Schema: api.SchemaV1, StateRef: ref})
+		entry.SetStateRef(ref, len(input.State))
+		entry.Admit()
+		resp := api.StateReference{Schema: api.SchemaV1, StateRef: ref}
+		entry.Complete(time.Now(), resp, http.StatusOK)
+		writeJSON(w, http.StatusOK, resp)
 	})
 	mux.HandleFunc("POST /v1/decide", func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()

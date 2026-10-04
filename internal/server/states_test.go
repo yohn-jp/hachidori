@@ -33,7 +33,8 @@ func TestRegisteredStateDecisionAndHistory(t *testing.T) {
 		t.Fatalf("reference decision: %d %v", rec.Code, m)
 	}
 	view := history.List()
-	if len(view.Entries) != 1 || view.Entries[0].StateRef != ref || view.Entries[0].StateBytes != len("policy") || view.Entries[0].State != "completed" {
+	if len(view.Entries) != 3 || view.Entries[0].StateRef != ref || view.Entries[2].Endpoint != "/v1/states" ||
+		view.Entries[0].StateBytes != len("policy") || view.Entries[0].State != "completed" {
 		t.Fatalf("history: %+v", view.Entries)
 	}
 	rec, m = do(h, "POST", "/v1/decide", strings.Replace(request, `"state_ref":"`+ref+`"`, `"state":"other","state_ref":"`+ref+`"`, 1))
