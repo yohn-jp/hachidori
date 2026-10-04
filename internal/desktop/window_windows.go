@@ -93,6 +93,12 @@ type shell struct {
 	controller *edge.ICoreWebView2Controller
 	guard      *navigationGuard
 	closed     bool
+	// quitPending records a Quit received while go-webview2 is still creating
+	// the controller. Destroying the parent HWND during that asynchronous COM
+	// operation makes WebView2 complete with E_ABORT, and go-webview2 treats
+	// that initialization error as process-fatal. Keep the HWND alive until
+	// controller creation completes, then honor the Quit before navigation.
+	quitPending bool
 
 	// Resident mode (nil res: no tray, closing the window ends the session).
 	res         *Resident
@@ -249,6 +255,21 @@ const (
 // released and the window is destroyed, which ends the message loop. Open then
 // returns and the caller shuts the runtime down.
 func (s *shell) quit() {
+	// Embed pumps the Win32 queue while WebView2 creates its controller, so a
+	// Quit request can arrive after the HWND exists but before Open has received
+	// the controller. The controller still needs that HWND: destroying it here
+	// completes CreateCoreWebView2Controller with E_ABORT, which the dependency
+	// treats as fatal. Defer only this initialization-time Quit; Open consumes it
+	// immediately after successful controller creation.
+	if s.controller == nil {
+		s.quitPending = true
+		return
+	}
+	s.finishQuit()
+}
+
+func (s *shell) finishQuit() {
+	s.quitPending = false
 	s.closeWebView()
 	s.tray.remove()
 	procDestroyWindow.Call(s.hwnd)
@@ -512,6 +533,15 @@ func (native) Open(ctx context.Context, w Window) (err error) {
 	s.controller = c.GetController()
 	if s.controller == nil {
 		return errors.New("WebView2 controller was not created")
+	}
+	if s.quitPending {
+		// The user already chose Quit while Embed was pumping messages. Close the
+		// now-valid controller before any navigation/normal interaction and return
+		// through the ordinary desktop shutdown path with no WebView2 init error.
+		s.chromium = c
+		s.finishQuit()
+		destroyed = true
+		return nil
 	}
 	webview, err := s.controller.GetCoreWebView2()
 	if err != nil {
