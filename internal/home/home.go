@@ -435,6 +435,11 @@ func (h Home) Env(pythonDir string, offline bool) []string {
 		"PYTHONUNBUFFERED=1",
 		"PYTHONUTF8=1",
 		"PYTHONIOENCODING=utf-8",
+		// getpass.getuser() reads LOGNAME, USER, LNAME, USERNAME and then falls back
+		// to pwd, which native Windows does not have. torch._inductor.codecache calls
+		// it while it is being imported, so a missing name fails that import midway.
+		// A fixed name keeps the worker deterministic and does not name the account.
+		"USERNAME=hachidori",
 		"PATH=" + pythonDir,
 		"HOME=" + c("home"),
 		"TMPDIR=" + c("tmp"),

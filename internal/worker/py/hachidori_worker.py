@@ -53,6 +53,55 @@ def fatal(cls, message):
     sys.exit(3)
 
 
+# A failed provider import or model load keeps a bounded traceback in the worker log,
+# whose tail the supervisor attaches (redacted and bounded again) to the failure.
+TRACE_MAX_FRAMES = 12
+TRACE_MAX_LINES = 32
+TRACE_MAX_LINE = 400
+
+
+def log_failure_trace(phase, exc):
+    """Log the traceback of a startup failure: the last TRACE_MAX_FRAMES frames of
+    every exception in its chain, the last TRACE_MAX_LINES lines of that text, each
+    cut to TRACE_MAX_LINE characters. Source lines only; no locals or values."""
+    try:
+        text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__,
+                                                  limit=-TRACE_MAX_FRAMES))
+    except Exception:  # noqa: BLE001 - diagnostics never replace the failure they describe
+        return
+    lines = text.rstrip("\n").splitlines()
+    omitted = max(0, len(lines) - TRACE_MAX_LINES)
+    log("%s traceback%s:" % (phase, " (%d earlier lines omitted)" % omitted if omitted else ""))
+    for line in lines[-TRACE_MAX_LINES:]:
+        line = line.rstrip()
+        if len(line) > TRACE_MAX_LINE:
+            line = line[:TRACE_MAX_LINE] + "...[truncated]"
+        log("  " + line)
+
+
+def require_account_name():
+    """Fail with the real cause when the process has no account name.
+
+    torch._inductor.codecache computes a cache directory from getpass.getuser() at
+    module level, after it has already registered InductorCacheArtifact. Without
+    LOGNAME/USER/LNAME/USERNAME, native Windows has no pwd module to fall back on:
+    that first import fails after registering, an optional-import guard swallows
+    the ImportError, and the next import of the module re-runs the registration as
+    the misleading "Artifact of type=inductor already registered" assertion.
+    The supervisor supplies USERNAME (home.Env); this checks it before torch is
+    imported so a missing name is reported as itself.
+    """
+    import getpass
+    try:
+        getpass.getuser()
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            "the worker process has no account name (getpass.getuser() failed with %s: %s); "
+            "torch._inductor.codecache needs one at import time and a failed first import "
+            "surfaces later as a duplicate inductor cache registration"
+            % (type(e).__name__, e)) from e
+
+
 def to_typed(questions):
     # Laya and OpenDecider share this typed-question shape.
     out = {}
@@ -230,9 +279,11 @@ class Provider:
     def initialize(self):
         emit({"event": "phase", "phase": "importing"})
         try:
+            require_account_name()
             import torch
             self.import_provider()
         except Exception as e:  # noqa: BLE001 - any import failure is a provider failure
+            log_failure_trace("provider_import", e)
             fatal("provider_import", "%s: %s" % (type(e).__name__, e))
         self.torch = torch
         if self.requested == "cuda":
@@ -249,6 +300,7 @@ class Provider:
         try:
             self.load()
         except Exception as e:  # noqa: BLE001
+            log_failure_trace("model_load", e)
             fatal("model_load", "%s: %s" % (type(e).__name__, e))
         # A requested device is never substituted: a model that did not land on it
         # is a device failure for Hachidori, not a degraded success.

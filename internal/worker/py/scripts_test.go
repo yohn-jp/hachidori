@@ -92,6 +92,20 @@ func TestClefBatchContract(t *testing.T) {
 	}
 }
 
+// A missing account name is reported as itself before torch is imported, a
+// one-shot import-time registration is never re-run by the worker's own import
+// order, and a startup failure keeps a bounded traceback (#259).
+func TestWorkerStartupDiagnostics(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3")
+	}
+	cmd := exec.Command(python, "-B", filepath.Join("testdata", "startup_diagnostics.py"), "hachidori_worker.py")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("worker startup diagnostics: %v\n%s", err, out)
+	}
+}
+
 func TestClefKernelEvidence(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

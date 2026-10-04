@@ -26,6 +26,11 @@ func TestEnvIsExplicit(t *testing.T) {
 			t.Errorf("%s leaked into worker env", k)
 		}
 	}
+	// torch._inductor.codecache needs an account name while it is imported, and
+	// native Windows has no pwd fallback for getpass.getuser() (#259).
+	if env["USERNAME"] != "hachidori" {
+		t.Errorf("USERNAME=%q, want the fixed worker account name", env["USERNAME"])
+	}
 	if env["PYTHONNOUSERSITE"] != "1" || env["HF_HUB_OFFLINE"] != "1" {
 		t.Errorf("isolation flags missing: %v", env)
 	}

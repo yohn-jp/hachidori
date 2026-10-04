@@ -625,7 +625,7 @@ func pythonWorker(t *testing.T, dir, provider, device string, extra ...string) C
 		Python: python,
 		Args: append([]string{"-S", "-c", "import sys; sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[2:]; exec(open(sys.argv[0]).read())",
 			dir, script, "--model-dir", dir, "--device", device, "--manifest", filepath.Join(dir, "manifest.json"), "--provider", provider}, extra...),
-		Env:            []string{"PYTHONNOUSERSITE=1"},
+		Env:            []string{"PYTHONNOUSERSITE=1", "USERNAME=hachidori"},
 		StartTimeout:   20 * time.Second,
 		RequestTimeout: 10 * time.Second,
 	}
