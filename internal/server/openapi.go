@@ -163,7 +163,7 @@ func postResponses(success obj, desc string) obj {
 var errorMeaning = map[string]string{
 	api.ErrRequestInvalid:  "request_invalid: schema or limit violation, unknown field, malformed JSON, or a model that is not resident.",
 	api.ErrNotReady:        "not_ready: the worker (or the targeted resident) is starting, restarting, failed or stopped.",
-	api.ErrCapacity:        "capacity: more requests are queued or in flight than the runtime accepts.",
+	api.ErrCapacity:        "capacity: queue admission or declared input/token/forward-shape capacity exceeded.",
 	api.ErrInferenceFailed: "inference_failed: the healthy worker failed this request.",
 	api.ErrWorkerFailure:   "worker_failure: the worker crashed, hung or violated its protocol.",
 	api.ErrRoutingFailed:   "routing_failed: a routed request (route \"auto\") that its policy could not answer: no routing policy is configured, the first-path resident was unavailable or failed, or a required handoff target was unavailable or failed. The message starts with a stable code (no_routing_policy, first_path_failed, required_handoff_failed). No result is returned and no other resident answers instead.",
@@ -305,9 +305,15 @@ func schemas() obj {
 			"error":  ref("ErrorInfo"),
 		}, "schema", "error"),
 
+		"CapacityInfo": object("Pre-GPU input-capacity denial.", obj{
+			"metric":   str("Authoritative input or execution shape metric."),
+			"limit":    obj{"type": "integer", "minimum": 0},
+			"observed": obj{"type": "integer", "minimum": 0},
+		}, "metric", "limit", "observed"),
 		"ErrorInfo": object("One failure.", obj{
-			"class":   obj{"type": "string", "enum": errorClasses(), "description": "Stable error class."},
-			"message": str("Human-readable detail. For inference_failed and worker_failure it is the worker's own text, redacted of local paths and credentials and at most 1 KiB."),
+			"class":    obj{"type": "string", "enum": errorClasses(), "description": "Stable error class."},
+			"capacity": ref("CapacityInfo"),
+			"message":  str("Human-readable detail. For inference_failed and worker_failure it is the worker's own text, redacted of local paths and credentials and at most 1 KiB."),
 		}, "class", "message"),
 
 		"Health": object("Readiness.", obj{

@@ -735,6 +735,18 @@ func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm hom
 	if dtype != "" {
 		args = append(args, "--dtype", dtype)
 	}
+	if model.Provider == "clef" {
+		profile, profileErr := resolveCapacityProfile(h, a, rm, model, mm, variant, dtype)
+		if profileErr != "" {
+			args = append(args, "--capacity-profile-error", profileErr)
+		} else if profile != nil {
+			encoded, err := json.Marshal(profile)
+			if err != nil {
+				return worker.Config{}, Runtime{}, fmt.Errorf("encode capacity profile: %w", err)
+			}
+			args = append(args, "--capacity-profile", string(encoded))
+		}
+	}
 	cfg := worker.Config{
 		Python:         python,
 		Args:           args,
@@ -821,6 +833,12 @@ const maxErrorDetail = requesthistory.MaxMetadataStringBytes
 // sees the unredacted text in the worker log and the dashboard.
 func writeWorkerErr(w http.ResponseWriter, sc redact.Scrubber, err error) {
 	class, message := workerError(sc, err)
+	var re *worker.RequestError
+	if errors.As(err, &re) && re.Class == api.ErrCapacity && re.Capacity != nil {
+		writeJSON(w, statusFor[api.ErrCapacity], api.ErrorBody{Schema: api.SchemaV1,
+			Error: api.ErrorInfo{Class: class, Message: message, Capacity: re.Capacity}})
+		return
+	}
 	writeErr(w, class, message)
 }
 

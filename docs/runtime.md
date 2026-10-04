@@ -1979,3 +1979,48 @@ work unchanged. The report lists the resolved definitions as
 `question_definitions` (`id`, `version`, `digest`). `testdata/questions/` and
 `testdata/eval/contract-example-refs.jsonl` are the reference-form equivalent
 of the contract example.
+
+### Clef input capacity
+
+Clef CUDA serving reads an operator-owned, versioned capacity profile from
+`HACHIDORI_HOME/state/capacity-profiles.json`. It does not guess capacity from
+state bytes, card size, or the RTX 3060 observations. The document has
+`schema: "hachidori.capacity-profiles.v1"` and a `profiles` array. Each entry
+contains these fields:
+
+| Fields | Meaning |
+|---|---|
+| `runtime`, `model_id`, `provider`, `repo`, `revision`, `source_files_sha256` | Exact dependency runtime and pinned source identity; source digest is `home.SourceOf(model).FilesSHA256` |
+| `device`, `dtype`, `variant_id` | Concrete CPU/CUDA execution, serving precision, and optional variant ID; capacities never cross these boundaries |
+| `max_state_tokens`, `max_input_tokens` | Positive measured/configured state-token and complete encoded-input limits, including question schema |
+| `max_batch_items`, `max_batch_padded_tokens` | Positive limits for one actual provider forward; padded tokens are rows times longest encoded sequence |
+| `required_gpu_headroom_bytes` | Required inference workspace budget after resident model/runtime allocations; mandatory and positive for CUDA, absent/zero for CPU |
+
+Operators supply limits established for their selected execution target; there
+are no sample/default safe GPU numbers. Unknown fields, duplicate targets,
+missing limits, and mismatched target identities are refused. Missing Clef CUDA
+profiles produce a typed `capacity` startup condition before model loading.
+CPU remains launchable without a GPU profile. Other providers retain their
+existing execution paths; this profile enforcement is specific to pinned Clef.
+
+Before READY, the worker checks configured input limits against Clef's 16,384-token
+model context and compares required workspace with actual free CUDA memory plus
+reusable, unallocated blocks in the CUDA allocator. The check runs after loading
+and again after warmup. `/v1/status` provider `capacity` reports the selected
+profile, model context, required/usable workspace and resident/allocator memory;
+worker statistics also report the last rejected shape. The headroom is an
+admission budget, not an exclusive device-memory reservation against other processes.
+
+Every Clef request is fully encoded on CPU using the pinned tokenizer and
+`joint_schema_model.encode_record`, without truncation. All question groups in
+a request are admitted before any group's tensors are collated on the device.
+Single records and each planned forward are checked against the same configured
+profile. A batch is evaluated using the existing actual forward partitioning,
+not a sum of unrelated concurrently nonexistent activations. Capacity denials
+return HTTP 429, class `capacity`, and an optional structured `error.capacity`
+with `metric`, `limit`, and `observed`. They keep the worker alive and do not
+trigger a watchdog restart, truncate state, or fall back to CPU.
+
+Physical RTX 3060/Clef-Flash W4A16 safe-capacity calibration and CUDA execution
+validation for this change: **NOT_CHECKED**. Portable admission tests establish
+control flow and shape accounting, not a calibrated safe GPU profile.
