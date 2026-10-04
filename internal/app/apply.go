@@ -408,6 +408,11 @@ func (t *applyTx) validate(ctx context.Context) error {
 		if err := t.validateDesiredPrerequisites(spec.ID()); err != nil {
 			return err
 		}
+		if t.hasVariant && t.p.Device == "cuda" && t.model.Provider == home.ProviderClef {
+			if err := ensureVariantCapacity(ctx, h, t.variant.ID, t.p.Device, t.log); err != nil {
+				return fmt.Errorf("capacity calibration: %w", err)
+			}
+		}
 		return nil
 	}
 	have := func() (rt, src bool) {
@@ -426,6 +431,11 @@ func (t *applyTx) validate(ctx context.Context) error {
 			return fmt.Errorf("materialization finished but the %s runtime %s or the source model %s is still missing", t.p.Device, spec.ID(), model.ID)
 		}
 		t.materialized = true
+	}
+	if t.hasVariant && t.p.Device == "cuda" && t.model.Provider == home.ProviderClef {
+		if err := ensureVariantCapacity(ctx, h, t.variant.ID, t.p.Device, t.log); err != nil {
+			return fmt.Errorf("capacity calibration: %w", err)
+		}
 	}
 	return nil
 }
