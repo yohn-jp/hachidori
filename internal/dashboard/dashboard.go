@@ -560,6 +560,7 @@ var pageBase = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"since":           since,
 	"took":            took,
 	"variantTitle":    variantTitle,
+	"modelTitle":      modelTitle,
 	"opLabel":         opLabel,
 	"opHref":          opHref,
 	"opOutcome":       opOutcome,
