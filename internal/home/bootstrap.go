@@ -256,7 +256,7 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	const attempts = 50
 	const retryDelay = 10 * time.Millisecond
 	for i := 0; i < attempts; i++ {
-		err = os.Rename(tmp, path)
+		err = replaceBootstrapFile(tmp, path)
 		if err == nil || !retryableBootstrapReplaceError(err) {
 			return err
 		}
