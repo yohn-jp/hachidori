@@ -150,7 +150,13 @@ func TestSaveCapacityProfileInitializesUpsertsAndPreservesOtherTargets(t *testin
 	if p, ok := got.Find(other.CapacityTarget); !ok || p != other {
 		t.Fatalf("other = %+v, %v", p, ok)
 	}
-	if fi, err := os.Stat(h.Path("state", CapacityProfilesFile)); err != nil || fi.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("capacity profile permissions: %v %v", fi, err)
+	fi, err := os.Stat(h.Path("state", CapacityProfilesFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Native Windows does not preserve POSIX permission bits. On platforms
+	// that do, the persisted operator contract is private to the account.
+	if os.PathSeparator != '\\' && fi.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("capacity profile permissions: %v", fi.Mode().Perm())
 	}
 }
