@@ -233,6 +233,7 @@ func TestActivateRejectsInvalidVariants(t *testing.T) {
 	if _, err := setup.ActivateTarget(h, "cpu", setup.ClefFlash, setup.ActivateOptions{Variant: v.ID}, io.Discard, nil); err != nil {
 		t.Fatalf("generated Python bytecode invalidated variant: %v", err)
 	}
+	before = rawActive(h) // Subsequent refusals must preserve the successful activation.
 	// The exception is deliberately not a general __pycache__ allowlist.
 	otherCache := filepath.Join(cacheDir, "unexpected.bin")
 	if err := os.WriteFile(otherCache, []byte("x"), 0o644); err != nil {

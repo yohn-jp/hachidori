@@ -36,8 +36,8 @@ func TestRepairCacheCommand(t *testing.T) {
 	}
 
 	polluted := inject(vdir)
-	if code := run([]string{"variant", "verify", "-home", h.Root, v.ID}, nil); code != 1 {
-		t.Fatalf("a polluted variant verified (exit %d)", code)
+	if code := run([]string{"variant", "verify", "-home", h.Root, v.ID}, nil); code != 0 {
+		t.Fatalf("generated Python bytecode invalidated the variant (exit %d)", code)
 	}
 	// Bad invocations change nothing: no target, two targets, a directory
 	// instead of an identity, an extra argument.
