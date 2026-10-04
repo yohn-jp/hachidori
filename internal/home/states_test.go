@@ -29,7 +29,7 @@ func TestStateRegistration(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	got, err := h.ResolveState(ref)
+	got, err := (Home{Root: h.Root}).ResolveState(ref)
 	if err != nil || got != state {
 		t.Fatalf("resolve: %q %v", got, err)
 	}

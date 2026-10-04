@@ -184,12 +184,16 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
+		if input.Schema != api.SchemaV1 {
+			writeErr(w, api.ErrRequestInvalid, "schema must be hachidori.v1")
+			return
+		}
 		ref, err := (home.Home{Root: rt.Home}).RegisterState(input.State)
 		if err != nil {
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, api.StateReference{StateRef: ref})
+		writeJSON(w, http.StatusOK, api.StateReference{Schema: api.SchemaV1, StateRef: ref})
 	})
 	mux.HandleFunc("POST /v1/decide", func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()

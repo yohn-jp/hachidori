@@ -5,6 +5,8 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
@@ -44,22 +46,41 @@ type Question struct {
 // the default route. It cannot be combined with Model: a direct request is
 // strict and a routed request is answered per the runtime's routing policy.
 type DecideRequest struct {
-	Schema    string         `json:"schema"`
-	State     string         `json:"state,omitempty"`
-	StateRef  string         `json:"state_ref,omitempty"`
-	Questions []Question     `json:"questions"`
-	Options   map[string]any `json:"options,omitempty"`
-	Model     *string        `json:"model,omitempty"`
-	Route     string         `json:"route,omitempty"`
+	Schema         string         `json:"schema"`
+	State          string         `json:"state,omitempty"`
+	StateRef       string         `json:"state_ref,omitempty"`
+	Questions      []Question     `json:"questions"`
+	Options        map[string]any `json:"options,omitempty"`
+	Model          *string        `json:"model,omitempty"`
+	Route          string         `json:"route,omitempty"`
+	inlineSupplied bool           `json:"-"`
+	refSupplied    bool           `json:"-"`
+}
+
+// UnmarshalJSON retains field presence so an explicitly empty inline State
+// cannot be smuggled alongside a reference (including in batch entries).
+func (r *DecideRequest) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	_, r.inlineSupplied = fields["state"]
+	_, r.refSupplied = fields["state_ref"]
+	type plain DecideRequest
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode((*plain)(r))
 }
 
 // RegisterState is the immutable content-addressed registration input.
 type RegisterState struct {
-	State string `json:"state"`
+	Schema string `json:"schema"`
+	State  string `json:"state"`
 }
 
 // StateReference is the registration result.
 type StateReference struct {
+	Schema   string `json:"schema"`
 	StateRef string `json:"state_ref"`
 }
 
@@ -281,7 +302,9 @@ func (r *DecideRequest) Validate() error {
 	if len(r.State) > MaxStateBytes {
 		return fmt.Errorf("state exceeds %d bytes", MaxStateBytes)
 	}
-	if (strings.TrimSpace(r.State) == "") == (r.StateRef == "") {
+	if (strings.TrimSpace(r.State) == "") == (r.StateRef == "") ||
+		(r.inlineSupplied && r.refSupplied) ||
+		(r.refSupplied && r.StateRef == "") {
 		return fmt.Errorf("exactly one of state or state_ref is required")
 	}
 	if r.StateRef != "" && (len(r.StateRef) != 71 || !strings.HasPrefix(r.StateRef, "sha256:")) {

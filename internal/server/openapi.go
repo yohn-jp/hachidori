@@ -189,8 +189,8 @@ func schemas() obj {
 				"description": "Optional per-choice description, keyed by a label present in choices."},
 		}, "id", "type", "instructions", "choices"),
 
-		"RegisterState":  object("Register a nonblank immutable State.", obj{"state": obj{"type": "string", "minLength": 1, "maxLength": api.MaxStateBytes}}, "state"),
-		"StateReference": object("Content-derived State reference.", obj{"state_ref": obj{"type": "string"}}, "state_ref"),
+		"RegisterState":  object("Register a nonblank immutable State.", obj{"schema": schemaConst(), "state": obj{"type": "string", "minLength": 1, "maxLength": api.MaxStateBytes}}, "schema", "state"),
+		"StateReference": object("Content-derived State reference.", obj{"schema": schemaConst(), "state_ref": obj{"type": "string"}}, "schema", "state_ref"),
 		"DecideRequest":  decideRequest(true),
 		"BatchItem":      decideRequest(false),
 

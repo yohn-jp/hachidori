@@ -15,7 +15,7 @@ func TestRegisteredStateDecisionAndHistory(t *testing.T) {
 	rt := Runtime{Home: t.TempDir()}
 	history := requesthistory.New()
 	h := HandlerSinceWithHistory(f, rt, time.Now(), history)
-	rec, m := do(h, "POST", "/v1/states", `{"state":"policy"}`)
+	rec, m := do(h, "POST", "/v1/states", `{"schema":"hachidori.v1","state":"policy"}`)
 	if rec.Code != 200 {
 		t.Fatalf("registration: %d %v", rec.Code, m)
 	}
@@ -23,7 +23,7 @@ func TestRegisteredStateDecisionAndHistory(t *testing.T) {
 	if ref != home.StateRef("policy") {
 		t.Fatal("identity mismatch")
 	}
-	rec, m = do(h, "POST", "/v1/states", `{"state":"policy"}`)
+	rec, m = do(h, "POST", "/v1/states", `{"schema":"hachidori.v1","state":"policy"}`)
 	if rec.Code != 200 || m["state_ref"] != ref {
 		t.Fatalf("duplicate: %d %v", rec.Code, m)
 	}
@@ -39,6 +39,10 @@ func TestRegisteredStateDecisionAndHistory(t *testing.T) {
 	rec, m = do(h, "POST", "/v1/decide", strings.Replace(request, `"state_ref":"`+ref+`"`, `"state":"other","state_ref":"`+ref+`"`, 1))
 	if rec.Code != 400 || errClass(m) != "request_invalid" || f.calls != 1 {
 		t.Fatalf("exclusivity: %d %v", rec.Code, m)
+	}
+	rec, m = do(h, "POST", "/v1/decide", strings.Replace(request, `"state_ref":`, `"state":"","state_ref":`, 1))
+	if rec.Code != 400 || errClass(m) != "request_invalid" || f.calls != 1 {
+		t.Fatalf("empty inline conflict: %d %v", rec.Code, m)
 	}
 	rec, m = do(h, "POST", "/v1/decide", strings.Replace(request, ref, home.StateRef("missing"), 1))
 	if rec.Code != 400 || errClass(m) != "request_invalid" || f.calls != 1 {

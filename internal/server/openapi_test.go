@@ -413,6 +413,9 @@ func jsonFields(t reflect.Type) (props map[string]reflect.Type, required map[str
 	props, required = map[string]reflect.Type{}, map[string]bool{}
 	for i := 0; i < t.NumField(); i++ {
 		name, opts, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if name == "-" {
+			continue
+		}
 		props[name] = t.Field(i).Type
 		required[name] = !strings.Contains(opts, "omitempty")
 	}

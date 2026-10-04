@@ -46,7 +46,7 @@ defaults to `HACHIDORI_ENDPOINT`, then `http://127.0.0.1:7843`.
 |---|---|---|
 | `GET /health` | `200 {"ready":true,"state":"ready"}` | `503` with the same body while starting, restarting or failed |
 | `GET /v1/status` | `200` | runtime (model ID, device), provider (name, version, the loaded model's ID and revision, device, dtype, GPU name, load/warmup ms), accelerator memory, worker pid/state/starts/restarts, last failure with stderr tail, request/error counters, waiting `queue_depth`, executing `in_flight`, admission `queue_limit`, inference p50/p95; with several residents, `residents` lists each one's own such document |
-| `POST /v1/states` | `200` | persist `{ "state": "..." }` beneath `HACHIDORI_HOME/state/registered`; returns `{ "state_ref": "sha256:<digest>" }` for the exact UTF-8 content (not a model cache or admission reservation) |
+| `POST /v1/states` | `200` | persist `{ "schema": "hachidori.v1", "state": "..." }` beneath `HACHIDORI_HOME/state/registered`; returns `{ "schema": "hachidori.v1", "state_ref": "sha256:<digest>" }` for the exact UTF-8 content (not a model cache or admission reservation) |
 | `POST /v1/decide` | `200` | exactly one of inline `state` or registered `state_ref`, 1–32 `choice` questions; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
 | `POST /v1/decide/batch` | `200` | 1–64 decide requests, each with inline `state` or `state_ref`; optional `model` targets one resident, optional `route: "auto"` routes by policy (below) |
 | `GET /openapi.json` | `200` | the OpenAPI 3.1 description of this API (below) |
