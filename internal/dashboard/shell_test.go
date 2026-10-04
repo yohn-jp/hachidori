@@ -211,7 +211,7 @@ func TestRuntimeSummarySeparatesDiagnosticEvidence(t *testing.T) {
 	e.rt.snap.State, e.rt.snap.Ready, e.rt.snap.PID = worker.StateStopped, false, 0
 	e.rt.mu.Unlock()
 	live := e.get(t, "/live").Body.String()
-	if !strings.Contains(live, `<p class="state-word"><span class="dot"></span>stopped</p>`) || !strings.Contains(live, "<dt>worker state</dt><dd>stopped (phase ready)</dd>") {
+	if !strings.Contains(live, `<p class="state-word"><span class="dot"></span>NEEDS ATTENTION</p>`) || !strings.Contains(live, "<dt>worker state</dt><dd>stopped (phase ready)</dd>") {
 		t.Error("runtime summary and diagnostic evidence do not both follow /v1/status")
 	}
 }
