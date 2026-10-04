@@ -474,9 +474,6 @@ func sourceTargetPresentation(modelID string) ExecutionTargetPresentation {
 
 func variantTargetPresentation(v setup.VariantEntry) ExecutionTargetPresentation {
 	title := variantTitle(v.SourceID, v.Scheme)
-	if title == "" {
-		title = modelTitle(v.SourceID) + " · Variant"
-	}
 	var detail []string
 	if v.Recipe != "" {
 		detail = append(detail, v.Recipe)
@@ -548,7 +545,7 @@ func variantLabels(vs []setup.VariantEntry) map[string]string {
 			// primary human label.
 			out[v.ID] = p.Title + " · #" + v.ManifestSHA256[:min(8, len(v.ManifestSHA256))]
 		default:
-			out[v.ID] = p.Title + " · " + v.ID
+			out[v.ID] = v.ID
 		}
 	}
 	return out
