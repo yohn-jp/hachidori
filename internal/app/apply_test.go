@@ -453,6 +453,29 @@ func TestApplyStartsAStoppedRuntimeAndLeavesUnrelatedStateAlone(t *testing.T) {
 	e2.requireServingVariant(e2.v.ID)
 }
 
+func TestApplyCalibratesMissingCapacityBeforeActivationMutation(t *testing.T) {
+	e := newApplyEnv(t, "accepted")
+	e.start()
+	before := e.record()
+	called := 0
+	e.c.cfg.Maintenance.CalibrateCapacity = func(ctx context.Context, root, variant, device string, log io.Writer) error {
+		called++
+		if root != e.h.Root || variant != e.v.ID || device != "cuda" {
+			t.Fatalf("calibration target root=%q variant=%q device=%q", root, variant, device)
+		}
+		return errors.New("calibration failed")
+	}
+	_, err := e.apply(context.Background())
+	ae := asApplyError(t, err)
+	if called != 1 || ae.Phase != PhaseApplyValidate || ae.Mutated || ae.RolledBack || !strings.Contains(err.Error(), "capacity calibration") {
+		t.Fatalf("called=%d err=%v (%+v)", called, err, ae)
+	}
+	if e.record() != before || len(e.activateCalls()) != 0 {
+		t.Fatal("failed capacity calibration mutated activation")
+	}
+	e.requireServingSource()
+}
+
 // ---- refusal before any mutation ----
 
 func TestApplyRefusesWhatIsNotAcceptedBeforeAnyChange(t *testing.T) {
