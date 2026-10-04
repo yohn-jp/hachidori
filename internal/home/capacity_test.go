@@ -108,7 +108,6 @@ func TestLoadCapacityProfilesRejectsUnknownAndTrailingFields(t *testing.T) {
 	}
 }
 
-
 func TestSaveCapacityProfileInitializesUpsertsAndPreservesOtherTargets(t *testing.T) {
 	h := Home{Root: t.TempDir()}
 	first := capacityProfile("cuda", "variant-a")
