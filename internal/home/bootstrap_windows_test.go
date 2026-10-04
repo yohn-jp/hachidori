@@ -3,11 +3,14 @@
 package home
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestWindowsDefaultLocator(t *testing.T) {
@@ -54,5 +57,48 @@ func TestWindowsDiscoverRememberForget(t *testing.T) {
 	}
 	if d, err := Discover(""); err != nil || d.Source != SourceUnconfigured {
 		t.Fatal(d, err)
+	}
+}
+
+func TestWindowsLocatorReadHandleAllowsAtomicReplace(t *testing.T) {
+	l := testLocator(t)
+	a, b := t.TempDir(), t.TempDir()
+	if _, err := l.Save(a); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := openBootstrapReadFile(l.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := l.Save(b)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("replace while locator reader was open: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("replace blocked by locator read handle")
+	}
+
+	// The already-open handle still observes one complete old record while the
+	// pathname resolves to the complete replacement.
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old Bootstrap
+	if err := json.Unmarshal(raw, &old); err != nil || old.Schema != BootstrapSchema || old.Home != a {
+		t.Fatalf("old read handle: %+v %v", old, err)
+	}
+	got, found, err := l.Lookup()
+	if err != nil || !found || got.Root != b {
+		t.Fatalf("replacement lookup: %+v found=%v err=%v", got, found, err)
 	}
 }
