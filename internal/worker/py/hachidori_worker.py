@@ -1328,16 +1328,30 @@ class ClefProvider(Provider):
         return self.reference().dtype
 
     def _resident_artifact(self):
-        """Restrict continuation to the physically validated CUDA artifact."""
+        """Restrict continuation to the physically validated CUDA artifact.
+
+        Runtime kernel evidence mutates its execution observation after first use;
+        identity must bind only immutable selection facts, never that mutable field.
+        """
+        files = self.variant.get("files", {}) if self.variant else self.digests
+        kernel_identity = {}
+        for name, entry in sorted(self.kernel_paths.items()):
+            if isinstance(entry, dict):
+                kernel_identity[name] = {
+                    key: entry.get(key)
+                    for key in ("selected", "availability", "implementation", "reason")
+                }
+            else:
+                kernel_identity[name] = entry
         if (self.requested != "cuda" or self.want_dtype != "bfloat16" or
                 not self.variant or self.variant.get("id") !=
                 "clef-flash--clef-flash-w4a16-rtn-g128--6cdd68bf9677" or
                 self.torch.__version__ != "2.11.0+cu128" or
                 self.transformers.__version__ != "5.17.0" or
-                self.digests.get("joint_schema_model.py") !=
+                files.get("joint_schema_model.py") !=
                 "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3"):
             raise RuntimeError("Clef continuation is not certified for this execution artifact")
-        facts = (self.digests, self.variant, self.kernel_paths, self.want_dtype,
+        facts = (files, self.variant, kernel_identity, self.want_dtype,
                  self.requested, self.torch.__version__, self.transformers.__version__)
         return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
@@ -1355,14 +1369,14 @@ class ClefProvider(Provider):
         return record
 
     def build_resident(self, state, questions):
-        """Construct a complete effective State prefix, never a partial cache.
+        """Construct a complete admitted State prefix, never a partial cache.
 
-        Encode two sentinel States with the *same* Questions to locate the
-        upstream encoder's fixed pre-State boundary. Its own rendered State
-        tokens and full record length establish its exact truncation budget.
+        Capacity admission owns the no-silent-truncation contract. Two sentinel
+        States with the same Questions then locate the upstream encoder's fixed
+        pre-State boundary for the already-admitted full record.
         """
         artifact = self._resident_artifact()
-        record = self._resident_record(state, questions)
+        record = self._encode_inputs([state], questions)[0]
         empty = self._resident_record("", questions)
         other = self._resident_record(0, questions)
         limit = min(len(empty.input_ids), len(other.input_ids))
@@ -1399,7 +1413,9 @@ class ClefProvider(Provider):
         if not isinstance(resident, ClefResidentState):
             raise TypeError("expected completed Clef resident State")
         artifact = self._resident_artifact()
-        record = self._resident_record(state, questions)
+        # Resident execution remains subject to the same pre-device capacity
+        # admission and no-silent-truncation contract as ordinary Clef requests.
+        record = self._encode_inputs([state], questions)[0]
         prefix = tuple(record.input_ids[:resident.prefix_tokens])
         identity = (artifact, hashlib.sha256(json.dumps(prefix).encode()).hexdigest())
         if (identity != resident.identity or prefix != resident._prefix or
