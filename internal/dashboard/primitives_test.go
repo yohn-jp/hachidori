@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/i18n"
+	"github.com/yohn-jp/hachidori/internal/setup"
 )
 
 func primitiveHTML(t *testing.T, locale i18n.Locale, name string, data any) string {
@@ -100,6 +101,42 @@ func TestSharedPrimitiveStylesReachProductionShell(t *testing.T) {
 	for _, want := range []string{"@media (max-width: 42rem)", ".instrument-heading, .operator-row { grid-template-columns: minmax(0, 1fr); }", ":focus-visible", "prefers-reduced-motion"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("production shell lacks %q", want)
+		}
+	}
+}
+
+func TestExecutionTargetPresentationKeepsHumanLabelSeparateFromIdentity(t *testing.T) {
+	source := sourceTargetPresentation("clef-flash")
+	if source.Kind != "SOURCE" || source.Title != "Clef Flash" || source.ID != "clef-flash" {
+		t.Fatalf("source presentation %+v", source)
+	}
+	v := setup.VariantEntry{
+		ID: "clef-flash--profile--123456789abc", SourceID: "clef-flash",
+		Recipe: "balanced-rtn-g128", Scheme: "W4A16", Certification: "accepted",
+		Preserved: []string{"joint_schema_head", "layers.31"},
+	}
+	p := variantTargetPresentation(v)
+	if p.Kind != "VARIANT" || p.Title != "Clef Flash · W4A16" || p.ID != v.ID ||
+		!strings.Contains(p.Detail, "balanced-rtn-g128") || !strings.Contains(p.Detail, "2 preserved") || !strings.Contains(p.Detail, "accepted") {
+		t.Fatalf("variant presentation %+v", p)
+	}
+	if strings.Contains(p.Title, "123456789abc") {
+		t.Fatalf("machine identity leaked into primary title %q", p.Title)
+	}
+}
+
+func TestVariantLabelsPreferMeaningfulProvenanceBeforeDigest(t *testing.T) {
+	vs := []setup.VariantEntry{
+		{ID: "v-a", SourceID: "clef-flash", Scheme: "W4A16", Recipe: "balanced", Certification: "accepted", Preserved: []string{"head"}, ManifestSHA256: "aaaaaaaa11111111"},
+		{ID: "v-b", SourceID: "clef-flash", Scheme: "W4A16", Recipe: "memory-first", Certification: "accepted", Preserved: []string{"head", "late"}, ManifestSHA256: "bbbbbbbb22222222"},
+	}
+	labels := variantLabels(vs)
+	if labels["v-a"] == labels["v-b"] {
+		t.Fatalf("labels are not distinguishable: %+v", labels)
+	}
+	for id, label := range labels {
+		if strings.Contains(label, "#") {
+			t.Fatalf("%s used digest before meaningful provenance: %q", id, label)
 		}
 	}
 }

@@ -47,12 +47,20 @@ func TestDesktopPanelAbsentUnlessHostedByDesktop(t *testing.T) {
 func TestDesktopPanelShowsOptInPreferencesAndTrayBehaviour(t *testing.T) {
 	e := newEnv(t)
 	withDesktop(e, &fakeDesktopPrefs{})
+	settingsBody := e.get(t, "/settings").Body.String()
+	for _, want := range []string{"Start Hachidori when I sign in", "Start minimized", `action="/desktop/prefs"`} {
+		if !strings.Contains(settingsBody, want) {
+			t.Errorf("settings lacks %q", want)
+		}
+	}
 	body := e.get(t, "/diagnostics").Body.String()
-	for _, want := range []string{"Start Hachidori when I sign in", "Start minimized", "hides Hachidori to the system tray",
-		"Quit Hachidori", `action="/desktop/prefs"`} {
+	for _, want := range []string{"hides Hachidori to the system tray", "Quit Hachidori", `href="/settings#settings-desktop"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("diagnostics lacks %q", want)
 		}
+	}
+	if strings.Contains(body, `action="/desktop/prefs"`) {
+		t.Error("diagnostics exposes a second desktop preference authority")
 	}
 	// The tray opens the dashboard root at #diagnostics when the application
 	// needs attention (desktop.DiagnosticsFragment); the root keeps that
@@ -75,8 +83,8 @@ func TestDesktopPrefsFormAppliesCompleteDesiredState(t *testing.T) {
 	if !f.signIn || f.minimized {
 		t.Fatalf("after enabling sign-in only: %+v", f)
 	}
-	if !strings.Contains(e.get(t, "/diagnostics").Body.String(), `name="start_at_sign_in" value="1" checked`) {
-		t.Error("enabled preference not shown checked")
+	if !strings.Contains(e.get(t, "/settings").Body.String(), `name="start_at_sign_in" value="1" checked`) {
+		t.Error("enabled preference not shown checked in Settings")
 	}
 	// An empty form (both boxes cleared) turns both off: reversible.
 	e.post(t, "/desktop/prefs", nil)

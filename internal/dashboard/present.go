@@ -205,6 +205,40 @@ func pauseReason(p *ModelPause) string {
 	return "Paused — model engineering is using the GPU. Serving resumes automatically when it finishes."
 }
 
+// WorkspaceState is the operator-facing runtime state used by the shell and
+// workspace headers. It is derived from supervision plus the current worker
+// snapshot; historical operation state never overrides it.
+type WorkspaceState string
+
+const (
+	WorkspaceReady          WorkspaceState = "READY"
+	WorkspaceStarting       WorkspaceState = "STARTING"
+	WorkspaceNeedsAttention WorkspaceState = "NEEDS ATTENTION"
+	WorkspaceStopped        WorkspaceState = "STOPPED"
+	WorkspacePaused         WorkspaceState = "PAUSED"
+)
+
+func workspaceStateOf(v view) (WorkspaceState, string) {
+	w := v.S.Worker
+	switch {
+	case v.pause() != nil && !v.Running:
+		return WorkspacePaused, "active"
+	case !v.Running:
+		// Supervision is the authority for whether a runtime exists. A stale
+		// worker phase from a completed/rolled-back operation must never keep
+		// the shell in STARTING after supervision has stopped.
+		return WorkspaceStopped, "idle"
+	case w.Ready:
+		return WorkspaceReady, "ok"
+	case w.State == worker.StateStarting || w.State == worker.StateRestarting:
+		return WorkspaceStarting, "warn"
+	case w.State == worker.StateFailed:
+		return WorkspaceNeedsAttention, "bad"
+	default:
+		return WorkspaceNeedsAttention, "warn"
+	}
+}
+
 // shellStatus is the compact runtime identity the workstation shell shows on
 // every page. It restates the /v1/status document and the attention list; it
 // is not a second readiness authority.
@@ -228,15 +262,11 @@ type shellStatus struct {
 
 func shellOf(v view) shellStatus {
 	w := v.S.Worker
-	s := shellStatus{Word: w.State, Tone: stateTone(w), Model: v.S.Runtime.ModelID, Attention: len(alerts(v)),
+	state, tone := workspaceStateOf(v)
+	s := shellStatus{Word: string(state), Tone: tone, Model: v.S.Runtime.ModelID, Attention: len(alerts(v)),
 		Provider: join(opt(w.Info, "provider"), opt(w.Info, "provider_version")),
 		Device:   join(opt(w.Info, "device"), opt(w.Info, "dtype")), GPU: opt(w.Info, "device_name")}
-	if w.Ready {
-		s.Word = "READY"
-	}
-	if v.pause() != nil && !v.Running {
-		s.Word, s.Tone, s.Paused = "PAUSED", "active", true
-	}
+	s.Paused = state == WorkspacePaused
 	switch {
 	case !v.Running:
 	case v.S.Runtime.Variant != nil:
@@ -428,6 +458,35 @@ func distOf(probs map[string]float64, choice, expected string) distView {
 	return distView{Rows: probRows(probs, choice), Expected: expected}
 }
 
+// ExecutionTargetPresentation is the shared human-facing composition for a
+// source model or derived Variant. Title and Detail are presentation only;
+// ID remains the exact immutable identity for forms, evidence and diagnostics.
+type ExecutionTargetPresentation struct {
+	Kind   string
+	Title  string
+	Detail string
+	ID     string
+}
+
+func sourceTargetPresentation(modelID string) ExecutionTargetPresentation {
+	return ExecutionTargetPresentation{Kind: "SOURCE", Title: modelTitle(modelID), Detail: "Source model", ID: modelID}
+}
+
+func variantTargetPresentation(v setup.VariantEntry) ExecutionTargetPresentation {
+	title := variantTitle(v.SourceID, v.Scheme)
+	var detail []string
+	if v.Recipe != "" {
+		detail = append(detail, v.Recipe)
+	}
+	if len(v.Preserved) > 0 {
+		detail = append(detail, fmt.Sprintf("%d preserved", len(v.Preserved)))
+	}
+	if v.Certification != "" {
+		detail = append(detail, v.Certification)
+	}
+	return ExecutionTargetPresentation{Kind: "VARIANT", Title: title, Detail: strings.Join(detail, " · "), ID: v.ID}
+}
+
 // modelTitle is a catalog model's display name: the words of its catalog ID
 // ("clef-flash" is "Clef Flash"). A catalog ID is a human slug, not an opaque
 // identity, so this is presentation of the catalog's own name.
@@ -456,22 +515,37 @@ func variantTitle(sourceID, scheme string) string {
 // digest to use, their exact ID); the exact ID stays in each variant's details
 // and evidence.
 func variantLabels(vs []setup.VariantEntry) map[string]string {
-	count := map[string]int{}
+	type named struct {
+		p ExecutionTargetPresentation
+		v setup.VariantEntry
+	}
+	items := make([]named, 0, len(vs))
+	titleCount := map[string]int{}
+	detailCount := map[string]int{}
 	for _, v := range vs {
-		count[variantTitle(v.SourceID, v.Scheme)]++
+		p := variantTargetPresentation(v)
+		items = append(items, named{p: p, v: v})
+		titleCount[p.Title]++
+		detailCount[p.Title+"\x00"+p.Detail]++
 	}
 	out := make(map[string]string, len(vs))
-	for _, v := range vs {
-		t := variantTitle(v.SourceID, v.Scheme)
+	for _, item := range items {
+		p, v := item.p, item.v
 		switch {
-		case t == "":
+		case p.Title == "":
 			out[v.ID] = v.ID
-		case count[t] > 1 && v.ManifestSHA256 == "":
-			out[v.ID] = v.ID // nothing structured tells them apart: the exact identity does
-		case count[t] > 1:
-			out[v.ID] = t + " · #" + v.ManifestSHA256[:min(8, len(v.ManifestSHA256))]
+		case titleCount[p.Title] == 1:
+			out[v.ID] = p.Title
+		case p.Detail != "" && detailCount[p.Title+"\x00"+p.Detail] == 1:
+			// Prefer meaningful provenance over an opaque digest when it
+			// actually distinguishes otherwise identical candidates.
+			out[v.ID] = p.Title + " · " + p.Detail
+		case v.ManifestSHA256 != "":
+			// Exact identity is the last-resort disambiguator, never the
+			// primary human label.
+			out[v.ID] = p.Title + " · #" + v.ManifestSHA256[:min(8, len(v.ManifestSHA256))]
 		default:
-			out[v.ID] = t
+			out[v.ID] = v.ID
 		}
 	}
 	return out
