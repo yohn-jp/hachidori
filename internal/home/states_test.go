@@ -39,6 +39,10 @@ func TestStateRegistration(t *testing.T) {
 	if _, err = h.ResolveState("../active-runtime.json"); err == nil {
 		t.Fatal("invalid reference accepted")
 	}
+	upper := "sha256:" + strings.ToUpper(strings.TrimPrefix(ref, "sha256:"))
+	if _, err = h.ResolveState(upper); err == nil {
+		t.Fatal("non-canonical reference accepted")
+	}
 	path := h.Path("state", "registered", strings.TrimPrefix(ref, "sha256:"))
 	if err = os.WriteFile(path, []byte("other"), 0600); err != nil {
 		t.Fatal(err)
