@@ -45,11 +45,22 @@ type Question struct {
 // strict and a routed request is answered per the runtime's routing policy.
 type DecideRequest struct {
 	Schema    string         `json:"schema"`
-	State     string         `json:"state"`
+	State     string         `json:"state,omitempty"`
+	StateRef  string         `json:"state_ref,omitempty"`
 	Questions []Question     `json:"questions"`
 	Options   map[string]any `json:"options,omitempty"`
 	Model     *string        `json:"model,omitempty"`
 	Route     string         `json:"route,omitempty"`
+}
+
+// RegisterState is the immutable content-addressed registration input.
+type RegisterState struct {
+	State string `json:"state"`
+}
+
+// StateReference is the registration result.
+type StateReference struct {
+	StateRef string `json:"state_ref"`
 }
 
 // RouteAuto selects the runtime's deterministic routing policy: each question
@@ -116,11 +127,12 @@ func (r Result) Validate(q Question) error {
 // it is omitted for the default route. Routing is present only for a routed
 // request and says which resident produced each final result and why.
 type DecideResponse struct {
-	Schema  string   `json:"schema"`
-	Results []Result `json:"results"`
-	Timing  *Timing  `json:"timing,omitempty"` // omitted inside batch responses
-	Served  *Served  `json:"served,omitempty"`
-	Routing *Routing `json:"routing,omitempty"`
+	Schema   string   `json:"schema"`
+	Results  []Result `json:"results"`
+	StateRef string   `json:"state_ref,omitempty"`
+	Timing   *Timing  `json:"timing,omitempty"` // omitted inside batch responses
+	Served   *Served  `json:"served,omitempty"`
+	Routing  *Routing `json:"routing,omitempty"`
 }
 
 // Stable routing reason codes (RoutedResult.Reason). They are part of the
@@ -269,8 +281,11 @@ func (r *DecideRequest) Validate() error {
 	if len(r.State) > MaxStateBytes {
 		return fmt.Errorf("state exceeds %d bytes", MaxStateBytes)
 	}
-	if strings.TrimSpace(r.State) == "" {
-		return fmt.Errorf("state must not be empty")
+	if (strings.TrimSpace(r.State) == "") == (r.StateRef == "") {
+		return fmt.Errorf("exactly one of state or state_ref is required")
+	}
+	if r.StateRef != "" && (len(r.StateRef) != 71 || !strings.HasPrefix(r.StateRef, "sha256:")) {
+		return fmt.Errorf("invalid state_ref")
 	}
 	if err := validModelRef(r.Model); err != nil {
 		return err

@@ -129,6 +129,20 @@ func (c checker) validate(s map[string]any, v any) []string {
 					}
 				}
 			}
+		case "oneOf":
+			matched := 0
+			for _, branch := range want.([]any) {
+				if len(c.validate(branch.(map[string]any), v)) == 0 {
+					matched++
+				}
+			}
+			if matched != 1 {
+				fail("oneOf matched %d branches", matched)
+			}
+		case "not":
+			if len(c.validate(want.(map[string]any), v)) == 0 {
+				fail("not schema matched")
+			}
 		case "required":
 			if m, ok := v.(map[string]any); ok {
 				for _, r := range want.([]any) {
@@ -173,7 +187,7 @@ func (c checker) validate(s map[string]any, v any) []string {
 
 var evaluated = map[string]bool{"$ref": true, "type": true, "const": true, "enum": true, "minLength": true, "maxLength": true,
 	"minimum": true, "maximum": true, "minItems": true, "maxItems": true, "uniqueItems": true, "items": true, "required": true,
-	"properties": true, "additionalProperties": true, "allOf": true}
+	"properties": true, "additionalProperties": true, "allOf": true, "oneOf": true, "not": true}
 
 // lint fails on a schema keyword that validate does not evaluate.
 func lint(t *testing.T, where string, v any) {
@@ -193,10 +207,12 @@ func lint(t *testing.T, where string, v any) {
 			}
 		case k == "items" || k == "additionalProperties":
 			lint(t, where+"."+k, sub)
-		case k == "allOf":
+		case k == "allOf" || k == "oneOf":
 			for _, e := range sub.([]any) {
-				lint(t, where+".allOf", e)
+				lint(t, where+"."+k, e)
 			}
+		case k == "not":
+			lint(t, where+".not", sub)
 		}
 	}
 }
@@ -322,7 +338,7 @@ func TestOpenAPIStructure(t *testing.T) {
 		}
 	}
 	sort.Strings(ops)
-	want := []string{"GET /health", "GET /openapi.json", "GET /v1/status", "POST /v1/decide", "POST /v1/decide/batch"}
+	want := []string{"GET /health", "GET /openapi.json", "GET /v1/status", "POST /v1/decide", "POST /v1/decide/batch", "POST /v1/states"}
 	if !reflect.DeepEqual(ops, want) {
 		t.Fatalf("operations = %v, want %v", ops, want)
 	}
@@ -412,8 +428,10 @@ func TestOpenAPISchemasMatchGoTypes(t *testing.T) {
 		optional []string // properties the contract relaxes versus the Go tag
 	}{
 		{"Question", reflect.TypeFor[api.Question](), nil},
-		{"DecideRequest", reflect.TypeFor[api.DecideRequest](), nil},
-		{"BatchItem", reflect.TypeFor[api.DecideRequest](), []string{"schema"}},
+		{"RegisterState", reflect.TypeFor[api.RegisterState](), nil},
+		{"StateReference", reflect.TypeFor[api.StateReference](), nil},
+		{"DecideRequest", reflect.TypeFor[api.DecideRequest](), []string{"state"}},
+		{"BatchItem", reflect.TypeFor[api.DecideRequest](), []string{"schema", "state"}},
 		{"Result", reflect.TypeFor[api.Result](), nil},
 		{"Timing", reflect.TypeFor[api.Timing](), nil},
 		{"DecideResponse", reflect.TypeFor[api.DecideResponse](), nil},

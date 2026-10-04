@@ -42,6 +42,7 @@ type Summary struct {
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 	StateBytes     int        `json:"state_bytes"`
+	StateRef       string     `json:"state_ref,omitempty"`
 	TokenCount     *int       `json:"token_count,omitempty"`
 	QuestionCount  int        `json:"question_count"`
 	ItemCount      int        `json:"item_count"`
@@ -141,6 +142,14 @@ func (r *Request) SetInput(input any, stateBytes, questions, items int) {
 	if r.entry.retained {
 		r.setInputLocked(data)
 	}
+}
+
+// SetStateRef records the effective immutable State identity, including inline States.
+func (r *Request) SetStateRef(ref string, stateBytes int) {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	r.entry.summary.StateRef = ref
+	r.entry.summary.StateBytes = stateBytes
 }
 
 // SetIdentity updates the execution identity when a named resident is
