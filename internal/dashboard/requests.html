@@ -113,6 +113,7 @@
       output.textContent = detail.output ? JSON.stringify(detail.output, null, 2) : (detail.error_class || "—");
       if (detail.content_limited) output.textContent = labels.limited + "\n" + output.textContent;
     }).catch(error => {
+      selected = "";
       empty.hidden = false;
       empty.textContent = error.message;
       meta.hidden = true;
