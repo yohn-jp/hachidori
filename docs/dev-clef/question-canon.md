@@ -6,7 +6,7 @@ Date: 2026-10-05
 
 Target: Windows CUDA, Clef-Flash W4A16, RTX 3060 12 GiB. The runtime build that served the run was not recorded.
 
-Related: [architecture.md §13](../architecture.md) (question design), #284 (duplicate Question IDs in same-State requests).
+Related: [architecture.md §13](../architecture.md) (question design), [state-canon-experiment.md](state-canon-experiment.md) (canon in State), #284 (duplicate Question IDs in same-State requests).
 
 ## Purpose
 
