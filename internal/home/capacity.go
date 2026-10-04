@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 )
 
 // CapacityProfilesFile is the operator-owned input and device-headroom
@@ -138,4 +140,49 @@ func (h Home) LoadCapacityProfiles() (CapacityProfiles, error) {
 		return CapacityProfiles{}, err
 	}
 	return ps, nil
+}
+
+
+// SaveCapacityProfile atomically upserts one exact-target capacity profile.
+// A missing profile document is initialized. Existing profiles for every other
+// target are preserved; replacing a target never broadens its identity.
+func (h Home) SaveCapacityProfile(profile CapacityProfile) error {
+	if err := profile.Validate(); err != nil {
+		return err
+	}
+	ps, err := h.LoadCapacityProfiles()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		ps = CapacityProfiles{Schema: CapacityProfilesSchema, Profiles: []CapacityProfile{}}
+	}
+	replaced := false
+	for i := range ps.Profiles {
+		if ps.Profiles[i].CapacityTarget == profile.CapacityTarget {
+			ps.Profiles[i] = profile
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		ps.Profiles = append(ps.Profiles, profile)
+	}
+	sort.Slice(ps.Profiles, func(i, j int) bool {
+		a, b := ps.Profiles[i].CapacityTarget, ps.Profiles[j].CapacityTarget
+		ak := a.Runtime + "\x00" + a.ModelID + "\x00" + a.Provider + "\x00" + a.Repo + "\x00" + a.Revision + "\x00" + a.SourceFilesSHA256 + "\x00" + a.Device + "\x00" + a.DType + "\x00" + a.VariantID
+		bk := b.Runtime + "\x00" + b.ModelID + "\x00" + b.Provider + "\x00" + b.Repo + "\x00" + b.Revision + "\x00" + b.SourceFilesSHA256 + "\x00" + b.Device + "\x00" + b.DType + "\x00" + b.VariantID
+		return ak < bk
+	})
+	if err := ps.Validate(); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(ps, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(h.Path("state"), 0o755); err != nil {
+		return err
+	}
+	return WriteFileAtomic(filepath.Join(h.Path("state"), CapacityProfilesFile), append(b, '\n'), 0o600)
 }
