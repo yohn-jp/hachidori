@@ -3,5 +3,9 @@
     "candidate-identity",
     "diagnostics-bundle-schema-identity",
     "diagnostics-bundle-secrecy"
-  ]
+  ],
+  "dependencies": {
+    "diagnostics-bundle-schema-identity": ["candidate-identity"],
+    "diagnostics-bundle-secrecy": ["candidate-identity"]
+  }
 }

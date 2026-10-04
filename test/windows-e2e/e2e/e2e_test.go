@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -118,6 +119,7 @@ func TestAssembleFailsClosed(t *testing.T) {
 	cases := map[string]Result{
 		"missing": Assemble("update", c, []string{"candidate-identity", "other"}, []ScenarioResult{pass}, nil, nil, now, now),
 		"skipped": Assemble("update", c, []string{"candidate-identity"}, []ScenarioResult{{ID: "candidate-identity", Outcome: OutcomeSkip}}, nil, nil, now, now),
+		"blocked": Assemble("update", c, []string{"candidate-identity"}, []ScenarioResult{{ID: "candidate-identity", Outcome: OutcomeBlocked, Blocked: &BlockedInfo{Reason: BlockReasonPrerequisiteNotPassed, Dependencies: []ScenarioDependency{{Kind: DependencyScenario, ID: "other", Outcome: OutcomeFail}}}}}, nil, nil, now, now),
 		"failed":  Assemble("update", c, []string{"candidate-identity"}, []ScenarioResult{{ID: "candidate-identity", Outcome: OutcomeFail}}, nil, nil, now, now),
 		"problem": Assemble("update", c, []string{"candidate-identity"}, []ScenarioResult{pass}, nil, []string{"candidate identity: boom"}, now, now),
 		"none":    Assemble("update", c, nil, []ScenarioResult{pass}, nil, nil, now, now),
@@ -139,18 +141,30 @@ func TestLoadRequired(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(`{"scenarios":["candidate-identity","runtime-ready"]}`)
+	write(`{"scenarios":["candidate-identity","runtime-ready"],"dependencies":{"runtime-ready":["candidate-identity"]}}`)
+	plan, err := LoadRequiredPlan(dir)
+	if err != nil || len(plan.Scenarios) != 2 || len(plan.Dependencies["runtime-ready"]) != 1 {
+		t.Fatalf("LoadRequiredPlan = %+v, %v", plan, err)
+	}
 	got, err := LoadRequired(dir)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("LoadRequired = %v, %v", got, err)
 	}
-	write(`{"scenarios":["Bad_ID"]}`)
-	if _, err := LoadRequired(dir); err == nil {
-		t.Fatal("a non kebab-case id must be rejected")
-	}
-	write(`{"scenarios":["a","a"]}`)
-	if _, err := LoadRequired(dir); err == nil {
-		t.Fatal("a duplicate id must be rejected")
+	for name, doc := range map[string]string{
+		"bad id":                `{"scenarios":["Bad_ID"]}`,
+		"duplicate id":          `{"scenarios":["a","a"]}`,
+		"unlisted dependency":   `{"scenarios":["a"],"dependencies":{"a":["missing"]}}`,
+		"dependency cycle":      `{"scenarios":["a","b"],"dependencies":{"a":["b"],"b":["a"]}}`,
+		"unknown field":         `{"scenarios":["a"],"dependecies":{"a":["a"]}}`,
+		"too many dependencies": `{"scenarios":["a","b","c"],"dependencies":{"a":["b","c","b","c","b","c","b","c","b","c","b","c","b","c","b","c","b"]}}`,
+		"trailing JSON":         `{"scenarios":["a"]} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			write(doc)
+			if _, err := LoadRequiredPlan(dir); err == nil {
+				t.Fatalf("invalid plan %q must be rejected", name)
+			}
+		})
 	}
 }
 
@@ -197,6 +211,209 @@ func TestWriteResultLayout(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "runtime", "result.json")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestBlockedOutcomeSerializationAndValidation(t *testing.T) {
+	blocked := ScenarioResult{
+		ID:      "scenario-c",
+		Outcome: OutcomeBlocked,
+		Blocked: &BlockedInfo{
+			Reason: BlockReasonPrerequisiteNotPassed,
+			Dependencies: []ScenarioDependency{{
+				Kind: DependencyScenario, ID: "scenario-a", Outcome: OutcomeFail,
+			}},
+		},
+	}
+	result := Result{
+		Schema: ResultSchema, Shard: ShardRuntime, Status: OutcomeFail,
+		Required:  []string{"scenario-a", "scenario-c"},
+		Scenarios: []ScenarioResult{{ID: "scenario-a", Outcome: OutcomeFail}, blocked},
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Result
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateResult(decoded); err != nil {
+		t.Fatalf("valid BLOCKED result did not validate: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"reason":"prerequisite_not_passed"`) || !strings.Contains(string(encoded), `"outcome":"FAIL"`) {
+		t.Fatalf("serialized BLOCKED evidence is incomplete: %s", encoded)
+	}
+
+	cases := map[string]func(*Result){
+		"missing dependencies": func(r *Result) { r.Scenarios[1].Blocked = nil },
+		"PASS prerequisite": func(r *Result) {
+			r.Scenarios[1].Blocked.Dependencies[0].Outcome = OutcomePass
+		},
+		"unknown reason": func(r *Result) { r.Scenarios[1].Blocked.Reason = "payload-is-not-a-reason" },
+		"non-FAIL shard prerequisite": func(r *Result) {
+			r.Scenarios[1].Blocked = &BlockedInfo{Reason: BlockReasonShardPrerequisite, Dependencies: []ScenarioDependency{{Kind: DependencyShard, ID: "windows-runner", Outcome: OutcomeMissing}}}
+		},
+		"metadata on PASS": func(r *Result) {
+			r.Scenarios[0].Outcome = OutcomePass
+			r.Scenarios[0].Blocked = &BlockedInfo{Reason: BlockReasonPrerequisiteNotPassed, Dependencies: []ScenarioDependency{{Kind: DependencyScenario, ID: "scenario-c", Outcome: OutcomeFail}}}
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			var doc Result
+			if err := json.Unmarshal(encoded, &doc); err != nil {
+				t.Fatal(err)
+			}
+			mutate(&doc)
+			if err := ValidateResult(doc); err == nil {
+				t.Fatal("invalid BLOCKED evidence must be rejected")
+			}
+		})
+	}
+}
+
+func TestScenarioHarnessProcess(t *testing.T) {
+	resultDir := os.Getenv("HACHIDORI_SCENARIO_HARNESS_DIR")
+	if resultDir == "" {
+		return
+	}
+	t.Setenv(EnvEnable, "1")
+	rec = newRecorder()
+	state.plan = RequiredPlan{
+		Scenarios:    []string{"candidate-identity", "scenario-a", "scenario-b", "scenario-c"},
+		Dependencies: map[string][]string{"scenario-c": {"scenario-a"}},
+	}
+	rec.record(ScenarioResult{ID: "candidate-identity", Outcome: OutcomePass})
+
+	t.Run("scenario-a", func(t *testing.T) {
+		Begin(t, "scenario-a")
+		t.Error("injected scenario A failure")
+	})
+	independentExecuted := false
+	t.Run("scenario-b", func(t *testing.T) {
+		Begin(t, "scenario-b")
+		independentExecuted = true
+	})
+	dependentExecuted := false
+	t.Run("scenario-c", func(t *testing.T) {
+		Begin(t, "scenario-c")
+		dependentExecuted = true
+	})
+	if !independentExecuted {
+		t.Error("independent scenario B did not execute")
+	}
+	if dependentExecuted {
+		t.Error("dependent scenario C executed after prerequisite A failed")
+	}
+
+	now := time.Now()
+	result := Assemble(ShardRuntime, Candidate{}, state.plan.Scenarios, rec.results(), nil, nil, now, now)
+	if err := WriteResult(resultDir, result); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScenarioRunnerContinuesIndependentWorkAndAggregatesBlockedDependency(t *testing.T) {
+	harnessDir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestScenarioHarnessProcess$", "-test.count=1")
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, EnvEnable+"=") || strings.HasPrefix(entry, "HACHIDORI_SCENARIO_HARNESS_DIR=") {
+			continue
+		}
+		cmd.Env = append(cmd.Env, entry)
+	}
+	cmd.Env = append(cmd.Env, EnvEnable+"=1", "HACHIDORI_SCENARIO_HARNESS_DIR="+harnessDir)
+	output, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("the isolated shard harness must exit non-zero for scenario A's failure")
+	}
+
+	data, err := os.ReadFile(filepath.Join(harnessDir, ShardRuntime, "result.json"))
+	if err != nil {
+		t.Fatalf("scenario harness did not retain its result: %v\n%s", err, output)
+	}
+	var result Result
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newFixture(t)
+	fixture.writeRequired(t, ShardRuntime, `{"scenarios":["candidate-identity","scenario-a","scenario-b","scenario-c"],"dependencies":{"scenario-c":["scenario-a"]}}`)
+	result.Candidate = CandidateRef{SourceCommit: fixture.cand.SourceCommit, File: fixture.cand.File, SHA256: fixture.cand.SHA256, Size: fixture.cand.Size}
+	result.Run.ID = "42"
+	if result.Status != OutcomeFail || !hasOutcomeValue(result.Scenarios, "scenario-a", OutcomeFail) || !hasOutcomeValue(result.Scenarios, "scenario-b", OutcomePass) || !hasOutcomeValue(result.Scenarios, "scenario-c", OutcomeBlocked) {
+		t.Fatalf("shard result did not preserve FAIL + independent PASS + dependent BLOCKED: %+v", result)
+	}
+	if err := ValidateResult(result); err != nil {
+		t.Fatalf("shard result failed schema validation: %v", err)
+	}
+	artifactDir := filepath.Join(fixture.evidence, EvidenceDirPrefix+ShardRuntime)
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err = json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "result.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cert := Aggregate(fixture.input())
+	if cert.Status != OutcomeFail {
+		t.Fatalf("A FAIL and C BLOCKED must fail aggregate certification: %+v", cert)
+	}
+	if cert.Counts.Fail != 1 || cert.Counts.Blocked != 1 || cert.Counts.Pass != 12 || cert.Counts.Skip != 0 || cert.Counts.Missing != 0 {
+		t.Fatalf("unexpected aggregate outcome counts: %+v", cert.Counts)
+	}
+	markdown := cert.Markdown()
+	for _, point := range []string{"| 12 | 1 | 1 | 0 | 0 |", "#### runtime", "scenario `scenario-a`: **FAIL**", "scenario `scenario-c`: **BLOCKED**"} {
+		if !strings.Contains(markdown, point) {
+			t.Errorf("aggregate summary omitted %q:\n%s", point, markdown)
+		}
+	}
+	if strings.Contains(markdown, "scenario `scenario-b`:") {
+		t.Errorf("passing independent scenario B must not be reported as a problem:\n%s", markdown)
+	}
+}
+
+func TestPreflightFailuresProduceExplicitOutcomes(t *testing.T) {
+	plan := RequiredPlan{
+		Scenarios:    []string{"candidate-identity", "independent"},
+		Dependencies: map[string][]string{"independent": {"candidate-identity"}},
+	}
+	candidateFailure := Assemble(ShardRuntime, Candidate{}, plan.Scenarios, preflightOutcomes(plan, true, false), nil, []string{"candidate identity failed"}, time.Now(), time.Now())
+	if candidateFailure.Status != OutcomeFail || !hasOutcomeValue(candidateFailure.Scenarios, "candidate-identity", OutcomeFail) || !hasOutcomeValue(candidateFailure.Scenarios, "independent", OutcomeBlocked) {
+		t.Fatalf("candidate failure must be visible and block its dependent: %+v", candidateFailure)
+	}
+	if err := ValidateResult(candidateFailure); err != nil {
+		t.Fatalf("candidate preflight result is invalid: %v", err)
+	}
+
+	windowsFailure := Assemble(ShardRuntime, Candidate{}, plan.Scenarios, preflightOutcomes(plan, false, true), nil, []string{"wrong runner"}, time.Now(), time.Now())
+	if windowsFailure.Status != OutcomeFail || !hasOutcomeValue(windowsFailure.Scenarios, "candidate-identity", OutcomeBlocked) || !hasOutcomeValue(windowsFailure.Scenarios, "independent", OutcomeBlocked) {
+		t.Fatalf("shard-wide runner failure must make all required loss visible: %+v", windowsFailure)
+	}
+	if err := ValidateResult(windowsFailure); err != nil {
+		t.Fatalf("runner preflight result is invalid: %v", err)
+	}
+}
+
+func hasOutcomeValue(scenarios []ScenarioResult, id, outcome string) bool {
+	for _, scenario := range scenarios {
+		if scenario.ID == id {
+			return scenario.Outcome == outcome
+		}
+	}
+	return false
+}
+
+func hasOutcome(scenarios []ScenarioResult, id string) bool {
+	for _, scenario := range scenarios {
+		if scenario.ID == id {
+			return scenario.Outcome != ""
+		}
+	}
+	return false
 }
 
 func TestShardsAreTheSixProofBoundaries(t *testing.T) {

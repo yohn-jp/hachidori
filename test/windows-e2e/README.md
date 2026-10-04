@@ -50,17 +50,25 @@ One shard is one proof boundary: `bootstrap`, `runtime`, `recovery`,
 
 A shard package contains:
 
-- `required.json`: `{"scenarios": ["candidate-identity", ...]}`, the scenario
-  IDs (lower-case kebab-case) that must pass for the shard to pass. A required
-  scenario that did not run, was skipped or failed fails the shard.
+- `required.json`: `{"scenarios": ["candidate-identity", ...]}` lists the
+  required scenario IDs (lower-case kebab-case). Its optional `dependencies`
+  object maps a scenario ID to required prerequisite IDs; it does not add
+  scenarios. A dependent scenario runs only after every prerequisite records
+  `PASS`. A prerequisite that failed, was blocked, skipped or is missing makes
+  the dependent scenario `BLOCKED` without executing its body.
 - `e2e_test.go` with `func TestMain(m *testing.M) { os.Exit(e2e.Main(m, e2e.Shard...)) }`
   and tests that start with `s := e2e.Begin(t, "<scenario-id>")`.
 
 `e2e.Main` is the only place that decides certification mode
 (`HACHIDORI_WINDOWS_E2E=1`). Outside it (a plain `go test ./...` in normal CI)
 the scenarios skip, so normal CI runs only the portable helper tests. In
-certification mode it requires Windows, verifies the candidate, runs the tests
-and always writes `result.json`, then exits non-zero unless the shard passed.
+certification mode it requires Windows, verifies the candidate, runs every
+scenario whose prerequisites passed, and always writes `result.json`. A test
+failure does not stop unrelated Go tests; declared dependents are recorded as
+`BLOCKED`. A shard-wide preflight failure records required scenarios as
+`BLOCKED` (or candidate identity as `FAIL` when candidate verification itself
+failed) where the required plan can be read. The shard exits non-zero unless
+every required scenario passed.
 
 Scenarios synchronize on observable state (ready/endpoint/pid/persisted-file
 conditions with a bounded deadline), never on a fixed sleep. They use
@@ -87,12 +95,15 @@ them failed or was cancelled (`if: always()`), and calls
   to this workflow run, is `CI_HOSTED` with `physical_pass: false`, and lists as
   required exactly the scenarios in the repository's `required.json` (which must
   contain `candidate-identity`),
-- every required scenario is `PASS` in the result.
+- every required scenario has a valid `PASS`, `FAIL`, `BLOCKED`, `SKIP`, or
+  `MISSING` outcome, and only `PASS` satisfies certification.
 
-It always writes `certification.json` (`hachidori.windows-e2e.certification/v1`:
-status, candidate identity, per-shard verdicts, problems, `physical_checks:
-NOT_CHECKED`) and `certification.md` (appended to the job summary) and uploads
-them as the artifact `windows-e2e-certification`, for passing and failing runs.
+It always writes `certification.json` (`hachidori.windows-e2e.certification/v2`:
+status, candidate identity, per-shard scenario outcomes, stable outcome counts,
+problems, `physical_checks: NOT_CHECKED`) and `certification.md` (appended to
+the job summary) and uploads them as the artifact `windows-e2e-certification`,
+for passing and failing runs. The summary counts `PASS`, `FAIL`, `BLOCKED`,
+`SKIP`, and `MISSING`, and groups every non-PASS scenario by shard.
 
 The `release` job needs `candidate` and `aggregate` with the implicit
 `success()` and runs only for a `push` to `main`. It downloads the certified
@@ -111,11 +122,12 @@ commit gets no development release. `release.yml` keeps only the
 Each shard retains, under `evidence/<shard>/`, and uploads as the artifact
 `windows-e2e-evidence-<shard>` also when the shard fails:
 
-- `result.json` (`hachidori.windows-e2e.result/v1`): shard, `PASS`/`FAIL`
+- `result.json` (`hachidori.windows-e2e.result/v2`): shard, `PASS`/`FAIL`
   status, `evidence_class` `CI_HOSTED`, `physical_pass` always `false`, the
   candidate identity (commit, file, SHA-256, size), runner and run identity,
-  the required scenario IDs, every scenario outcome (`PASS`, `FAIL`, `SKIP`,
-  `MISSING`) with a bounded log, problems and attachment names;
+  the required scenario IDs, every scenario outcome (`PASS`, `FAIL`, `BLOCKED`,
+  `SKIP`, `MISSING`) with a bounded log, structured bounded prerequisite
+  identities/reason codes for `BLOCKED`, problems and attachment names;
 - `logs/*`: scenario attachments from `Scenario.Attach`;
 - `go-test.log`: the last 2000 lines of the shard's `go test -v` output.
 

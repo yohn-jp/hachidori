@@ -45,7 +45,7 @@ const (
 // Schema identifiers of the two documents this package defines.
 const (
 	CandidateSchema = "hachidori.windows-e2e.candidate/v1"
-	ResultSchema    = "hachidori.windows-e2e.result/v1"
+	ResultSchema    = "hachidori.windows-e2e.result/v2"
 )
 
 // ManifestName is the candidate manifest's file name inside the candidate

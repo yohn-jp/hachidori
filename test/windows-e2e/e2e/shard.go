@@ -15,6 +15,7 @@ var state struct {
 	shard       string
 	candidate   Candidate
 	evidenceDir string
+	plan        RequiredPlan
 }
 
 // Main is the TestMain body of every shard package:
@@ -33,8 +34,9 @@ func Main(m *testing.M, shard string) int {
 	started := time.Now()
 	var problems []string
 	var c Candidate
-
-	if runtime.GOOS != "windows" {
+	candidateFailure := false
+	windowsFailure := runtime.GOOS != "windows"
+	if windowsFailure {
 		problems = append(problems, "certification mode requires GOOS=windows, got "+runtime.GOOS)
 	}
 	evidenceDir := os.Getenv(EnvEvidenceDir)
@@ -42,21 +44,24 @@ func Main(m *testing.M, shard string) int {
 		fmt.Fprintf(os.Stderr, "e2e: %s is not set\n", EnvEvidenceDir)
 		return 2
 	}
-	required, err := LoadRequired(".")
+	plan, err := LoadRequiredPlan(".")
 	if err != nil {
 		problems = append(problems, "required scenarios: "+err.Error())
 	}
 	if dir := os.Getenv(EnvCandidateDir); dir == "" {
+		candidateFailure = true
 		problems = append(problems, EnvCandidateDir+" is not set")
 	} else if exp := ExpectFromEnv(); exp.SHA256 == "" || exp.SourceCommit == "" {
+		candidateFailure = true
 		problems = append(problems, EnvExpectedSHA256+" and "+EnvExpectedCommit+" must both be set; the candidate identity is verified against values passed outside the artifact")
 	} else if c, err = LoadCandidate(dir, exp); err != nil {
+		candidateFailure = true
 		problems = append(problems, "candidate identity: "+err.Error())
 	}
 
 	code := 0
 	if len(problems) == 0 {
-		state.shard, state.candidate, state.evidenceDir = shard, c, evidenceDir
+		state.shard, state.candidate, state.evidenceDir, state.plan = shard, c, evidenceDir, plan
 		code = m.Run()
 	}
 
@@ -66,7 +71,10 @@ func Main(m *testing.M, shard string) int {
 		scenarios = append(scenarios, *s)
 	}
 	rec.mu.Unlock()
-	res := Assemble(shard, c, required, scenarios, rec.attachmentList(), problems, started, time.Now())
+	if len(problems) > 0 && len(plan.Scenarios) > 0 {
+		scenarios = preflightOutcomes(plan, candidateFailure, windowsFailure)
+	}
+	res := Assemble(shard, c, plan.Scenarios, scenarios, rec.attachmentList(), problems, started, time.Now())
 	if code != 0 && res.Status == OutcomePass {
 		res.Status = OutcomeFail
 		res.Problems = append(res.Problems, "test binary exited non-zero")
@@ -84,18 +92,45 @@ func Main(m *testing.M, shard string) int {
 	return 0
 }
 
+func preflightOutcomes(plan RequiredPlan, candidateFailure, windowsFailure bool) []ScenarioResult {
+	results := make([]ScenarioResult, 0, len(plan.Scenarios))
+	for _, id := range plan.Scenarios {
+		if candidateFailure && id == "candidate-identity" {
+			results = append(results, ScenarioResult{ID: id, Outcome: OutcomeFail})
+			continue
+		}
+		if !candidateFailure && !windowsFailure {
+			results = append(results, ScenarioResult{ID: id, Outcome: OutcomeMissing})
+			continue
+		}
+		dependency := ScenarioDependency{Kind: DependencyShard, ID: "windows-runner", Outcome: OutcomeFail}
+		reason := BlockReasonShardPrerequisite
+		if candidateFailure {
+			dependency = ScenarioDependency{Kind: DependencyScenario, ID: "candidate-identity", Outcome: OutcomeFail}
+			reason = BlockReasonPrerequisiteNotPassed
+		}
+		results = append(results, ScenarioResult{
+			ID:      id,
+			Outcome: OutcomeBlocked,
+			Blocked: &BlockedInfo{Reason: reason, Dependencies: []ScenarioDependency{dependency}},
+		})
+	}
+	return results
+}
+
 // Scenario is one named certification scenario of a shard.
 type Scenario struct {
-	t     *testing.T
-	id    string
-	log   []string
-	start time.Time
+	t       *testing.T
+	id      string
+	log     []string
+	blocked *BlockedInfo
+	start   time.Time
 }
 
 // Begin starts the scenario id (lower-case kebab-case, listed in the shard's
-// required.json). In portable mode it skips the test. Its outcome is recorded
-// when the test ends: a failed test is FAIL, a skipped test is SKIP (which does
-// not satisfy a required scenario) and anything else is PASS.
+// required.json). In portable mode it skips the test. A declared prerequisite
+// that did not PASS blocks this scenario without executing its body. Its final
+// outcome is recorded when the test ends.
 func Begin(t *testing.T, id string) *Scenario {
 	t.Helper()
 	if !Enabled() {
@@ -105,13 +140,32 @@ func Begin(t *testing.T, id string) *Scenario {
 		t.Fatalf("scenario id %q is not lower-case kebab-case", id)
 	}
 	s := &Scenario{t: t, id: id, start: time.Now()}
+	for _, prerequisite := range state.plan.Dependencies[id] {
+		outcome, found := rec.outcome(prerequisite)
+		if !found {
+			outcome = OutcomeMissing
+		}
+		if outcome != OutcomePass {
+			if s.blocked == nil {
+				s.blocked = &BlockedInfo{Reason: BlockReasonPrerequisiteNotPassed}
+			}
+			s.blocked.Dependencies = append(s.blocked.Dependencies, ScenarioDependency{
+				Kind: DependencyScenario, ID: prerequisite, Outcome: outcome,
+			})
+		}
+	}
 	t.Cleanup(s.finish)
+	if s.blocked != nil {
+		t.Skip("scenario blocked by a prerequisite that did not PASS")
+	}
 	return s
 }
 
 func (s *Scenario) finish() {
 	outcome := OutcomePass
 	switch {
+	case s.blocked != nil:
+		outcome = OutcomeBlocked
 	case s.t.Failed():
 		outcome = OutcomeFail
 	case s.t.Skipped():
@@ -122,6 +176,7 @@ func (s *Scenario) finish() {
 		Outcome:    outcome,
 		DurationMS: time.Since(s.start).Milliseconds(),
 		Log:        s.log,
+		Blocked:    s.blocked,
 	})
 }
 

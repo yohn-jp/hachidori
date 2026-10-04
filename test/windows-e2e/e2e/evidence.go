@@ -1,9 +1,11 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -42,8 +44,19 @@ var Shards = []string{
 const (
 	OutcomePass    = "PASS"
 	OutcomeFail    = "FAIL"
+	OutcomeBlocked = "BLOCKED"
 	OutcomeSkip    = "SKIP"
 	OutcomeMissing = "MISSING"
+)
+
+const (
+	BlockReasonPrerequisiteNotPassed = "prerequisite_not_passed"
+	BlockReasonShardPrerequisite     = "shard_prerequisite_failed"
+
+	DependencyScenario = "scenario"
+	DependencyShard    = "shard"
+
+	MaxScenarioDependencies = 16
 )
 
 // Evidence classification. Hosted-runner evidence is CI evidence only.
@@ -61,12 +74,28 @@ const requiredFile = "required.json"
 
 var scenarioID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+// ScenarioDependency identifies the failed prerequisite that blocked a
+// scenario. Scenario dependencies name another required scenario; shard
+// dependencies name a bounded shard-wide precondition.
+type ScenarioDependency struct {
+	Kind    string `json:"kind"`
+	ID      string `json:"id"`
+	Outcome string `json:"outcome"`
+}
+
+// BlockedInfo is bounded machine-readable evidence for a BLOCKED outcome.
+type BlockedInfo struct {
+	Reason       string               `json:"reason"`
+	Dependencies []ScenarioDependency `json:"dependencies"`
+}
+
 // ScenarioResult is one scenario's outcome inside a shard result.
 type ScenarioResult struct {
-	ID         string   `json:"id"`
-	Outcome    string   `json:"outcome"`
-	DurationMS int64    `json:"duration_ms"`
-	Log        []string `json:"log,omitempty"`
+	ID         string       `json:"id"`
+	Outcome    string       `json:"outcome"`
+	DurationMS int64        `json:"duration_ms"`
+	Log        []string     `json:"log,omitempty"`
+	Blocked    *BlockedInfo `json:"blocked,omitempty"`
 }
 
 // CandidateRef is the candidate identity recorded in every result.
@@ -108,7 +137,11 @@ type recorder struct {
 	started   time.Time
 }
 
-var rec = &recorder{scenarios: map[string]*ScenarioResult{}, names: map[string]int{}, started: time.Now().UTC()}
+var rec = newRecorder()
+
+func newRecorder() *recorder {
+	return &recorder{scenarios: map[string]*ScenarioResult{}, names: map[string]int{}, started: time.Now().UTC()}
+}
 
 func (r *recorder) record(s ScenarioResult) {
 	r.mu.Lock()
@@ -116,9 +149,29 @@ func (r *recorder) record(s ScenarioResult) {
 	r.scenarios[s.ID] = &s
 }
 
+func (r *recorder) outcome(id string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.scenarios[id]
+	if !ok {
+		return "", false
+	}
+	return s.Outcome, true
+}
+
+func (r *recorder) results() []ScenarioResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]ScenarioResult, 0, len(r.scenarios))
+	for _, scenario := range r.scenarios {
+		out = append(out, *scenario)
+	}
+	return out
+}
+
 // Assemble builds the shard result from recorded scenarios, the required
 // scenario list and any process-level problem. A required scenario that did not
-// pass (absent, skipped or failed) fails the shard.
+// pass (absent, skipped, failed or blocked) fails the shard.
 func Assemble(shard string, c Candidate, required []string, scenarios []ScenarioResult, attachments, problems []string, started, finished time.Time) Result {
 	res := Result{
 		Schema:        ResultSchema,
@@ -141,9 +194,6 @@ func Assemble(shard string, c Candidate, required []string, scenarios []Scenario
 		if s.Outcome != OutcomePass && isRequired(required, s.ID) {
 			res.Problems = append(res.Problems, fmt.Sprintf("required scenario %q: %s", s.ID, s.Outcome))
 		}
-		if s.Outcome == OutcomeFail {
-			res.Problems = append(res.Problems, fmt.Sprintf("scenario %q failed", s.ID))
-		}
 	}
 	for _, id := range required {
 		if !seen[id] {
@@ -153,6 +203,7 @@ func Assemble(shard string, c Candidate, required []string, scenarios []Scenario
 	}
 	sort.Slice(res.Scenarios, func(i, j int) bool { return res.Scenarios[i].ID < res.Scenarios[j].ID })
 	res.Problems = dedupe(res.Problems)
+	sort.Strings(res.Problems)
 	res.Status = OutcomePass
 	if len(res.Problems) > 0 || len(required) == 0 {
 		res.Status = OutcomeFail
@@ -184,30 +235,102 @@ func dedupe(in []string) []string {
 	return out
 }
 
-// LoadRequired reads the shard's required.json (a JSON object with a
-// "scenarios" array of scenario ids) from dir.
-func LoadRequired(dir string) ([]string, error) {
+// RequiredPlan is the authoritative required scenario list plus optional
+// dependency metadata. Dependencies never define additional scenarios.
+type RequiredPlan struct {
+	Scenarios    []string            `json:"scenarios"`
+	Dependencies map[string][]string `json:"dependencies,omitempty"`
+}
+
+// LoadRequiredPlan reads required.json and validates its required scenarios
+// and optional scenario-to-prerequisite mapping.
+func LoadRequiredPlan(dir string) (RequiredPlan, error) {
 	data, err := os.ReadFile(filepath.Join(dir, requiredFile))
 	if err != nil {
-		return nil, err
+		return RequiredPlan{}, err
 	}
-	var doc struct {
-		Scenarios []string `json:"scenarios"`
+	var plan RequiredPlan
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&plan); err != nil {
+		return RequiredPlan{}, fmt.Errorf("parse %s: %w", requiredFile, err)
 	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", requiredFile, err)
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return RequiredPlan{}, fmt.Errorf("parse %s: trailing JSON content", requiredFile)
 	}
 	seen := map[string]bool{}
-	for _, id := range doc.Scenarios {
+	for _, id := range plan.Scenarios {
 		if !scenarioID.MatchString(id) {
-			return nil, fmt.Errorf("%s: scenario id %q is not lower-case kebab-case", requiredFile, id)
+			return RequiredPlan{}, fmt.Errorf("%s: scenario id %q is not lower-case kebab-case", requiredFile, id)
 		}
 		if seen[id] {
-			return nil, fmt.Errorf("%s: duplicate scenario id %q", requiredFile, id)
+			return RequiredPlan{}, fmt.Errorf("%s: duplicate scenario id %q", requiredFile, id)
 		}
 		seen[id] = true
 	}
-	return doc.Scenarios, nil
+	for id, dependencies := range plan.Dependencies {
+		if !seen[id] {
+			return RequiredPlan{}, fmt.Errorf("%s: dependency target %q is not a required scenario", requiredFile, id)
+		}
+		if len(dependencies) == 0 || len(dependencies) > MaxScenarioDependencies {
+			return RequiredPlan{}, fmt.Errorf("%s: scenario %q must declare 1..%d dependencies", requiredFile, id, MaxScenarioDependencies)
+		}
+		dependencySeen := map[string]bool{}
+		for _, dependency := range dependencies {
+			if !scenarioID.MatchString(dependency) || !seen[dependency] {
+				return RequiredPlan{}, fmt.Errorf("%s: scenario %q has invalid or non-required dependency %q", requiredFile, id, dependency)
+			}
+			if dependency == id || dependencySeen[dependency] {
+				return RequiredPlan{}, fmt.Errorf("%s: scenario %q has a self or duplicate dependency %q", requiredFile, id, dependency)
+			}
+			dependencySeen[dependency] = true
+		}
+	}
+	if err := validateDependencyCycles(plan.Dependencies); err != nil {
+		return RequiredPlan{}, fmt.Errorf("%s: %w", requiredFile, err)
+	}
+	return plan, nil
+}
+
+// LoadRequired reads only the authoritative required scenario IDs from dir.
+func LoadRequired(dir string) ([]string, error) {
+	plan, err := LoadRequiredPlan(dir)
+	if err != nil {
+		return nil, err
+	}
+	return plan.Scenarios, nil
+}
+
+func validateDependencyCycles(dependencies map[string][]string) error {
+	const (
+		visiting = iota + 1
+		visited
+	)
+	states := map[string]int{}
+	var visit func(string) error
+	visit = func(id string) error {
+		if states[id] == visiting {
+			return fmt.Errorf("scenario dependency cycle includes %q", id)
+		}
+		if states[id] == visited {
+			return nil
+		}
+		states[id] = visiting
+		for _, dependency := range dependencies[id] {
+			if err := visit(dependency); err != nil {
+				return err
+			}
+		}
+		states[id] = visited
+		return nil
+	}
+	for id := range dependencies {
+		if err := visit(id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WriteResult writes <evidenceDir>/<shard>/result.json.

@@ -4,5 +4,10 @@
     "single-instance-concurrent-launch",
     "single-instance-second-launch",
     "single-instance-guard-released"
-  ]
+  ],
+  "dependencies": {
+    "single-instance-concurrent-launch": ["candidate-identity"],
+    "single-instance-second-launch": ["candidate-identity"],
+    "single-instance-guard-released": ["candidate-identity"]
+  }
 }

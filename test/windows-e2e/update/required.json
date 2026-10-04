@@ -8,5 +8,14 @@
     "update-network-failure-bounded",
     "update-replace-restart",
     "update-file-lock-keeps-previous"
-  ]
+  ],
+  "dependencies": {
+    "update-check-download-progress": ["candidate-identity"],
+    "update-no-network-on-open": ["candidate-identity"],
+    "update-single-check-flight": ["candidate-identity"],
+    "update-corruption-rejected": ["candidate-identity"],
+    "update-network-failure-bounded": ["candidate-identity"],
+    "update-replace-restart": ["candidate-identity"],
+    "update-file-lock-keeps-previous": ["candidate-identity"]
+  }
 }

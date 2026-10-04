@@ -13,7 +13,3 @@ func TestMain(m *testing.M) {
 	desktopkit.MaybeRunStub()
 	os.Exit(e2e.Main(m, e2e.ShardBootstrap))
 }
-
-// TestCandidateIdentity is the shard's shared precondition: it certifies the
-// exact candidate bytes the workflow built once.
-func TestCandidateIdentity(t *testing.T) { e2e.VerifyCandidateScenario(t) }
