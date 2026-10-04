@@ -10,7 +10,7 @@ import (
 func capacityTarget(device, variant string) CapacityTarget {
 	return CapacityTarget{Runtime: "cu128-test", ModelID: "clef-flash", Provider: ProviderClef,
 		Repo: "Cloudflare/clef-flash", Revision: "17f0b0ad", SourceFilesSHA256: strings.Repeat("a", 64),
-		Device: device, VariantID: variant}
+		Device: device, DType: "bfloat16", VariantID: variant}
 }
 
 func capacityProfile(device, variant string) CapacityProfile {
@@ -32,6 +32,7 @@ func TestCapacityProfilesRequireExactTargetAndPositiveDeclaredLimits(t *testing.
 		t.Fatalf("exact profile = %+v, %v", got, ok)
 	}
 	for name, target := range map[string]CapacityTarget{
+		"dtype":    func() CapacityTarget { x := capacityTarget("cuda", "variant-a"); x.DType = "float32"; return x }(),
 		"runtime":  func() CapacityTarget { x := capacityTarget("cuda", "variant-a"); x.Runtime += "-other"; return x }(),
 		"model":    func() CapacityTarget { x := capacityTarget("cuda", "variant-a"); x.ModelID += "-other"; return x }(),
 		"provider": func() CapacityTarget { x := capacityTarget("cuda", "variant-a"); x.Provider = "laya"; return x }(),

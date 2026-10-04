@@ -16,6 +16,7 @@ def provider(profile=None):
     p = Clef.__new__(Clef)
     p.capacity_profile = profile
     p.requested = 'cpu'
+    p.want_dtype = 'bfloat16'
     p.tokenizer = object()
     p.sync = lambda: None
     p.calls = []
@@ -32,7 +33,7 @@ def provider(profile=None):
 
 
 def profile(**overrides):
-    x = dict(max_state_tokens=8, max_input_tokens=10, max_batch_items=2,
+    x = dict(dtype='bfloat16', max_state_tokens=8, max_input_tokens=10, max_batch_items=2,
              max_batch_padded_tokens=20, required_gpu_headroom_bytes=100)
     x.update(overrides)
     return x

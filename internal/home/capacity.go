@@ -26,6 +26,7 @@ type CapacityTarget struct {
 	Revision          string `json:"revision"`
 	SourceFilesSHA256 string `json:"source_files_sha256"`
 	Device            string `json:"device"`
+	DType             string `json:"dtype"`
 	VariantID         string `json:"variant_id,omitempty"`
 }
 
@@ -58,6 +59,9 @@ func (p CapacityProfile) Validate() error {
 	if t.Runtime == "" || t.ModelID == "" || t.Provider == "" || t.Repo == "" || t.Revision == "" ||
 		t.SourceFilesSHA256 == "" || (t.Device != "cpu" && t.Device != "cuda") {
 		return errors.New("capacity profile target must name runtime, model, provider, source revision, source digest and cpu or cuda device")
+	}
+	if t.DType != "bfloat16" && t.DType != "float32" {
+		return errors.New("capacity profile must name the Clef serving dtype")
 	}
 	if p.MaxStateTokens <= 0 || p.MaxInputTokens <= 0 || p.MaxBatchItems <= 0 || p.MaxBatchPaddedTokens <= 0 {
 		return errors.New("capacity profile token and batch limits must be positive")

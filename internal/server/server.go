@@ -585,7 +585,7 @@ func workerConfigFor(h home.Home, a home.Active, rm home.RuntimeManifest, mm hom
 		args = append(args, "--dtype", dtype)
 	}
 	if model.Provider == "clef" {
-		profile, profileErr := resolveCapacityProfile(h, a, rm, model, mm, variant)
+		profile, profileErr := resolveCapacityProfile(h, a, rm, model, mm, variant, dtype)
 		if profileErr != "" {
 			args = append(args, "--capacity-profile-error", profileErr)
 		} else if profile != nil {

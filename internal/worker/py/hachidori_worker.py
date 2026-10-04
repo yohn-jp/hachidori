@@ -1273,6 +1273,8 @@ class ClefProvider(Provider):
 
     def check_capacity_readiness(self):
         profile = getattr(self, "capacity_profile", None)
+        if profile and profile["dtype"] != self.want_dtype:
+            fatal("capacity", "capacity profile dtype does not match loaded execution dtype")
         if self.requested == "cuda" and not profile:
             fatal("capacity", "capacity_profile: " + getattr(self, "capacity_profile_error", "missing"))
         if profile and profile["max_input_tokens"] > CLEF_MAX_LENGTH:
@@ -1506,6 +1508,8 @@ def main():
     if args.provider == "clef":
         provider.capacity_profile = json.loads(args.capacity_profile) if args.capacity_profile else None
         provider.capacity_profile_error = args.capacity_profile_error or "missing"
+    if args.provider == "clef" and args.device == "cuda" and not provider.capacity_profile:
+        fatal("capacity", "capacity_profile: " + provider.capacity_profile_error)
     provider.initialize()
     provider.warmup()
     emit({"event": "ready", "info": provider.info()})
