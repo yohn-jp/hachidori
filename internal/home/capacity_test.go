@@ -107,3 +107,55 @@ func TestLoadCapacityProfilesRejectsUnknownAndTrailingFields(t *testing.T) {
 		})
 	}
 }
+
+func TestSaveCapacityProfileInitializesUpsertsAndPreservesOtherTargets(t *testing.T) {
+	h := Home{Root: t.TempDir()}
+	first := capacityProfile("cuda", "variant-a")
+	if err := h.SaveCapacityProfile(first); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.LoadCapacityProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Profiles) != 1 || got.Profiles[0] != first {
+		t.Fatalf("profiles = %+v", got.Profiles)
+	}
+
+	other := capacityProfile("cuda", "variant-b")
+	other.MaxInputTokens = 300
+	other.MaxBatchPaddedTokens = 1200
+	if err := h.SaveCapacityProfile(other); err != nil {
+		t.Fatal(err)
+	}
+	replacement := first
+	replacement.MaxStateTokens = 180
+	replacement.MaxInputTokens = 220
+	replacement.MaxBatchPaddedTokens = 880
+	replacement.RequiredGPUHeadroomBytes = 1234
+	if err := h.SaveCapacityProfile(replacement); err != nil {
+		t.Fatal(err)
+	}
+	got, err = h.LoadCapacityProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Profiles) != 2 {
+		t.Fatalf("profiles = %+v", got.Profiles)
+	}
+	if p, ok := got.Find(first.CapacityTarget); !ok || p != replacement {
+		t.Fatalf("replacement = %+v, %v", p, ok)
+	}
+	if p, ok := got.Find(other.CapacityTarget); !ok || p != other {
+		t.Fatalf("other = %+v, %v", p, ok)
+	}
+	fi, err := os.Stat(h.Path("state", CapacityProfilesFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Native Windows does not preserve POSIX permission bits. On platforms
+	// that do, the persisted operator contract is private to the account.
+	if os.PathSeparator != '\\' && fi.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("capacity profile permissions: %v", fi.Mode().Perm())
+	}
+}

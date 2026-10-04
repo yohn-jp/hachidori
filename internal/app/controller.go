@@ -134,6 +134,9 @@ type Maintenance struct {
 	// Probe loads a persisted variant in an isolated worker and asks one typed
 	// decision.
 	Probe func(ctx context.Context, root string, p ProbeParams, log io.Writer, obs *setup.Observer) (ProbeRecord, error)
+	// CalibrateCapacity measures and persists the strict CUDA capacity contract
+	// for an exact Clef variant before it is activated.
+	CalibrateCapacity func(ctx context.Context, root, variant, device string, log io.Writer) error
 	// Execute runs one exact-target execution session and records its
 	// evidence (RunExecution).
 	Execute func(ctx context.Context, root string, p ExecuteParams, log io.Writer) (ExecutionResult, error)
@@ -226,6 +229,11 @@ func (m Maintenance) withDefaults() Maintenance {
 	if m.Probe == nil {
 		m.Probe = func(ctx context.Context, root string, p ProbeParams, log io.Writer, obs *setup.Observer) (ProbeRecord, error) {
 			return Probe(ctx, home.Home{Root: root}, p, ProbeDeps{}, log, obs)
+		}
+	}
+	if m.CalibrateCapacity == nil {
+		m.CalibrateCapacity = func(ctx context.Context, root, variant, device string, log io.Writer) error {
+			return ensureVariantCapacity(ctx, home.Home{Root: root}, variant, device, log)
 		}
 	}
 	if m.Execute == nil {
