@@ -1526,6 +1526,7 @@ var ja = map[string]string{
 	"Repairing":              "修復中",
 	"Setting up":             "セットアップ中",
 }
+
 func init() {
 	ja["runtime behavior on this host"] = "このホストでのランタイム動作"
 	ja["Desktop startup preferences are owned by Settings. Diagnostics reports host behavior but does not change those preferences."] = "デスクトップの起動設定は設定画面で管理します。診断ではホストの動作を表示しますが、これらの設定は変更しません。"
