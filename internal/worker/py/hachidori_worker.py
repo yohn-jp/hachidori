@@ -17,6 +17,7 @@ Library output written to stdout (Laya prints warnings there) is redirected to s
 so the protocol channel carries protocol messages only.
 """
 import argparse
+import copy
 import functools
 import hashlib
 import inspect
@@ -1146,6 +1147,67 @@ def trial_dispatch(executor, op, req):
     raise ValueError("unknown trial op %r" % op)
 
 
+def _clef_tensor_bytes(value):
+    """Count unique tensor storages in the Clef continuation and hidden states."""
+    seen, storages = set(), set()
+    total = 0
+
+    def visit(obj):
+        nonlocal total
+        if id(obj) in seen:
+            return
+        seen.add(id(obj))
+        if hasattr(obj, "untyped_storage") and hasattr(obj, "device"):
+            storage = obj.untyped_storage()
+            key = (str(obj.device), storage.data_ptr())
+            if key not in storages:
+                storages.add(key)
+                total += storage.nbytes()
+        elif isinstance(obj, dict):
+            for item in obj.values():
+                visit(item)
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                visit(item)
+        elif hasattr(obj, "__dict__"):
+            for item in vars(obj).values():
+                visit(item)
+
+    visit(value)
+    return total
+
+
+class ClefResidentState:
+    """Completed Clef/Qwen3.5 continuation; the cache is never forwarded directly."""
+
+    __slots__ = ("_identity", "_prefix", "_cache", "_hidden", "_payload_bytes", "_sealed")
+
+    def __init__(self, identity, prefix, cache, hidden):
+        object.__setattr__(self, "_identity", identity)
+        object.__setattr__(self, "_prefix", tuple(prefix))
+        object.__setattr__(self, "_cache", cache)
+        object.__setattr__(self, "_hidden", hidden)
+        object.__setattr__(self, "_payload_bytes", _clef_tensor_bytes((cache, hidden)))
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_sealed", False):
+            raise AttributeError("resident State is immutable")
+        object.__setattr__(self, name, value)
+
+    @property
+    def identity(self):
+        return self._identity
+
+    @property
+    def payload_bytes(self):
+        return self._payload_bytes
+
+    @property
+    def prefix_tokens(self):
+        return len(self._prefix)
+
+
 class ClefProvider(Provider):
     """Clef System One (a Qwen3.5 backbone with the joint schema head). The upstream
     module joint_schema_model.py, imported from the digest-verified model directory,
@@ -1265,6 +1327,123 @@ class ClefProvider(Provider):
     def placed_dtype(self):
         return self.reference().dtype
 
+    def _resident_artifact(self):
+        """Restrict continuation to the physically validated CUDA artifact.
+
+        Runtime kernel evidence mutates its execution observation after first use;
+        identity must bind only immutable selection facts, never that mutable field.
+        """
+        files = self.variant.get("files", {}) if self.variant else self.digests
+        kernel_identity = {}
+        for name, entry in sorted(self.kernel_paths.items()):
+            if isinstance(entry, dict):
+                kernel_identity[name] = {
+                    key: entry.get(key)
+                    for key in ("selected", "availability", "implementation", "reason")
+                }
+            else:
+                kernel_identity[name] = entry
+        if (self.requested != "cuda" or self.want_dtype != "bfloat16" or
+                not self.variant or self.variant.get("id") !=
+                "clef-flash--clef-flash-w4a16-rtn-g128--6cdd68bf9677" or
+                self.torch.__version__ != "2.11.0+cu128" or
+                self.transformers.__version__ != "5.17.0" or
+                files.get("joint_schema_model.py") !=
+                "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3"):
+            raise RuntimeError("Clef continuation is not certified for this execution artifact")
+        facts = (files, self.variant, kernel_identity, self.want_dtype,
+                 self.requested, self.torch.__version__, self.transformers.__version__)
+        return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
+
+    def _resident_text_model(self):
+        base = (self.backbone.get_base_model() if hasattr(self.backbone, "get_base_model")
+                else self.backbone)
+        text = base.model
+        return text.language_model if hasattr(text, "language_model") else text
+
+    def _resident_record(self, state, questions):
+        record = self.jsm.encode_record(self.tokenizer, {"state": state, "questions": questions},
+                                        max_length=CLEF_MAX_LENGTH)
+        if record.media is not None:
+            raise ValueError("Clef resident State does not support media")
+        return record
+
+    def build_resident(self, state, questions):
+        """Construct a complete admitted State prefix, never a partial cache.
+
+        Capacity admission owns the no-silent-truncation contract. Two sentinel
+        States with the same Questions then locate the upstream encoder's fixed
+        pre-State boundary for the already-admitted full record.
+        """
+        artifact = self._resident_artifact()
+        record = self._encode_inputs([state], questions)[0]
+        empty = self._resident_record("", questions)
+        other = self._resident_record(0, questions)
+        limit = min(len(empty.input_ids), len(other.input_ids))
+        start = next((i for i in range(limit)
+                      if empty.input_ids[i] != other.input_ids[i]), limit)
+        empty_ids = self.jsm._tokens(self.tokenizer, self.jsm.render(""))
+        state_ids = self.jsm._tokens(self.tokenizer, self.jsm.render(state))
+        fixed = len(empty.input_ids) - len(empty_ids)
+        effective = len(record.input_ids) - fixed
+        boundary = start + effective
+        if (start == limit or start < 1 or effective < 0 or effective > len(state_ids) or
+                tuple(empty.input_ids[start:start + len(empty_ids)]) != tuple(empty_ids) or
+                tuple(record.input_ids[start:boundary]) != tuple(state_ids[:effective]) or
+                tuple(record.input_ids[boundary:]) != tuple(empty.input_ids[start + len(empty_ids):])):
+            raise ValueError("cannot establish exact effective Clef State prefix")
+        prefix = tuple(record.input_ids[:boundary])
+        identity = (artifact, hashlib.sha256(json.dumps(prefix).encode()).hexdigest())
+        torch = self.torch
+        cache, hidden = None, []
+        with torch.inference_mode():
+            for start in range(0, len(prefix), 512):
+                chunk = torch.tensor([prefix[start:start + 512]], dtype=torch.long,
+                                     device=self.reference().device)
+                outputs = self._resident_text_model()(input_ids=chunk, past_key_values=cache,
+                                                       use_cache=True, return_dict=True)
+                cache = outputs.past_key_values
+                if cache is None:
+                    raise RuntimeError("Qwen3.5 prefill returned no continuation Cache")
+                hidden.append(outputs.last_hidden_state)
+            return ClefResidentState(identity, prefix, cache, torch.cat(hidden, dim=1))
+
+    def predict_resident(self, resident, state, questions):
+        """Run only a compatible suffix against a request-owned hybrid Cache."""
+        if not isinstance(resident, ClefResidentState):
+            raise TypeError("expected completed Clef resident State")
+        artifact = self._resident_artifact()
+        # Resident execution remains subject to the same pre-device capacity
+        # admission and no-silent-truncation contract as ordinary Clef requests.
+        record = self._encode_inputs([state], questions)[0]
+        prefix = tuple(record.input_ids[:resident.prefix_tokens])
+        identity = (artifact, hashlib.sha256(json.dumps(prefix).encode()).hexdigest())
+        if (identity != resident.identity or prefix != resident._prefix or
+                len(record.input_ids) <= resident.prefix_tokens):
+            raise ValueError("incompatible Clef resident prefix or execution artifact")
+        torch = self.torch
+        with torch.inference_mode():
+            # The Qwen3.5 cache includes attention KV and recurrent/conv state.
+            cache = copy.deepcopy(resident._cache)
+            fork_bytes = _clef_tensor_bytes(cache)
+            suffix = torch.tensor([record.input_ids[resident.prefix_tokens:]],
+                                  dtype=torch.long, device=self.reference().device)
+            outputs = self._resident_text_model()(input_ids=suffix, past_key_values=cache,
+                                                   use_cache=True, return_dict=True)
+            if outputs.past_key_values is None:
+                raise RuntimeError("Qwen3.5 suffix returned no continuation Cache")
+            hidden = torch.cat((resident._hidden, outputs.last_hidden_state), dim=1)
+            batch = self.jsm.collate_records([record], self.tokenizer.pad_token_id,
+                                             self.reference().device)
+            base = (self.backbone.get_base_model() if hasattr(self.backbone, "get_base_model")
+                    else self.backbone)
+            logits = self.model.head(hidden, batch["input_ids"], batch["attention_mask"],
+                                     [record], base.get_output_embeddings().weight)
+            result = self._map_clef_results([record], logits, torch)[0]
+            working_bytes = _clef_tensor_bytes((cache, suffix, outputs.last_hidden_state,
+                                                hidden, batch["input_ids"], batch["attention_mask"]))
+        return result, {"fork_bytes": fork_bytes, "working_bytes": working_bytes}
+
     def capacity_status(self):
         return {"profile": getattr(self, "capacity_profile", None),
                 "model_context_tokens": CLEF_MAX_LENGTH,
@@ -1383,11 +1562,14 @@ class ClefProvider(Provider):
             # On CUDA this is enqueue time, not synchronized GPU execution time.
             self.batch_profile["model_enqueue_ms"] += (time.perf_counter() - start) * 1000
             start = time.perf_counter()
-            # Ragged question sizes require separate softmaxes; concatenate
-            # the results before the sole host extraction for this forward.
-            flat = [qlogits.float().softmax(-1) for logits in all_logits for qlogits in logits]
-            values = torch.cat(flat).tolist()
+            out = self._map_clef_results(records, all_logits, torch)
             self.batch_profile["post_transfer_ms"] += (time.perf_counter() - start) * 1000
+        return out
+
+    def _map_clef_results(self, records, all_logits, torch):
+        # Ragged question sizes require separate softmaxes and one host extraction.
+        flat = [qlogits.float().softmax(-1) for logits in all_logits for qlogits in logits]
+        values = torch.cat(flat).tolist()
         offset = 0
         out = []
         for record, logits in zip(records, all_logits):
