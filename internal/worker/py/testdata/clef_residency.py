@@ -1,5 +1,6 @@
 """Clef continuation ownership tests without CUDA or model weights."""
 import contextlib
+import hashlib
 import runpy
 import sys
 import types
@@ -99,6 +100,31 @@ class ResidentContract(unittest.TestCase):
             return {'input_ids': ids, 'attention_mask': Tensor([1] * len(ids.values))}
         p.jsm = types.SimpleNamespace(encode_record=encode, collate_records=collate,
                                       render=str, _tokens=lambda tokenizer, text: [ord(c) for c in text])
+
+    def test_explicit_registration_and_resident_dispatch(self):
+        p = self.provider
+        p.check_capacity_readiness = lambda: None
+        p.sync = lambda: None
+        state = 'policy'
+        ref = 'sha256:' + hashlib.sha256(state.encode()).hexdigest()
+        q1 = {'id': 'q1', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        q2 = dict(q1, id='q2')
+        metadata = p.register_resident(ref, state, [q1])
+        self.assertTrue(metadata['supported'])
+        self.assertEqual(metadata['payload_bytes'], p.registered_resident[2].payload_bytes)
+        resident = p.registered_resident[2]
+        self.assertEqual(p.register_resident(ref, state, [q2]), metadata)
+        self.assertIs(p.registered_resident[2], resident)
+        result = p.decide_resident([{'state_ref': ref, 'state': state, 'questions': [q2]}])
+        self.assertEqual(result[0][0]['id'], 'q2')
+        self.assertEqual(result[0][0]['choice'], 'yes')
+        self.assertEqual(p.resident_usage['payload_bytes'], resident.payload_bytes)
+        self.assertIn('fork_bytes', p.resident_usage)
+        with self.assertRaisesRegex(ValueError, 'match State content'):
+            p.register_resident(ref, 'different', [q1])
+        with self.assertRaisesRegex(ValueError, 'incompatible resident State'):
+            p.decide_resident([{'state_ref': ref, 'state': 'different', 'questions': [q1]}])
+        self.assertIs(p.registered_resident[2], resident)
 
     def test_chunk_forks_identity_and_accounting(self):
         p = self.provider

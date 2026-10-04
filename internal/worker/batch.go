@@ -85,6 +85,7 @@ func batchMetadata(items []Item) (string, int, int) {
 // An in-flight forward cannot be cancelled; queued callers observe ctx/done.
 func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-chan batchRequest) {
 	var pending []batchRequest
+	var residentRef string // scoped to this Process generation
 	var opened time.Time
 	var timer *time.Timer
 	var tick <-chan time.Time
@@ -130,13 +131,40 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 			close(req.started)
 		}
 		execution, counts, coalesced := coalesceStates(pending, items)
-		results, ms, err := p.DecideObserved(execution, func(at time.Time) {
+		notify := func(at time.Time) {
 			for _, req := range pending {
 				if req.observer != nil {
 					req.observer.Started(at)
 				}
 			}
-		})
+		}
+		execute := func(batch []Item, started func(time.Time)) ([][]api.Result, float64, error) {
+			if len(batch) != 1 || batch[0].StateRef == "" || p.Info["provider"] != "clef" {
+				return p.DecideObserved(batch, started)
+			}
+			if residentRef != batch[0].StateRef {
+				started(time.Now())
+				raw, err := p.Call("resident_register", map[string]any{
+					"state_ref": batch[0].StateRef, "state": batch[0].State, "questions": batch[0].Questions})
+				if err != nil {
+					residentRef = ""
+					return nil, 0, err
+				}
+				var metadata struct {
+					Supported bool `json:"supported"`
+				}
+				if err := json.Unmarshal(raw, &metadata); err != nil {
+					return nil, 0, err
+				}
+				if !metadata.Supported {
+					return p.Decide(batch)
+				}
+				residentRef = batch[0].StateRef
+				return p.DecideResidentObserved(batch, nil)
+			}
+			return p.DecideResidentObserved(batch, started)
+		}
+		results, ms, err := execute(execution, notify)
 		// A combined shape can exceed capacity even when its constituent
 		// requests fit. The authoritative worker denies that shape before a
 		// forward; retry each original item independently, preserving errors.
@@ -145,7 +173,7 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 		if coalesced && errors.As(err, &rejection) && (rejection.Class == api.ErrCapacity || rejection.Class == api.ErrRequestInvalid) {
 			isolated = make([]batchReply, len(pending))
 			for i, item := range items {
-				part, elapsed, failure := p.Decide([]Item{item})
+				part, elapsed, failure := execute([]Item{item}, func(time.Time) {})
 				isolated[i] = batchReply{results: part, ms: elapsed, err: failure}
 			}
 		}
