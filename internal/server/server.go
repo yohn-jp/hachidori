@@ -228,7 +228,7 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 		entry.SetStateRef(stateRef, len(req.State))
 		entry.Admit()
 		observer := requestObserver{entry: entry, decider: d, runtime: rt}
-		items := []worker.Item{{State: req.State, Questions: req.Questions}}
+		items := []worker.Item{{State: req.State, StateRef: req.StateRef, Questions: req.Questions}}
 		if req.Route == api.RouteAuto {
 			out, rtr, err := decideRouted(d, items, observer)
 			if err != nil {
@@ -298,7 +298,7 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 			} else {
 				refs[i] = home.StateRef(q.State)
 			}
-			items[i] = worker.Item{State: q.State, Questions: q.Questions}
+			items[i] = worker.Item{State: q.State, StateRef: q.StateRef, Questions: q.Questions}
 		}
 		entry.Admit()
 		observer := requestObserver{entry: entry, decider: d, runtime: rt}

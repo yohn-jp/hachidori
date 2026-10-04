@@ -58,10 +58,17 @@ func batchMetadata(items []Item) (string, int, int) {
 	}
 	encoded, _ := json.Marshal(items[0].Questions)
 	key := string(encoded)
+	if len(items) == 1 && items[0].StateRef != "" {
+		key = "state:" + items[0].StateRef
+	}
 	work, longest := 0, 0
 	for _, item := range items {
 		q, _ := json.Marshal(item.Questions)
-		if string(q) != key {
+		if items[0].StateRef != "" && len(items) == 1 {
+			if item.StateRef != items[0].StateRef {
+				return "", 0, 0
+			}
+		} else if string(q) != key {
 			return "", 0, 0
 		}
 		length := len(item.State) + len(q)
@@ -121,7 +128,8 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 			items = append(items, req.items...)
 			close(req.started)
 		}
-		results, ms, err := p.DecideObserved(items, func(at time.Time) {
+		execution, counts, coalesced := coalesceStates(pending, items)
+		results, ms, err := p.DecideObserved(execution, func(at time.Time) {
 			for _, req := range pending {
 				if req.observer != nil {
 					req.observer.Started(at)
@@ -138,8 +146,28 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 		s.batchCalls++
 		s.batchItems += int64(len(items))
 		s.mu.Unlock()
-		if err == nil && len(results) != len(items) {
-			err = &RequestError{Class: api.ErrWorkerFailure, Message: "batched worker result count mismatch"}
+		if err == nil {
+			if len(results) != len(execution) {
+				err = &RequestError{Class: api.ErrWorkerFailure, Message: "batched worker result count mismatch"}
+			} else if coalesced {
+				parts := make([][]api.Result, len(counts))
+				offset := 0
+				for i, n := range counts {
+					if offset+n > len(results[0]) {
+						err = &RequestError{Class: api.ErrWorkerFailure, Message: "coalesced result count mismatch"}
+						break
+					}
+					parts[i] = results[0][offset : offset+n]
+					offset += n
+				}
+				if err == nil && offset != len(results[0]) {
+					err = &RequestError{Class: api.ErrWorkerFailure, Message: "coalesced result count mismatch"}
+				}
+				if err == nil {
+					results = make([][]api.Result, len(parts))
+					copy(results, parts)
+				}
+			}
 		}
 		offset := 0
 		for _, req := range pending {
@@ -202,6 +230,32 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 // A dispatched forward must finish (or hit the Process timeout) before its
 // caller returns. Only requests still waiting in the collector can be released
 // immediately when the supervisor stops or the worker exits.
+// coalesceStates combines only separately arrived, registered single-State
+// requests. Duplicate question IDs cannot share one Clef record without
+// changing its encoding, so those calls retain their independent boundary.
+func coalesceStates(pending []batchRequest, items []Item) ([]Item, []int, bool) {
+	if len(pending) < 2 || len(items) != len(pending) || items[0].StateRef == "" {
+		return items, nil, false
+	}
+	seen := make(map[string]bool)
+	combined := Item{State: items[0].State, StateRef: items[0].StateRef}
+	counts := make([]int, len(items))
+	for i, item := range items {
+		if item.StateRef != combined.StateRef || item.State != combined.State {
+			return items, nil, false
+		}
+		counts[i] = len(item.Questions)
+		for _, q := range item.Questions {
+			if seen[q.ID] || len(combined.Questions) == api.MaxQuestions {
+				return items, nil, false
+			}
+			seen[q.ID] = true
+			combined.Questions = append(combined.Questions, q)
+		}
+	}
+	return []Item{combined}, counts, true
+}
+
 func waitBatch(req batchRequest, ctx context.Context, p *Process) (batchReply, error) {
 	select {
 	case answer := <-req.reply:

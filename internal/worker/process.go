@@ -74,6 +74,7 @@ type Info map[string]any
 // Item is one decide unit sent to the worker.
 type Item struct {
 	State     string         `json:"state"`
+	StateRef  string         `json:"state_ref,omitempty"`
 	Questions []api.Question `json:"questions"`
 }
 
