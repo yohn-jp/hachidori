@@ -82,6 +82,12 @@ func buildOpenAPI() obj {
 			{"name": "discovery", "description": "API description."},
 		},
 		"paths": obj{
+			"/v1/states": obj{"post": obj{
+				"operationId": "registerState", "tags": []string{"decide"},
+				"summary":     "Register immutable State content.",
+				"requestBody": obj{"required": true, "content": jsonContent(ref("RegisterState"))},
+				"responses":   postResponses(ref("StateReference"), "Content-derived reference."),
+			}},
 			"/v1/decide": obj{"post": obj{
 				"operationId": "decide",
 				"tags":        []string{"decide"},
@@ -183,8 +189,10 @@ func schemas() obj {
 				"description": "Optional per-choice description, keyed by a label present in choices."},
 		}, "id", "type", "instructions", "choices"),
 
-		"DecideRequest": decideRequest(true),
-		"BatchItem":     decideRequest(false),
+		"RegisterState":  object("Register a nonblank immutable State.", obj{"schema": schemaConst(), "state": obj{"type": "string", "minLength": 1, "maxLength": api.MaxStateBytes}}, "schema", "state"),
+		"StateReference": object("Content-derived State reference.", obj{"schema": schemaConst(), "state_ref": obj{"type": "string"}}, "schema", "state_ref"),
+		"DecideRequest":  decideRequest(true),
+		"BatchItem":      decideRequest(false),
 
 		"Result": object("One typed observation for one question.", obj{
 			"id":         str("The question id."),
@@ -201,11 +209,12 @@ func schemas() obj {
 		}, "inference_ms", "total_ms"),
 
 		"DecideResponse": object("One result per question, in request order. timing is present on a /v1/decide response and absent on the entries of a batch response.", obj{
-			"schema":  schemaConst(),
-			"results": obj{"type": "array", "items": ref("Result"), "description": "Results in question order, ids preserved."},
-			"timing":  ref("Timing"),
-			"served":  ref("Served"),
-			"routing": ref("Routing"),
+			"state_ref": obj{"type": "string", "description": "Effective content-derived State identity."},
+			"schema":    schemaConst(),
+			"results":   obj{"type": "array", "items": ref("Result"), "description": "Results in question order, ids preserved."},
+			"timing":    ref("Timing"),
+			"served":    ref("Served"),
+			"routing":   ref("Routing"),
 		}, "schema", "results"),
 
 		"BatchRequest": object("Independent decide requests.", obj{
@@ -402,22 +411,25 @@ func schemas() obj {
 // (it defaults to the batch's), so schema is required only for /v1/decide.
 func decideRequest(schemaRequired bool) obj {
 	desc := "Asks every question against one state."
-	req := []string{"state", "questions"}
+	req := []string{"questions"}
 	if schemaRequired {
 		req = append([]string{"schema"}, req...)
 	} else {
 		desc = "One decide request of a batch; schema may be omitted and then defaults to \"" + api.SchemaV1 + "\"."
 	}
-	return object(desc, obj{
+	o := object(desc, obj{
 		"schema": schemaConst(),
 		"state": obj{"type": "string", "minLength": 1, "maxLength": api.MaxStateBytes,
-			"description": fmt.Sprintf("The text to decide about. Must not be blank; at most %d bytes of UTF-8 (maxLength bounds characters, which is a necessary condition).", api.MaxStateBytes)},
+			"description": fmt.Sprintf("Inline State. Exactly one of state or state_ref is required; at most %d bytes of UTF-8.", api.MaxStateBytes)},
+		"state_ref": obj{"type": "string", "description": "Reference returned by POST /v1/states; mutually exclusive with state."},
 		"questions": obj{"type": "array", "minItems": 1, "maxItems": api.MaxQuestions, "items": ref("Question"),
 			"description": "Questions to answer; ids must be unique within the request."},
 		"options": openObject("Reserved. Accepted and currently has no effect."),
 		"model":   modelRef(),
 		"route":   routeRef(),
 	}, req...)
+	o["oneOf"] = []obj{{"required": []string{"state"}, "not": obj{"required": []string{"state_ref"}}}, {"required": []string{"state_ref"}, "not": obj{"required": []string{"state"}}}}
+	return o
 }
 
 // errorClasses lists the classes the handlers can answer with.

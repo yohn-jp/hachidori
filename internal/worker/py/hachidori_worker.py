@@ -1408,6 +1408,71 @@ class ClefProvider(Provider):
                 hidden.append(outputs.last_hidden_state)
             return ClefResidentState(identity, prefix, cache, torch.cat(hidden, dim=1))
 
+    def register_resident(self, ref, state, questions):
+        """Attach one admitted immutable continuation to an explicit State ref.
+
+        The content digest names the registry object, not the execution cache:
+        build_resident binds the exact effective prefix and pinned artifact.
+        """
+        if ref != "sha256:" + hashlib.sha256(state.encode("utf-8")).hexdigest():
+            raise ValueError("state_ref does not match State content")
+        if self.requested != "cuda":
+            # The #270 continuation is certified only for its pinned CUDA
+            # artifact; referenced CPU requests retain ordinary execution.
+            return {"supported": False}
+        current = getattr(self, "registered_resident", None)
+        if current is None:
+            try:
+                self._resident_artifact()
+            except RuntimeError as e:
+                if "not certified" in str(e):
+                    return {"supported": False}
+                raise
+        if current is not None and current[0] == ref:
+            if current[1] != state:
+                raise ValueError("State reference collision")
+            # The primitive checks exact artifact and effective prefix on use.
+            return self.resident_info(current[2])
+        # Bound residency to one completed object; failed construction is not
+        # published. #264 checks input shape before build touches the device.
+        self.registered_resident = None
+        self.resident_usage = {}
+        # Drop the local reference too. Otherwise the evicted resident remains
+        # alive throughout construction of its replacement and both GPU payloads
+        # can coexist transiently, defeating the one-object residency bound.
+        current = None
+        self.check_capacity_readiness()
+        resident = self.build_resident(state, to_typed(questions))
+        # The resident payload itself consumes device memory. Re-evaluate the
+        # authoritative #264 headroom contract while the completed object is
+        # live, before publishing it for request execution.
+        self.check_capacity_readiness()
+        self.registered_resident = (ref, state, resident)
+        return self.resident_info(resident)
+
+    def resident_info(self, resident):
+        return {"supported": True, "artifact": resident.identity[0], "effective_prefix": resident.identity[1],
+                "prefix_tokens": resident.prefix_tokens, "payload_bytes": resident.payload_bytes}
+
+    def decide_resident(self, items):
+        current = getattr(self, "registered_resident", None)
+        if current is None:
+            raise ValueError("no registered resident State")
+        # Admit all questions before any suffix is forwarded. Do not reuse a
+        # resident if the State content, execution artifact or prefix differs.
+        for item in items:
+            if item.get("state_ref") != current[0] or item["state"] != current[1]:
+                raise ValueError("incompatible resident State reference")
+            self._encode_inputs([item["state"]], to_typed(item["questions"]))
+        self.check_capacity_readiness()
+        results = []
+        for item in items:
+            out, usage = self.predict_resident(current[2], item["state"], to_typed(item["questions"]))
+            self.resident_usage = {**self.resident_info(current[2]), **usage}
+            results.append(from_typed(item["questions"], out["answers"]))
+        self.sync()
+        return results
+
     def predict_resident(self, resident, state, questions):
         """Run only a compatible suffix against a request-owned hybrid Cache."""
         if not isinstance(resident, ClefResidentState):
@@ -1445,10 +1510,14 @@ class ClefProvider(Provider):
         return result, {"fork_bytes": fork_bytes, "working_bytes": working_bytes}
 
     def capacity_status(self):
+        current = getattr(self, "registered_resident", None)
+        resident = ({"state_ref": current[0], **self.resident_info(current[2]),
+                     **getattr(self, "resident_usage", {})} if current else None)
         return {"profile": getattr(self, "capacity_profile", None),
                 "model_context_tokens": CLEF_MAX_LENGTH,
                 "headroom": getattr(self, "capacity_headroom", None),
-                "last_rejection": getattr(self, "capacity_rejection", None)}
+                "last_rejection": getattr(self, "capacity_rejection", None),
+                "resident": resident}
 
     def check_capacity_readiness(self):
         profile = getattr(self, "capacity_profile", None)
@@ -1592,6 +1661,10 @@ class ClefProvider(Provider):
         info = {"transformers_version": self.transformers.__version__, "weights_quantized_modules": self.quantized,
                 "execution": execution, "kernel_paths": self.kernel_paths}
         info["capacity"] = self.capacity_status()
+        if getattr(self, "registered_resident", None) is not None:
+            info["resident_state"] = {"state_ref": self.registered_resident[0],
+                                      **self.resident_info(self.registered_resident[2]),
+                                      **getattr(self, "resident_usage", {})}
         info["w4_linear_paths"] = {name: dict(module._hachidori_w4[0])
                                    for name, module in self.backbone.named_modules()
                                    if hasattr(module, "_hachidori_w4")}
@@ -1623,7 +1696,19 @@ def serve(provider):
             emit({"id": rid, "ok": True})
             return
         try:
-            if op == "decide":
+            if op == "resident_register":
+                if not isinstance(provider, ClefProvider):
+                    raise ValueError("resident State requires Clef")
+                emit({"id": rid, "ok": True, "result": provider.register_resident(
+                    req["state_ref"], req["state"], req["questions"])})
+            elif op == "resident_decide":
+                if not isinstance(provider, ClefProvider):
+                    raise ValueError("resident State requires Clef")
+                t0 = time.perf_counter()
+                results = provider.decide_resident(req["items"])
+                emit({"id": rid, "ok": True, "results": results,
+                      "inference_ms": (time.perf_counter() - t0) * 1000.0})
+            elif op == "decide":
                 t0 = time.perf_counter()
                 results = provider.decide(req["items"])
                 emit({"id": rid, "ok": True, "results": results,

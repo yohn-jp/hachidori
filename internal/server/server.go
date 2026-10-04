@@ -178,6 +178,32 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, StatusBody(d, rt, started))
 	})
+	mux.HandleFunc("POST /v1/states", func(w http.ResponseWriter, r *http.Request) {
+		entry := requests.Begin("/v1/states", time.Now(), requestIdentity(rt))
+		var input api.RegisterState
+		if err := decode(w, r, &input); err != nil {
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, err.Error())
+			writeErr(w, api.ErrRequestInvalid, err.Error())
+			return
+		}
+		entry.SetInput(input, len(input.State), 0, 0)
+		if input.Schema != api.SchemaV1 {
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, "schema must be hachidori.v1")
+			writeErr(w, api.ErrRequestInvalid, "schema must be hachidori.v1")
+			return
+		}
+		ref, err := (home.Home{Root: rt.Home}).RegisterState(input.State)
+		if err != nil {
+			entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, err.Error())
+			writeErr(w, api.ErrRequestInvalid, err.Error())
+			return
+		}
+		entry.SetStateRef(ref, len(input.State))
+		entry.Admit()
+		resp := api.StateReference{Schema: api.SchemaV1, StateRef: ref}
+		entry.Complete(time.Now(), resp, http.StatusOK)
+		writeJSON(w, http.StatusOK, resp)
+	})
 	mux.HandleFunc("POST /v1/decide", func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
 		var req api.DecideRequest
@@ -200,9 +226,22 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
+		stateRef := req.StateRef
+		if stateRef != "" {
+			state, err := (home.Home{Root: rt.Home}).ResolveState(stateRef)
+			if err != nil {
+				entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, err.Error())
+				writeErr(w, api.ErrRequestInvalid, err.Error())
+				return
+			}
+			req.State = state
+		} else {
+			stateRef = home.StateRef(req.State)
+		}
+		entry.SetStateRef(stateRef, len(req.State))
 		entry.Admit()
 		observer := requestObserver{entry: entry, decider: d, runtime: rt}
-		items := []worker.Item{{State: req.State, Questions: req.Questions}}
+		items := []worker.Item{{State: req.State, StateRef: req.StateRef, Questions: req.Questions}}
 		if req.Route == api.RouteAuto {
 			out, rtr, err := decideRouted(d, items, observer)
 			if err != nil {
@@ -210,7 +249,7 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 				writeWorkerErr(w, sc, err)
 				return
 			}
-			resp := api.DecideResponse{Schema: api.SchemaV1, Results: out.Items[0].Results,
+			resp := api.DecideResponse{Schema: api.SchemaV1, Results: out.Items[0].Results, StateRef: stateRef,
 				Timing:  &api.Timing{InferenceMS: out.InferenceMS, TotalMS: msSince(t0)},
 				Routing: rtr.Routing(out.Items[0], out.Providers)}
 			entry.Complete(time.Now(), resp, http.StatusOK)
@@ -223,7 +262,7 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 			writeWorkerErr(w, sc, err)
 			return
 		}
-		resp := api.DecideResponse{Schema: api.SchemaV1, Results: res[0],
+		resp := api.DecideResponse{Schema: api.SchemaV1, Results: res[0], StateRef: stateRef,
 			Timing: &api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}, Served: served}
 		entry.Complete(time.Now(), resp, http.StatusOK)
 		writeJSON(w, http.StatusOK, resp)
@@ -257,12 +296,30 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 			writeErr(w, api.ErrRequestInvalid, err.Error())
 			return
 		}
+		items := make([]worker.Item, len(req.Requests))
+		refs := make([]string, len(req.Requests))
+		for i, q := range req.Requests {
+			if q.StateRef != "" {
+				state, err := (home.Home{Root: rt.Home}).ResolveState(q.StateRef)
+				if err != nil {
+					entry.Reject(time.Now(), http.StatusBadRequest, api.ErrRequestInvalid, err.Error())
+					writeErr(w, api.ErrRequestInvalid, err.Error())
+					return
+				}
+				q.State = state
+				refs[i] = q.StateRef
+			} else {
+				refs[i] = home.StateRef(q.State)
+			}
+			items[i] = worker.Item{State: q.State, StateRef: q.StateRef, Questions: q.Questions}
+		}
+		resolvedBytes := 0
+		for _, item := range items {
+			resolvedBytes += len(item.State)
+		}
+		entry.SetStateRefs(refs, resolvedBytes)
 		entry.Admit()
 		observer := requestObserver{entry: entry, decider: d, runtime: rt}
-		items := make([]worker.Item, len(req.Requests))
-		for i, q := range req.Requests {
-			items[i] = worker.Item{State: q.State, Questions: q.Questions}
-		}
 		if mode == api.RouteAuto { // validated above
 			out, rtr, err := decideRouted(d, items, observer)
 			if err != nil {
@@ -272,8 +329,8 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 			}
 			resp := api.BatchResponse{Schema: api.SchemaV1, Timing: api.Timing{InferenceMS: out.InferenceMS, TotalMS: msSince(t0)},
 				Routing: &api.Routing{Mode: api.RouteAuto, Policy: rtr.Ref(), Handoffs: out.Handoffs, Providers: out.Providers}}
-			for _, it := range out.Items {
-				resp.Responses = append(resp.Responses, api.DecideResponse{Schema: api.SchemaV1, Results: it.Results, Routing: rtr.Routing(it, nil)})
+			for i, it := range out.Items {
+				resp.Responses = append(resp.Responses, api.DecideResponse{Schema: api.SchemaV1, Results: it.Results, StateRef: refs[i], Routing: rtr.Routing(it, nil)})
 			}
 			entry.Complete(time.Now(), resp, http.StatusOK)
 			writeJSON(w, http.StatusOK, resp)
@@ -287,8 +344,8 @@ func routes(d Decider, rt Runtime, started time.Time, requests *requesthistory.S
 			return
 		}
 		out := api.BatchResponse{Schema: api.SchemaV1, Timing: api.Timing{InferenceMS: ms, TotalMS: msSince(t0)}, Served: served}
-		for _, rs := range res {
-			out.Responses = append(out.Responses, api.DecideResponse{Schema: api.SchemaV1, Results: rs})
+		for i, rs := range res {
+			out.Responses = append(out.Responses, api.DecideResponse{Schema: api.SchemaV1, Results: rs, StateRef: refs[i]})
 		}
 		entry.Complete(time.Now(), out, http.StatusOK)
 		writeJSON(w, http.StatusOK, out)

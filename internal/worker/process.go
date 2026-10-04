@@ -74,6 +74,7 @@ type Info map[string]any
 // Item is one decide unit sent to the worker.
 type Item struct {
 	State     string         `json:"state"`
+	StateRef  string         `json:"state_ref,omitempty"`
 	Questions []api.Question `json:"questions"`
 }
 
@@ -256,7 +257,16 @@ func (p *Process) Decide(items []Item) ([][]api.Result, float64, error) {
 // DecideObserved reports when this serialized worker starts receiving the
 // inference call. It does not add a lock or wait around execution.
 func (p *Process) DecideObserved(items []Item, started func(time.Time)) ([][]api.Result, float64, error) {
-	m, err := p.callObserved(map[string]any{"op": "decide", "items": items}, started)
+	return p.decideOp("decide", items, started)
+}
+
+// DecideResidentObserved invokes only the explicitly registered Clef continuation.
+func (p *Process) DecideResidentObserved(items []Item, started func(time.Time)) ([][]api.Result, float64, error) {
+	return p.decideOp("resident_decide", items, started)
+}
+
+func (p *Process) decideOp(op string, items []Item, started func(time.Time)) ([][]api.Result, float64, error) {
+	m, err := p.callObserved(map[string]any{"op": op, "items": items}, started)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/home"
 )
 
 // TestHelperWorker is not a real test: it is re-executed as a fake worker
@@ -67,11 +68,15 @@ func TestHelperWorker(t *testing.T) {
 	emit(map[string]any{"event": "ready", "info": map[string]any{"provider": provider, "device": "cpu"}})
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 1<<20), 16<<20)
+	registered := ""
 	for sc.Scan() {
 		var req struct {
-			ID    int64  `json:"id"`
-			Op    string `json:"op"`
-			Items []Item `json:"items"`
+			ID        int64          `json:"id"`
+			Op        string         `json:"op"`
+			Items     []Item         `json:"items"`
+			StateRef  string         `json:"state_ref"`
+			State     string         `json:"state"`
+			Questions []api.Question `json:"questions"`
 		}
 		_ = json.Unmarshal(sc.Bytes(), &req)
 		if mode == "hold_decide" && req.Op == "decide" {
@@ -110,13 +115,34 @@ func TestHelperWorker(t *testing.T) {
 			os.Exit(0)
 		case (mode == "crash_on_decide" || mode == "clef_crash") && req.Op == "decide":
 			os.Exit(7)
-		case mode == "hang_on_decide" && req.Op == "decide":
+		case mode == "hang_on_decide" && req.Op == "decide" || mode == "clef_hang_resident" && req.Op == "resident_decide":
 			time.Sleep(time.Minute)
+		case req.Op == "resident_register":
+			invalidQuestion := false
+			for _, q := range req.Questions {
+				invalidQuestion = invalidQuestion || q.ID == "bad"
+			}
+			if mode == "clef_invalid_question" && invalidQuestion {
+				emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "bad question"}})
+			} else if mode == "clef_capacity" && len(req.Questions) > 1 {
+				emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{
+					"class": "capacity", "message": "combined input too large",
+					"capacity": map[string]any{"metric": "input_tokens", "limit": 1, "observed": len(req.Questions)}}})
+			} else if req.StateRef != home.StateRef(req.State) {
+				emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "State reference mismatch"}})
+			} else {
+				registered = req.StateRef
+				emit(map[string]any{"id": req.ID, "ok": true, "result": map[string]any{"supported": true, "artifact": "fake", "effective_prefix": "fake", "payload_bytes": 2}})
+			}
+		case req.Op == "resident_decide" && mode == "clef_invalid_question" && req.Items[0].Questions[0].ID == "bad":
+			emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "bad question"}})
+		case req.Op == "resident_decide" && (registered == "" || req.Items[0].StateRef != registered):
+			emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "resident mismatch"}})
 		case req.Op == "stats":
 			emit(map[string]any{"id": req.ID, "ok": true, "stats": map[string]any{"memory_total": 100}})
 		case req.Op == "decide" && (req.Items[0].State == "invalid" || mode == "clef_error"):
 			emit(map[string]any{"id": req.ID, "ok": false, "error": map[string]any{"class": "request_invalid", "message": "bad"}})
-		case req.Op == "decide":
+		case req.Op == "decide" || req.Op == "resident_decide":
 			var results [][]api.Result
 			for _, it := range req.Items {
 				var rs []api.Result

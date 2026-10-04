@@ -1,5 +1,6 @@
 """Clef continuation ownership tests without CUDA or model weights."""
 import contextlib
+import hashlib
 import runpy
 import sys
 import types
@@ -99,6 +100,110 @@ class ResidentContract(unittest.TestCase):
             return {'input_ids': ids, 'attention_mask': Tensor([1] * len(ids.values))}
         p.jsm = types.SimpleNamespace(encode_record=encode, collate_records=collate,
                                       render=str, _tokens=lambda tokenizer, text: [ord(c) for c in text])
+
+    def test_explicit_registration_and_resident_dispatch(self):
+        p = self.provider
+        p.check_capacity_readiness = lambda: None
+        p.sync = lambda: None
+        state = 'policy'
+        ref = 'sha256:' + hashlib.sha256(state.encode()).hexdigest()
+        q1 = {'id': 'q1', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        q2 = dict(q1, id='q2')
+        metadata = p.register_resident(ref, state, [q1])
+        self.assertTrue(metadata['supported'])
+        self.assertEqual(metadata['payload_bytes'], p.registered_resident[2].payload_bytes)
+        resident = p.registered_resident[2]
+        self.assertEqual(p.register_resident(ref, state, [q2]), metadata)
+        self.assertIs(p.registered_resident[2], resident)
+        result = p.decide_resident([{'state_ref': ref, 'state': state, 'questions': [q2]}])
+        self.assertEqual(result[0][0]['id'], 'q2')
+        self.assertEqual(result[0][0]['choice'], 'yes')
+        self.assertEqual(p.resident_usage['payload_bytes'], resident.payload_bytes)
+        self.assertIn('fork_bytes', p.resident_usage)
+        with self.assertRaisesRegex(ValueError, 'match State content'):
+            p.register_resident(ref, 'different', [q1])
+        with self.assertRaisesRegex(ValueError, 'incompatible resident State'):
+            p.decide_resident([{'state_ref': ref, 'state': 'different', 'questions': [q1]}])
+        self.assertIs(p.registered_resident[2], resident)
+
+    def test_registration_capacity_denied_before_prefill(self):
+        p = self.provider
+        p.check_capacity_readiness = lambda: None
+        p.capacity_profile = {'max_input_tokens': 8192, 'max_state_tokens': 1,
+                              'max_batch_items': 8, 'max_batch_padded_tokens': 8192}
+        state = 'policy'
+        ref = 'sha256:' + hashlib.sha256(state.encode()).hexdigest()
+        q = {'id': 'q', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        with self.assertRaises(CapacityError):
+            p.register_resident(ref, state, [q])
+        self.assertIsNone(p.registered_resident)
+        self.assertEqual(self.text.calls, [])
+
+    def test_replacement_releases_previous_resident_before_prefill(self):
+        p = self.provider
+        p.check_capacity_readiness = lambda: None
+        first_state = 'first'
+        first_ref = 'sha256:' + hashlib.sha256(first_state.encode()).hexdigest()
+        q = {'id': 'q', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        p.register_resident(first_ref, first_state, [q])
+
+        released = []
+        old = p.registered_resident[2]
+        original_del = getattr(type(old), '__del__', None)
+        # The resident type is slot-based and not weak-referenceable. Replace the
+        # tuple payload with a tiny sentinel whose destructor records when the last
+        # reference is dropped; the replacement path only needs tuple identity here.
+        class Sentinel:
+            def __del__(self):
+                released.append(True)
+        sentinel = Sentinel()
+        p.registered_resident = (first_ref, first_state, sentinel)
+        del sentinel
+        del old
+
+        second_state = 'second'
+        second_ref = 'sha256:' + hashlib.sha256(second_state.encode()).hexdigest()
+        original_build = p.build_resident
+        def build(state, questions):
+            self.assertTrue(released, 'evicted resident stayed alive during replacement prefill')
+            return original_build(state, questions)
+        p.build_resident = build
+        p.register_resident(second_ref, second_state, [q])
+        self.assertEqual(p.registered_resident[0], second_ref)
+        self.assertIsNone(original_del)
+
+    def test_resident_payload_headroom_is_checked_before_publish(self):
+        p = self.provider
+        calls = 0
+        def readiness():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise CapacityError('gpu_headroom_bytes', 100, 50)
+        p.check_capacity_readiness = readiness
+        state = 'policy'
+        ref = 'sha256:' + hashlib.sha256(state.encode()).hexdigest()
+        q = {'id': 'q', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        with self.assertRaises(CapacityError):
+            p.register_resident(ref, state, [q])
+        self.assertEqual(calls, 2)
+        self.assertIsNone(p.registered_resident)
+        self.assertGreater(len(self.text.calls), 0)
+
+    def test_resident_decide_admits_before_suffix(self):
+        p = self.provider
+        p.check_capacity_readiness = lambda: None
+        p.sync = lambda: None
+        state = 'policy'
+        ref = 'sha256:' + hashlib.sha256(state.encode()).hexdigest()
+        q = {'id': 'q', 'type': 'choice', 'instructions': 'choose', 'choices': ['no', 'yes']}
+        p.register_resident(ref, state, [q])
+        before = list(self.text.calls)
+        p.capacity_profile = {'max_input_tokens': 8192, 'max_state_tokens': 1,
+                              'max_batch_items': 8, 'max_batch_padded_tokens': 8192}
+        with self.assertRaises(CapacityError):
+            p.decide_resident([{'state_ref': ref, 'state': state, 'questions': [q]}])
+        self.assertEqual(self.text.calls, before)
 
     def test_chunk_forks_identity_and_accounting(self):
         p = self.provider
