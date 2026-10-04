@@ -142,7 +142,6 @@ func (h Home) LoadCapacityProfiles() (CapacityProfiles, error) {
 	return ps, nil
 }
 
-
 // SaveCapacityProfile atomically upserts one exact-target capacity profile.
 // A missing profile document is initialized. Existing profiles for every other
 // target are preserved; replacing a target never broadens its identity.
