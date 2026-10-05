@@ -237,10 +237,22 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 		case <-p.Done():
 			stopTimer()
 			return
+		case <-s.batchWindowChanged:
+			stopTimer()
+			if len(pending) > 0 {
+				window := s.BatchWindow()
+				if window == 0 || !time.Now().Before(pending[0].queued.Add(window)) {
+					flush()
+				} else {
+					timer = time.NewTimer(time.Until(pending[0].queued.Add(window)))
+					tick = timer.C
+				}
+			}
 		case <-tick:
 			flush()
 		case req := <-incoming:
-			if len(pending) > 0 && s.policy.BatchWindow > 0 && !time.Now().Before(pending[0].queued.Add(s.policy.BatchWindow)) {
+			window := s.BatchWindow()
+			if len(pending) > 0 && window > 0 && !time.Now().Before(pending[0].queued.Add(window)) {
 				flush()
 			}
 			if ctx.Err() != nil {
@@ -263,11 +275,11 @@ func (s *Supervisor) collectBatches(ctx context.Context, p *Process, incoming <-
 				opened = time.Now()
 			}
 			pending = append(pending, req)
-			if len(pending) == 1 && s.policy.BatchWindow > 0 {
-				timer = time.NewTimer(max(0, time.Until(req.queued.Add(s.policy.BatchWindow))))
+			if len(pending) == 1 && window > 0 {
+				timer = time.NewTimer(max(0, time.Until(req.queued.Add(window))))
 				tick = timer.C
 			}
-			if s.policy.BatchWindow == 0 || req.key == "" || batchCount(pending) >= s.policy.BatchItems ||
+			if window == 0 || req.key == "" || batchCount(pending) >= s.policy.BatchItems ||
 				batchWork(pending) >= s.policy.BatchWork {
 				flush()
 			}

@@ -105,6 +105,29 @@ Question IDs; it demultiplexes results to the original requests. This is not
 `/v1/decide/batch` transport semantics. Capacity-denied combined shapes are
 retried as separate requests against the same authoritative worker admission.
 
+Workbench's same-State experiment uses this same path. The default concurrency
+is one, preserving the single `/v1/decide` flow. Higher values send that many
+independent concurrent `/v1/decide` requests with one shared registered
+`state_ref`; Workbench partitions distinct questions into contiguous,
+input-order-preserving groups. Group sizes are balanced, with the first
+remainder groups receiving one additional question (six questions at
+concurrency three become `[Q1,Q2]`, `[Q3,Q4]`, `[Q5,Q6]`). Each request keeps
+its own admission, cancellation, timeout and error boundary, while preserving
+unique Question IDs for Clef coalescing. Results return to the page in the
+editor's original question order. The selected concurrency
+cannot exceed either the number of questions or the running worker's queue
+limit. Workbench never translates this experiment into `/v1/decide/batch`.
+
+The batch window is the live `worker.Policy.BatchWindow` used by the running
+supervisor. Workbench accepts whole milliseconds from 0 through 1000; zero
+flushes compatible requests immediately. The default is 10 ms. Changing the
+value wakes the current Clef collector to recalculate its deadline, and the
+same effective value is reported as `worker.batch_window_ms` in `/v1/status`
+and in the Workbench's JSON experiment evidence alongside concurrency,
+State reference, request bodies and per-request results or errors. It applies
+to all residents in a resident set, remains in force through worker restarts
+within that process, and a new Hachidori process starts with the 10 ms default.
+
 A pinned, certified Clef CUDA worker can attach one completed #270 continuation
 to an explicit registered State. Its execution identity binds the effective
 encoded prefix and artifact in addition to the content reference. The worker

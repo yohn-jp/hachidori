@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,10 +19,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/question"
+	"github.com/yohn-jp/hachidori/internal/server"
 	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
@@ -37,7 +40,9 @@ type fakeAPI struct {
 	nstat  int
 	// block, when set, holds every decide request until it is closed or
 	// the request is abandoned.
-	block chan struct{}
+	block            chan struct{}
+	activeDecides    int
+	maxActiveDecides int
 }
 
 func statusDoc(model string, uptime int) string {
@@ -69,11 +74,31 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Write([]byte(doc))
 		return
+	case "/v1/states":
+		f.bodies = append(f.bodies, b)
+		f.paths = append(f.paths, r.Method+" "+r.URL.Path)
+		f.mu.Unlock()
+		var input api.RegisterState
+		_ = json.Unmarshal(b, &input)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(api.StateReference{Schema: api.SchemaV1, StateRef: home.StateRef(input.State)})
+		return
 	}
 	f.bodies = append(f.bodies, b)
 	f.paths = append(f.paths, r.Method+" "+r.URL.Path)
 	reply, block := f.reply, f.block
+	if r.URL.Path == "/v1/decide" {
+		f.activeDecides++
+		f.maxActiveDecides = max(f.maxActiveDecides, f.activeDecides)
+	}
 	f.mu.Unlock()
+	if r.URL.Path == "/v1/decide" {
+		defer func() {
+			f.mu.Lock()
+			f.activeDecides--
+			f.mu.Unlock()
+		}()
+	}
 	if block != nil {
 		select {
 		case <-block:
@@ -128,6 +153,283 @@ func newWorkbenchEnv(t testing.TB) (*env, *fakeAPI) {
 	cfg.APIAddr = srv.Listener.Addr().String()
 	e.d = New(cfg)
 	return e, f
+}
+
+type fakeBatchWindowControl struct {
+	mu     sync.Mutex
+	window time.Duration
+	sets   []time.Duration
+}
+
+func (c *fakeBatchWindowControl) BatchWindow() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.window
+}
+
+func (c *fakeBatchWindowControl) SetBatchWindow(window time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if window < 0 || window > worker.MaxBatchWindow || window%time.Millisecond != 0 {
+		return fmt.Errorf("batch window out of range")
+	}
+	c.window = window
+	c.sets = append(c.sets, window)
+	return nil
+}
+
+func enableWorkbenchScheduler(t testing.TB, e *env, window time.Duration, queueLimit int) *fakeBatchWindowControl {
+	t.Helper()
+	control := &fakeBatchWindowControl{window: window}
+	cfg := e.d.cfg
+	previous := cfg.Status
+	cfg.Status = func() server.Status {
+		status := previous()
+		status.Worker.State = worker.StateReady
+		status.Worker.Ready = true
+		status.Worker.QueueLimit = queueLimit
+		status.Worker.Info = worker.Info{"provider": "clef"}
+		return status
+	}
+	cfg.BatchWindow = control
+	e.d = New(cfg)
+	return control
+}
+
+func TestWorkbenchCanRegisterStateReference(t *testing.T) {
+	e, f := newWorkbenchEnv(t)
+	state := "shared experiment State"
+	body := e.post(t, "/workbench", with(form(state, []string{"q", "Pick", "a", "b"}), "op", "register-state")).Body.String()
+	if !strings.Contains(body, home.StateRef(state)) || !strings.Contains(body, "State registered as") {
+		t.Fatalf("registered reference not shown: %s", body)
+	}
+	paths, _ := f.calls()
+	if !reflect.DeepEqual(paths, []string{"POST /v1/states"}) {
+		t.Fatalf("registration calls %v", paths)
+	}
+}
+
+func TestWorkbenchSameStateConcurrencyUsesIndependentDecideRequests(t *testing.T) {
+	e, f := newWorkbenchEnv(t)
+	control := enableWorkbenchScheduler(t, e, 10*time.Millisecond, 4)
+	barrier := make(chan struct{})
+	f.block = barrier
+	questions := make([][]string, 6)
+	for i := range questions {
+		questions[i] = []string{fmt.Sprintf("q%d", i+1), fmt.Sprintf("Question %d?", i+1), "yes", "no"}
+	}
+	values := with(form("shared State", questions...), "op", "run", "concurrency", "3", "batch_window_ms", "25")
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- e.post(t, "/workbench", values) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		f.mu.Lock()
+		active := f.activeDecides
+		f.mu.Unlock()
+		if active == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(barrier)
+			t.Fatalf("independent decide calls did not overlap; active=%d", active)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(barrier)
+	rec := <-done
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run: %d %s", rec.Code, rec.Body)
+	}
+	paths, bodies := f.calls()
+	if len(paths) != 4 || paths[0] != "POST /v1/states" || paths[1] != "POST /v1/decide" || paths[2] != "POST /v1/decide" || paths[3] != "POST /v1/decide" {
+		t.Fatalf("experiment endpoints %v", paths)
+	}
+	f.mu.Lock()
+	maxActive := f.maxActiveDecides
+	f.mu.Unlock()
+	if maxActive != 3 {
+		t.Fatalf("peak independent requests=%d, want 3", maxActive)
+	}
+	wantGroups := map[string][]string{"q1": {"q1", "q2"}, "q3": {"q3", "q4"}, "q5": {"q5", "q6"}}
+	gotGroups := make(map[string][]string)
+	for i, body := range bodies[1:] {
+		var req api.DecideRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		if req.Schema != api.SchemaV1 || req.State != "" || req.StateRef != home.StateRef("shared State") || len(req.Questions) != 2 {
+			t.Fatalf("request %d was not an independent same-ref request with a two-question chunk: %+v", i, req)
+		}
+		ids := []string{req.Questions[0].ID, req.Questions[1].ID}
+		if _, exists := gotGroups[ids[0]]; exists {
+			t.Fatalf("duplicate independent request group beginning with %q", ids[0])
+		}
+		gotGroups[ids[0]] = ids
+	}
+	if !reflect.DeepEqual(gotGroups, wantGroups) {
+		t.Fatalf("request question groups = %v, want contiguous input-order groups %v", gotGroups, wantGroups)
+	}
+	if control.BatchWindow() != 25*time.Millisecond {
+		t.Fatalf("effective window=%s", control.BatchWindow())
+	}
+	page := html.UnescapeString(rec.Body.String())
+	for _, want := range []string{"3 independent requests", "effective batch window 25 ms", "Experiment evidence (JSON)", `"concurrency": 3`, `"batch_window_ms": 25`, home.StateRef("shared State")} {
+		if !strings.Contains(page, want) {
+			t.Errorf("experiment evidence lacks %q", want)
+		}
+	}
+	last := -1
+	for i := range questions {
+		marker := fmt.Sprintf(`aria-label="Result · Question %d"`, i)
+		at := strings.Index(page, marker)
+		if at < 0 || at <= last {
+			t.Fatalf("rendered results do not follow input order at %q", marker)
+		}
+		last = at
+	}
+}
+
+func TestWorkbenchRequestsUseContiguousBalancedQuestionChunks(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		count int
+		want  [][]string
+	}{
+		{name: "even", count: 6, want: [][]string{{"q1", "q2"}, {"q3", "q4"}, {"q5", "q6"}}},
+		{name: "remainder goes to first groups", count: 5, want: [][]string{{"q1", "q2"}, {"q3", "q4"}, {"q5"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := api.DecideRequest{Schema: api.SchemaV1, State: "state"}
+			for i := 1; i <= tc.count; i++ {
+				base.Questions = append(base.Questions, api.Question{ID: fmt.Sprintf("q%d", i), Instructions: fmt.Sprintf("question %d", i)})
+			}
+			requests := workbenchRequests(base, 3, "registered-state-ref")
+			if len(requests) != len(tc.want) {
+				t.Fatalf("request count=%d, want %d", len(requests), len(tc.want))
+			}
+			for i, req := range requests {
+				if req.Schema != api.SchemaV1 || req.State != "" || req.StateRef != "registered-state-ref" {
+					t.Errorf("request %d has wrong shared State identity: %+v", i, req)
+				}
+				var ids []string
+				for _, q := range req.Questions {
+					ids = append(ids, q.ID)
+				}
+				if !reflect.DeepEqual(ids, tc.want[i]) {
+					t.Errorf("request %d question IDs=%v, want %v", i, ids, tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestWorkbenchRejectsExperimentControlsBeforeExecution(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		concurrency string
+		window      string
+		questions   [][]string
+		want        string
+	}{
+		{name: "invalid concurrency", concurrency: "two", window: "10", questions: [][]string{{"q", "Pick", "a", "b"}}, want: "concurrency must be a whole number"},
+		{name: "too many independent requests", concurrency: "2", window: "10", questions: [][]string{{"q", "Pick", "a", "b"}}, want: "cannot exceed the 1 distinct questions"},
+		{name: "no questions", concurrency: "1", window: "10", want: "cannot exceed the 0 distinct questions"},
+		{name: "window over maximum", concurrency: "1", window: "1001", questions: [][]string{{"q", "Pick", "a", "b"}}, want: "from 0 to 1000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, f := newWorkbenchEnv(t)
+			control := enableWorkbenchScheduler(t, e, 10*time.Millisecond, 4)
+			v := form("state", tc.questions...)
+			v.Set("op", "run")
+			v.Set("concurrency", tc.concurrency)
+			v.Set("batch_window_ms", tc.window)
+			body := e.post(t, "/workbench", v).Body.String()
+			if !strings.Contains(body, html.EscapeString(tc.want)) || !strings.Contains(body, "invalid · not sent") {
+				t.Fatalf("validation message missing %q: %s", tc.want, body)
+			}
+			if paths, _ := f.calls(); len(paths) != 0 {
+				t.Fatalf("invalid controls reached the API: %v", paths)
+			}
+			if control.BatchWindow() != 10*time.Millisecond || len(control.sets) != 0 {
+				t.Fatalf("invalid controls changed effective window: %s", control.BatchWindow())
+			}
+		})
+	}
+}
+
+func TestWorkbenchConcurrentRequestErrorsRemainIsolated(t *testing.T) {
+	e, f := newWorkbenchEnv(t)
+	enableWorkbenchScheduler(t, e, 20*time.Millisecond, 4)
+	f.reply = func(req api.DecideRequest) (int, any) {
+		if req.Questions[0].ID == "bad" {
+			return http.StatusFailedDependency, api.ErrorBody{Schema: api.SchemaV1,
+				Error: api.ErrorInfo{Class: api.ErrInferenceFailed, Message: "one request failed"}}
+		}
+		return http.StatusOK, echo(req)
+	}
+	v := with(form("state", []string{"good", "Pick", "yes", "no"}, []string{"bad", "Pick", "yes", "no"}),
+		"op", "run", "concurrency", "2", "batch_window_ms", "20")
+	body := e.post(t, "/workbench", v).Body.String()
+	for _, want := range []string{"1 of 2 independent decide requests failed", "one request failed", "Question 0", "yes", `"error": "inference_failed`} {
+		if !strings.Contains(html.UnescapeString(body), want) {
+			t.Errorf("independent result evidence lacks %q", want)
+		}
+	}
+	paths, _ := f.calls()
+	if len(paths) != 3 || paths[0] != "POST /v1/states" || paths[1] != "POST /v1/decide" || paths[2] != "POST /v1/decide" {
+		t.Fatalf("failed request changed the independent request path: %v", paths)
+	}
+}
+
+func TestWorkbenchSameStateConcurrentRequestsPropagateCancellation(t *testing.T) {
+	e, f := newWorkbenchEnv(t)
+	enableWorkbenchScheduler(t, e, 20*time.Millisecond, 4)
+	f.block = make(chan struct{})
+	v := with(form("state", []string{"q1", "Pick one", "yes", "no"}, []string{"q2", "Pick two", "yes", "no"}),
+		"op", "run", "concurrency", "2", "batch_window_ms", "20")
+	v.Set("token", e.d.token)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest("POST", "http://127.0.0.1:7844/workbench", strings.NewReader(v.Encode())).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://127.0.0.1:7844")
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		e.d.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		f.mu.Lock()
+		active := f.activeDecides
+		f.mu.Unlock()
+		if active == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("concurrent decide requests did not start before cancellation; active=%d", active)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Workbench did not return after its request context was canceled")
+	}
+	body := html.UnescapeString(rec.Body.String())
+	if !strings.Contains(body, "2 of 2 independent decide requests failed") {
+		t.Fatalf("cancellation was not isolated and reported for both requests: %s", body)
+	}
+	paths, _ := f.calls()
+	if len(paths) != 3 || paths[0] != "POST /v1/states" || paths[1] != "POST /v1/decide" || paths[2] != "POST /v1/decide" {
+		t.Fatalf("canceled experiment path %v", paths)
+	}
 }
 
 func enableWorkbenchCapacity(t testing.TB, e *env, requested int) home.CapacityProfile {

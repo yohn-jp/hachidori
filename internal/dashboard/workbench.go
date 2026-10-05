@@ -13,6 +13,7 @@ package dashboard
 // only at local paths the operator typed, one file per action.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,12 +23,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/client"
 	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/question"
+	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
 // workbenchMaxBody bounds a workbench POST: a maximal v1 request (64 KiB of
@@ -64,9 +67,12 @@ type wbQuestion struct {
 // workbench is the complete editor state.
 type workbench struct {
 	State                   string
+	StateRef                string
 	Questions               []wbQuestion
 	LoadPath                string
 	RequestedMaxInputTokens string
+	Concurrency             string
+	BatchWindowMS           string
 }
 
 // definition is the Question Definition the editor row describes. Choice
@@ -140,7 +146,10 @@ func nl(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 // bounded by the v1 limits so a crafted form cannot allocate unboundedly.
 func parseWorkbench(r *http.Request) workbench {
 	w := workbench{State: nl(r.PostFormValue("state")), LoadPath: strings.TrimSpace(r.PostFormValue("load_path")),
-		RequestedMaxInputTokens: strings.TrimSpace(r.PostFormValue("requested_max_input_tokens"))}
+		RequestedMaxInputTokens: strings.TrimSpace(r.PostFormValue("requested_max_input_tokens")),
+		StateRef:                strings.TrimSpace(r.PostFormValue("state_ref")),
+		Concurrency:             strings.TrimSpace(r.PostFormValue("concurrency")),
+		BatchWindowMS:           strings.TrimSpace(r.PostFormValue("batch_window_ms"))}
 	nq := bounded(r.PostFormValue("nq"), api.MaxQuestions)
 	for i := 0; i < nq; i++ {
 		p := "q" + strconv.Itoa(i) + "."
@@ -170,11 +179,24 @@ func bounded(s string, hi int) int {
 
 // wbRun is the outcome of one inference run from the workbench.
 type wbRun struct {
-	Wire     string // the exact JSON body sent to POST /v1/decide
+	Wire          string // the exact JSON body sent to POST /v1/decide
+	Response      *api.DecideResponse
+	Err           string
+	Invalid       bool // the request failed v1 validation and was not sent
+	Sent          bool
+	TookMS        float64
+	StateRef      string
+	Concurrency   int
+	BatchWindowMS *int
+	Calls         []wbCall
+	Results       map[string]api.Result
+	Evidence      string
+}
+
+type wbCall struct {
+	Wire     string
 	Response *api.DecideResponse
 	Err      string
-	Invalid  bool // the request failed v1 validation and was not sent
-	Sent     bool
 	TookMS   float64
 }
 
@@ -194,6 +216,7 @@ type wbView struct {
 	Endpoint        string
 	W               workbench
 	Capacity        *wbCapacity
+	BatchWindow     *wbBatchWindow
 	CapacityMessage string
 	Run             *wbRun
 	Preview         bool
@@ -201,7 +224,14 @@ type wbView struct {
 	LoadMsg         string
 	LoadErr         string
 	FormError       string
+	StateMessage    string
 	PathPicker      bool
+}
+
+type wbBatchWindow struct {
+	EffectiveMS    int
+	MaxWindowMS    int
+	MaxConcurrency int
 }
 
 type wbCapacity struct {
@@ -239,13 +269,28 @@ func (v wbView) Question(i int) wbQuestionView {
 		qv.Identity = &id
 	}
 	qv.Modified = q.Loaded != nil && (qv.Identity == nil || *qv.Identity != *q.Loaded)
-	if v.Run != nil && v.Run.Response != nil && i < len(v.Run.Response.Results) {
-		res := v.Run.Response.Results[i]
-		if res.ID == q.ID {
+	if v.Run != nil {
+		if res, ok := v.Run.Results[q.ID]; ok {
 			qv.Result = &res
+		} else if v.Run.Response != nil && i < len(v.Run.Response.Results) {
+			res := v.Run.Response.Results[i]
+			if res.ID == q.ID {
+				qv.Result = &res
+			}
 		}
 	}
 	return qv
+}
+
+func (v wbView) StateReferenceMatches() bool {
+	return v.W.StateRef == "" || home.StateRef(v.W.State) == v.W.StateRef
+}
+
+func (v wbView) MaxConcurrency() int {
+	if v.BatchWindow == nil {
+		return 1
+	}
+	return max(1, min(v.BatchWindow.MaxConcurrency, len(v.W.Questions)))
 }
 
 func (d *Dashboard) endpoint() *client.Client {
@@ -253,26 +298,49 @@ func (d *Dashboard) endpoint() *client.Client {
 }
 
 func (d *Dashboard) workbenchView() wbView {
-	return wbView{Chrome: d.chrome("Workbench", "workbench"),
+	v := wbView{Chrome: d.chrome("Workbench", "workbench"),
 		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr + "/v1/decide", PathPicker: d.cfg.PathPicker != nil,
 		Capacity: d.workbenchCapacity()}
+	v.BatchWindow = d.workbenchBatchWindow()
+	return v
+}
+
+func (d *Dashboard) workbenchBatchWindow() *wbBatchWindow {
+	if d.cfg.BatchWindow == nil || d.cfg.Status == nil {
+		return nil
+	}
+	status := d.cfg.Status()
+	if !status.Worker.Ready || status.Worker.Info["provider"] != "clef" || status.Worker.QueueLimit < 1 {
+		return nil
+	}
+	return &wbBatchWindow{EffectiveMS: int(d.cfg.BatchWindow.BatchWindow() / time.Millisecond),
+		MaxWindowMS: int(worker.MaxBatchWindow.Milliseconds()), MaxConcurrency: status.Worker.QueueLimit}
 }
 
 func (d *Dashboard) workbenchPage(w http.ResponseWriter, r *http.Request) {
 	v := d.workbenchView()
-	v.W = workbench{Questions: []wbQuestion{blankQuestion()}}
+	v.W = workbench{Questions: []wbQuestion{blankQuestion()}, Concurrency: "1"}
+	if v.BatchWindow != nil {
+		v.W.BatchWindowMS = strconv.Itoa(v.BatchWindow.EffectiveMS)
+	}
 	if v.Capacity != nil && v.Capacity.Editable {
 		v.W.RequestedMaxInputTokens = v.Capacity.Requested
 	}
 	d.renderView(w, "workbench", v)
 }
 
-// workbenchPost applies one editor operation and renders the result. Saving a
-// requested capacity changes the operator-owned profile; "run" is one POST
-// /v1/decide and does not alter the inline-State or State-reference contract.
+// workbenchPost applies one editor operation and renders the result. Capacity
+// edits use their existing HACHIDORI_HOME profile; scheduler experiments use
+// the live worker Policy and independent v1 decide requests.
 func (d *Dashboard) workbenchPost(w http.ResponseWriter, r *http.Request) {
 	v := d.workbenchView()
 	v.W = parseWorkbench(r)
+	if v.W.Concurrency == "" {
+		v.W.Concurrency = "1"
+	}
+	if !r.PostForm.Has("batch_window_ms") && v.BatchWindow != nil {
+		v.W.BatchWindowMS = strconv.Itoa(v.BatchWindow.EffectiveMS)
+	}
 	for i, q := range v.W.Questions {
 		v.W.Questions[i] = q.withBlankRows()
 	}
@@ -280,7 +348,12 @@ func (d *Dashboard) workbenchPost(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case op == "run", op == "preview":
 		v.Preview = op == "preview"
-		v.Run = d.workbenchRun(v.W, op == "run")
+		v.Run = d.workbenchRun(r.Context(), &v.W, op == "run")
+		if v.Run.Invalid {
+			v.FormError = v.Run.Err
+		}
+	case op == "register-state":
+		d.workbenchRegisterState(r.Context(), &v)
 	case op == "save-capacity":
 		if err := d.saveWorkbenchCapacity(v.W.RequestedMaxInputTokens); err != nil {
 			v.FormError = err.Error()
@@ -318,6 +391,7 @@ func (d *Dashboard) workbenchPost(w http.ResponseWriter, r *http.Request) {
 	default:
 		v.FormError = "unknown workbench operation"
 	}
+	v.BatchWindow = d.workbenchBatchWindow()
 	if len(v.W.Questions) == 0 {
 		v.W.Questions = []wbQuestion{blankQuestion()}
 	}
@@ -453,33 +527,265 @@ func index(op, prefix string, n int) (int, bool) {
 	return i, err == nil && i >= 0 && i < n
 }
 
-// workbenchRun validates the compiled request with the v1 contract and, when
-// send is set and it is valid, sends it once through the existing endpoint.
-func (d *Dashboard) workbenchRun(wb workbench, send bool) *wbRun {
-	req := wb.request()
-	run := &wbRun{}
-	b, err := json.Marshal(req) // byte-for-byte what client.Decide sends
-	if err != nil {
-		run.Err = err.Error()
-		return run
+// workbenchRun validates the editor and experiment controls before changing
+// the live window or sending any inference request. Multiple requests are
+// independently sent to /v1/decide with balanced, contiguous groups of the
+// Workbench's distinct questions so the worker can coalesce them without
+// duplicate question IDs.
+func (d *Dashboard) workbenchRun(ctx context.Context, wb *workbench, send bool) *wbRun {
+	run := &wbRun{Results: map[string]api.Result{}}
+	if send {
+		// Keep the selected live window stable for the entire Workbench run.
+		d.workbenchRunMu.Lock()
+		defer d.workbenchRunMu.Unlock()
 	}
-	run.Wire = string(b)
-	if err := req.Validate(); err != nil {
-		run.Err, run.Invalid = err.Error(), true
-		return run
+	if wb.Concurrency == "" {
+		wb.Concurrency = "1"
+	}
+	window := d.workbenchBatchWindow()
+	concurrency, err := workbenchConcurrency(wb.Concurrency, len(wb.Questions), window)
+	if err != nil {
+		return invalidWorkbenchRun(run, err)
+	}
+	run.Concurrency = concurrency
+	if concurrency > 1 && window == nil {
+		return invalidWorkbenchRun(run, errors.New("same-State concurrency requires a ready Clef worker and its batch-window control"))
+	}
+	var requestedWindowMS *int
+	if window != nil {
+		ms, err := parseBatchWindowMS(wb.BatchWindowMS)
+		if err != nil {
+			return invalidWorkbenchRun(run, err)
+		}
+		requestedWindowMS = &ms
+		run.BatchWindowMS = &ms
+	} else if wb.BatchWindowMS != "" {
+		return invalidWorkbenchRun(run, errors.New("batch-window control requires a ready Clef worker"))
+	}
+
+	base := wb.request()
+	if wb.StateRef != "" {
+		if home.StateRef(wb.State) != wb.StateRef {
+			return invalidWorkbenchRun(run, errors.New("registered State reference does not match the current State; register it again"))
+		}
+		base.State, base.StateRef = "", wb.StateRef
+	}
+	run.StateRef = base.StateRef
+	if err := base.Validate(); err != nil {
+		return invalidWorkbenchRun(run, err)
+	}
+	stateRef := wb.StateRef
+	if concurrency > 1 && stateRef == "" {
+		stateRef = home.StateRef(wb.State)
+	}
+	if concurrency > 1 {
+		run.StateRef = stateRef
+	}
+	requests := workbenchRequests(base, concurrency, stateRef)
+	if len(requests) == 1 {
+		wire, err := json.Marshal(requests[0])
+		if err != nil {
+			return invalidWorkbenchRun(run, err)
+		}
+		run.Wire = string(wire)
+	} else {
+		for _, req := range requests {
+			wire, err := json.Marshal(req)
+			if err != nil {
+				return invalidWorkbenchRun(run, err)
+			}
+			run.Calls = append(run.Calls, wbCall{Wire: string(wire)})
+		}
 	}
 	if !send {
 		return run
 	}
-	t0 := time.Now()
-	resp, err := d.endpoint().Decide(req)
-	run.Sent, run.TookMS = true, float64(time.Since(t0).Microseconds())/1000
-	if err != nil {
-		run.Err = err.Error()
-		return run
+
+	apiClient := d.endpoint()
+	if concurrency > 1 && wb.StateRef == "" {
+		registered, err := apiClient.RegisterStateContext(ctx, api.RegisterState{Schema: api.SchemaV1, State: wb.State})
+		if err != nil {
+			run.Err = "register State: " + err.Error()
+			return run
+		}
+		if registered.StateRef != stateRef {
+			run.Err = "runtime returned a State reference that does not match the submitted State"
+			return run
+		}
+		wb.StateRef = registered.StateRef
 	}
-	run.Response = &resp
+	if requestedWindowMS != nil {
+		if err := d.cfg.BatchWindow.SetBatchWindow(time.Duration(*requestedWindowMS) * time.Millisecond); err != nil {
+			run.Err = err.Error()
+			return run
+		}
+		if effective := int(d.cfg.BatchWindow.BatchWindow() / time.Millisecond); effective != *requestedWindowMS {
+			run.Err = fmt.Sprintf("runtime applied %dms batch window, requested %dms", effective, *requestedWindowMS)
+			return run
+		}
+		run.BatchWindowMS = requestedWindowMS
+	}
+
+	started := time.Now()
+	run.Sent = true
+	if len(requests) == 1 {
+		call := workbenchCall(ctx, apiClient, requests[0], run.Wire)
+		run.TookMS = call.TookMS
+		run.Err = call.Err
+		run.Response = call.Response
+		if call.Response != nil {
+			for _, result := range call.Response.Results {
+				run.Results[result.ID] = result
+			}
+		}
+	} else {
+		run.Calls = make([]wbCall, len(requests))
+		var wg sync.WaitGroup
+		for i, req := range requests {
+			wire, _ := json.Marshal(req) // the same typed request was marshaled above
+			run.Calls[i].Wire = string(wire)
+			wg.Add(1)
+			go func(i int, req api.DecideRequest, wire string) {
+				defer wg.Done()
+				run.Calls[i] = workbenchCall(ctx, apiClient, req, wire)
+			}(i, req, string(wire))
+		}
+		wg.Wait()
+		run.TookMS = float64(time.Since(started).Microseconds()) / 1000
+		failed := 0
+		for _, call := range run.Calls {
+			if call.Err != "" {
+				failed++
+				continue
+			}
+			if call.Response != nil {
+				for _, result := range call.Response.Results {
+					run.Results[result.ID] = result
+				}
+			}
+		}
+		if failed > 0 {
+			run.Err = fmt.Sprintf("%d of %d independent decide requests failed", failed, len(run.Calls))
+		}
+	}
+	run.Evidence = workbenchEvidence(run, requests, started, time.Now())
 	return run
+}
+
+func workbenchConcurrency(raw string, questionCount int, window *wbBatchWindow) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 1 {
+		return 0, errors.New("concurrency must be a whole number greater than zero")
+	}
+	if n > 1 && window == nil {
+		return 0, errors.New("same-State concurrency requires a ready Clef worker and its batch-window control")
+	}
+	if window != nil && n > window.MaxConcurrency {
+		return 0, fmt.Errorf("concurrency must be between 1 and the runtime queue limit of %d", window.MaxConcurrency)
+	}
+	if n > questionCount {
+		return 0, fmt.Errorf("concurrency cannot exceed the %d distinct questions; add a unique question for each independent request", questionCount)
+	}
+	return n, nil
+}
+
+func parseBatchWindowMS(raw string) (int, error) {
+	ms, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || ms < 0 || int64(ms) > worker.MaxBatchWindow.Milliseconds() {
+		return 0, fmt.Errorf("batch window must be a whole number of milliseconds from 0 to %d", worker.MaxBatchWindow.Milliseconds())
+	}
+	return ms, nil
+}
+
+func invalidWorkbenchRun(run *wbRun, err error) *wbRun {
+	run.Err, run.Invalid = err.Error(), true
+	return run
+}
+
+func workbenchRequests(base api.DecideRequest, concurrency int, stateRef string) []api.DecideRequest {
+	if concurrency == 1 {
+		return []api.DecideRequest{base}
+	}
+	requests := make([]api.DecideRequest, concurrency)
+	chunkSize, remainder := len(base.Questions)/concurrency, len(base.Questions)%concurrency
+	start := 0
+	for i := range requests {
+		size := chunkSize
+		if i < remainder {
+			size++
+		}
+		end := start + size
+		requests[i] = api.DecideRequest{Schema: api.SchemaV1, StateRef: stateRef,
+			Questions: append([]api.Question(nil), base.Questions[start:end]...)}
+		start = end
+	}
+	return requests
+}
+
+func workbenchCall(ctx context.Context, c *client.Client, req api.DecideRequest, wire string) wbCall {
+	started := time.Now()
+	resp, err := c.DecideContext(ctx, req)
+	call := wbCall{Wire: wire, TookMS: float64(time.Since(started).Microseconds()) / 1000}
+	if err != nil {
+		call.Err = err.Error()
+		return call
+	}
+	call.Response = &resp
+	return call
+}
+
+func workbenchEvidence(run *wbRun, requests []api.DecideRequest, started, finished time.Time) string {
+	type requestEvidence struct {
+		Request  json.RawMessage     `json:"request"`
+		Response *api.DecideResponse `json:"response,omitempty"`
+		Error    string              `json:"error,omitempty"`
+		TookMS   float64             `json:"round_trip_ms"`
+	}
+	evidence := struct {
+		Concurrency   int               `json:"concurrency"`
+		BatchWindowMS *int              `json:"batch_window_ms,omitempty"`
+		StateRef      string            `json:"state_ref,omitempty"`
+		StartedAt     time.Time         `json:"started_at"`
+		FinishedAt    time.Time         `json:"finished_at"`
+		Requests      []requestEvidence `json:"requests"`
+	}{Concurrency: run.Concurrency, BatchWindowMS: run.BatchWindowMS, StateRef: run.StateRef,
+		StartedAt: started.UTC(), FinishedAt: finished.UTC(), Requests: make([]requestEvidence, len(requests))}
+	for i, req := range requests {
+		wire, _ := json.Marshal(req)
+		evidence.Requests[i].Request = wire
+		if i < len(run.Calls) {
+			evidence.Requests[i].Response = run.Calls[i].Response
+			evidence.Requests[i].Error = run.Calls[i].Err
+			evidence.Requests[i].TookMS = run.Calls[i].TookMS
+		} else if len(requests) == 1 {
+			evidence.Requests[i].Response = run.Response
+			evidence.Requests[i].Error = run.Err
+			evidence.Requests[i].TookMS = run.TookMS
+		}
+	}
+	data, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func (d *Dashboard) workbenchRegisterState(ctx context.Context, view *wbView) {
+	if strings.TrimSpace(view.W.State) == "" {
+		view.FormError = "State must not be blank"
+		return
+	}
+	if len(view.W.State) > api.MaxStateBytes {
+		view.FormError = fmt.Sprintf("state exceeds %d bytes", api.MaxStateBytes)
+		return
+	}
+	registered, err := d.endpoint().RegisterStateContext(ctx, api.RegisterState{Schema: api.SchemaV1, State: view.W.State})
+	if err != nil {
+		view.FormError = "register State: " + err.Error()
+		return
+	}
+	view.W.StateRef = registered.StateRef
+	view.StateMessage = "State registered as " + registered.StateRef
 }
 
 // absPath requires an explicit absolute local path: the dashboard never

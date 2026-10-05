@@ -63,6 +63,13 @@ type Lifecycle interface {
 	Running() bool
 }
 
+// BatchWindowControl is the live worker Policy authority used by Workbench
+// scheduler experiments.
+type BatchWindowControl interface {
+	BatchWindow() time.Duration
+	SetBatchWindow(time.Duration) error
+}
+
 // PathPicker is the optional desktop capability used by workstation file
 // workflows. Browser hosted dashboards leave it nil and retain typed paths.
 // A dismissed dialog returns ErrPickCancelled.
@@ -77,9 +84,12 @@ type Config struct {
 	APIAddr   string               // the loopback inference API address; the workbench calls it
 	Status    func() server.Status // the /v1/status document
 	Lifecycle Lifecycle
-	Doctor    func(out io.Writer) bool // doctor.Run bound to HACHIDORI_HOME
-	Tunnel    *tunnel.Manager
-	PrefsPath string // non-secret tunnel preferences; empty disables persistence
+	// BatchWindow exposes the same live worker policy reported by Status. Nil
+	// disables same-State scheduler experiments for hosts without a supervisor.
+	BatchWindow BatchWindowControl
+	Doctor      func(out io.Writer) bool // doctor.Run bound to HACHIDORI_HOME
+	Tunnel      *tunnel.Manager
+	PrefsPath   string // non-secret tunnel preferences; empty disables persistence
 	// HistoryDir is the experiment history root beneath HACHIDORI_HOME
 	// (state/history). Empty disables saving and listing experiment history;
 	// experiments then stay memory-only apart from explicit exports.
@@ -476,9 +486,10 @@ type Dashboard struct {
 	token string
 	mux   *http.ServeMux
 
-	mu     sync.Mutex
-	last   *Action
-	doctor DoctorRun
+	mu             sync.Mutex
+	workbenchRunMu sync.Mutex
+	last           *Action
+	doctor         DoctorRun
 
 	exp     experiments
 	errs    explorer

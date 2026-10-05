@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -23,6 +24,13 @@ const (
 // possible, before any process exists.
 const PhasePreflight = "preflight"
 
+// DefaultBatchWindow is the runtime's initial maximum wait for compatible
+// Clef requests. Workbench can update it through the live Supervisor policy.
+const DefaultBatchWindow = 10 * time.Millisecond
+
+// MaxBatchWindow bounds a Workbench experiment's scheduler wait.
+const MaxBatchWindow = time.Second
+
 // Policy bounds restarts after a worker that was READY dies.
 // Startup failures (import, device, model load, warmup) are deterministic and
 // are not retried: the supervisor reports them and stays failed.
@@ -37,22 +45,23 @@ type Policy struct {
 }
 
 // DefaultPolicy is the conservative first-milestone policy.
-var DefaultPolicy = Policy{MaxRestarts: 3, Window: 10 * time.Minute, Backoff: 2 * time.Second, QueueDepth: 64, BatchWindow: 10 * time.Millisecond, BatchItems: 8, BatchWork: 32768}
+var DefaultPolicy = Policy{MaxRestarts: 3, Window: 10 * time.Minute, Backoff: 2 * time.Second, QueueDepth: 64, BatchWindow: DefaultBatchWindow, BatchItems: 8, BatchWork: 32768}
 
 // Supervisor owns one resident worker and its restart policy.
 type Supervisor struct {
-	cfg              Config
-	policy           Policy
-	queue            chan struct{}
-	batch            chan batchRequest
-	batchCtx         context.Context
-	batchCalls       int64
-	batchItems       int64
-	batchQueueWaitMS float64
-	batchWaitMS      float64
-	batchLastSize    int
-	batchLastWork    int
-	batchSizes       map[int]int64
+	cfg                Config
+	policy             Policy
+	queue              chan struct{}
+	batch              chan batchRequest
+	batchCtx           context.Context
+	batchWindowChanged chan struct{}
+	batchCalls         int64
+	batchItems         int64
+	batchQueueWaitMS   float64
+	batchWaitMS        float64
+	batchLastSize      int
+	batchLastWork      int
+	batchSizes         map[int]int64
 
 	mu        sync.Mutex
 	state     string
@@ -111,9 +120,40 @@ func NewSupervisor(cfg Config, policy Policy) *Supervisor {
 	}
 	if policy.BatchWindow < 0 {
 		policy.BatchWindow = 0
+	} else if policy.BatchWindow > MaxBatchWindow {
+		policy.BatchWindow = MaxBatchWindow
 	}
 	return &Supervisor{cfg: cfg, policy: policy, queue: make(chan struct{}, policy.QueueDepth),
-		state: StateStarting, errors: map[string]int64{}, batchSizes: map[int]int64{}}
+		batchWindowChanged: make(chan struct{}, 1), state: StateStarting,
+		errors: map[string]int64{}, batchSizes: map[int]int64{}}
+}
+
+// BatchWindow reports the effective maximum wait for compatible Clef
+// requests. The value is part of the same live Policy used by the scheduler.
+func (s *Supervisor) BatchWindow() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.policy.BatchWindow
+}
+
+// SetBatchWindow updates the live scheduler policy. The collector wakes and
+// recalculates its current deadline, so the setting applies without replacing
+// the worker or changing request lifecycle.
+func (s *Supervisor) SetBatchWindow(window time.Duration) error {
+	if window < 0 || window > MaxBatchWindow || window%time.Millisecond != 0 {
+		return fmt.Errorf("batch window must be a whole number of milliseconds from 0 to %d", MaxBatchWindow.Milliseconds())
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.policy.BatchWindow == window {
+		return nil
+	}
+	s.policy.BatchWindow = window
+	select {
+	case s.batchWindowChanged <- struct{}{}:
+	default:
+	}
+	return nil
 }
 
 // Run starts the worker and keeps it resident until ctx is cancelled.
@@ -399,6 +439,7 @@ type Snapshot struct {
 	QueueDepth       int              `json:"queue_depth"` // requests waiting for a worker call
 	InFlight         int              `json:"in_flight"`   // requests whose worker call is executing
 	QueueLimit       int              `json:"queue_limit"`
+	BatchWindowMS    *int             `json:"batch_window_ms,omitempty"`
 	LatencyP50MS     float64          `json:"inference_p50_ms"`
 	LatencyP95MS     float64          `json:"inference_p95_ms"`
 }
@@ -418,6 +459,10 @@ func (s *Supervisor) Snapshot() Snapshot {
 	snap := Snapshot{State: s.state, Phase: s.phase, Ready: s.state == StateReady, Starts: s.starts,
 		Restarts: len(s.restarts), Info: s.info, Requests: s.requests, Errors: map[string]int64{},
 		QueueDepth: s.waiting, InFlight: s.inFlight, QueueLimit: cap(s.queue)}
+	if s.info["provider"] == "clef" {
+		windowMS := int(s.policy.BatchWindow / time.Millisecond)
+		snap.BatchWindowMS = &windowMS
+	}
 	batch := s.batchMetricsLocked()
 	clef := s.info["provider"] == "clef"
 	for k, v := range s.errors {
