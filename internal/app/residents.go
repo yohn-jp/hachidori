@@ -252,6 +252,21 @@ func (s *ResidentSet) Ready() bool               { return s.def.Supervisor.Ready
 func (s *ResidentSet) State() string             { return s.def.Supervisor.State() }
 func (s *ResidentSet) Snapshot() worker.Snapshot { return s.def.Supervisor.Snapshot() }
 
+// BatchWindow is the live scheduler window shared by every resident worker.
+func (s *ResidentSet) BatchWindow() time.Duration { return s.def.Supervisor.BatchWindow() }
+
+// SetBatchWindow updates every resident scheduler through its existing
+// Supervisor policy. The same bounded value is applied to the full set before
+// the Workbench starts an experiment.
+func (s *ResidentSet) SetBatchWindow(window time.Duration) error {
+	for _, resident := range s.order {
+		if err := resident.Supervisor.SetBatchWindow(window); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Status is the /v1/status document: the default resident's own fields plus
 // every resident in Residents.
 func (s *ResidentSet) Status() server.Status {

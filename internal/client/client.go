@@ -3,6 +3,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,8 +48,25 @@ func (e *APIError) Error() string {
 
 // Decide calls POST /v1/decide.
 func (c *Client) Decide(req api.DecideRequest) (api.DecideResponse, error) {
+	return c.DecideContext(context.Background(), req)
+}
+
+// DecideContext calls POST /v1/decide and follows the caller's cancellation.
+func (c *Client) DecideContext(ctx context.Context, req api.DecideRequest) (api.DecideResponse, error) {
 	var out api.DecideResponse
-	err := c.do("POST", "/v1/decide", req, &out)
+	err := c.doContext(ctx, "POST", "/v1/decide", req, &out)
+	return out, err
+}
+
+// RegisterState calls POST /v1/states.
+func (c *Client) RegisterState(req api.RegisterState) (api.StateReference, error) {
+	return c.RegisterStateContext(context.Background(), req)
+}
+
+// RegisterStateContext calls POST /v1/states and follows the caller's cancellation.
+func (c *Client) RegisterStateContext(ctx context.Context, req api.RegisterState) (api.StateReference, error) {
+	var out api.StateReference
+	err := c.doContext(ctx, "POST", "/v1/states", req, &out)
 	return out, err
 }
 
@@ -77,6 +95,10 @@ func (c *Client) Health() (api.Health, error) {
 }
 
 func (c *Client) do(method, path string, body, out any) error {
+	return c.doContext(context.Background(), method, path, body, out)
+}
+
+func (c *Client) doContext(ctx context.Context, method, path string, body, out any) error {
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -85,7 +107,7 @@ func (c *Client) do(method, path string, body, out any) error {
 		}
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, c.Endpoint+path, rd)
+	req, err := http.NewRequestWithContext(ctx, method, c.Endpoint+path, rd)
 	if err != nil {
 		return err
 	}

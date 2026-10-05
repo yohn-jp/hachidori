@@ -395,6 +395,7 @@ func schemas() obj {
 			"queue_depth":        obj{"type": "integer", "description": "Requests waiting for a worker call; excludes in-flight requests."},
 			"in_flight":          obj{"type": "integer", "description": "Requests whose worker call is executing."},
 			"queue_limit":        obj{"type": "integer", "description": "Maximum admitted requests, waiting or in flight."},
+			"batch_window_ms":    obj{"type": "integer", "minimum": 0, "maximum": worker.MaxBatchWindow.Milliseconds(), "description": "Effective Clef same-State scheduler wait in milliseconds; the runtime policy retains it across worker restarts in this process."},
 			"inference_p50_ms":   num("Median inference latency in milliseconds."),
 			"inference_p95_ms":   num("95th-percentile inference latency in milliseconds."),
 		}, "state", "phase", "ready", "starts", "restarts_in_window", "requests", "errors", "queue_depth", "in_flight", "queue_limit", "inference_p50_ms", "inference_p95_ms"),

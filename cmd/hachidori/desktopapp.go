@@ -268,9 +268,11 @@ func (a *desktopApp) run() error {
 		// bind attaches the dashboard and the API handler to a newly opened
 		// runtime, whether it is the one worker or a resident set.
 		bind := func(status func() server.Status, lc dashboard.Lifecycle, dec server.Decider, info server.Runtime, started time.Time) {
+			batchWindow, _ := dec.(dashboard.BatchWindowControl)
 			dash := dashboard.New(dashboard.Config{
 				APIAddr:        apiAddr,
 				Status:         status,
+				BatchWindow:    batchWindow,
 				RequestHistory: requests,
 				Lifecycle:      lc,
 				Doctor:         func(out io.Writer) bool { return doctor.Run(root, out) },

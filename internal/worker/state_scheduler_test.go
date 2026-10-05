@@ -78,8 +78,11 @@ func TestCombinedStateCapacityIsolatesRequests(t *testing.T) {
 }
 
 func TestSameStateDifferentQuestionScheduler(t *testing.T) {
-	s, stop := clefSupervisor(t, "clef", Policy{QueueDepth: 8, BatchWindow: 100 * time.Millisecond, BatchItems: 2})
+	s, stop := clefSupervisor(t, "clef", Policy{QueueDepth: 8, BatchWindow: 0, BatchItems: 2})
 	defer stop()
+	if err := s.SetBatchWindow(100 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	for _, id := range []string{"first", "second"} {
 		wg.Add(1)
@@ -98,5 +101,56 @@ func TestSameStateDifferentQuestionScheduler(t *testing.T) {
 	wg.Wait()
 	if metrics := s.BatchMetrics(); metrics.BatchCalls != 1 || metrics.BatchItems != 2 {
 		t.Fatal(fmt.Sprint(metrics))
+	}
+	if got := s.Snapshot().BatchWindowMS; got == nil || *got != 100 {
+		t.Fatalf("status batch_window_ms=%v, want 100", got)
+	}
+}
+
+func TestSupervisorBatchWindowChangeWakesPendingCollector(t *testing.T) {
+	s, stop := clefSupervisor(t, "clef", Policy{QueueDepth: 4, BatchWindow: time.Second, BatchItems: 4})
+	defer stop()
+	if got := s.Snapshot().BatchWindowMS; got == nil || *got != 1000 {
+		t.Fatalf("initial batch_window_ms=%v, want 1000", got)
+	}
+	for _, window := range []time.Duration{-time.Millisecond, time.Microsecond, MaxBatchWindow + time.Millisecond} {
+		if err := s.SetBatchWindow(window); err == nil {
+			t.Errorf("accepted invalid batch window %s", window)
+		}
+	}
+	if got := s.BatchWindow(); got != time.Second {
+		t.Fatalf("invalid changes modified window to %s", got)
+	}
+	it := item
+	it.State = "shared"
+	it.StateRef = home.StateRef(it.State)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := s.Decide([]Item{it})
+		done <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for s.Snapshot().QueueDepth == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("request did not enter the batching queue")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := s.BatchMetrics().BatchCalls; got != 0 {
+		t.Fatalf("request flushed before window change: calls=%d", got)
+	}
+	if err := s.SetBatchWindow(0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("zero window did not release the pending request")
+	}
+	if got := s.BatchMetrics().BatchCalls; got != 1 {
+		t.Fatalf("batch calls=%d, want 1", got)
 	}
 }

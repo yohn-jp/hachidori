@@ -105,6 +105,29 @@ Question IDs; it demultiplexes results to the original requests. This is not
 `/v1/decide/batch` transport semantics. Capacity-denied combined shapes are
 retried as separate requests against the same authoritative worker admission.
 
+Workbench's same-State experiment uses this same path. The default concurrency
+is one, preserving the single `/v1/decide` flow. Higher values send that many
+independent concurrent `/v1/decide` requests with one shared registered
+`state_ref`; Workbench partitions distinct questions into contiguous,
+input-order-preserving groups. Group sizes are balanced, with the first
+remainder groups receiving one additional question (six questions at
+concurrency three become `[Q1,Q2]`, `[Q3,Q4]`, `[Q5,Q6]`). Each request keeps
+its own admission, cancellation, timeout and error boundary, while preserving
+unique Question IDs for Clef coalescing. Results return to the page in the
+editor's original question order. The selected concurrency
+cannot exceed either the number of questions or the running worker's queue
+limit. Workbench never translates this experiment into `/v1/decide/batch`.
+
+The batch window is the live `worker.Policy.BatchWindow` used by the running
+supervisor. Workbench accepts whole milliseconds from 0 through 1000; zero
+flushes compatible requests immediately. The default is 10 ms. Changing the
+value wakes the current Clef collector to recalculate its deadline, and the
+same effective value is reported as `worker.batch_window_ms` in `/v1/status`
+and in the Workbench's JSON experiment evidence alongside concurrency,
+State reference, request bodies and per-request results or errors. It applies
+to all residents in a resident set, remains in force through worker restarts
+within that process, and a new Hachidori process starts with the 10 ms default.
+
 A pinned, certified Clef CUDA worker can attach one completed #270 continuation
 to an explicit registered State. Its execution identity binds the effective
 encoded prefix and artifact in addition to the content reference. The worker
@@ -531,15 +554,17 @@ and Diagnostics also for their detail); there is no frontend build.
 
 `/workbench` is an interactive caller surface for one bounded state and one or
 more editable v1 choice questions (id, instructions, choices, optional choice
-descriptions). **Run** compiles every question with `internal/question`,
-validates the request with the v1 contract and sends it as one
-`POST /v1/decide` to the resident runtime; an invalid request shows the v1
-validation error and is not sent. The page shows each result's choice,
+descriptions). At the default concurrency of one, **Run** compiles every
+question with `internal/question`, validates the request with the v1 contract
+and sends it as one `POST /v1/decide` to the resident runtime; the same-State
+experiment described above can send balanced question groups concurrently.
+An invalid request shows the v1 validation error and is not sent. The page shows each result's choice,
 confidence and per-choice probabilities, and the exact request JSON body.
 There are no expected labels and no scoring here.
 
-The workbench keeps no state: the editor travels in the page's form (bounded
-by the v1 limits) and nothing is stored. Question Definition files are read or
+The workbench keeps no editor/session state: the editor travels in the page's
+form (bounded by the v1 limits). Register State is an explicit action that
+persists the exact State content under `HACHIDORI_HOME`. Question Definition files are read or
 written only at an absolute local path the operator types, one file per
 action: **Load** validates one `hachidori.question.v1` file with the same rules
 as `hachidori question` and projects it into the editor (showing whether the

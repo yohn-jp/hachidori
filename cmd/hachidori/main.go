@@ -307,9 +307,14 @@ func runHost(name string, args []string) error {
 
 	var dash *http.Server
 	if dashAddr != nil {
+		var batchWindow dashboard.BatchWindowControl
+		if control, ok := dec.(dashboard.BatchWindowControl); ok {
+			batchWindow = control
+		}
 		d := dashboard.New(dashboard.Config{
 			APIAddr:        *listen,
 			Status:         status,
+			BatchWindow:    batchWindow,
 			RequestHistory: requests,
 			Lifecycle:      lc,
 			Doctor:         func(out io.Writer) bool { return doctor.Run(h.Root, out) },

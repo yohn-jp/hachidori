@@ -108,6 +108,22 @@ func newResidentSet(t *testing.T, policy worker.Policy, members ...ResidentMembe
 	return s
 }
 
+func TestResidentSetBatchWindowUpdatesEveryWorkerPolicy(t *testing.T) {
+	s := newResidentSet(t, worker.Policy{QueueDepth: 8, BatchWindow: 10 * time.Millisecond},
+		residentMember(t, modelA, "ready"), residentMember(t, modelB, "ready"))
+	if got := s.BatchWindow(); got != 10*time.Millisecond {
+		t.Fatalf("initial window=%s", got)
+	}
+	if err := s.SetBatchWindow(75 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	for _, resident := range s.order {
+		if got := resident.Supervisor.BatchWindow(); got != 75*time.Millisecond {
+			t.Errorf("resident %s window=%s", resident.Model, got)
+		}
+	}
+}
+
 var noRestart = worker.Policy{MaxRestarts: 0, Window: time.Minute, QueueDepth: 8}
 
 func item(state string) []worker.Item { return []worker.Item{{State: state, Questions: nil}} }
