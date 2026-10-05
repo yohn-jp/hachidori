@@ -486,10 +486,10 @@ type Dashboard struct {
 	token string
 	mux   *http.ServeMux
 
-	mu             sync.Mutex
-	workbenchRunMu sync.Mutex
-	last           *Action
-	doctor         DoctorRun
+	mu               sync.Mutex
+	workbenchRunGate chan struct{}
+	last             *Action
+	doctor           DoctorRun
 
 	exp     experiments
 	errs    explorer
@@ -633,7 +633,7 @@ func New(cfg Config) *Dashboard {
 	if token == "" {
 		token = NewToken()
 	}
-	d := &Dashboard{cfg: cfg, token: token, mux: http.NewServeMux()}
+	d := &Dashboard{cfg: cfg, token: token, mux: http.NewServeMux(), workbenchRunGate: make(chan struct{}, 1)}
 	if cfg.HistoryDir != "" {
 		var err error
 		if d.hist, err = history.Open(cfg.HistoryDir); err != nil {

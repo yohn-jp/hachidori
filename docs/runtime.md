@@ -554,15 +554,17 @@ and Diagnostics also for their detail); there is no frontend build.
 
 `/workbench` is an interactive caller surface for one bounded state and one or
 more editable v1 choice questions (id, instructions, choices, optional choice
-descriptions). **Run** compiles every question with `internal/question`,
-validates the request with the v1 contract and sends it as one
-`POST /v1/decide` to the resident runtime; an invalid request shows the v1
-validation error and is not sent. The page shows each result's choice,
+descriptions). At the default concurrency of one, **Run** compiles every
+question with `internal/question`, validates the request with the v1 contract
+and sends it as one `POST /v1/decide` to the resident runtime; the same-State
+experiment described above can send balanced question groups concurrently.
+An invalid request shows the v1 validation error and is not sent. The page shows each result's choice,
 confidence and per-choice probabilities, and the exact request JSON body.
 There are no expected labels and no scoring here.
 
-The workbench keeps no state: the editor travels in the page's form (bounded
-by the v1 limits) and nothing is stored. Question Definition files are read or
+The workbench keeps no editor/session state: the editor travels in the page's
+form (bounded by the v1 limits). Register State is an explicit action that
+persists the exact State content under `HACHIDORI_HOME`. Question Definition files are read or
 written only at an absolute local path the operator types, one file per
 action: **Load** validates one `hachidori.question.v1` file with the same rules
 as `hachidori question` and projects it into the editor (showing whether the

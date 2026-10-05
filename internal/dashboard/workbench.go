@@ -536,8 +536,17 @@ func (d *Dashboard) workbenchRun(ctx context.Context, wb *workbench, send bool) 
 	run := &wbRun{Results: map[string]api.Result{}}
 	if send {
 		// Keep the selected live window stable for the entire Workbench run.
-		d.workbenchRunMu.Lock()
-		defer d.workbenchRunMu.Unlock()
+		select {
+		case d.workbenchRunGate <- struct{}{}:
+			defer func() { <-d.workbenchRunGate }()
+		case <-ctx.Done():
+			run.Err = ctx.Err().Error()
+			return run
+		}
+		if err := ctx.Err(); err != nil {
+			run.Err = err.Error()
+			return run
+		}
 	}
 	if wb.Concurrency == "" {
 		wb.Concurrency = "1"
@@ -603,6 +612,10 @@ func (d *Dashboard) workbenchRun(ctx context.Context, wb *workbench, send bool) 
 
 	apiClient := d.endpoint()
 	if concurrency > 1 && wb.StateRef == "" {
+		if err := ctx.Err(); err != nil {
+			run.Err = err.Error()
+			return run
+		}
 		registered, err := apiClient.RegisterStateContext(ctx, api.RegisterState{Schema: api.SchemaV1, State: wb.State})
 		if err != nil {
 			run.Err = "register State: " + err.Error()
@@ -615,6 +628,10 @@ func (d *Dashboard) workbenchRun(ctx context.Context, wb *workbench, send bool) 
 		wb.StateRef = registered.StateRef
 	}
 	if requestedWindowMS != nil {
+		if err := ctx.Err(); err != nil {
+			run.Err = err.Error()
+			return run
+		}
 		if err := d.cfg.BatchWindow.SetBatchWindow(time.Duration(*requestedWindowMS) * time.Millisecond); err != nil {
 			run.Err = err.Error()
 			return run
@@ -626,6 +643,10 @@ func (d *Dashboard) workbenchRun(ctx context.Context, wb *workbench, send bool) 
 		run.BatchWindowMS = requestedWindowMS
 	}
 
+	if err := ctx.Err(); err != nil {
+		run.Err = err.Error()
+		return run
+	}
 	started := time.Now()
 	run.Sent = true
 	if len(requests) == 1 {

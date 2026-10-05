@@ -432,6 +432,83 @@ func TestWorkbenchSameStateConcurrentRequestsPropagateCancellation(t *testing.T)
 	}
 }
 
+func TestWorkbenchCanceledRunWaitingForGateHasNoEffects(t *testing.T) {
+	e, f := newWorkbenchEnv(t)
+	control := enableWorkbenchScheduler(t, e, 10*time.Millisecond, 4)
+	barrier := make(chan struct{})
+	f.block = barrier
+	var release sync.Once
+	releaseBarrier := func() { release.Do(func() { close(barrier) }) }
+	t.Cleanup(releaseBarrier)
+	values := with(form("first state", []string{"q1", "Pick one", "yes", "no"}, []string{"q2", "Pick two", "yes", "no"}),
+		"op", "run", "concurrency", "2", "batch_window_ms", "20")
+	values.Set("token", e.d.token)
+	secondValues := url.Values{}
+	for key, value := range values {
+		secondValues[key] = append([]string(nil), value...)
+	}
+	secondValues.Set("state", "second state")
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { firstDone <- e.post(t, "/workbench", values) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		f.mu.Lock()
+		active := f.activeDecides
+		f.mu.Unlock()
+		if active == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			releaseBarrier()
+			<-firstDone
+			t.Fatalf("first run did not hold the gate with both decide calls active; active=%d", active)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("POST", "http://127.0.0.1:7844/workbench", strings.NewReader(secondValues.Encode())).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://127.0.0.1:7844")
+	rec := httptest.NewRecorder()
+	secondStarted, secondDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		close(secondStarted)
+		e.d.ServeHTTP(rec, req)
+		close(secondDone)
+	}()
+	<-secondStarted
+	cancel()
+	select {
+	case <-secondDone:
+	case <-time.After(500 * time.Millisecond):
+		releaseBarrier()
+		<-firstDone
+		t.Fatal("canceled Workbench request remained blocked behind the active run")
+	}
+	if !strings.Contains(html.UnescapeString(rec.Body.String()), "context canceled") {
+		t.Fatalf("canceled run did not report its cancellation: %s", rec.Body)
+	}
+	paths, _ := f.calls()
+	if !reflect.DeepEqual(paths, []string{"POST /v1/states", "POST /v1/decide", "POST /v1/decide"}) {
+		t.Fatalf("canceled waiter caused API effects: %v", paths)
+	}
+	control.mu.Lock()
+	sets := append([]time.Duration(nil), control.sets...)
+	control.mu.Unlock()
+	if !reflect.DeepEqual(sets, []time.Duration{20 * time.Millisecond}) {
+		t.Fatalf("canceled waiter changed the effective window: %v", sets)
+	}
+
+	releaseBarrier()
+	select {
+	case <-firstDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("active Workbench run did not finish after release")
+	}
+}
+
 func enableWorkbenchCapacity(t testing.TB, e *env, requested int) home.CapacityProfile {
 	t.Helper()
 	status := e.d.cfg.Status()

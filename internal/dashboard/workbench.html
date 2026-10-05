@@ -1,7 +1,7 @@
 {{/* ---- Workbench: what does the model think? ---- */}}
 {{define "workbench"}}{{template "open" .Chrome}}
 <header class="ws-head">
-  <div><h1>{{t "Workbench"}}</h1><p class="lede">{{t "Ask the resident model one or more choice questions about a bounded state. Nothing is stored and there are no expected labels."}}</p></div>
+  <div><h1>{{t "Workbench"}}</h1><p class="lede">{{t "Ask the resident model one or more choice questions about a bounded state. The editor is not saved; registering a State stores its exact content. There are no expected labels."}}</p></div>
   <span class="ws-meta mono">POST {{.Endpoint}}</span>
 </header>
 
@@ -16,7 +16,7 @@
       <label class="field">{{t "Concurrent independent requests"}}<input type="number" name="concurrency" value="{{$.W.Concurrency}}" min="1" max="{{$.MaxConcurrency}}" step="1" inputmode="numeric" autocomplete="off"></label>
       <label class="field">{{t "Batch window (ms)"}}<input type="number" name="batch_window_ms" value="{{$.W.BatchWindowMS}}" min="0" max="{{.MaxWindowMS}}" step="1" inputmode="numeric" autocomplete="off"></label>
     </div>
-    <p class="note">{{t "Run sends one independent POST /v1/decide per request, using the registered State reference. Distinct questions are split into balanced, contiguous groups in editor order; the selected window is applied to the live worker Policy before execution."}} {{t "Each value must be between 0 and"}} {{.MaxWindowMS}} {{t "milliseconds. A new Hachidori process starts with the 10ms runtime default."}}</p>
+    <p class="note">{{t "Run sends one independent POST /v1/decide per request, using the registered State reference. Distinct questions are split into balanced, contiguous groups in editor order; the selected window is applied to the live worker Policy before execution."}} {{t "The batch window must be between 0 and"}} {{.MaxWindowMS}} {{t "milliseconds. A new Hachidori process starts with the 10ms runtime default."}}</p>
   </section>
   {{end}}
 
