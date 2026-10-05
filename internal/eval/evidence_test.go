@@ -162,6 +162,16 @@ func TestServedIdentityFromStatus(t *testing.T) {
 	}
 }
 
+func TestServedCapacityIsRecordedInDecisionEvidence(t *testing.T) {
+	status := `{"schema":"hachidori.v1","runtime":{"home":"/h","runtime":"rt","model_id":"clef-flash","model":"org/clef@rev","device":"cuda"},` +
+		`"uptime_s":10,"worker":{"state":"ready","ready":true,"pid":42,"starts":1,"provider":{"provider":"clef","capacity":{"requested_max_input_tokens":700,"effective_max_input_tokens":500}}}}`
+	r := evRun(t, &evStub{answers: map[string]string{"a": "yes"}, statuses: []string{status}}, evCases(), Options{})
+	capacity, ok := r.Served.Provider["capacity"].(map[string]any)
+	if !ok || capacity["requested_max_input_tokens"] != float64(700) || capacity["effective_max_input_tokens"] != float64(500) {
+		t.Fatalf("served capacity evidence = %#v", r.Served.Provider["capacity"])
+	}
+}
+
 // Question Definitions -> eval -> Decision Evidence: every observation of a
 // definition-backed dataset records the exact definition identity/digest, and
 // inline questions claim no definition but keep an unambiguous wire digest.

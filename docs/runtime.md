@@ -2014,7 +2014,8 @@ contains these fields:
 |---|---|
 | `runtime`, `model_id`, `provider`, `repo`, `revision`, `source_files_sha256` | Exact dependency runtime and pinned source identity; source digest is `home.SourceOf(model).FilesSHA256` |
 | `device`, `dtype`, `variant_id` | Concrete CPU/CUDA execution, serving precision, and optional variant ID; capacities never cross these boundaries |
-| `max_state_tokens`, `max_input_tokens` | Positive measured/configured state-token and complete encoded-input limits, including question schema |
+| `max_state_tokens`, `max_input_tokens` | Positive measured/configured state-token and complete encoded-input limits, including question schema; `max_input_tokens` is the authoritative safe input bound |
+| `requested_max_input_tokens` | Optional positive operator request that can tighten admission; absent or zero uses the safe input bound |
 | `max_batch_items`, `max_batch_padded_tokens` | Positive limits for one actual provider forward; padded tokens are rows times longest encoded sequence |
 | `required_gpu_headroom_bytes` | Required inference workspace budget after resident model/runtime allocations; mandatory and positive for CUDA, absent/zero for CPU |
 
@@ -2027,11 +2028,16 @@ existing execution paths; this profile enforcement is specific to pinned Clef.
 
 Before READY, the worker checks configured input limits against Clef's 16,384-token
 model context and compares required workspace with actual free CUDA memory plus
-reusable, unallocated blocks in the CUDA allocator. The check runs after loading
-and again after warmup. `/v1/status` provider `capacity` reports the selected
-profile, model context, required/usable workspace and resident/allocator memory;
-worker statistics also report the last rejected shape. The headroom is an
-admission budget, not an exclusive device-memory reservation against other processes.
+reusable, unallocated blocks in the CUDA allocator. The effective input limit is
+the minimum of model context, the profile's authoritative `max_input_tokens`,
+and a positive `requested_max_input_tokens` when present. A request above the
+safe profile bound does not raise the effective limit. The check runs after
+loading and again after warmup. `/v1/status` provider `capacity` reports the
+selected profile, distinct requested and effective input limits, model context,
+required/usable workspace and resident/allocator memory; Decision Evidence
+snapshots these provider values. Worker statistics also report the last
+rejected shape. The headroom is an admission budget, not an exclusive
+device-memory reservation against other processes.
 
 Every Clef request is fully encoded on CPU using the pinned tokenizer and
 `joint_schema_model.encode_record`, without truncation. All question groups in
@@ -2042,6 +2048,12 @@ not a sum of unrelated concurrently nonexistent activations. Capacity denials
 return HTTP 429, class `capacity`, and an optional structured `error.capacity`
 with `metric`, `limit`, and `observed`. They keep the worker alive and do not
 trigger a watchdog restart, truncate state, or fall back to CPU.
+
+Workbench shows the current effective limit and exact profile's safe bound.
+Its requested-limit field updates only `requested_max_input_tokens` for that
+profile in `HACHIDORI_HOME/state/capacity-profiles.json`; blank clears the
+request. The updated setting applies after the runtime restarts. It never
+changes the measured profile fields or the encoded request.
 
 Physical RTX 3060/Clef-Flash W4A16 safe-capacity calibration and CUDA execution
 validation for this change: **NOT_CHECKED**. Portable admission tests establish

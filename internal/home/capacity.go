@@ -39,8 +39,10 @@ type CapacityTarget struct {
 // sequence length of one provider forward.
 type CapacityProfile struct {
 	CapacityTarget
-	MaxStateTokens           int    `json:"max_state_tokens"`
-	MaxInputTokens           int    `json:"max_input_tokens"`
+	MaxStateTokens int `json:"max_state_tokens"`
+	MaxInputTokens int `json:"max_input_tokens"`
+	// RequestedMaxInputTokens adds an operator limit that cannot raise MaxInputTokens.
+	RequestedMaxInputTokens  int    `json:"requested_max_input_tokens,omitempty"`
 	MaxBatchItems            int    `json:"max_batch_items"`
 	MaxBatchPaddedTokens     int    `json:"max_batch_padded_tokens"`
 	RequiredGPUHeadroomBytes uint64 `json:"required_gpu_headroom_bytes,omitempty"`
@@ -73,6 +75,9 @@ func (p CapacityProfile) Validate() error {
 	}
 	if p.MaxBatchPaddedTokens < p.MaxInputTokens {
 		return errors.New("capacity profile max_batch_padded_tokens must admit one max_input_tokens item")
+	}
+	if p.RequestedMaxInputTokens < 0 {
+		return errors.New("capacity profile requested_max_input_tokens cannot be negative")
 	}
 	if t.Device == "cuda" && p.RequiredGPUHeadroomBytes == 0 {
 		return errors.New("CUDA capacity profile must declare required_gpu_headroom_bytes")

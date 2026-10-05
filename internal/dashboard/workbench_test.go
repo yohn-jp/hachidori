@@ -20,7 +20,9 @@ import (
 	"testing"
 
 	"github.com/yohn-jp/hachidori/internal/api"
+	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/question"
+	"github.com/yohn-jp/hachidori/internal/worker"
 )
 
 // fakeAPI stands in for the resident runtime's inference API. It records
@@ -126,6 +128,62 @@ func newWorkbenchEnv(t testing.TB) (*env, *fakeAPI) {
 	cfg.APIAddr = srv.Listener.Addr().String()
 	e.d = New(cfg)
 	return e, f
+}
+
+func enableWorkbenchCapacity(t testing.TB, e *env, requested int) home.CapacityProfile {
+	t.Helper()
+	status := e.d.cfg.Status()
+	profile := home.CapacityProfile{CapacityTarget: home.CapacityTarget{
+		Runtime: status.Runtime.Runtime, ModelID: status.Runtime.ModelID, Provider: "clef", Repo: "repo", Revision: "rev",
+		SourceFilesSHA256: "sha256", Device: "cuda", DType: "bfloat16"},
+		MaxStateTokens: 80, MaxInputTokens: 100, RequestedMaxInputTokens: requested,
+		MaxBatchItems: 2, MaxBatchPaddedTokens: 200, RequiredGPUHeadroomBytes: 1}
+	if err := (home.Home{Root: e.home}).SaveCapacityProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	running := profile
+	effective := profile.MaxInputTokens
+	if requested > 0 {
+		effective = min(effective, requested)
+	}
+	e.rt.mu.Lock()
+	e.rt.snap.Info = worker.Info{"provider": "clef", "capacity": map[string]any{
+		"profile": running, "model_context_tokens": float64(16384),
+		"requested_max_input_tokens": requested, "effective_max_input_tokens": effective,
+	}}
+	e.rt.mu.Unlock()
+	return profile
+}
+
+func TestWorkbenchShowsAndSavesRequestedCapacity(t *testing.T) {
+	e, f := newWorkbenchEnv(t)
+	profile := enableWorkbenchCapacity(t, e, 40)
+
+	page := e.get(t, "/workbench").Body.String()
+	for _, want := range []string{`name="requested_max_input_tokens" value="40"`, "authoritative safe input limit is 100", "effective for the running worker"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("capacity view lacks %q", want)
+		}
+	}
+
+	form := with(form("state", []string{"q", "Pick", "a", "b"}), "op", "save-capacity", "requested_max_input_tokens", "25")
+	page = e.post(t, "/workbench", form).Body.String()
+	profiles, err := (home.Home{Root: e.home}).LoadCapacityProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, ok := profiles.Find(profile.CapacityTarget)
+	if !ok || saved.RequestedMaxInputTokens != 25 {
+		t.Fatalf("saved profile = %+v, found %v", saved, ok)
+	}
+	for _, want := range []string{`name="requested_max_input_tokens" value="25"`, "Requested input-token limit saved", "Restart the runtime to apply it", "effective for the running worker"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("saved capacity view lacks %q", want)
+		}
+	}
+	if paths, _ := f.calls(); len(paths) != 0 {
+		t.Fatalf("saving capacity sent inference: %v", paths)
+	}
 }
 
 // form builds a workbench form: state plus questions given as
