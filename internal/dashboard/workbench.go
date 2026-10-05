@@ -4,12 +4,13 @@ package dashboard
 // state and one or more editable v1 choice questions through the existing
 // POST /v1/decide contract of the resident runtime.
 //
-// The workbench keeps no state between requests: the whole editor travels in
-// the form and every POST renders the page again from it. Questions are
-// validated and compiled with internal/question and internal/api; only the
+// The question editor keeps no state between requests: its whole editor
+// travels in the form and every POST renders the page again from it. Questions
+// are validated and compiled with internal/question and internal/api; only
 // compiled api.Question values are sent. There are no expected labels here.
-// Question Definition files are read or written only at local paths the
-// operator typed, one file per action; nothing is scanned or stored.
+// The Clef requested capacity control edits the exact operator-owned capacity
+// profile under HACHIDORI_HOME. Question Definition files are read or written
+// only at local paths the operator typed, one file per action.
 
 import (
 	"encoding/json"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/yohn-jp/hachidori/internal/api"
 	"github.com/yohn-jp/hachidori/internal/client"
+	"github.com/yohn-jp/hachidori/internal/home"
 	"github.com/yohn-jp/hachidori/internal/question"
 )
 
@@ -61,9 +63,10 @@ type wbQuestion struct {
 
 // workbench is the complete editor state.
 type workbench struct {
-	State     string
-	Questions []wbQuestion
-	LoadPath  string
+	State                   string
+	Questions               []wbQuestion
+	LoadPath                string
+	RequestedMaxInputTokens string
 }
 
 // definition is the Question Definition the editor row describes. Choice
@@ -136,7 +139,8 @@ func nl(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 // parseWorkbench reads the editor state from a posted form. Counts are
 // bounded by the v1 limits so a crafted form cannot allocate unboundedly.
 func parseWorkbench(r *http.Request) workbench {
-	w := workbench{State: nl(r.PostFormValue("state")), LoadPath: strings.TrimSpace(r.PostFormValue("load_path"))}
+	w := workbench{State: nl(r.PostFormValue("state")), LoadPath: strings.TrimSpace(r.PostFormValue("load_path")),
+		RequestedMaxInputTokens: strings.TrimSpace(r.PostFormValue("requested_max_input_tokens"))}
 	nq := bounded(r.PostFormValue("nq"), api.MaxQuestions)
 	for i := 0; i < nq; i++ {
 		p := "q" + strconv.Itoa(i) + "."
@@ -186,16 +190,29 @@ type wbExport struct {
 // wbView is the workbench page's view model.
 type wbView struct {
 	Chrome
-	Token      string
-	Endpoint   string
-	W          workbench
-	Run        *wbRun
-	Preview    bool
-	Export     *wbExport
-	LoadMsg    string
-	LoadErr    string
-	FormError  string
-	PathPicker bool
+	Token           string
+	Endpoint        string
+	W               workbench
+	Capacity        *wbCapacity
+	CapacityMessage string
+	Run             *wbRun
+	Preview         bool
+	Export          *wbExport
+	LoadMsg         string
+	LoadErr         string
+	FormError       string
+	PathPicker      bool
+}
+
+type wbCapacity struct {
+	SafeLimit       int
+	EffectiveLimit  int
+	Requested       string
+	Editable        bool
+	RestartRequired bool
+	Notice          string
+	homeRoot        string
+	runningProfile  home.CapacityProfile
 }
 
 // wbQuestionView is what the page shows for one editor row besides its
@@ -237,17 +254,22 @@ func (d *Dashboard) endpoint() *client.Client {
 
 func (d *Dashboard) workbenchView() wbView {
 	return wbView{Chrome: d.chrome("Workbench", "workbench"),
-		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr + "/v1/decide", PathPicker: d.cfg.PathPicker != nil}
+		Token: d.token, Endpoint: "http://" + d.cfg.APIAddr + "/v1/decide", PathPicker: d.cfg.PathPicker != nil,
+		Capacity: d.workbenchCapacity()}
 }
 
 func (d *Dashboard) workbenchPage(w http.ResponseWriter, r *http.Request) {
 	v := d.workbenchView()
 	v.W = workbench{Questions: []wbQuestion{blankQuestion()}}
+	if v.Capacity != nil && v.Capacity.Editable {
+		v.W.RequestedMaxInputTokens = v.Capacity.Requested
+	}
 	d.renderView(w, "workbench", v)
 }
 
-// workbenchPost applies one editor operation and renders the result. None of
-// the operations change runtime state; "run" is one POST /v1/decide.
+// workbenchPost applies one editor operation and renders the result. Saving a
+// requested capacity changes the operator-owned profile; "run" is one POST
+// /v1/decide and does not alter the inline-State or State-reference contract.
 func (d *Dashboard) workbenchPost(w http.ResponseWriter, r *http.Request) {
 	v := d.workbenchView()
 	v.W = parseWorkbench(r)
@@ -259,6 +281,13 @@ func (d *Dashboard) workbenchPost(w http.ResponseWriter, r *http.Request) {
 	case op == "run", op == "preview":
 		v.Preview = op == "preview"
 		v.Run = d.workbenchRun(v.W, op == "run")
+	case op == "save-capacity":
+		if err := d.saveWorkbenchCapacity(v.W.RequestedMaxInputTokens); err != nil {
+			v.FormError = err.Error()
+		} else {
+			v.CapacityMessage = "Requested input-token limit saved. Restart the runtime to apply it."
+		}
+		v.Capacity = d.workbenchCapacity()
 	case op == "add":
 		if len(v.W.Questions) >= api.MaxQuestions {
 			v.FormError = fmt.Sprintf("a request carries at most %d questions", api.MaxQuestions)
@@ -293,6 +322,104 @@ func (d *Dashboard) workbenchPost(w http.ResponseWriter, r *http.Request) {
 		v.W.Questions = []wbQuestion{blankQuestion()}
 	}
 	d.renderView(w, "workbench", v)
+}
+
+func (d *Dashboard) workbenchCapacity() *wbCapacity {
+	if d.cfg.Status == nil {
+		return nil
+	}
+	status := d.cfg.Status()
+	if !status.Worker.Ready || status.Worker.Info["provider"] != "clef" {
+		return nil
+	}
+	capacity, ok := status.Worker.Info["capacity"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	profileValue := capacity["profile"]
+	if profileValue == nil {
+		return &wbCapacity{SafeLimit: statusInt(capacity["model_context_tokens"]),
+			EffectiveLimit: statusInt(capacity["effective_max_input_tokens"])}
+	}
+	encoded, err := json.Marshal(profileValue)
+	if err != nil {
+		return nil
+	}
+	var running home.CapacityProfile
+	if err := json.Unmarshal(encoded, &running); err != nil || running.Validate() != nil {
+		return nil
+	}
+	view := &wbCapacity{SafeLimit: running.MaxInputTokens,
+		EffectiveLimit: statusInt(capacity["effective_max_input_tokens"]),
+		homeRoot:       status.Runtime.Home, runningProfile: running}
+	if view.EffectiveLimit == 0 {
+		view.EffectiveLimit = min(running.MaxInputTokens, statusInt(capacity["model_context_tokens"]))
+		if running.RequestedMaxInputTokens > 0 {
+			view.EffectiveLimit = min(view.EffectiveLimit, running.RequestedMaxInputTokens)
+		}
+	}
+	h := home.Home{Root: status.Runtime.Home}
+	profiles, err := h.LoadCapacityProfiles()
+	if err != nil {
+		view.Notice = "The running capacity profile cannot be edited because its saved configuration is unavailable."
+		return view
+	}
+	saved, ok := profiles.Find(running.CapacityTarget)
+	if !ok {
+		view.Notice = "The running capacity profile cannot be edited because its saved target no longer matches."
+		return view
+	}
+	view.Requested = requestedInputValue(saved.RequestedMaxInputTokens)
+	withoutSavedRequest := saved
+	withoutSavedRequest.RequestedMaxInputTokens = running.RequestedMaxInputTokens
+	if withoutSavedRequest != running {
+		view.Notice = "The saved safe capacity differs from the running worker. Restart the runtime before editing its requested limit."
+		return view
+	}
+	view.Editable = true
+	view.RestartRequired = saved.RequestedMaxInputTokens != running.RequestedMaxInputTokens
+	return view
+}
+
+func (d *Dashboard) saveWorkbenchCapacity(value string) error {
+	requested := 0
+	if value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			return errors.New("requested input-token limit must be a positive integer or blank")
+		}
+		requested = parsed
+	}
+	view := d.workbenchCapacity()
+	if view == nil || !view.Editable {
+		return errors.New("a matching ready Clef capacity profile is required to edit the requested limit")
+	}
+	profile := view.runningProfile
+	profile.RequestedMaxInputTokens = requested
+	if err := (home.Home{Root: view.homeRoot}).SaveCapacityProfile(profile); err != nil {
+		return fmt.Errorf("save requested input-token limit: %w", err)
+	}
+	return nil
+}
+
+func requestedInputValue(value int) string {
+	if value <= 0 {
+		return ""
+	}
+	return strconv.Itoa(value)
+}
+
+func statusInt(value any) int {
+	switch n := value.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
 }
 
 func (d *Dashboard) workbenchPickLoad(r *http.Request, v *wbView) {

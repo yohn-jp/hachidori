@@ -23,12 +23,16 @@ func capacityProfile(device, variant string) CapacityProfile {
 }
 
 func TestCapacityProfilesRequireExactTargetAndPositiveDeclaredLimits(t *testing.T) {
+	cuda := capacityProfile("cuda", "variant-a")
+	// A request above the measured bound remains valid configuration; the worker
+	// clamps its effective admission limit to the measured value.
+	cuda.RequestedMaxInputTokens = 300
 	profiles := CapacityProfiles{Schema: CapacityProfilesSchema,
-		Profiles: []CapacityProfile{capacityProfile("cuda", "variant-a"), capacityProfile("cpu", "")}}
+		Profiles: []CapacityProfile{cuda, capacityProfile("cpu", "")}}
 	if err := profiles.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := profiles.Find(capacityTarget("cuda", "variant-a")); !ok || got.MaxStateTokens != 200 {
+	if got, ok := profiles.Find(capacityTarget("cuda", "variant-a")); !ok || got.MaxStateTokens != 200 || got.RequestedMaxInputTokens != 300 {
 		t.Fatalf("exact profile = %+v, %v", got, ok)
 	}
 	for name, target := range map[string]CapacityTarget{
@@ -54,12 +58,13 @@ func TestCapacityProfilesRequireExactTargetAndPositiveDeclaredLimits(t *testing.
 
 func TestCapacityProfilesRejectUnusableAndDuplicateEntries(t *testing.T) {
 	cases := map[string]func(*CapacityProfile){
-		"missing state limit":   func(p *CapacityProfile) { p.MaxStateTokens = 0 },
-		"input below state":     func(p *CapacityProfile) { p.MaxInputTokens = p.MaxStateTokens - 1 },
-		"padded below input":    func(p *CapacityProfile) { p.MaxBatchPaddedTokens = p.MaxInputTokens - 1 },
-		"missing cuda headroom": func(p *CapacityProfile) { p.RequiredGPUHeadroomBytes = 0 },
-		"cpu headroom":          func(p *CapacityProfile) { p.RequiredGPUHeadroomBytes = 1 },
-		"invalid device":        func(p *CapacityProfile) { p.Device = "auto" },
+		"missing state limit":      func(p *CapacityProfile) { p.MaxStateTokens = 0 },
+		"input below state":        func(p *CapacityProfile) { p.MaxInputTokens = p.MaxStateTokens - 1 },
+		"padded below input":       func(p *CapacityProfile) { p.MaxBatchPaddedTokens = p.MaxInputTokens - 1 },
+		"negative requested input": func(p *CapacityProfile) { p.RequestedMaxInputTokens = -1 },
+		"missing cuda headroom":    func(p *CapacityProfile) { p.RequiredGPUHeadroomBytes = 0 },
+		"cpu headroom":             func(p *CapacityProfile) { p.RequiredGPUHeadroomBytes = 1 },
+		"invalid device":           func(p *CapacityProfile) { p.Device = "auto" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -133,6 +138,7 @@ func TestSaveCapacityProfileInitializesUpsertsAndPreservesOtherTargets(t *testin
 	replacement.MaxInputTokens = 220
 	replacement.MaxBatchPaddedTokens = 880
 	replacement.RequiredGPUHeadroomBytes = 1234
+	replacement.RequestedMaxInputTokens = 120
 	if err := h.SaveCapacityProfile(replacement); err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,20 @@
   <input type="hidden" name="token" value="{{.Token}}">
   <input type="hidden" name="nq" value="{{len .W.Questions}}">
 
+  {{with .Capacity}}
+  <section class="block" aria-labelledby="capacity-h">
+    <div class="block-h"><h2 id="capacity-h">{{t "Clef input capacity"}}</h2><span class="sub num">{{t "effective for the running worker"}} {{.EffectiveLimit}}</span></div>
+    <p class="note">{{t "The authoritative safe input limit is"}} {{.SafeLimit}} {{t "tokens. The requested limit can only lower the effective limit."}}</p>
+    {{with $.CapacityMessage}}<p class="msg ok" role="status">{{.}}</p>{{end}}
+    {{if .Editable}}
+    <label class="field">{{t "Requested input-token limit"}}<input type="number" name="requested_max_input_tokens" value="{{$.W.RequestedMaxInputTokens}}" min="1" inputmode="numeric" autocomplete="off" placeholder="{{t "blank uses the safe profile limit"}}"></label>
+    <div class="btn-row"><button type="submit" class="btn" name="op" value="save-capacity">{{t "Save requested limit"}}</button><span class="note">{{t "Saving changes HACHIDORI_HOME configuration; restart the runtime to apply it."}}</span></div>
+    {{if .RestartRequired}}<p class="note" role="status">{{t "The saved request differs from the running worker. Restart the runtime to apply it."}}</p>{{end}}
+    {{end}}
+    {{with .Notice}}<p class="note" role="status">{{.}}</p>{{end}}
+  </section>
+  {{end}}
+
   {{/* Run is the first submit control, so Enter in any field runs. */}}
   <div class="toolbar" role="toolbar" aria-label="{{t "Workbench actions"}}">
     <button type="submit" class="btn primary" name="op" value="run">{{t "Run"}}</button>

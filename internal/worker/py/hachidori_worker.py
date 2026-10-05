@@ -1573,11 +1573,22 @@ class ClefProvider(Provider):
         current = getattr(self, "registered_resident", None)
         resident = ({"state_ref": current[0], **self.resident_info(current[2]),
                      **getattr(self, "resident_usage", {})} if current else None)
+        requested, effective = self._input_token_capacity()
         return {"profile": getattr(self, "capacity_profile", None),
                 "model_context_tokens": CLEF_MAX_LENGTH,
+                "requested_max_input_tokens": requested,
+                "effective_max_input_tokens": effective,
                 "headroom": getattr(self, "capacity_headroom", None),
                 "last_rejection": getattr(self, "capacity_rejection", None),
                 "resident": resident}
+
+    def _input_token_capacity(self):
+        profile = getattr(self, "capacity_profile", None)
+        safe = min(CLEF_MAX_LENGTH, profile["max_input_tokens"]) if profile else CLEF_MAX_LENGTH
+        requested = profile.get("requested_max_input_tokens") if profile else None
+        if not requested:
+            requested = None
+        return requested, min(safe, requested) if requested is not None else safe
 
     def check_capacity_readiness(self):
         profile = getattr(self, "capacity_profile", None)
@@ -1612,13 +1623,13 @@ class ClefProvider(Provider):
         start = time.perf_counter()
         encoded = []
         profile = getattr(self, "capacity_profile", None)
+        _, input_limit = self._input_token_capacity()
         for state in states:
             # The pinned encoder slices to max_length. sys.maxsize disables
             # that slicing; reject the full CPU shape before device collation.
             record = self.jsm.encode_record(self.tokenizer, {"state": state, "questions": questions},
                                             max_length=sys.maxsize)
-            limit = min(CLEF_MAX_LENGTH, profile["max_input_tokens"]) if profile else CLEF_MAX_LENGTH
-            self._capacity_limit("input_tokens", limit, len(record.input_ids))
+            self._capacity_limit("input_tokens", input_limit, len(record.input_ids))
             if profile:
                 state_count = len(self.jsm._tokens(self.tokenizer, self.jsm.render(state)))
                 self._capacity_limit("state_tokens", profile["max_state_tokens"], state_count)

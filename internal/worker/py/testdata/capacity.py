@@ -56,6 +56,26 @@ class Capacity(unittest.TestCase):
         self.assertEqual(e.exception.details['metric'], 'input_tokens')
         self.assertEqual(p.calls, [])
 
+    def test_requested_input_limit_only_tightens_safe_bound(self):
+        p = provider(profile(requested_max_input_tokens=5))
+        status = p.capacity_status()
+        self.assertEqual(status['requested_max_input_tokens'], 5)
+        self.assertEqual(status['effective_max_input_tokens'], 5)
+        with self.assertRaises(CapacityError) as e:
+            p.predict(['s' * 5], {'q': {}})
+        self.assertEqual(e.exception.details, dict(metric='input_tokens', limit=5, observed=6))
+        self.assertEqual(p.calls, [])
+
+        p = provider(profile(max_state_tokens=12, max_input_tokens=12,
+                             max_batch_padded_tokens=24, requested_max_input_tokens=15))
+        status = p.capacity_status()
+        self.assertEqual(status['requested_max_input_tokens'], 15)
+        self.assertEqual(status['effective_max_input_tokens'], 12)
+        with self.assertRaises(CapacityError) as e:
+            p.predict(['s' * 12], {'q': {}})
+        self.assertEqual(e.exception.details, dict(metric='input_tokens', limit=12, observed=13))
+        self.assertEqual(p.calls, [])
+
     def test_batch_forward_shape_and_determinism(self):
         for _ in range(2):
             p = provider(profile(max_batch_padded_tokens=17))
